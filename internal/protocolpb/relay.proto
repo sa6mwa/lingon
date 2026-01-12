@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package lingon.protocol;
+
+option go_package = "pkt.systems/lingon/internal/protocolpb;protocolpb";
+
+message Frame {
+  string session_id = 1;
+  uint64 seq = 2;
+
+  oneof payload {
+    Hello hello = 10;
+    Welcome welcome = 11;
+    Snapshot snapshot = 12;
+    Diff diff = 13;
+    Out out = 14;
+    In in = 15;
+    Resize resize = 16;
+    Control control = 17;
+    Error error = 18;
+  }
+}
+
+message Hello {
+  string client_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  bool wants_control = 4;
+  uint64 last_seq = 5;
+  string client_type = 6;
+}
+
+message Welcome {
+  bool granted_control = 1;
+  uint32 server_cols = 2;
+  uint32 server_rows = 3;
+  string holder_client_id = 4;
+}
+
+message Snapshot {
+  uint32 cols = 1;
+  uint32 rows = 2;
+  repeated uint32 runes = 3 [packed = true];
+  repeated int32 modes = 4 [packed = true];
+  repeated uint32 fg = 5 [packed = true];
+  repeated uint32 bg = 6 [packed = true];
+  Cursor cursor = 7;
+  bool cursor_visible = 8;
+  uint32 mode = 9;
+  string title = 10;
+}
+
+message DiffRow {
+  uint32 row = 1;
+  repeated uint32 runes = 2 [packed = true];
+  repeated int32 modes = 3 [packed = true];
+  repeated uint32 fg = 4 [packed = true];
+  repeated uint32 bg = 5 [packed = true];
+}
+
+message Diff {
+  uint32 cols = 1;
+  uint32 rows = 2;
+  repeated DiffRow diff_rows = 3;
+  Cursor cursor = 4;
+  bool cursor_visible = 5;
+  uint32 mode = 6;
+  string title = 7;
+}
+
+message Out {
+  bytes data = 1;
+}
+
+message In {
+  bytes data = 1;
+}
+
+message Resize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message Control {
+  string holder_client_id = 1;
+}
+
+message Error {
+  string message = 1;
+}
+
+message Cursor {
+  uint32 x = 1;
+  uint32 y = 2;
+}

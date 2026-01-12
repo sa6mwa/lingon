@@ -1,0 +1,15 @@
+/lingon
+testdata/
+/.gocache
+bin/
+\#*\#
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.log
+*.test
+*.pprof
+vendor/
+.env*
