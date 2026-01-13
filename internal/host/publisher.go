@@ -35,6 +35,7 @@ type Publisher struct {
 	OnInput  func([]byte)
 	OnResize func(cols, rows int)
 	OnControl func(holderID string)
+	OnFrame   func(*protocolpb.Frame)
 
 	mu       sync.Mutex
 	lastSnap *protocolpb.Snapshot
@@ -120,6 +121,9 @@ func (p *Publisher) Publish(data []byte, snap *protocolpb.Snapshot) {
 	frame, lines := p.buildFrame(data, snap)
 	if frame == nil {
 		return
+	}
+	if p.OnFrame != nil {
+		p.OnFrame(frame)
 	}
 	if !p.sendFrame(frame) {
 		p.enqueue(frame, lines)
@@ -218,6 +222,10 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) {
 		if err != nil {
 			return
 		}
+		if hello := frame.GetHello(); hello != nil {
+			p.sendSnapshot()
+			continue
+		}
 		if in := frame.GetIn(); in != nil && p.OnInput != nil {
 			p.OnInput(in.Data)
 			continue
@@ -252,10 +260,29 @@ func (p *Publisher) sendFrame(frame *protocolpb.Frame) bool {
 	err := writeFrame(context.Background(), ws, frame)
 	p.writeMu.Unlock()
 	if err != nil {
+		_ = ws.Close(websocket.StatusInternalError, "write error")
 		p.clearConn()
 		return false
 	}
 	return true
+}
+
+func (p *Publisher) sendSnapshot() {
+	p.mu.Lock()
+	snap := p.lastSnap
+	p.lastSent = snap
+	p.mu.Unlock()
+	if snap == nil {
+		return
+	}
+	frame := &protocolpb.Frame{
+		SessionId: p.opts.SessionID,
+		Payload:   &protocolpb.Frame_Snapshot{Snapshot: snap},
+	}
+	if p.OnFrame != nil {
+		p.OnFrame(frame)
+	}
+	_ = p.sendFrame(frame)
 }
 
 // TakeControl announces that the host wants controller lease.

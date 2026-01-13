@@ -583,6 +583,9 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = ws.Send(ctx, frameWelcome(granted, cols, rows, holder, sessionID))
+	if granted {
+		s.Hub.BroadcastControl(ctx, sessionID)
+	}
 	_ = s.Hub.HandleClientFrame(ctx, ws, frame)
 
 	s.serveWSLoop(ctx, ws)

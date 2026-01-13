@@ -42,6 +42,9 @@ type Options struct {
 	Stdout         *os.File
 	DisableRaw     bool
 	Logger         pslog.Logger
+	OnPTYRead      func([]byte)
+	OnPublishFrame func(*protocolpb.Frame)
+	OnSnapshot     func(terminal.Snapshot)
 }
 
 // Runner executes a local interactive session with optional relay publishing.
@@ -50,11 +53,18 @@ type Runner struct {
 	logger pslog.Logger
 
 	ptyFile *os.File
+	ttyFile *os.File
 	cmd     *exec.Cmd
 
 	emulator terminal.Emulator
 	emuMu    sync.Mutex
 	writeMu  sync.Mutex
+
+	veofMu   sync.Mutex
+	veofOrig uint8
+	veofSet  bool
+
+	lastRender *protocolpb.Snapshot
 
 	holderMu sync.Mutex
 	holderID string
@@ -76,7 +86,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.opts.SessionID = config.DefaultSessionID
 	}
 	if r.opts.Cols <= 0 || r.opts.Rows <= 0 {
-		cols, rows := termSize(r.stdout())
+		cols, rows := termSizeAny(r.stdout(), r.stdin())
 		if cols > 0 && rows > 0 {
 			r.opts.Cols, r.opts.Rows = cols, rows
 		}
@@ -101,22 +111,32 @@ func (r *Runner) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	ptyFile, cmd, err := r.startShell(r.opts.Shell)
+	ptyFile, ttyFile, cmd, err := r.startShell(r.opts.Shell)
 	if err != nil {
 		return err
 	}
 	r.ptyFile = ptyFile
+	r.ttyFile = ttyFile
 	r.cmd = cmd
 
 	defer func() {
 		_ = ptyFile.Close()
+		if ttyFile != nil {
+			_ = ttyFile.Close()
+		}
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
 	}()
 
+	r.captureVEOF()
+
 	r.emulator = emu.New(r.opts.Cols, r.opts.Rows)
 	_ = pty.Resize(ptyFile, r.opts.Cols, r.opts.Rows)
+	_ = setNonblock(ptyFile, true)
+	defer func() {
+		_ = setNonblock(ptyFile, false)
+	}()
 
 	stdin := r.stdin()
 	stdout := r.stdout()
@@ -129,6 +149,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer func() {
 			_ = setNonblock(stdin, false)
 		}()
+	} else {
+		_ = setNonblock(stdin, true)
+		defer func() {
+			_ = setNonblock(stdin, false)
+		}()
 	}
 
 	sigCtx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
@@ -137,9 +162,31 @@ func (r *Runner) Run(ctx context.Context) error {
 	sigwinch := make(chan os.Signal, 1)
 	signal.Notify(sigwinch, syscall.SIGWINCH)
 	defer signal.Stop(sigwinch)
+	go func() {
+		<-sigCtx.Done()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = ptyFile.Close()
+	}()
+	if r.opts.Stdin != nil {
+		go func() {
+			<-sigCtx.Done()
+			_ = stdin.Close()
+		}()
+	}
 
 	var wg sync.WaitGroup
 	localErr := make(chan error, 1)
+	reportErr := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case localErr <- err:
+		default:
+		}
+	}
 	var publisher *host.Publisher
 
 	// Local input -> PTY.
@@ -159,21 +206,25 @@ func (r *Runner) Run(ctx context.Context) error {
 					time.Sleep(10 * time.Millisecond)
 					continue
 				}
-			if !errors.Is(err, io.EOF) {
-				r.logger.Debug("stdin read error", "err", err)
+				if !errors.Is(err, io.EOF) {
+					r.logger.Debug("stdin read error", "err", err)
+				}
+				if !r.opts.Publish {
+					reportErr(err)
+				}
+				return
 			}
-			localErr <- err
-			return
-		}
 			if publisher != nil {
 				r.takeControl(publisher, stdout)
 			}
 			if _, err := r.writePTY(buf[:n]); err != nil {
 				r.logger.Debug("pty write error", "err", err)
-				localErr <- err
+				if !r.opts.Publish {
+					reportErr(err)
+				}
 				return
 			}
-	}
+		}
 	}()
 
 	// Publish relay updates (optional).
@@ -188,6 +239,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			BufferLines:    r.opts.BufferLines,
 			Logger:         r.logger.With("component", "publish"),
 		})
+		if r.opts.OnPublishFrame != nil {
+			publisher.OnFrame = r.opts.OnPublishFrame
+		}
 		r.setHolder(host.HostControlID)
 		publisher.OnInput = func(data []byte) {
 			if len(data) == 0 {
@@ -195,6 +249,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			if r.holder() == host.HostControlID {
 				return
+			}
+			if r.ttyFile != nil {
+				data = filterRemoteInput(r.ttyFile, data)
+				if len(data) == 0 {
+					return
+				}
 			}
 			_, _ = r.writePTY(data)
 		}
@@ -241,33 +301,50 @@ func (r *Runner) Run(ctx context.Context) error {
 				return
 			default:
 			}
-			n, err := ptyFile.Read(buf)
+			n, err := readPTY(sigCtx, ptyFile, buf)
 			if err != nil {
+				if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
 				if !errors.Is(err, io.EOF) {
 					r.logger.Debug("pty read error", "err", err)
 				}
-				localErr <- err
+				reportErr(err)
 				return
 			}
 			data := buf[:n]
+			if r.opts.OnPTYRead != nil {
+				cp := make([]byte, len(data))
+				copy(cp, data)
+				r.opts.OnPTYRead(cp)
+			}
+			r.emuMu.Lock()
 			if err := r.emulator.Write(data); err != nil {
 				r.logger.Debug("emulator write error", "err", err)
 			}
-			snap, err := r.snapshotLocked()
+			rawSnap, err := r.emulator.Snapshot()
+			r.emuMu.Unlock()
 			if err != nil {
-				localErr <- err
+				reportErr(err)
 				return
 			}
+			if r.opts.OnSnapshot != nil {
+				r.opts.OnSnapshot(rawSnap)
+			}
+			snap := protocol.SnapshotToProto(rawSnap)
 			if r.useRenderer(stdout) {
-				cols, rows := termSize(stdout)
+				cols, rows := termSizeAny(stdout, stdin)
 				if cols <= 0 || rows <= 0 {
 					cols, rows = r.opts.Cols, r.opts.Rows
 				}
-				if err := render.SnapshotViewport(stdout, snap, cols, rows); err != nil {
+				if err := render.SnapshotViewportDelta(stdout, r.lastRender, snap, cols, rows); err != nil {
 					r.logger.Debug("render error", "err", err)
 				}
+				r.lastRender = snap
 			} else {
-				if _, err := stdout.Write(data); err != nil {
+				r.lastRender = nil
+				if err := writeAll(sigCtx, stdout, data); err != nil {
 					r.logger.Debug("stdout write error", "err", err)
 				}
 			}
@@ -286,7 +363,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			case <-sigCtx.Done():
 				return
 			case <-sigwinch:
-				cols, rows := termSize(stdout)
+				cols, rows := termSizeAny(stdout, stdin)
 				if cols <= 0 || rows <= 0 {
 					continue
 				}
@@ -297,11 +374,11 @@ func (r *Runner) Run(ctx context.Context) error {
 				_ = pty.Resize(ptyFile, cols, rows)
 				r.emuMu.Lock()
 				r.emulator.Resize(cols, rows)
-				snap, err := r.snapshotLocked()
+				rawSnap, err := r.emulator.Snapshot()
 				r.emuMu.Unlock()
 				if err == nil {
 					if publisher != nil {
-						publisher.Resize(cols, rows, snap)
+						publisher.Resize(cols, rows, protocol.SnapshotToProto(rawSnap))
 					}
 				}
 			}
@@ -319,7 +396,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) startShell(shellOverride string) (*os.File, *exec.Cmd, error) {
+func (r *Runner) startShell(shellOverride string) (*os.File, *os.File, *exec.Cmd, error) {
 	path := shellOverride
 	if path == "" {
 		if u, err := user.Current(); err == nil && u != nil && u.Uid != "" {
@@ -338,11 +415,11 @@ func (r *Runner) startShell(shellOverride string) (*os.File, *exec.Cmd, error) {
 	if r.opts.Term != "" {
 		cmd.Env = append(os.Environ(), "TERM="+r.opts.Term)
 	}
-	ptyFile, err := pty.Start(cmd)
+	ptyFile, ttyFile, err := pty.StartWithTTY(cmd)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return ptyFile, cmd, nil
+	return ptyFile, ttyFile, cmd, nil
 }
 
 func (r *Runner) makeRaw(file *os.File) error {
@@ -401,9 +478,6 @@ func termSize(file *os.File) (int, int) {
 	if file == nil {
 		return 0, 0
 	}
-	if !term.IsTerminal(int(file.Fd())) {
-		return 0, 0
-	}
 	cols, rows, err := term.GetSize(int(file.Fd()))
 	if err != nil {
 		return 0, 0
@@ -427,10 +501,50 @@ func waitProcess(cmd *exec.Cmd) <-chan struct{} {
 	return ch
 }
 
+func writeAll(ctx context.Context, w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		n, err := w.Write(data)
+		if n > 0 {
+			data = data[n:]
+		}
+		if err != nil {
+			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+				if ctx != nil {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Millisecond):
+					}
+				} else {
+					time.Sleep(5 * time.Millisecond)
+				}
+				continue
+			}
+			return err
+		}
+		if n == 0 {
+			if ctx != nil {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(5 * time.Millisecond):
+				}
+			} else {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+	}
+	return nil
+}
+
 func (r *Runner) setHolder(holderID string) {
 	r.holderMu.Lock()
 	r.holderID = holderID
 	r.holderMu.Unlock()
+	r.applyVEOF(holderID)
 }
 
 func (r *Runner) holder() string {
@@ -439,13 +553,42 @@ func (r *Runner) holder() string {
 	return r.holderID
 }
 
+func (r *Runner) captureVEOF() {
+	if r.ttyFile == nil {
+		return
+	}
+	val, err := getVEOF(r.ttyFile)
+	if err != nil {
+		return
+	}
+	r.veofMu.Lock()
+	r.veofOrig = val
+	r.veofSet = true
+	r.veofMu.Unlock()
+}
+
+func (r *Runner) applyVEOF(holderID string) {
+	if r.ttyFile == nil {
+		return
+	}
+	r.veofMu.Lock()
+	if !r.veofSet {
+		r.veofMu.Unlock()
+		return
+	}
+	orig := r.veofOrig
+	r.veofMu.Unlock()
+	target := orig
+	if holderID != "" && holderID != host.HostControlID {
+		target = 0
+	}
+	_ = setVEOF(r.ttyFile, target)
+}
+
 func (r *Runner) useRenderer(stdout *os.File) bool {
-	cols, rows := termSize(stdout)
+	cols, rows := termSizeAny(stdout, r.stdin())
 	if cols <= 0 || rows <= 0 {
 		return false
-	}
-	if r.holder() != host.HostControlID {
-		return true
 	}
 	return cols != r.opts.Cols || rows != r.opts.Rows
 }
@@ -457,7 +600,7 @@ func (r *Runner) takeControl(publisher *host.Publisher, stdout *os.File) {
 	publisher.TakeControl()
 	r.setHolder(host.HostControlID)
 
-	cols, rows := termSize(stdout)
+	cols, rows := termSizeAny(stdout, r.stdin())
 	if cols <= 0 || rows <= 0 {
 		return
 	}
@@ -473,6 +616,27 @@ func (r *Runner) takeControl(publisher *host.Publisher, stdout *os.File) {
 	if err == nil {
 		publisher.Resize(cols, rows, protocol.SnapshotToProto(snap))
 	}
+}
+
+func termSizeAny(files ...*os.File) (int, int) {
+	for _, file := range files {
+		if file == nil {
+			continue
+		}
+		cols, rows := termSize(file)
+		if cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	if tty, err := os.Open("/dev/tty"); err == nil {
+		defer func() {
+			_ = tty.Close()
+		}()
+		if cols, rows := termSize(tty); cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	return 0, 0
 }
 
 var terminalStateMu sync.Mutex

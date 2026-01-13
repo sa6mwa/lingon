@@ -97,17 +97,26 @@ func (h *Hub) RegisterClient(conn connection, sessionID, clientID string, wantsC
 
 // Unregister removes a connection from the hub.
 func (h *Hub) Unregister(conn connection) {
+	var notify []connection
+	var notifyReason string
+
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	state := h.sessions[conn.SessionID()]
 	if state == nil {
+		h.mu.Unlock()
 		return
 	}
 
 	if conn.Role() == RoleHost {
 		if state.host != nil && state.host.ID() == conn.ID() {
 			state.host = nil
+			state.controller = ""
+			notifyReason = "host disconnected"
+			notify = make([]connection, 0, len(state.clients))
+			for _, client := range state.clients {
+				notify = append(notify, client)
+			}
 		}
 	} else {
 		delete(state.clients, conn.ID())
@@ -115,6 +124,17 @@ func (h *Hub) Unregister(conn connection) {
 	}
 	if state.controller == conn.ID() {
 		state.controller = ""
+	}
+
+	h.mu.Unlock()
+
+	if len(notify) == 0 {
+		return
+	}
+	frame := frameError(notifyReason)
+	for _, client := range notify {
+		_ = client.Send(context.Background(), frame)
+		_ = client.Close(context.Background(), notifyReason)
 	}
 }
 
@@ -213,6 +233,52 @@ func (h *Hub) session(sessionID string) *sessionState {
 	}
 	h.sessions[sessionID] = state
 	return state
+}
+
+// ControllerID returns the current controller client ID for a session.
+func (h *Hub) ControllerID(sessionID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	state := h.sessions[sessionID]
+	if state == nil {
+		return ""
+	}
+	holderID := state.clientIDs[state.controller]
+	if holderID == "" {
+		holderID = state.controller
+	}
+	return holderID
+}
+
+// BroadcastControl notifies host and clients about the current controller.
+func (h *Hub) BroadcastControl(ctx context.Context, sessionID string) {
+	h.mu.Lock()
+	state := h.sessions[sessionID]
+	if state == nil {
+		h.mu.Unlock()
+		return
+	}
+	holderID := state.clientIDs[state.controller]
+	if holderID == "" {
+		holderID = state.controller
+	}
+	host := state.host
+	clients := make([]connection, 0, len(state.clients))
+	for _, client := range state.clients {
+		clients = append(clients, client)
+	}
+	h.mu.Unlock()
+
+	if holderID == "" {
+		return
+	}
+	ctrl := frameControl(sessionID, holderID)
+	for _, client := range clients {
+		_ = client.Send(ctx, ctrl)
+	}
+	if host != nil {
+		_ = host.Send(ctx, ctrl)
+	}
 }
 
 // NextSeq reserves the next sequence number for a session.

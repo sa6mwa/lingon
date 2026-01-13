@@ -779,6 +779,12 @@ func (e *Emulator) setAltScreen(enable bool, saveCursor bool) {
 func (e *Emulator) selectGraphicRendition(params []int) {
 	if len(params) == 0 {
 		params = []int{0}
+	} else {
+		for i := range params {
+			if params[i] == -1 {
+				params[i] = 0
+			}
+		}
 	}
 	for i := 0; i < len(params); i++ {
 		switch params[i] {
@@ -827,9 +833,9 @@ func (e *Emulator) selectGraphicRendition(params []int) {
 				isFg := params[i] == 38
 				if i+1 < len(params) && params[i+1] == 5 && i+2 < len(params) {
 					if isFg {
-						e.attr.fg = terminal.ColorIndexed | uint32(params[i+2])
+						e.attr.fg = terminal.ColorIndexed256 | uint32(params[i+2])
 					} else {
-						e.attr.bg = terminal.ColorIndexed | uint32(params[i+2])
+						e.attr.bg = terminal.ColorIndexed256 | uint32(params[i+2])
 					}
 					i += 2
 				} else if i+1 < len(params) && params[i+1] == 2 && i+4 < len(params) {

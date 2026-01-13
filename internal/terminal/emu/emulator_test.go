@@ -87,6 +87,20 @@ func TestSGRColors(t *testing.T) {
 	}
 }
 
+func TestSGREmptyResetsAttributes(t *testing.T) {
+	emu := New(2, 1)
+	_ = emu.Write([]byte("\x1b[7mA\x1b[mB"))
+	snap, _ := emu.Snapshot()
+	cellA := cellAt(snap, 0, 0)
+	cellB := cellAt(snap, 1, 0)
+	if cellA.Mode&terminal.ModeInverse == 0 {
+		t.Fatalf("expected inverse on first cell")
+	}
+	if cellB.Mode&terminal.ModeInverse != 0 {
+		t.Fatalf("expected inverse cleared on second cell")
+	}
+}
+
 func TestTabStops(t *testing.T) {
 	emu := New(10, 1)
 	_ = emu.Write([]byte("a\tb"))
@@ -105,6 +119,18 @@ func TestLineDrawingCharset(t *testing.T) {
 	snap, _ := emu.Snapshot()
 	if got := cellRune(snap, 0, 0); got != '─' {
 		t.Fatalf("cell0 = %q", got)
+	}
+}
+
+func TestCRLFMovesToNextLine(t *testing.T) {
+	emu := New(4, 3)
+	_ = emu.Write([]byte("one\r\ntwo\r\n"))
+	snap, _ := emu.Snapshot()
+	if row := rowString(snap, 0); row[:3] != "one" {
+		t.Fatalf("row0 = %q", row)
+	}
+	if row := rowString(snap, 1); row[:3] != "two" {
+		t.Fatalf("row1 = %q", row)
 	}
 }
 

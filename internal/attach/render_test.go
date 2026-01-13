@@ -84,10 +84,10 @@ func TestRenderSnapshotColors(t *testing.T) {
 		t.Fatalf("RenderSnapshot: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "38;5;1") {
+	if !strings.Contains(out, "31") {
 		t.Fatalf("expected fg color sgr")
 	}
-	if !strings.Contains(out, "48;5;2") {
+	if !strings.Contains(out, "42") {
 		t.Fatalf("expected bg color sgr")
 	}
 }

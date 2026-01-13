@@ -2,6 +2,7 @@ package attach
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -431,7 +432,19 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 			}
 			return
 		}
-		frame := &protocolpb.Frame{Payload: &protocolpb.Frame_In{In: &protocolpb.In{Data: buf[:n]}}}
+		data := buf[:n]
+		if idx := bytes.IndexByte(data, 0x04); idx >= 0 {
+			if idx > 0 {
+				frame := &protocolpb.Frame{Payload: &protocolpb.Frame_In{In: &protocolpb.In{Data: data[:idx]}}}
+				if err := c.writeFrame(ctx, ws, frame); err != nil {
+					c.Logger.Debug("ws write error", "err", err)
+					c.setError(err)
+				}
+			}
+			_ = ws.Close(websocket.StatusNormalClosure, "ctrl-d")
+			return
+		}
+		frame := &protocolpb.Frame{Payload: &protocolpb.Frame_In{In: &protocolpb.In{Data: data}}}
 		if err := c.writeFrame(ctx, ws, frame); err != nil {
 			c.Logger.Debug("ws write error", "err", err)
 			c.setError(err)

@@ -46,12 +46,15 @@ const (
 )
 
 // Color encoding flags for snapshot cells.
+// ColorIndexed represents the 16 ANSI palette indices (0-15).
+// ColorIndexed256 represents explicit 256-color indices (0-255).
 const (
-	ColorDefault   uint32 = 0
-	ColorIndexed   uint32 = 1 << 24
-	ColorTrue      uint32 = 2 << 24
-	ColorFlagMask  uint32 = 0xff000000
-	ColorValueMask uint32 = 0x00ffffff
+	ColorDefault    uint32 = 0
+	ColorIndexed    uint32 = 1 << 24
+	ColorIndexed256 uint32 = 3 << 24
+	ColorTrue       uint32 = 2 << 24
+	ColorFlagMask   uint32 = 0xff000000
+	ColorValueMask  uint32 = 0x00ffffff
 )
 
 // CellAt returns the cell at (x, y).
