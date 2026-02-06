@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ANDROID_DIR="${ROOT_DIR}/android"
+
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
+EMULATOR_BIN="${EMULATOR:-${ANDROID_SDK_ROOT}/emulator/emulator}"
+PRESET="${PRESET:-medium}"
+AVD_NAME="${AVD_NAME:-}"
+HARNESS_BIN="${ROOT_DIR}/bin/lingon-android-harness"
+ARTIFACT_OUT="${ANDROID_DIR}/test-artifacts"
+HARNESS_LOG="${ARTIFACT_OUT}/harness.log"
+LOCK_PATH="${ARTIFACT_OUT}/integration-test.lock"
+CURRENT_TEST_PID=""
+CURRENT_TEST_PGID=""
+EMULATOR_STARTED="0"
+HOST_COLS_OVERRIDE="${HOST_COLS:-}"
+HOST_ROWS_OVERRIDE="${HOST_ROWS:-}"
+CONFIG_PATH=""
+
+resolve_avd_name() {
+  if [[ -n "${AVD_NAME}" ]]; then
+    echo "${AVD_NAME}"
+    return
+  fi
+  case "${PRESET}" in
+    small) echo "lingon-small" ;;
+    medium) echo "lingon-medium" ;;
+    pixel7) echo "lingon-pixel7" ;;
+    pixel9) echo "lingon-pixel9" ;;
+    *) echo "lingon-medium" ;;
+  esac
+}
+
+acquire_lock() {
+  if [[ -f "${LOCK_PATH}" ]]; then
+    local existing_pid=""
+    existing_pid="$(cat "${LOCK_PATH}" 2>/dev/null || true)"
+    if [[ -n "${existing_pid}" ]] && kill -0 "${existing_pid}" 2>/dev/null; then
+      echo "Another integration test run is active (PID ${existing_pid}). Aborting." >&2
+      exit 1
+    fi
+  fi
+  echo "$$" > "${LOCK_PATH}"
+}
+
+release_lock() {
+  rm -f "${LOCK_PATH}"
+}
+
+kill_running_tests() {
+  if [[ -n "${CURRENT_TEST_PID}" ]]; then
+    if [[ -n "${CURRENT_TEST_PGID}" ]]; then
+      kill -TERM -- "-${CURRENT_TEST_PGID}" >/dev/null 2>&1 || true
+    fi
+    kill -TERM "${CURRENT_TEST_PID}" >/dev/null 2>&1 || true
+    pkill -TERM -P "${CURRENT_TEST_PID}" >/dev/null 2>&1 || true
+    wait "${CURRENT_TEST_PID}" >/dev/null 2>&1 || true
+    CURRENT_TEST_PID=""
+    CURRENT_TEST_PGID=""
+  fi
+}
+
+cleanup() {
+  kill_running_tests
+  if [[ -n "${HARNESS_PID:-}" ]]; then
+    kill "${HARNESS_PID}" >/dev/null 2>&1 || true
+    wait "${HARNESS_PID}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${EMULATOR_STARTED}" == "1" ]] && [[ -n "${DEVICE_SERIAL:-}" ]]; then
+    "${ADB_BIN}" -s "${DEVICE_SERIAL}" emu kill >/dev/null 2>&1 || true
+  fi
+  release_lock
+  if [[ -n "${CONFIG_PATH:-}" ]]; then
+    rm -f "${CONFIG_PATH}" || true
+  fi
+}
+
+on_interrupt() {
+  echo "Interrupted; stopping integration tests..." >&2
+  kill_running_tests
+  exit 130
+}
+
+trap on_interrupt INT
+trap on_interrupt TERM
+trap cleanup EXIT
+
+mkdir -p "${ROOT_DIR}/bin" "${ARTIFACT_OUT}"
+acquire_lock
+
+echo "Building harness..."
+(
+  cd "${ROOT_DIR}"
+  go build -o "${HARNESS_BIN}" ./cmd/lingon-android-harness
+)
+
+HARNESS_ARGS=()
+SPECIAL_TEST="refreshes_sessions_when_host_starts_late"
+if [[ -z "${HOST_COLS_OVERRIDE}" ]]; then
+  HOST_COLS_OVERRIDE="120"
+fi
+if [[ "${HOST_COLS_OVERRIDE}" =~ ^[0-9]+$ ]]; then
+  HARNESS_ARGS+=("-cols" "${HOST_COLS_OVERRIDE}")
+fi
+if [[ -n "${HOST_ROWS_OVERRIDE}" ]] && [[ "${HOST_ROWS_OVERRIDE}" =~ ^[0-9]+$ ]]; then
+  HARNESS_ARGS+=("-rows" "${HOST_ROWS_OVERRIDE}")
+fi
+
+read_config() {
+  python - "$CONFIG_PATH" <<'PY'
+import json,sys,urllib.parse
+cfg=json.load(open(sys.argv[1]))
+url=urllib.parse.urlparse(cfg["endpoint"])
+port=url.port
+users=cfg.get("users", [])
+user1=users[0] if len(users) > 0 else {}
+user2=users[1] if len(users) > 1 else {}
+print("ENDPOINT=%s" % cfg["endpoint"])
+print("PORT=%s" % port)
+print("USERNAME=%s" % user1.get("username", ""))
+print("PASSWORD=%s" % user1.get("password", ""))
+print("TOTP_SECRET=%s" % user1.get("totp_secret", ""))
+print("CA_PATH=%s" % cfg["ca_cert_path"])
+print("SESSIONS=%s" % ",".join(user1.get("sessions", []) or []))
+print("VIEW_TOKEN=%s" % user1.get("view_token", ""))
+print("USERNAME2=%s" % user2.get("username", ""))
+print("PASSWORD2=%s" % user2.get("password", ""))
+print("TOTP_SECRET2=%s" % user2.get("totp_secret", ""))
+print("SESSIONS2=%s" % ",".join(user2.get("sessions", []) or []))
+print("VIEW_TOKEN2=%s" % user2.get("view_token", ""))
+print("HOST_COLS=%s" % cfg.get("host_cols", ""))
+print("HOST_ROWS=%s" % cfg.get("host_rows", ""))
+PY
+}
+
+start_harness() {
+  local session_count="$1"
+  CONFIG_PATH="$(mktemp)"
+  echo "Starting harness (sessions=${session_count})..."
+  "${HARNESS_BIN}" -config "${CONFIG_PATH}" -sessions "${session_count}" "${HARNESS_ARGS[@]}" >"${HARNESS_LOG}" 2>&1 &
+  HARNESS_PID=$!
+  for _ in {1..50}; do
+    if [[ -s "${CONFIG_PATH}" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ ! -s "${CONFIG_PATH}" ]]; then
+    echo "Harness did not write config. Log:"
+    cat "${HARNESS_LOG}"
+    exit 1
+  fi
+  eval "$(read_config)"
+  DEVICE_ENDPOINT="https://localhost:${PORT}/v1"
+  echo "Harness endpoint: ${ENDPOINT}"
+  echo "Device endpoint: ${DEVICE_ENDPOINT}"
+  echo "Sessions: ${SESSIONS}"
+  if [[ -n "${SESSIONS2}" ]]; then
+    echo "Sessions (user2): ${SESSIONS2}"
+  fi
+  CA_PEM_B64="$(python - "$CA_PATH" <<'PY'
+import base64,sys
+data=open(sys.argv[1],"rb").read()
+print(base64.b64encode(data).decode("ascii"))
+PY
+)"
+}
+
+stop_harness() {
+  if [[ -n "${HARNESS_PID:-}" ]]; then
+    kill "${HARNESS_PID}" >/dev/null 2>&1 || true
+    wait "${HARNESS_PID}" >/dev/null 2>&1 || true
+    HARNESS_PID=""
+  fi
+  if [[ -n "${CONFIG_PATH:-}" ]]; then
+    rm -f "${CONFIG_PATH}"
+    CONFIG_PATH=""
+  fi
+}
+
+ensure_adb_reverse() {
+  export ADB_REVERSE_PORT="${PORT}"
+  echo "Ensuring adb reverse tcp:${PORT}..."
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" reverse "tcp:${PORT}" "tcp:${PORT}" >/dev/null 2>&1 || true
+}
+
+if [[ ! -x "${ADB_BIN}" ]]; then
+  echo "adb not found (set ADB or ANDROID_SDK_ROOT)." >&2
+  exit 1
+fi
+
+DEVICE_SERIAL="$("${ADB_BIN}" devices | awk 'NR>1 && $2=="device" {print $1; exit}')"
+if [[ -z "${DEVICE_SERIAL}" ]]; then
+  AVD_NAME="$(resolve_avd_name)"
+  if [[ ! -d "${HOME}/.android/avd/${AVD_NAME}.avd" ]]; then
+    echo "Creating AVD ${AVD_NAME} (PRESET=${PRESET})..."
+    (cd "${ANDROID_DIR}" && make avd PRESET="${PRESET}")
+  fi
+  EMU_PORT="$(ADB="${ADB_BIN}" "${ANDROID_DIR}/scripts/find-emu-port.sh")"
+  echo "Starting emulator ${AVD_NAME} on port ${EMU_PORT}..."
+  "${EMULATOR_BIN}" -avd "${AVD_NAME}" -port "${EMU_PORT}" >/dev/null 2>&1 &
+  DEVICE_SERIAL="emulator-${EMU_PORT}"
+  EMULATOR_STARTED="1"
+fi
+
+ADB_SERIAL="${DEVICE_SERIAL}"
+export ADB_SERIAL
+export ADB="${ADB_BIN}"
+
+"${ANDROID_DIR}/scripts/ensure-emu-keyboard.sh" || true
+
+start_harness 2
+ensure_adb_reverse
+
+echo "Running connectedDebugAndroidTest..."
+set +e
+(
+  cd "${ANDROID_DIR}"
+  TEST_SRC="${ANDROID_DIR}/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt"
+  TESTS=()
+  if [[ -f "${TEST_SRC}" ]]; then
+    mapfile -t TESTS < <(python - "${TEST_SRC}" <<'PY'
+import sys
+tests=[]
+pending=False
+for line in open(sys.argv[1],"r",encoding="utf-8"):
+    stripped=line.strip()
+    if stripped.startswith("@Test"):
+        pending=True
+        continue
+    if pending:
+        if stripped.startswith("fun "):
+            name=stripped.split()[1].split("(")[0]
+            if name:
+                tests.append(name)
+        pending=False
+for name in tests:
+    print(name)
+PY
+    )
+  fi
+  if [[ "${#TESTS[@]}" -eq 0 ]]; then
+    echo "No tests found in ${TEST_SRC}"
+    exit 1
+  fi
+  TEST_EXIT=0
+  for test_name in "${TESTS[@]}"; do
+    if [[ "${test_name}" == "${SPECIAL_TEST}" ]]; then
+      stop_harness
+      start_harness 0
+      ensure_adb_reverse
+    fi
+    echo "Running ${test_name}..."
+    ./gradlew :app:connectedDebugAndroidTest \
+      --no-configuration-cache \
+      -Plingon.it.class="systems.pkt.lingon.EndToEndTest#${test_name}" \
+      -Plingon.it.endpoint="${DEVICE_ENDPOINT}" \
+      -Plingon.it.username="${USERNAME}" \
+      -Plingon.it.password="${PASSWORD}" \
+      -Plingon.it.totp_secret="${TOTP_SECRET}" \
+      -Plingon.it.ca_pem_b64="${CA_PEM_B64}" \
+      -Plingon.it.sessions="${SESSIONS}" \
+      -Plingon.it.view_token="${VIEW_TOKEN}" \
+      -Plingon.it.username2="${USERNAME2}" \
+      -Plingon.it.password2="${PASSWORD2}" \
+      -Plingon.it.totp_secret2="${TOTP_SECRET2}" \
+      -Plingon.it.sessions2="${SESSIONS2}" \
+      -Plingon.it.view_token2="${VIEW_TOKEN2}" \
+      -Plingon.it.host_cols="${HOST_COLS}" \
+      -Plingon.it.host_rows="${HOST_ROWS}" &
+    CURRENT_TEST_PID=$!
+    CURRENT_TEST_PGID="$(ps -o pgid= "${CURRENT_TEST_PID}" | tr -d ' ' || true)"
+    wait "${CURRENT_TEST_PID}"
+    TEST_EXIT=$?
+    CURRENT_TEST_PID=""
+    CURRENT_TEST_PGID=""
+    if [[ "${TEST_EXIT}" -ne 0 ]]; then
+      break
+    fi
+    if [[ "${test_name}" == "${SPECIAL_TEST}" ]]; then
+      stop_harness
+      start_harness 2
+      ensure_adb_reverse
+    fi
+  done
+  stop_harness
+  exit "${TEST_EXIT}"
+)
+TEST_EXIT=$?
+set -e
+
+echo "Collecting test artifacts..."
+ARTIFACT_DIRS=(
+  "/sdcard/Android/data/systems.pkt.lingon/files/test-artifacts"
+  "/sdcard/Android/data/systems.pkt.lingon.test/files/test-artifacts"
+)
+found_artifacts=false
+for dir in "${ARTIFACT_DIRS[@]}"; do
+  if "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell ls "${dir}" >/dev/null 2>&1; then
+    "${ADB_BIN}" -s "${DEVICE_SERIAL}" pull "${dir}" "${ARTIFACT_OUT}" >/dev/null 2>&1 || true
+    found_artifacts=true
+  fi
+done
+if [[ "${found_artifacts}" == true ]]; then
+  echo "Artifacts pulled to ${ARTIFACT_OUT}"
+else
+  echo "No test artifacts found."
+fi
+
+echo "Collecting logcat..."
+"${ADB_BIN}" -s "${DEVICE_SERIAL}" logcat -d > "${ARTIFACT_OUT}/logcat.txt" || true
+
+exit "${TEST_EXIT}"

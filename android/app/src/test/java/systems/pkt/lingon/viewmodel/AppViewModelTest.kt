@@ -1,0 +1,307 @@
+package systems.pkt.lingon.viewmodel
+
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.resetMain
+import okhttp3.CookieJar
+import okhttp3.WebSocket
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TestWatcher
+import org.junit.runner.Description
+import java.nio.file.Files
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import systems.pkt.lingon.data.ApiException
+import systems.pkt.lingon.data.HttpClientProvider
+import systems.pkt.lingon.data.LingonClient
+import systems.pkt.lingon.data.relay.RelaySession
+import systems.pkt.lingon.data.relay.RelayWallEventsPage
+import systems.pkt.lingon.data.certs.TrustedCert
+import systems.pkt.lingon.data.relay.RelayWebSocketClient
+import systems.pkt.lingon.data.certs.CertificateStore
+import systems.pkt.lingon.terminal.TerminalSnapshot
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class AppViewModelTest {
+    @get:Rule
+    val mainDispatcherRule = MainDispatcherRule()
+
+    @Test
+    fun handleSharedTokenUpdatesState() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        viewModel.handleSharedToken("token", "https://example")
+
+        val state = viewModel.state.value
+        assertFalse(state.loggedIn)
+        assertEquals("token", state.shareToken)
+        assertEquals("shared", state.activeSessionId)
+        assertEquals(1, state.sessions.size)
+    }
+
+    @Test
+    fun selectSessionOnActiveTabKeepsVisibleSnapshot() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        viewModel.handleSharedToken("token", "https://example")
+        advanceUntilIdle()
+
+        val seededSnapshot = TerminalSnapshot(
+            cols = 4,
+            rows = 2,
+            runes = IntArray(8),
+            modes = IntArray(8),
+            fg = IntArray(8),
+            bg = IntArray(8),
+            graphemes = null,
+            cursorX = 0,
+            cursorY = 0,
+            cursorVisible = true,
+            mode = 0,
+            title = "",
+        )
+        setActiveSnapshotForTest(viewModel, seededSnapshot)
+        val before = viewModel.state.value.activeSnapshot
+        assertNotNull(before)
+
+        viewModel.selectSession("shared")
+
+        val after = viewModel.state.value.activeSnapshot
+        assertSame(before, after)
+    }
+
+    @Test
+    fun onAppForegroundRequiresUnlockAfterTimeout() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        viewModel.login("user", "pass", "")
+        advanceUntilIdle()
+
+        viewModel.onAppBackgroundAt(0L)
+        viewModel.onAppForegroundAt(31 * 60_000L)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue(state.requiresAppUnlock)
+        assertTrue(state.unlockPromptPending)
+    }
+
+    @Test
+    fun unlockDisabledDoesNotRequireUnlock() = runTest {
+        val repository = FakeRepository(appLockMinutes = 0)
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        viewModel.login("user", "pass", "")
+        advanceUntilIdle()
+
+        viewModel.onAppBackgroundAt(0L)
+        viewModel.onAppForegroundAt(120 * 60_000L)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertFalse(state.requiresAppUnlock)
+    }
+
+    @Test
+    fun shouldEnableWallWorkConnectedForegroundIsFalse() {
+        val enabled = AppViewModel.shouldEnableWallWork(
+            loggedIn = true,
+            shareToken = null,
+            requiresUnlock = false,
+            appInForeground = true,
+            connectionState = ConnectionState.Connected,
+            hasSocket = true,
+        )
+        assertFalse(enabled)
+    }
+
+    @Test
+    fun shouldEnableWallWorkDisconnectedForegroundIsTrue() {
+        val enabled = AppViewModel.shouldEnableWallWork(
+            loggedIn = true,
+            shareToken = null,
+            requiresUnlock = false,
+            appInForeground = true,
+            connectionState = ConnectionState.Disconnected,
+            hasSocket = false,
+        )
+        assertTrue(enabled)
+    }
+
+    @Test
+    fun shouldEnableWallWorkBackgroundLoggedInIsTrue() {
+        val enabled = AppViewModel.shouldEnableWallWork(
+            loggedIn = true,
+            shareToken = null,
+            requiresUnlock = false,
+            appInForeground = false,
+            connectionState = ConnectionState.Connected,
+            hasSocket = true,
+        )
+        assertTrue(enabled)
+    }
+
+    @Test
+    fun shouldEnableWallWorkLoggedOutOrShareTokenIsFalse() {
+        val loggedOut = AppViewModel.shouldEnableWallWork(
+            loggedIn = false,
+            shareToken = null,
+            requiresUnlock = false,
+            appInForeground = false,
+            connectionState = ConnectionState.Disconnected,
+            hasSocket = false,
+        )
+        assertFalse(loggedOut)
+        val shareTokenMode = AppViewModel.shouldEnableWallWork(
+            loggedIn = true,
+            shareToken = "token",
+            requiresUnlock = false,
+            appInForeground = false,
+            connectionState = ConnectionState.Disconnected,
+            hasSocket = false,
+        )
+        assertFalse(shareTokenMode)
+    }
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class MainDispatcherRule : TestWatcher() {
+    private val dispatcher = StandardTestDispatcher()
+
+    override fun starting(description: Description) {
+        Dispatchers.setMain(dispatcher)
+    }
+
+    override fun finished(description: Description) {
+        Dispatchers.resetMain()
+    }
+}
+
+private class FakeRepository(
+    appLockMinutes: Int = 30,
+) : LingonClient {
+    override val endpointFlow: Flow<String> = MutableStateFlow("https://localhost:12843/v1")
+    override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
+    override val zoomFlow: Flow<Float> = MutableStateFlow(1.0f)
+    override val resizeHostFlow: Flow<Boolean> = MutableStateFlow(false)
+    override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
+    override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(listOf("https://localhost:12843/v1"))
+    override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
+
+    override fun setEndpoint(value: String) {
+        // no-op
+    }
+
+    override fun setFontSize(value: Int) {
+        // no-op
+    }
+
+    override fun setZoom(value: Float) {
+        // no-op
+    }
+
+    override fun setResizeHostEnabled(value: Boolean) {
+        // no-op
+    }
+
+    override fun setAppLockTimeoutMinutes(value: Int) {
+        // no-op
+    }
+
+    override suspend fun login(username: String, password: String, totp: String) {
+        // no-op
+    }
+
+    override suspend fun logout() {
+        // no-op
+    }
+
+    override suspend fun clearAuth() {
+        // no-op
+    }
+
+    override suspend fun refreshAuth(): Boolean = true
+
+    override suspend fun listSessions(): List<RelaySession> {
+        throw ApiException("invalid session", 401)
+    }
+
+    override suspend fun listWallEvents(sinceId: Long, limit: Int): RelayWallEventsPage {
+        return RelayWallEventsPage()
+    }
+
+    override fun streamSessions(): Flow<List<RelaySession>> = emptyFlow()
+
+    override suspend fun listTrustedCertificates(endpoint: String): List<TrustedCert> = emptyList()
+
+    override suspend fun addTrustedCertificates(endpoint: String, pem: String): List<TrustedCert> = emptyList()
+
+    override suspend fun removeTrustedCertificate(endpoint: String, certId: String) {
+        // no-op
+    }
+}
+
+private class FakeWsClient : RelayWebSocketClient(
+    testHttpClientProvider(),
+) {
+    override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
+        return object : WebSocket {
+            override fun request(): okhttp3.Request = okhttp3.Request.Builder().url(options.baseUrl).build()
+            override fun queueSize(): Long = 0
+            override fun send(text: String): Boolean = true
+            override fun send(bytes: okio.ByteString): Boolean = true
+            override fun close(code: Int, reason: String?): Boolean = true
+            override fun cancel() {}
+        }
+    }
+
+    override fun sendInput(webSocket: WebSocket, data: ByteArray) {
+        // no-op
+    }
+
+    override fun sendInput(webSocket: WebSocket, text: String) {
+        // no-op
+    }
+
+    override fun sendResize(webSocket: WebSocket, cols: Int, rows: Int) {
+        // no-op
+    }
+}
+
+private fun setActiveSnapshotForTest(viewModel: AppViewModel, snapshot: TerminalSnapshot) {
+    val stateField = AppViewModel::class.java.getDeclaredField("_state")
+    stateField.isAccessible = true
+    @Suppress("UNCHECKED_CAST")
+    val stateFlow = stateField.get(viewModel) as MutableStateFlow<UiState>
+    stateFlow.value = stateFlow.value.copy(activeSnapshot = snapshot)
+}
+
+private fun testHttpClientProvider(): HttpClientProvider {
+    val dataStore = PreferenceDataStoreFactory.create(
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+        produceFile = { Files.createTempFile("lingon", ".preferences_pb").toFile() },
+    )
+    val certStore = CertificateStore(dataStore)
+    return HttpClientProvider(certStore, CookieJar.NO_COOKIES)
+}

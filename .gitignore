@@ -1,0 +1,17 @@
+/lingon
+testdata/
+/.gocache
+bin/
+/stash/
+/podman.yaml
+\#*\#
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.log
+*.test
+*.pprof
+vendor/
+.env*

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ .Title }}</title>
+    <base href="./" />
+    <link rel="stylesheet" href="./vendor/xterm.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <main id="login-view" class="view">
+        <section class="card">
+          {{ if .ShowBanner }}<header class="card-header">
+            <div class="logo">LINGON</div>
+            <p class="subtitle">Sign in to your session</p>
+          </header>{{ end }}
+          <form id="login-form" class="form">
+            <label class="field">
+              <span>Username</span>
+              <input type="text" name="username" autocomplete="username" required />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input type="password" name="password" autocomplete="current-password" required />
+            </label>
+            <label class="field">
+              <span>TOTP</span>
+              <input type="text" name="totp" autocomplete="one-time-code" inputmode="numeric" required />
+            </label>
+            <div class="or-separator" aria-hidden="true"><span>OR</span></div>
+            <label class="field">
+              <span>Token</span>
+              <input id="share-token-input" type="text" name="share_token" autocomplete="off" />
+            </label>
+            <button id="login-submit-btn" class="primary" type="submit">Connect</button>
+            <div id="login-error" class="error hidden"></div>
+          </form>
+        </section>
+      </main>
+
+      <main id="terminal-view" class="view hidden">
+        <header class="toolbar">
+          <button id="menu-toggle" class="icon-button" aria-label="Open menu">
+            <span class="icon icon-list">≡</span>
+            <span class="icon icon-close hidden">✕</span>
+          </button>
+          <button id="refresh-sessions-btn" class="icon-button" aria-label="Refresh sessions">
+            <span class="icon">↻</span>
+          </button>
+          <div id="tab-bar" class="tab-bar hidden">
+            <div id="tab-list" class="tab-list"></div>
+          </div>
+          <div id="connection-pill" class="pill">offline</div>
+        </header>
+
+        <section class="terminal-shell">
+          <div id="term-container" class="terminal-grid"></div>
+          <div class="terminal-scrollbar" aria-hidden="true">
+            <div class="terminal-scrollbar-thumb"></div>
+          </div>
+          <div id="status-banner" class="status-banner hidden"></div>
+          <div id="empty-state" class="empty-state hidden">
+            <div class="empty-title">no host connected</div>
+            <div class="empty-subtitle">waiting for a host to come online...</div>
+          </div>
+        </section>
+
+        <aside id="menu" class="menu hidden" aria-hidden="true">
+          <div class="menu-section">
+            <div class="menu-title">Display</div>
+            <label class="menu-field">
+              <span>Zoom</span>
+              <input id="font-scale" type="range" min="50" max="150" value="100" />
+              <span id="font-scale-label">100%</span>
+            </label>
+            <label class="menu-field menu-toggle">
+              <span>Fullscreen (single)</span>
+              <input id="fullscreen-toggle" type="checkbox" />
+            </label>
+            <label class="menu-field">
+              <span>Theme</span>
+              <select id="theme-select"></select>
+            </label>
+          </div>
+          <div class="menu-section">
+            <button id="logout-btn" class="danger">Logout</button>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="./vendor/xterm.js"></script>
+    <script src="./vendor/xterm-addon-fit.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

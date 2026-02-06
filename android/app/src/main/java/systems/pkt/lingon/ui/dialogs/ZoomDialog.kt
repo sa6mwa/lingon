@@ -1,0 +1,77 @@
+package systems.pkt.lingon.ui.dialogs
+
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import systems.pkt.lingon.DefaultTerminalZoom
+import systems.pkt.lingon.MaxTerminalZoom
+import systems.pkt.lingon.MinTerminalZoom
+import systems.pkt.lingon.TerminalZoomStep
+import systems.pkt.lingon.ui.TestTags
+import kotlin.math.roundToInt
+
+@Composable
+fun ZoomDialog(
+    zoomFactor: Float,
+    onDismiss: () -> Unit,
+    onSave: (Float) -> Unit,
+) {
+    val minZoom = MinTerminalZoom
+    val maxZoom = MaxTerminalZoom
+    val step = TerminalZoomStep
+    val initial = zoomFactor.coerceIn(minZoom, maxZoom)
+    var value by rememberSaveable { mutableStateOf(initial) }
+    val steps = ((maxZoom - minZoom) / step).roundToInt().coerceAtLeast(1)
+    val rounded = ((value - minZoom) / step).roundToInt().let { idx ->
+        (minZoom + (idx * step)).coerceIn(minZoom, maxZoom)
+    }
+    val label = if (rounded == DefaultTerminalZoom) {
+        "1.0x"
+    } else {
+        String.format("%.1fx", rounded)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(rounded) },
+                modifier = Modifier.testTag(TestTags.ZoomSave),
+            ) {
+                Text(text = "Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Cancel")
+            }
+        },
+        title = { Text(text = "Zoom") },
+        text = {
+            androidx.compose.foundation.layout.Column {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    modifier = Modifier.testTag(TestTags.ZoomValue),
+                )
+                Slider(
+                    value = value,
+                    onValueChange = { next -> value = next.coerceIn(minZoom, maxZoom) },
+                    valueRange = minZoom..maxZoom,
+                    steps = (steps - 1).coerceAtLeast(0),
+                    modifier = Modifier.testTag(TestTags.ZoomSlider),
+                )
+            }
+        },
+    )
+}

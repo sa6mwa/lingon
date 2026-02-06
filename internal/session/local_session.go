@@ -1,0 +1,1282 @@
+package session
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"sync"
+	"syscall"
+	"time"
+
+	"pkt.systems/lingon/internal/clock"
+	"pkt.systems/lingon/internal/host"
+	"pkt.systems/lingon/internal/protocol"
+	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/pty"
+	"pkt.systems/lingon/internal/terminal"
+	"pkt.systems/lingon/internal/terminal/emu"
+	"pkt.systems/lingon/internal/trace"
+	"pkt.systems/pslog"
+)
+
+type localSession struct {
+	id   string
+	name string
+
+	shell string
+	term  string
+
+	cols            int
+	rows            int
+	scrollbackLines int
+
+	respawnMu sync.RWMutex
+	respawn   bool
+	offlineMu sync.RWMutex
+	offline   bool
+
+	ptyMu   sync.RWMutex
+	pty     *os.File
+	tty     *os.File
+	cmd     *exec.Cmd
+	writeMu sync.Mutex
+
+	emuMu    sync.Mutex
+	emulator terminal.Emulator
+
+	snapMu   sync.RWMutex
+	snapshot *protocolpb.Snapshot
+
+	holderMu sync.Mutex
+	holderID string
+
+	veofMu   sync.Mutex
+	veofOrig uint8
+	veofSet  bool
+
+	lastActiveMu sync.RWMutex
+	lastActive   time.Time
+
+	publisher *host.Publisher
+	closeOnce sync.Once
+
+	logger pslog.Logger
+	clock  clock.Clock
+	trace  *trace.Writer
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	onOutput    func(id string, data []byte, snap *protocolpb.Snapshot)
+	onPTYRead   func([]byte)
+	onSnapshot  func(terminal.Snapshot)
+	onExit      func(id string, err error)
+	csiState    csiParser
+	oscState    oscParser
+	cursorQuery func(terminal.Snapshot) (row, col int, ok bool)
+
+	oscDefaultsMu    sync.RWMutex
+	oscDefaultFg     string
+	oscDefaultBg     string
+	oscDefaultCursor string
+
+	recentInputMu sync.Mutex
+	recentInput   []byte
+}
+
+var errPTYNotReady = errors.New("pty not initialized")
+
+const recentInputLimit = 512
+
+func (s *localSession) recordRecentInput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	s.recentInputMu.Lock()
+	defer s.recentInputMu.Unlock()
+	if len(data) >= recentInputLimit {
+		s.recentInput = append(s.recentInput[:0], data[len(data)-recentInputLimit:]...)
+		return
+	}
+	if len(s.recentInput)+len(data) > recentInputLimit {
+		trim := len(s.recentInput) + len(data) - recentInputLimit
+		s.recentInput = append(s.recentInput[trim:], data...)
+		return
+	}
+	s.recentInput = append(s.recentInput, data...)
+}
+
+func (s *localSession) recentInputSnapshot() []byte {
+	s.recentInputMu.Lock()
+	defer s.recentInputMu.Unlock()
+	if len(s.recentInput) == 0 {
+		return nil
+	}
+	out := make([]byte, len(s.recentInput))
+	copy(out, s.recentInput)
+	return out
+}
+
+func (s *localSession) emuAltScreenActive() (bool, bool) {
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	if s.emulator == nil {
+		return false, false
+	}
+	type altChecker interface {
+		AltScreenActive() bool
+	}
+	checker, ok := s.emulator.(altChecker)
+	if !ok {
+		return false, false
+	}
+	return checker.AltScreenActive(), true
+}
+
+func (s *localSession) setInlineOriginRow(row int) {
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	if s.emulator == nil {
+		return
+	}
+	type inlineOriginSetter interface {
+		SetInlineOriginRow(int)
+	}
+	setter, ok := s.emulator.(inlineOriginSetter)
+	if !ok {
+		return
+	}
+	setter.SetInlineOriginRow(row)
+}
+
+func inlineOriginRow(cursorRow, viewportRow, totalRows int) int {
+	if viewportRow < 1 {
+		return 0
+	}
+	if cursorRow < 0 {
+		cursorRow = 0
+	}
+	if totalRows > 0 && cursorRow >= totalRows {
+		cursorRow = totalRows - 1
+	}
+	origin := cursorRow - (viewportRow - 1) + 1
+	if origin < 1 {
+		return 1
+	}
+	return origin
+}
+
+type recentInputSignals struct {
+	hasDSR          bool
+	hasHome         bool
+	hasClear        bool
+	hasAltEnter     bool
+	hasAltLeave     bool
+	hasCUP          bool
+	hasCUPHome      bool
+	hasED           bool
+	hasED2          bool
+	hasScrollRegion bool
+	hasRIS          bool
+}
+
+func recentInputHas(data []byte, seq string) bool {
+	if len(data) == 0 || seq == "" {
+		return false
+	}
+	return bytes.Contains(data, []byte(seq))
+}
+
+func csiParam(params []int, idx int, def int) int {
+	if idx >= len(params) {
+		return def
+	}
+	v := params[idx]
+	if v < 0 {
+		return def
+	}
+	return v
+}
+
+func analyzeRecentInput(data []byte) recentInputSignals {
+	out := recentInputSignals{
+		hasDSR:      recentInputHas(data, "\x1b[6n") || recentInputHas(data, "\x1b[?6n"),
+		hasHome:     recentInputHas(data, "\x1b[H"),
+		hasClear:    recentInputHas(data, "\x1b[2J"),
+		hasAltEnter: recentInputHas(data, "\x1b[?1049h"),
+		hasAltLeave: recentInputHas(data, "\x1b[?1049l"),
+		hasRIS:      recentInputHas(data, "\x1bc"),
+	}
+	var p csiParser
+	for _, b := range data {
+		final, params, _, ok := p.Feed(byte(b))
+		if !ok {
+			continue
+		}
+		switch final {
+		case 'H', 'f':
+			out.hasCUP = true
+			row := csiParam(params, 0, 1)
+			col := csiParam(params, 1, 1)
+			if row == 1 && col == 1 {
+				out.hasCUPHome = true
+			}
+		case 'J':
+			out.hasED = true
+			if csiParam(params, 0, 0) == 2 {
+				out.hasED2 = true
+			}
+		case 'r':
+			out.hasScrollRegion = true
+		}
+	}
+	return out
+}
+
+type localSessionOptions struct {
+	ID              string
+	Name            string
+	Shell           string
+	Term            string
+	Cols            int
+	Rows            int
+	ScrollbackLines int
+	Respawn         bool
+	Offline         bool
+	Logger          pslog.Logger
+	Clock           clock.Clock
+	OnOutput        func(id string, data []byte, snap *protocolpb.Snapshot)
+	OnPTYRead       func([]byte)
+	OnSnapshot      func(terminal.Snapshot)
+	OnExit          func(id string, err error)
+	CursorQuery     func(terminal.Snapshot) (row, col int, ok bool)
+	Trace           *trace.Writer
+	DefaultFg       string
+	DefaultBg       string
+	DefaultCursor   string
+}
+
+func newLocalSession(parent context.Context, opts localSessionOptions) *localSession {
+	ctx, cancel := context.WithCancel(parent)
+	logger := opts.Logger
+	if logger == nil {
+		logger = pslog.LoggerFromEnv().With("app", "lingon")
+	}
+	clk := opts.Clock
+	if clk == nil {
+		clk = clock.New()
+	}
+	session := &localSession{
+		id:              opts.ID,
+		name:            opts.Name,
+		shell:           opts.Shell,
+		term:            opts.Term,
+		cols:            opts.Cols,
+		rows:            opts.Rows,
+		scrollbackLines: opts.ScrollbackLines,
+		respawn:         opts.Respawn,
+		offline:         opts.Offline,
+		logger:          logger,
+		clock:           clk,
+		ctx:             ctx,
+		cancel:          cancel,
+		onOutput:        opts.OnOutput,
+		onPTYRead:       opts.OnPTYRead,
+		onSnapshot:      opts.OnSnapshot,
+		onExit:          opts.OnExit,
+		cursorQuery:     opts.CursorQuery,
+		trace:           opts.Trace,
+	}
+	if opts.Cols > 0 && opts.Rows > 0 {
+		session.snapshot = &protocolpb.Snapshot{
+			Cols:          uint32(opts.Cols),
+			Rows:          uint32(opts.Rows),
+			Runes:         make([]uint32, opts.Cols*opts.Rows),
+			Cursor:        &protocolpb.Cursor{X: 0, Y: 0},
+			CursorVisible: true,
+		}
+	}
+	session.setOscDefaults(opts.DefaultFg, opts.DefaultBg, opts.DefaultCursor)
+	return session
+}
+
+func (s *localSession) ID() string {
+	return s.id
+}
+
+func (s *localSession) Name() string {
+	return s.name
+}
+
+func (s *localSession) SetPublisher(p *host.Publisher) {
+	s.publisher = p
+	if p != nil {
+		p.SetScrollbackSnapshot(s.scrollbackSnapshot)
+		p.SetOffline(s.Offline())
+	}
+}
+
+func (s *localSession) scrollbackSnapshot() []terminal.ScrollbackRow {
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	if scrollback, ok := s.emulator.(*emu.Emulator); ok {
+		return scrollback.ScrollbackSnapshot()
+	}
+	return nil
+}
+
+func (s *localSession) SetLastActive(t time.Time) {
+	s.lastActiveMu.Lock()
+	s.lastActive = t
+	s.lastActiveMu.Unlock()
+}
+
+func (s *localSession) LastActive() time.Time {
+	s.lastActiveMu.RLock()
+	defer s.lastActiveMu.RUnlock()
+	return s.lastActive
+}
+
+func (s *localSession) Snapshot() *protocolpb.Snapshot {
+	s.snapMu.RLock()
+	defer s.snapMu.RUnlock()
+	return s.snapshot
+}
+
+func (s *localSession) Size() (int, int) {
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	return s.cols, s.rows
+}
+
+func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
+	if cols <= 0 || rows <= 0 {
+		return nil, fmt.Errorf("invalid size")
+	}
+	s.emuMu.Lock()
+	s.cols = cols
+	s.rows = rows
+	err := s.resizePTY(cols, rows)
+	if s.emulator == nil {
+		s.emuMu.Unlock()
+		if s.logger != nil {
+			s.logger.Debug("session.resize.skip.emulator.nil", "session", s.id, "cols", cols, "rows", rows)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("emulator not ready")
+	}
+	if err == nil {
+		s.emulator.Resize(cols, rows)
+	}
+	rawSnap, snapErr := s.emulator.Snapshot()
+	s.emuMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if snapErr != nil {
+		return nil, snapErr
+	}
+	snap := protocol.SnapshotToProto(rawSnap)
+	s.storeSnapshot(snap)
+	return snap, nil
+}
+
+func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot) {
+	s.snapMu.Lock()
+	s.snapshot = snap
+	s.snapMu.Unlock()
+}
+
+func (s *localSession) RespawnEnabled() bool {
+	s.respawnMu.RLock()
+	defer s.respawnMu.RUnlock()
+	return s.respawn
+}
+
+func (s *localSession) ToggleRespawn() bool {
+	s.respawnMu.Lock()
+	s.respawn = !s.respawn
+	enabled := s.respawn
+	s.respawnMu.Unlock()
+	return enabled
+}
+
+func (s *localSession) Offline() bool {
+	s.offlineMu.RLock()
+	defer s.offlineMu.RUnlock()
+	return s.offline
+}
+
+func (s *localSession) SetOffline(v bool) {
+	s.offlineMu.Lock()
+	s.offline = v
+	s.offlineMu.Unlock()
+	if s.publisher != nil {
+		s.publisher.SetOffline(v)
+	}
+}
+
+func (s *localSession) ToggleOffline() bool {
+	s.offlineMu.Lock()
+	s.offline = !s.offline
+	offline := s.offline
+	s.offlineMu.Unlock()
+	if s.publisher != nil {
+		s.publisher.SetOffline(offline)
+	}
+	return offline
+}
+
+func (s *localSession) Stop() {
+	s.notifyRemoteSessionClosed("stopped")
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.closePTY()
+}
+
+func (s *localSession) notifyRemoteSessionClosed(reason string) {
+	if s.publisher == nil || s.Offline() {
+		return
+	}
+	s.closeOnce.Do(func() {
+		s.publisher.SendSessionClosed(reason)
+	})
+}
+
+func (s *localSession) writePTY(data []byte) (int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.ptyMu.RLock()
+	ptyFile := s.pty
+	s.ptyMu.RUnlock()
+	if ptyFile == nil {
+		return 0, errPTYNotReady
+	}
+	sleep := time.Sleep
+	if s.clock != nil {
+		sleep = s.clock.Sleep
+	}
+	return writeAllWithRetry(s.ctx, sleep, data, ptyFile.Write)
+}
+
+func writeAllWithRetry(ctx context.Context, sleep func(time.Duration), data []byte, write func([]byte) (int, error)) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	written := 0
+	for written < len(data) {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return written, err
+			}
+		}
+		n, err := write(data[written:])
+		if n > 0 {
+			written += n
+		}
+		if err == nil {
+			if n == 0 {
+				return written, io.ErrShortWrite
+			}
+			continue
+		}
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+			if ctx != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return written, ctxErr
+				}
+			}
+			if sleep != nil {
+				sleep(2 * time.Millisecond)
+			}
+			continue
+		}
+		return written, err
+	}
+	return written, nil
+}
+
+func (s *localSession) resizePTY(cols, rows int) error {
+	s.ptyMu.RLock()
+	ptyFile := s.pty
+	s.ptyMu.RUnlock()
+	if ptyFile == nil {
+		return errPTYNotReady
+	}
+	return pty.Resize(ptyFile, cols, rows)
+}
+
+func (s *localSession) takeControl() {
+	if s.publisher == nil {
+		return
+	}
+	s.publisher.TakeControl()
+	s.setHolder(host.HostControlID)
+}
+
+func (s *localSession) holder() string {
+	s.holderMu.Lock()
+	defer s.holderMu.Unlock()
+	return s.holderID
+}
+
+func (s *localSession) filterRemoteInput(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+	s.ptyMu.RLock()
+	ttyFile := s.tty
+	s.ptyMu.RUnlock()
+	if ttyFile == nil {
+		return data
+	}
+	return filterRemoteInput(ttyFile, data)
+}
+
+func (s *localSession) setHolder(holderID string) {
+	s.holderMu.Lock()
+	s.holderID = holderID
+	s.holderMu.Unlock()
+	s.applyVEOF(holderID)
+}
+
+func (s *localSession) captureVEOF() {
+	s.ptyMu.RLock()
+	ttyFile := s.tty
+	s.ptyMu.RUnlock()
+	if ttyFile == nil {
+		return
+	}
+	val, err := getVEOF(ttyFile)
+	if err != nil {
+		return
+	}
+	s.veofMu.Lock()
+	s.veofOrig = val
+	s.veofSet = true
+	s.veofMu.Unlock()
+}
+
+func (s *localSession) applyVEOF(holderID string) {
+	s.ptyMu.RLock()
+	ttyFile := s.tty
+	s.ptyMu.RUnlock()
+	if ttyFile == nil {
+		return
+	}
+	s.veofMu.Lock()
+	if !s.veofSet {
+		s.veofMu.Unlock()
+		return
+	}
+	orig := s.veofOrig
+	s.veofMu.Unlock()
+	target := orig
+	if holderID != "" && holderID != host.HostControlID {
+		target = 0
+	}
+	_ = setVEOF(ttyFile, target)
+}
+
+func (s *localSession) closePTY() {
+	s.ptyMu.Lock()
+	ptyFile := s.pty
+	ttyFile := s.tty
+	cmd := s.cmd
+	s.pty = nil
+	s.tty = nil
+	s.cmd = nil
+	s.ptyMu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	if ptyFile != nil {
+		_ = ptyFile.Close()
+	}
+	if ttyFile != nil {
+		_ = ttyFile.Close()
+	}
+}
+
+func (s *localSession) runOnce(ctx context.Context) error {
+	ptyFile, ttyFile, cmd, err := startShell(s.shell, s.term)
+	if err != nil {
+		return err
+	}
+	s.ptyMu.Lock()
+	s.pty = ptyFile
+	s.tty = ttyFile
+	s.cmd = cmd
+	s.ptyMu.Unlock()
+
+	defer s.closePTY()
+
+	s.captureVEOF()
+
+	if s.cols <= 0 {
+		s.cols = 80
+	}
+	if s.rows <= 0 {
+		s.rows = 24
+	}
+
+	s.emuMu.Lock()
+	s.emulator = emu.New(s.cols, s.rows)
+	if emuImpl, ok := s.emulator.(*emu.Emulator); ok {
+		if s.trace != nil {
+			emuImpl.SetCursorTrace(func(ev emu.CursorTraceEvent) {
+				s.trace.Event("emu_cursor_zero", map[string]any{
+					"component":    "host",
+					"session_id":   s.id,
+					"reason":       ev.Reason,
+					"screen":       ev.Screen,
+					"old_x":        ev.Old.X,
+					"old_y":        ev.Old.Y,
+					"new_x":        ev.New.X,
+					"new_y":        ev.New.Y,
+					"recent_input": trace.SummarizeBytes(ev.Recent, 120),
+					"recent_len":   len(ev.Recent),
+				})
+			})
+			emuImpl.SetEventTrace(func(ev emu.Event) {
+				privateVal := ""
+				if ev.Private != 0 {
+					privateVal = string(ev.Private)
+				}
+				s.trace.Event("emu_event", map[string]any{
+					"component":        "host",
+					"session_id":       s.id,
+					"name":             ev.Name,
+					"final":            string(ev.Final),
+					"private":          privateVal,
+					"params":           ev.Params,
+					"screen":           ev.Screen,
+					"arg_row":          ev.ArgRow,
+					"arg_code":         ev.ArgCode,
+					"payload_len":      ev.PayloadLen,
+					"old_x":            ev.Old.Cursor.X,
+					"old_y":            ev.Old.Cursor.Y,
+					"new_x":            ev.New.Cursor.X,
+					"new_y":            ev.New.Cursor.Y,
+					"old_saved_x":      ev.Old.SavedCursor.X,
+					"old_saved_y":      ev.Old.SavedCursor.Y,
+					"new_saved_x":      ev.New.SavedCursor.X,
+					"new_saved_y":      ev.New.SavedCursor.Y,
+					"old_scroll_top":   ev.Old.ScrollTop,
+					"old_scroll_bot":   ev.Old.ScrollBottom,
+					"new_scroll_top":   ev.New.ScrollTop,
+					"new_scroll_bot":   ev.New.ScrollBottom,
+					"old_origin_mode":  ev.Old.OriginMode,
+					"new_origin_mode":  ev.New.OriginMode,
+					"old_wrap_mode":    ev.Old.WrapMode,
+					"new_wrap_mode":    ev.New.WrapMode,
+					"old_insert_mode":  ev.Old.InsertMode,
+					"new_insert_mode":  ev.New.InsertMode,
+					"old_newline_mode": ev.Old.NewLineMode,
+					"new_newline_mode": ev.New.NewLineMode,
+					"old_cursor_vis":   ev.Old.CursorVisible,
+					"new_cursor_vis":   ev.New.CursorVisible,
+					"old_inline_row":   ev.Old.InlineOriginRow,
+					"new_inline_row":   ev.New.InlineOriginRow,
+					"old_inline_set":   ev.Old.InlineOriginSet,
+					"new_inline_set":   ev.New.InlineOriginSet,
+					"old_alt_screen":   ev.Old.AltScreen,
+					"new_alt_screen":   ev.New.AltScreen,
+					"cols":             ev.New.Cols,
+					"rows":             ev.New.Rows,
+				})
+			})
+		}
+		emuImpl.SetScrollbackLimit(s.scrollbackLines)
+	}
+	s.emuMu.Unlock()
+	if s.logger != nil {
+		s.logger.Trace("session.emulator.ready", "session", s.id, "cols", s.cols, "rows", s.rows)
+	}
+	_ = s.resizePTY(s.cols, s.rows)
+	s.emuMu.Lock()
+	rawSnap, snapErr := s.emulator.Snapshot()
+	s.emuMu.Unlock()
+	if snapErr == nil {
+		s.storeSnapshot(protocol.SnapshotToProto(rawSnap))
+	}
+	_ = setNonblock(ptyFile, true)
+	defer func() {
+		_ = setNonblock(ptyFile, false)
+	}()
+
+	localErr := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			n, err := readPTY(ctx, ptyFile, buf)
+			if err != nil {
+				if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+					s.clock.Sleep(10 * time.Millisecond)
+					continue
+				}
+				if !errors.Is(err, io.EOF) {
+					s.logger.Debug("session.pty.read.failed", "err", err, "session", s.id)
+				}
+				select {
+				case localErr <- err:
+				default:
+				}
+				return
+			}
+			data := buf[:n]
+			if s.onPTYRead != nil {
+				cp := make([]byte, len(data))
+				copy(cp, data)
+				s.onPTYRead(cp)
+			}
+			var scrollRows []terminal.ScrollbackRow
+			s.emuMu.Lock()
+			if err := s.emulator.Write(data); err != nil {
+				s.logger.Debug("session.emulator.write.failed", "err", err, "session", s.id)
+			}
+			rawSnap, err := s.emulator.Snapshot()
+			if scrollback, ok := s.emulator.(*emu.Emulator); ok {
+				scrollRows = scrollback.DrainScrollback()
+			}
+			s.emuMu.Unlock()
+			s.respondToTerminalQueries(data, rawSnap)
+			if err != nil {
+				select {
+				case localErr <- err:
+				default:
+				}
+				return
+			}
+			if s.onSnapshot != nil {
+				s.onSnapshot(rawSnap)
+			}
+			snap := protocol.SnapshotToProto(rawSnap)
+			s.storeSnapshot(snap)
+			if s.onOutput != nil {
+				s.onOutput(s.id, data, snap)
+			}
+			if s.publisher != nil {
+				if len(scrollRows) > 0 {
+					s.publisher.PublishScrollback(scrollRows, int(snap.Cols), false)
+				}
+				s.publisher.Publish(data, snap)
+			}
+		}
+	}()
+
+	if s.publisher != nil {
+		s.publisher.TakeControl()
+		if snap := s.Snapshot(); snap != nil {
+			s.publisher.Publish(nil, snap)
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-waitProcess(cmd):
+	case <-localErr:
+	}
+
+	return nil
+}
+
+func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snapshot) {
+	s.recordRecentInput(data)
+	for _, b := range data {
+		if code, payload, ok := s.oscState.Feed(b); ok {
+			if payload == "?" {
+				color := s.oscQueryColor(code)
+				if color != "" {
+					resp := []byte(fmt.Sprintf("\x1b]%d;%s\x07", code, color))
+					if s.trace != nil {
+						s.trace.Event("osc_query_request", map[string]any{
+							"component":  "host",
+							"session_id": s.id,
+							"code":       code,
+						})
+					}
+					if s.trace != nil {
+						s.trace.Event("osc_query_response", map[string]any{
+							"component":  "host",
+							"session_id": s.id,
+							"code":       code,
+							"response":   trace.SummarizeBytes(resp, 120),
+						})
+					}
+					_, _ = s.writePTY(resp)
+				}
+			}
+		}
+		final, params, private, ok := s.csiState.Feed(b)
+		if !ok {
+			continue
+		}
+		switch final {
+		case 'n':
+			if len(params) != 1 {
+				continue
+			}
+			switch private {
+			case 0:
+				switch params[0] {
+				case 5:
+					if s.trace != nil {
+						s.trace.Event("cursor_status_request", map[string]any{
+							"component":  "host",
+							"session_id": s.id,
+							"private":    "",
+							"param":      5,
+						})
+					}
+					resp := []byte("\x1b[0n")
+					if s.trace != nil {
+						s.trace.Event("cursor_status_response", map[string]any{
+							"component":  "host",
+							"session_id": s.id,
+							"private":    "",
+							"param":      5,
+							"response":   trace.SummarizeBytes(resp, 80),
+						})
+					}
+					_, _ = s.writePTY(resp)
+				case 6:
+					if s.trace != nil {
+						recent := s.recentInputSnapshot()
+						signals := analyzeRecentInput(recent)
+						altActive, altKnown := s.emuAltScreenActive()
+						s.trace.Event("cursor_position_request", map[string]any{
+							"component":                "host",
+							"session_id":               s.id,
+							"private":                  "",
+							"param":                    6,
+							"recent_input":             trace.SummarizeBytes(recent, 120),
+							"recent_input_len":         len(recent),
+							"emu_alt_screen":           altActive,
+							"emu_alt_screen_known":     altKnown,
+							"recent_has_dsr":           signals.hasDSR,
+							"recent_has_home":          signals.hasHome,
+							"recent_has_clear":         signals.hasClear,
+							"recent_has_alt_enter":     signals.hasAltEnter,
+							"recent_has_alt_leave":     signals.hasAltLeave,
+							"recent_has_cup":           signals.hasCUP,
+							"recent_has_cup_home":      signals.hasCUPHome,
+							"recent_has_ed":            signals.hasED,
+							"recent_has_ed2":           signals.hasED2,
+							"recent_has_scroll_region": signals.hasScrollRegion,
+							"recent_has_ris":           signals.hasRIS,
+						})
+					}
+					row, col, ok := s.cursorQueryPosition(snap)
+					if ok {
+						if origin := inlineOriginRow(snap.Cursor.Y, row, snap.Rows); origin > 0 {
+							s.setInlineOriginRow(origin)
+						}
+					} else {
+						row = snap.Cursor.Y + 1
+						col = snap.Cursor.X + 1
+					}
+					if row < 1 {
+						row = 1
+					}
+					if col < 1 {
+						col = 1
+					}
+					resp := []byte(fmt.Sprintf("\x1b[%d;%dR", row, col))
+					if s.trace != nil {
+						s.trace.Event("cursor_position_response", map[string]any{
+							"component":  "host",
+							"session_id": s.id,
+							"private":    "",
+							"param":      6,
+							"row":        row,
+							"col":        col,
+							"ok":         ok,
+							"cursor_x":   snap.Cursor.X,
+							"cursor_y":   snap.Cursor.Y,
+							"cols":       snap.Cols,
+							"rows":       snap.Rows,
+							"response":   trace.SummarizeBytes(resp, 80),
+						})
+					}
+					_, _ = s.writePTY(resp)
+				}
+			case '?':
+				switch params[0] {
+				case 5:
+					if s.trace != nil {
+						s.trace.Event("cursor_status_request", map[string]any{
+							"component":  "host",
+							"session_id": s.id,
+							"private":    "?",
+							"param":      5,
+						})
+					}
+					resp := []byte("\x1b[?0n")
+					if s.trace != nil {
+						s.trace.Event("cursor_status_response", map[string]any{
+							"component":  "host",
+							"session_id": s.id,
+							"private":    "?",
+							"param":      5,
+							"response":   trace.SummarizeBytes(resp, 80),
+						})
+					}
+					_, _ = s.writePTY(resp)
+				case 6:
+					if s.trace != nil {
+						recent := s.recentInputSnapshot()
+						signals := analyzeRecentInput(recent)
+						altActive, altKnown := s.emuAltScreenActive()
+						s.trace.Event("cursor_position_request", map[string]any{
+							"component":                "host",
+							"session_id":               s.id,
+							"private":                  "?",
+							"param":                    6,
+							"recent_input":             trace.SummarizeBytes(recent, 120),
+							"recent_input_len":         len(recent),
+							"emu_alt_screen":           altActive,
+							"emu_alt_screen_known":     altKnown,
+							"recent_has_dsr":           signals.hasDSR,
+							"recent_has_home":          signals.hasHome,
+							"recent_has_clear":         signals.hasClear,
+							"recent_has_alt_enter":     signals.hasAltEnter,
+							"recent_has_alt_leave":     signals.hasAltLeave,
+							"recent_has_cup":           signals.hasCUP,
+							"recent_has_cup_home":      signals.hasCUPHome,
+							"recent_has_ed":            signals.hasED,
+							"recent_has_ed2":           signals.hasED2,
+							"recent_has_scroll_region": signals.hasScrollRegion,
+							"recent_has_ris":           signals.hasRIS,
+						})
+					}
+					row, col, ok := s.cursorQueryPosition(snap)
+					if ok {
+						if origin := inlineOriginRow(snap.Cursor.Y, row, snap.Rows); origin > 0 {
+							s.setInlineOriginRow(origin)
+						}
+					} else {
+						row = snap.Cursor.Y + 1
+						col = snap.Cursor.X + 1
+					}
+					if row < 1 {
+						row = 1
+					}
+					if col < 1 {
+						col = 1
+					}
+					resp := []byte(fmt.Sprintf("\x1b[?%d;%dR", row, col))
+					if s.trace != nil {
+						s.trace.Event("cursor_position_response", map[string]any{
+							"component":  "host",
+							"session_id": s.id,
+							"private":    "?",
+							"param":      6,
+							"row":        row,
+							"col":        col,
+							"ok":         ok,
+							"cursor_x":   snap.Cursor.X,
+							"cursor_y":   snap.Cursor.Y,
+							"cols":       snap.Cols,
+							"rows":       snap.Rows,
+							"response":   trace.SummarizeBytes(resp, 80),
+						})
+					}
+					_, _ = s.writePTY(resp)
+				}
+			}
+		case 'u':
+			if private != '?' {
+				continue
+			}
+			if s.trace != nil {
+				s.trace.Event("keyboard_enhancement_request", map[string]any{
+					"component":  "host",
+					"session_id": s.id,
+					"private":    "?",
+					"param":      params,
+				})
+			}
+			resp := []byte("\x1b[?0u")
+			if s.trace != nil {
+				s.trace.Event("keyboard_enhancement_response", map[string]any{
+					"component":  "host",
+					"session_id": s.id,
+					"private":    "?",
+					"response":   trace.SummarizeBytes(resp, 80),
+				})
+			}
+			_, _ = s.writePTY(resp)
+		case 'c':
+			switch private {
+			case 0:
+				if s.trace != nil {
+					s.trace.Event("device_attributes_request", map[string]any{
+						"component":  "host",
+						"session_id": s.id,
+						"private":    "",
+					})
+				}
+				resp := []byte("\x1b[?1;2c")
+				if s.trace != nil {
+					s.trace.Event("device_attributes_response", map[string]any{
+						"component":  "host",
+						"session_id": s.id,
+						"private":    "",
+						"response":   trace.SummarizeBytes(resp, 80),
+					})
+				}
+				_, _ = s.writePTY(resp)
+			case '>':
+				if s.trace != nil {
+					s.trace.Event("device_attributes_request", map[string]any{
+						"component":  "host",
+						"session_id": s.id,
+						"private":    ">",
+					})
+				}
+				resp := []byte("\x1b[>0;0;0c")
+				if s.trace != nil {
+					s.trace.Event("device_attributes_response", map[string]any{
+						"component":  "host",
+						"session_id": s.id,
+						"private":    ">",
+						"response":   trace.SummarizeBytes(resp, 80),
+					})
+				}
+				_, _ = s.writePTY(resp)
+			}
+		}
+	}
+}
+
+func (s *localSession) setOscDefaults(fg, bg, cursor string) {
+	s.oscDefaultsMu.Lock()
+	if fg != "" {
+		s.oscDefaultFg = fg
+	}
+	if bg != "" {
+		s.oscDefaultBg = bg
+	}
+	if cursor != "" {
+		s.oscDefaultCursor = cursor
+	}
+	s.oscDefaultsMu.Unlock()
+}
+
+func (s *localSession) oscQueryColor(code int) string {
+	s.oscDefaultsMu.RLock()
+	fg := s.oscDefaultFg
+	bg := s.oscDefaultBg
+	cursor := s.oscDefaultCursor
+	s.oscDefaultsMu.RUnlock()
+	switch code {
+	case 10:
+		if fg != "" {
+			return fg
+		}
+		return "rgb:ffff/ffff/ffff"
+	case 11:
+		if bg != "" {
+			return bg
+		}
+		return "rgb:0000/0000/0000"
+	case 12:
+		if cursor != "" {
+			return cursor
+		}
+		if fg != "" {
+			return fg
+		}
+		return "rgb:ffff/ffff/ffff"
+	default:
+		return ""
+	}
+}
+
+func (s *localSession) cursorQueryPosition(snap terminal.Snapshot) (row, col int, ok bool) {
+	if s.cursorQuery == nil {
+		return 0, 0, false
+	}
+	return s.cursorQuery(snap)
+}
+
+type csiParser struct {
+	state      int
+	private    byte
+	params     []int
+	current    int
+	hasCurrent bool
+}
+
+func (p *csiParser) reset() {
+	p.state = 0
+	p.private = 0
+	p.params = p.params[:0]
+	p.current = 0
+	p.hasCurrent = false
+}
+
+func (p *csiParser) Feed(b byte) (final byte, params []int, private byte, ok bool) {
+	switch p.state {
+	case 0:
+		if b == 0x1b {
+			p.state = 1
+		}
+	case 1:
+		if b == '[' {
+			p.state = 2
+			p.private = 0
+			p.params = p.params[:0]
+			p.current = 0
+			p.hasCurrent = false
+		} else if b == 0x1b {
+			p.state = 1
+		} else {
+			p.state = 0
+		}
+	case 2:
+		switch {
+		case b >= '0' && b <= '9':
+			p.current = p.current*10 + int(b-'0')
+			p.hasCurrent = true
+		case b == ';':
+			if p.hasCurrent {
+				p.params = append(p.params, p.current)
+				p.current = 0
+				p.hasCurrent = false
+			} else {
+				p.params = append(p.params, -1)
+			}
+		case b == '?' || b == '>':
+			if p.private == 0 && !p.hasCurrent && len(p.params) == 0 {
+				p.private = b
+			} else {
+				p.reset()
+			}
+		case b >= 0x40 && b <= 0x7e:
+			if p.hasCurrent {
+				p.params = append(p.params, p.current)
+			}
+			final = b
+			params = append([]int(nil), p.params...)
+			private = p.private
+			p.reset()
+			return final, params, private, true
+		default:
+			p.reset()
+		}
+	default:
+		p.reset()
+	}
+	return 0, nil, 0, false
+}
+
+type oscParser struct {
+	state  int
+	oscEsc bool
+	buf    []byte
+}
+
+func (p *oscParser) reset() {
+	p.state = 0
+	p.oscEsc = false
+	p.buf = p.buf[:0]
+}
+
+func (p *oscParser) Feed(b byte) (code int, payload string, ok bool) {
+	switch p.state {
+	case 0:
+		if b == 0x1b {
+			p.state = 1
+		}
+	case 1:
+		if b == ']' {
+			p.state = 2
+			p.oscEsc = false
+			p.buf = p.buf[:0]
+		} else if b == 0x1b {
+			p.state = 1
+		} else {
+			p.state = 0
+		}
+	case 2:
+		if p.oscEsc {
+			p.oscEsc = false
+			if b == '\\' {
+				code, payload, ok = parseOSCQuery(p.buf)
+				p.reset()
+				return code, payload, ok
+			}
+			p.buf = append(p.buf, 0x1b, b)
+			return 0, "", false
+		}
+		switch b {
+		case 0x1b:
+			p.oscEsc = true
+		case 0x07:
+			code, payload, ok = parseOSCQuery(p.buf)
+			p.reset()
+			return code, payload, ok
+		default:
+			p.buf = append(p.buf, b)
+		}
+	default:
+		p.reset()
+	}
+	return 0, "", false
+}
+
+func parseOSCQuery(buf []byte) (int, string, bool) {
+	if len(buf) == 0 {
+		return 0, "", false
+	}
+	code := 0
+	i := 0
+	for i < len(buf) && buf[i] >= '0' && buf[i] <= '9' {
+		code = code*10 + int(buf[i]-'0')
+		i++
+	}
+	if i == 0 {
+		return 0, "", false
+	}
+	if i < len(buf) && buf[i] == ';' {
+		return code, string(buf[i+1:]), true
+	}
+	return code, "", true
+}
+
+func (s *localSession) Run() {
+	for {
+		err := s.runOnce(s.ctx)
+		if s.ctx.Err() != nil {
+			return
+		}
+		if !s.RespawnEnabled() {
+			s.notifyRemoteSessionClosed("terminated")
+			if s.onExit != nil {
+				s.onExit(s.id, err)
+			}
+			if s.cancel != nil {
+				s.cancel()
+			}
+			return
+		}
+		s.clock.Sleep(100 * time.Millisecond)
+	}
+}

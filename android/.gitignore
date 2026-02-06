@@ -1,0 +1,10 @@
+/.gradle/
+/local.properties
+/.keystore/
+/signing.properties
+/.idea/
+/app/build/
+/build/
+*.iml
+/.kotlin/
+/test-artifacts/

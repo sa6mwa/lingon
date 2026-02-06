@@ -1,0 +1,20 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="systems.pkt.lingon">
+
+    <application>
+        <receiver
+            android:name="systems.pkt.lingon.debug.DebugEndpointReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="systems.pkt.lingon.DEBUG_SET_ENDPOINT" />
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name="systems.pkt.lingon.debug.DebugCertReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="systems.pkt.lingon.DEBUG_ADD_CERT" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
