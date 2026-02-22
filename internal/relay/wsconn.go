@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/pslog"
 )
@@ -30,7 +31,7 @@ type wsConn struct {
 
 func newWSConn(id string, role Role, sessionID string, scope ShareScope, conn *websocket.Conn, logger pslog.Logger) *wsConn {
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	ws := &wsConn{
 		id:        id,

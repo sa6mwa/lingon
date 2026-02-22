@@ -67,6 +67,12 @@ func TestAttachMultiHostRelayDropSwitchesTabs(t *testing.T) {
 	for id := range ids {
 		waitForClientCount(t, h, id, 1, 6*time.Second)
 	}
+	attachA, activeA, viewsA = ensureTrackedAttachReady(
+		t, h, attachA, activeA, viewsA, "attachA", "hostA", 8*time.Second,
+	)
+	attachB, activeB, viewsB = ensureTrackedAttachReady(
+		t, h, attachB, activeB, viewsB, "attachB", "hostB", 8*time.Second,
+	)
 	primeTabsByCountWithActive(t, attachA, 4, h.Clock(), activeA)
 	primeTabsByCountWithActive(t, attachB, 4, h.Clock(), activeB)
 

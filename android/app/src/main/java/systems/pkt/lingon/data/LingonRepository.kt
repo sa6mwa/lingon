@@ -15,6 +15,7 @@ class LingonRepository(
     private val sessionsClient: RelaySessionsClient,
     private val certificateStore: CertificateStore,
     private val endpointStore: EndpointStore,
+    private val lastActiveSessionStore: LastActiveSessionStore,
     private val fontSizeStore: FontSizeStore,
     private val zoomStore: ZoomStore,
     private val terminalResizeStore: TerminalResizeStore,
@@ -49,6 +50,14 @@ class LingonRepository(
         appLockStore.setTimeoutMinutes(value)
     }
 
+    override fun saveLastActiveSessionId(endpoint: String, sessionId: String) {
+        lastActiveSessionStore.saveAsync(endpoint, sessionId)
+    }
+
+    override fun clearLastActiveSession() {
+        lastActiveSessionStore.clearAsync()
+    }
+
     override suspend fun login(username: String, password: String, totp: String) {
         authClient.login(username, password, totp)
     }
@@ -66,6 +75,10 @@ class LingonRepository(
             authClient.refresh()
             true
         }.getOrDefault(false)
+    }
+
+    override suspend fun loadLastActiveSessionId(endpoint: String): String? {
+        return lastActiveSessionStore.load(endpoint)
     }
 
     override suspend fun listSessions(): List<RelaySession> {

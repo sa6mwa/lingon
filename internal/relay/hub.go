@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/pslog"
 
@@ -42,7 +43,7 @@ type Hub struct {
 }
 
 var errHostSessionClosed = errors.New("host session closed")
-var errSessionHasActiveHost = errors.New("session already has active host")
+var errStaleHostConnection = errors.New("stale host connection")
 
 type sessionState struct {
 	id            string
@@ -59,7 +60,7 @@ type sessionState struct {
 // NewHub constructs a Hub.
 func NewHub(logger pslog.Logger) *Hub {
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	return &Hub{
 		sessions: make(map[string]*sessionState),
@@ -69,21 +70,27 @@ func NewHub(logger pslog.Logger) *Hub {
 
 // RegisterHost registers a host connection for a session.
 func (h *Hub) RegisterHost(conn connection, sessionID string, cols, rows int) error {
+	_ = h.registerHost(conn, sessionID, cols, rows)
+	return nil
+}
+
+// registerHost registers a host connection for a session.
+// If another host is already present for the session, it is replaced and returned.
+func (h *Hub) registerHost(conn connection, sessionID string, cols, rows int) connection {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	state := h.session(sessionID)
-	if state.host != nil {
-		if state.host.ID() != conn.ID() {
-			h.logger.Debug("relay.hub.host.register.denied", "session", sessionID, "conn", conn.ID(), "existing", state.host.ID())
-			return errSessionHasActiveHost
-		}
+	var replaced connection
+	if state.host != nil && state.host.ID() != conn.ID() {
+		replaced = state.host
+		h.logger.Info("relay.hub.host.takeover", "session", sessionID, "old_conn", state.host.ID(), "new_conn", conn.ID())
 	}
 	state.host = conn
 	state.cols = cols
 	state.rows = rows
 	h.logger.Debug("relay.hub.host.register", "session", sessionID, "conn", conn.ID(), "cols", cols, "rows", rows)
-	return nil
+	return replaced
 }
 
 // RegisterClient registers a client for a session.
@@ -223,6 +230,10 @@ func (h *Hub) HandleHostFrame(ctx context.Context, conn connection, frame *proto
 	if state == nil {
 		h.mu.Unlock()
 		return fmt.Errorf("unknown session")
+	}
+	if state.host == nil || state.host.ID() != conn.ID() {
+		h.mu.Unlock()
+		return errStaleHostConnection
 	}
 	if frame.GetSessionClosed() != nil {
 		h.mu.Unlock()

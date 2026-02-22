@@ -169,7 +169,7 @@ func waitForClientReady(t *testing.T, clk clock.Clock, mu *sync.Mutex, views map
 		mu.Lock()
 		client := views[id]
 		mu.Unlock()
-		if client != nil && client.Connected() && client.Snapshot() != nil {
+		if client != nil && client.Connected() {
 			return
 		}
 		ptytest.Advance(clk, 50*time.Millisecond)

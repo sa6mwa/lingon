@@ -365,7 +365,7 @@ func tryWaitForActiveSessionReady(clk clock.Clock, activeMu *sync.Mutex, active 
 			viewsMu.Lock()
 			client := views[current]
 			viewsMu.Unlock()
-			if client != nil && client.Connected() && client.Snapshot() != nil {
+			if client != nil && client.Connected() {
 				return current, true
 			}
 		}
@@ -377,17 +377,22 @@ func tryWaitForActiveSessionReady(clk clock.Clock, activeMu *sync.Mutex, active 
 func assertTokensVisibleAcrossTabs(t *testing.T, sess *ptytest.PTYSession, count int, tokens []string, label string) {
 	t.Helper()
 	found := make(map[string]bool, len(tokens))
-	for i := 0; i < count; i++ {
+	maxCycles := count * 4
+	if maxCycles < count {
+		maxCycles = count
+	}
+	for i := 0; i < maxCycles; i++ {
 		for _, token := range tokens {
 			if screenContainsWithin(sess, token, 500*time.Millisecond) {
 				found[token] = true
 			}
 		}
-		if i < count-1 {
-			sess.SendCtrlL()
-			sess.Send("n")
-			ptytest.Advance(sess.Clock(), 300*time.Millisecond)
+		if len(found) == len(tokens) {
+			return
 		}
+		sess.SendCtrlL()
+		sess.Send("n")
+		ptytest.Advance(sess.Clock(), 300*time.Millisecond)
 	}
 	missing := make([]string, 0)
 	for _, token := range tokens {

@@ -14,6 +14,7 @@ import (
 
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/host"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/pty"
@@ -264,7 +265,7 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 	ctx, cancel := context.WithCancel(parent)
 	logger := opts.Logger
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	clk := opts.Clock
 	if clk == nil {

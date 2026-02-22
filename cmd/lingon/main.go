@@ -17,7 +17,7 @@ func main() {
 func submain(ctx context.Context) int {
 	loader := lingon.NewLoader()
 	root := NewRootCommand(loader)
-	logger := pslog.LoggerFromEnv(pslog.WithEnvWriter(os.Stdout)).With("app", "lingon")
+	logger := pslog.LoggerFromEnv(ctx, pslog.WithEnvWriter(os.Stdout)).With("app", "lingon")
 	root.SetContext(pslog.ContextWithLogger(ctx, logger))
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

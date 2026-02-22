@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -192,13 +193,13 @@ class EndToEndTest {
         openZoomDialog()
         setZoomSlider(1.5f)
         composeRule.onNodeWithTag(TestTags.ZoomSave, useUnmergedTree = true).performClick()
-        waitUntilNoError(3_000) {
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
             info != null && info.viewCols < initial.viewCols
         }
 
         resetZoomPan()
-        waitUntilNoError(3_000) {
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
             info != null && info.viewCols >= initial.viewCols
         }
@@ -216,13 +217,13 @@ class EndToEndTest {
             ?: throw AssertionError("missing terminal debug info")
 
         performPinchZoom(zoomIn = true)
-        waitUntilNoError(3_000) {
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
             info != null && info.viewCols < initial.viewCols
         }
 
         resetZoomPan()
-        waitUntilNoError(3_000) {
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
             info != null && info.viewCols >= initial.viewCols
         }
@@ -249,12 +250,8 @@ class EndToEndTest {
         ensureLoggedOut()
         setResizeHostEnabled(false)
 
-        if (!hasTag(TestTags.TerminalInput)) {
-            attemptLogin(testConfig.username, testConfig.password, generateTotp(testConfig.totpSecret))
-            waitForLoginSuccess(timeoutMs = 20_000L)
-            waitForTagNoError(TestTags.TerminalInput, timeoutMs = 10_000L)
-            waitForTerminalReady(timeoutMs = 10_000L)
-        }
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
         if (info.viewCols < testConfig.hostCols) {
@@ -339,7 +336,7 @@ class EndToEndTest {
         setResizeHostEnabled(false)
 
         attachViaShareToken(token)
-        waitUntilNoError(3_000) {
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
             info != null && !info.hasControl
         }
@@ -376,19 +373,51 @@ class EndToEndTest {
         val second = testConfig.sessions.firstOrNull { it != first } ?: return
         assertTerminalResponsive(first)
 
-        composeRule.onNodeWithTag(TestTags.tabTag(second)).performClick()
-        waitUntilNoError(3_000) {
-            val info = readTerminalDebugInfo()
-            info != null && info.state == "Connected" && info.activeSessionId == second
-        }
+        selectSessionTab(second, timeoutMs = 10_000L)
         assertTerminalResponsive(second)
 
-        composeRule.onNodeWithTag(TestTags.tabTag(first)).performClick()
-        waitUntilNoError(3_000) {
-            val info = readTerminalDebugInfo()
-            info != null && info.state == "Connected" && info.activeSessionId == first
-        }
+        selectSessionTab(first, timeoutMs = 10_000L)
         assertTerminalResponsive(first)
+    }
+
+    @Test
+    fun active_tab_persists_after_activity_recreate() {
+        if (testConfig.sessions.size < 2) return
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        val initial = activeSessionId()
+        val target = testConfig.sessions.firstOrNull { it != initial } ?: return
+        selectSessionTab(target, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        assertTerminalResponsive(target)
+
+        recreateActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = 15_000L)
+        waitUntilNoError(15_000L) {
+            val info = readTerminalDebugInfo()
+            info != null && info.state == "Connected" && info.activeSessionId == target
+        }
+    }
+
+    @Test
+    fun active_tab_persists_after_background_foreground_cycle() {
+        if (testConfig.sessions.size < 2) return
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        val initial = activeSessionId()
+        val target = testConfig.sessions.firstOrNull { it != initial } ?: return
+        selectSessionTab(target, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        assertTerminalResponsive(target)
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val info = readTerminalDebugInfo()
+            info != null && info.state == "Connected" && info.activeSessionId == target
+        }
     }
 
     @Test
@@ -412,16 +441,18 @@ class EndToEndTest {
         ensureLoggedOut()
 
         loginWithUser(testConfig.primaryUser())
-        selectSessionTab(primarySession)
-        waitUntilNoError(6_000) { snapshotContainsToken("TICK_$primarySession") }
+        selectSessionTab(primarySession, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        assertTerminalResponsive(primarySession)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { snapshotContainsToken("TICK_$primarySession") }
         if (snapshotContainsToken("TICK_$secondarySession")) {
             throw AssertionError("primary user session leaked secondary output")
         }
 
         ensureLoggedOut()
         loginWithUser(secondary)
-        selectSessionTab(secondarySession)
-        waitUntilNoError(6_000) { snapshotContainsToken("TICK_$secondarySession") }
+        selectSessionTab(secondarySession, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        assertTerminalResponsive(secondarySession)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { snapshotContainsToken("TICK_$secondarySession") }
         if (snapshotContainsToken("TICK_$primarySession")) {
             throw AssertionError("secondary user session leaked primary output")
         }
@@ -483,6 +514,17 @@ class EndToEndTest {
         waitForTag(TestTags.TopBarMenu)
     }
 
+    private fun recreateActivity() {
+        composeRule.activityRule.scenario.recreate()
+        composeRule.waitForIdle()
+    }
+
+    private fun backgroundAndResumeActivity() {
+        composeRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        composeRule.waitForIdle()
+    }
+
     private fun attachViaShareToken(token: String) {
         openMenu()
         composeRule.onNodeWithTag(TestTags.ShareTokenButton).performClick()
@@ -522,26 +564,56 @@ class EndToEndTest {
     }
 
     private fun assertTerminalResponsive(sessionId: String? = null, requireControl: Boolean = true) {
-        waitForTerminalReady(timeoutMs = 3_000L)
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         val echoChar = "Z"
         val echoHex = echoChar[0].code.toString(16).padStart(2, '0')
         val effectiveSessionId = sessionId ?: activeSessionId()
         if (requireControl) {
-            waitUntilNoError(3_000) {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
                 val info = readTerminalDebugInfo()
                 info != null && info.hasControl
             }
         }
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         composeRule.waitForIdle()
-        sendTerminalInputWithFallback(echoChar)
         val expected = "ECHO_${effectiveSessionId} $echoHex"
-        waitUntilNoError(4_000) { snapshotContainsToken(expected) }
-        sendTerminalEnterWithFallback()
+        var echoed = false
+        repeat(3) {
+            sendTerminalInputWithFallback(echoChar)
+            val success = runCatching {
+                waitUntilNoError(5_000L) { snapshotContainsToken(expected) }
+            }.isSuccess
+            if (success) {
+                echoed = true
+                return@repeat
+            }
+            composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+            composeRule.waitForIdle()
+        }
+        if (!echoed) {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { snapshotContainsToken(expected) }
+        }
         val newlineEchoCr = "ECHO_${effectiveSessionId} 0d"
         val newlineEchoLf = "ECHO_${effectiveSessionId} 0a"
-        waitUntilNoError(6_000) {
-            snapshotContainsToken(newlineEchoCr) || snapshotContainsToken(newlineEchoLf)
+        var newlineEchoed = false
+        repeat(2) {
+            sendTerminalEnterWithFallback()
+            val success = runCatching {
+                waitUntilNoError(5_000L) {
+                    snapshotContainsToken(newlineEchoCr) || snapshotContainsToken(newlineEchoLf)
+                }
+            }.isSuccess
+            if (success) {
+                newlineEchoed = true
+                return@repeat
+            }
+            composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+            composeRule.waitForIdle()
+        }
+        if (!newlineEchoed) {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+                snapshotContainsToken(newlineEchoCr) || snapshotContainsToken(newlineEchoLf)
+            }
         }
     }
 
@@ -634,15 +706,15 @@ class EndToEndTest {
         if (appViewModel().state.value.loggedIn) return
         val user = testConfig.primaryUser()
         attemptLogin(user.username, user.password, generateTotp(user.totpSecret))
-        waitForLoginSuccess(timeoutMs = 10_000L)
+        waitForLoginSuccess(timeoutMs = LOGIN_TIMEOUT_MS)
     }
 
     private fun loginWithUser(user: UserConfig) {
         if (hasTag(TestTags.TerminalInput)) return
         attemptLogin(user.username, user.password, generateTotp(user.totpSecret))
-        waitForLoginSuccess(timeoutMs = 10_000L)
-        waitForTagNoError(TestTags.TerminalInput, timeoutMs = 3_000L)
-        waitForTerminalReady(timeoutMs = 3_000L)
+        waitForLoginSuccess(timeoutMs = LOGIN_TIMEOUT_MS)
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
     }
 
     private fun attemptLogin(username: String, password: String, totp: String) {
@@ -834,14 +906,14 @@ class EndToEndTest {
         return crc.value
     }
 
-    private fun waitForTerminalReady(timeoutMs: Long = 3_000L) {
+    private fun waitForTerminalReady(timeoutMs: Long = TERMINAL_READY_TIMEOUT_MS) {
         waitUntilNoError(timeoutMs) {
             val info = readTerminalDebugInfo()
             info != null && info.rows > 0 && info.cols > 0 && info.state == "Connected"
         }
     }
 
-    private fun activeSessionId(timeoutMs: Long = 3_000L): String {
+    private fun activeSessionId(timeoutMs: Long = SHORT_UI_TIMEOUT_MS): String {
         var active = ""
         waitUntilNoError(timeoutMs) {
             val info = readTerminalDebugInfo()
@@ -852,24 +924,20 @@ class EndToEndTest {
     }
 
     private fun readStatusBanner(): StatusInfo? {
-        val nodes = composeRule.onAllNodesWithTag(TestTags.StatusBanner).fetchSemanticsNodes()
-        if (nodes.isEmpty()) return null
-        val desc = nodes.first().config
-            .getOrElse(SemanticsProperties.ContentDescription) { emptyList() }
-            .joinToString(" ")
-        if (desc.isBlank()) return null
-        val level = Regex("level=([^ ]+)").find(desc)?.groupValues?.get(1).orEmpty()
-        val message = desc.substringAfter("message=", "")
-        return StatusInfo(level = level, message = message)
+        var status: systems.pkt.lingon.viewmodel.StatusMessage? = null
+        composeRule.runOnIdle {
+            status = appViewModel().state.value.status
+        }
+        val current = status ?: return null
+        return StatusInfo(level = current.level.name, message = current.message)
     }
 
     private fun readLoginError(): String? {
-        val nodes = composeRule.onAllNodesWithTag(TestTags.LoginError).fetchSemanticsNodes()
-        if (nodes.isEmpty()) return null
-        val text = nodes.first().config
-            .getOrElse(SemanticsProperties.Text) { emptyList() }
-            .joinToString(separator = " ") { it.text }
-        return text.takeIf { it.isNotBlank() }
+        var message: String? = null
+        composeRule.runOnIdle {
+            message = appViewModel().state.value.loginError
+        }
+        return message?.takeIf { it.isNotBlank() }
     }
 
     private fun assertTopBarSafe() {
@@ -918,7 +986,15 @@ class EndToEndTest {
             composeRule.waitForIdle()
             Thread.sleep(POLL_INTERVAL_MS)
         }
-        throw AssertionError("Timed out waiting for UI condition after ${timeoutMs}ms")
+        val debug = readTerminalDebugInfo()
+        val state = appViewModel().state.value
+        val sessions = state.sessions.joinToString(",") { "${it.id}:${it.status}" }
+        throw AssertionError(
+            "Timed out waiting for UI condition after ${timeoutMs}ms " +
+                "(connection=${state.connectionState}, active=${state.activeSessionId}, " +
+                "shareToken=${state.shareToken}, " +
+                "sessions=[${sessions}], rows=${debug?.rows ?: 0}, cols=${debug?.cols ?: 0})",
+        )
     }
 
     private fun openZoomDialog() {
@@ -1246,6 +1322,9 @@ class EndToEndTest {
         private const val DEFAULT_PASSWORD = "admin"
         private const val TOTP_DIGITS = 6
         private const val DEFAULT_TIMEOUT_MS = 30_000L
+        private const val LOGIN_TIMEOUT_MS = 20_000L
+        private const val TERMINAL_READY_TIMEOUT_MS = 15_000L
+        private const val SHORT_UI_TIMEOUT_MS = 15_000L
         private const val POLL_INTERVAL_MS = 250L
         private const val BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
     }

@@ -104,6 +104,9 @@ func RefreshTokenWithTLSDirInsecure(ctx context.Context, httpURL, refreshToken, 
 	client := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
 	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return authstore.State{}, err
@@ -158,6 +161,9 @@ func LogoutWithTLSDirInsecure(ctx context.Context, endpoint, refreshToken, acces
 	}
 	client := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
 	}
 	resp, err := client.Do(req)
 	if err != nil {

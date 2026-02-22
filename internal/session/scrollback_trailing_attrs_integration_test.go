@@ -136,11 +136,13 @@ func TestHostScrollbackPSAuxTrailingBlankAttrsDefaultWhileScrolling(t *testing.T
 
 func assertScrollbackTrailingBlankAttrsDefault(t *testing.T, host *ptytest.PTYSession, cols, rows int) {
 	t.Helper()
+	snap := host.Snapshot()
+	lines := snapshotRows(snap)
 	// Row 1 is the scrollback status banner and intentionally styled.
 	for row := 2; row <= rows; row++ {
 		lastContentCol := 0
 		for col := 1; col <= cols; col++ {
-			cell, ok := host.CellAt(row, col)
+			cell, ok := snapshotCellAt(snap, row, col)
 			if !ok {
 				continue
 			}
@@ -176,14 +178,17 @@ func assertScrollbackTrailingBlankAttrsDefault(t *testing.T, host *ptytest.PTYSe
 		}
 
 		for col := lastContentCol + 1; col <= cols; col++ {
-			cell, ok := host.CellAt(row, col)
+			cell, ok := snapshotCellAt(snap, row, col)
 			if !ok {
 				continue
 			}
 			if cell.Mode == 0 && cell.FG == terminal.ColorDefault && cell.BG == terminal.ColorDefault {
 				continue
 			}
-			line := host.Screen().Row(row - 1)
+			line := ""
+			if row-1 >= 0 && row-1 < len(lines) {
+				line = lines[row-1]
+			}
 			t.Fatalf("trailing attrs leak in scrollback row=%d col=%d last=%d rune=%q mode=%d fg=%#x bg=%#x line=%q", row, col, lastContentCol, cell.Rune, cell.Mode, cell.FG, cell.BG, line)
 		}
 	}

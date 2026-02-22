@@ -45,7 +45,7 @@ func Bootstrap(ctx context.Context, cfg Config, logger pslog.Logger) (string, er
 func BootstrapWithOptions(ctx context.Context, opts BootstrapOptions) (string, error) {
 	logger := opts.Logger
 	if logger == nil {
-		logger = pslog.LoggerFromEnv()
+		logger = pslog.LoggerFromEnv(context.Background())
 	}
 
 	configPath := strings.TrimSpace(opts.ConfigPath)

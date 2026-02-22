@@ -22,6 +22,7 @@ import (
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
 	"pkt.systems/lingon/internal/host"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/protocol"
@@ -209,7 +210,7 @@ func (r *Runner) initializeSessionIdentity() {
 // Run starts the local terminal session and blocks until exit.
 func (r *Runner) Run(ctx context.Context) error {
 	if r.opts.Logger == nil {
-		r.opts.Logger = pslog.LoggerFromEnv().With("app", "lingon")
+		r.opts.Logger = logging.Default()
 	}
 	r.logger = r.opts.Logger
 	if r.opts.Clock == nil {

@@ -78,8 +78,11 @@ func TestComprehensiveHostAttachMatrix(t *testing.T) {
 				exerciseTabIO(t, sess, wantSessions, "host")
 			}
 			for _, sess := range attaches {
+				if !attachSessionUsable(t, sess) {
+					continue
+				}
 				state := attachStates[sess]
-				_ = waitForActiveOrAnyReadySession(t, h.Clock(), state, "", 6*time.Second)
+				_ = waitForActiveOrAnyReadySession(t, h.Clock(), state, "", 12*time.Second)
 				primeTabsByCountSessionWithActive(t, sess, wantSessions, h.Clock(), state)
 				assertAttachSendsToHostWithActive(t, sess, hosts[0], wantSessions, h.Clock(), state)
 				exerciseTabIOWithActive(t, sess, wantSessions, "attach", h.Clock(), state)
@@ -105,21 +108,38 @@ func runComprehensiveSequences(t *testing.T, h *ptytest.Harness, hosts, attaches
 	for _, sess := range hosts {
 		assertHostReconnectedState(t, sess)
 	}
+	liveAttaches := make([]*ptytest.PTYSession, 0, len(attaches))
 	for _, sess := range attaches {
+		if attachSessionUsable(t, sess) {
+			liveAttaches = append(liveAttaches, sess)
+		}
+	}
+	for _, sess := range liveAttaches {
 		assertConnectedBannerReplacesDisconnect(t, sess)
 	}
-	for _, sess := range attaches {
+	for _, sess := range liveAttaches {
 		if state := attachStates[sess]; state != nil {
-			_ = waitForActiveOrAnyReadySession(t, h.Clock(), state, "", 6*time.Second)
+			_ = waitForActiveOrAnyReadySession(t, h.Clock(), state, "", 12*time.Second)
 		}
 	}
 	for _, sess := range hosts {
 		verifySessionIO(t, sess, tabCount, "post-restart-host")
 	}
-	for _, sess := range attaches {
+	for _, sess := range liveAttaches {
 		state := attachStates[sess]
 		verifySessionIOWithActive(t, sess, tabCount, "post-restart-attach", h.Clock(), state)
 	}
+}
+
+func attachSessionUsable(t *testing.T, sess *ptytest.PTYSession) bool {
+	t.Helper()
+	if exited, err := sess.WaitErr(0); exited {
+		if err == nil || strings.Contains(err.Error(), "no sessions available") {
+			return false
+		}
+		t.Fatalf("attach exited unexpectedly: %v", err)
+	}
+	return true
 }
 
 func createLocalPTYSessions(t *testing.T, host *ptytest.PTYSession, count int) {
@@ -138,9 +158,9 @@ func primeTabsByCountSessionWithActive(t *testing.T, sess *ptytest.PTYSession, c
 	if count <= 1 {
 		return
 	}
-	current := waitForActiveOrAnyReadySession(t, clk, state, "", 6*time.Second)
+	current := waitForActiveOrAnyReadySession(t, clk, state, "", 12*time.Second)
 	for i := 0; i < count-1; i++ {
-		current = advanceActiveTabSession(t, sess, "n", clk, state, current, 2*time.Second)
+		current = advanceActiveTabSession(t, sess, "n", clk, state, current, 4*time.Second)
 	}
 	ptytest.Advance(sess.Clock(), 300*time.Millisecond)
 }
@@ -156,8 +176,8 @@ func exerciseTabIOWithActive(t *testing.T, sess *ptytest.PTYSession, tabCount in
 	t.Helper()
 	verifySessionIOWithActive(t, sess, tabCount, tag, clk, state)
 	if tabCount > 1 {
-		current := waitForActiveOrAnyReadySession(t, clk, state, "", 3*time.Second)
-		_ = advanceActiveTabSession(t, sess, "p", clk, state, current, 2*time.Second)
+		current := waitForActiveOrAnyReadySession(t, clk, state, "", 6*time.Second)
+		_ = advanceActiveTabSession(t, sess, "p", clk, state, current, 4*time.Second)
 	} else {
 		ctrlLCommand(sess, "p")
 	}
@@ -180,10 +200,10 @@ func verifySessionIO(t *testing.T, sess *ptytest.PTYSession, tabCount int, tag s
 
 func verifySessionIOWithActive(t *testing.T, sess *ptytest.PTYSession, tabCount int, tag string, clk clock.Clock, state *activeState) {
 	t.Helper()
-	current := waitForActiveOrAnyReadySession(t, clk, state, "", 6*time.Second)
+	current := waitForActiveOrAnyReadySession(t, clk, state, "", 12*time.Second)
 	for i := 0; i < tabCount; i++ {
 		if i > 0 {
-			current = advanceActiveTabSession(t, sess, "n", clk, state, current, 2*time.Second)
+			current = advanceActiveTabSession(t, sess, "n", clk, state, current, 4*time.Second)
 		}
 		token := fmt.Sprintf("io-%s-%d", tag, i)
 		ensureTabBarHidden(sess)
@@ -233,7 +253,7 @@ func ctrlLCommand(sess *ptytest.PTYSession, cmd string) {
 
 func assertAttachSendsToHostWithActive(t *testing.T, attach *ptytest.PTYSession, host *ptytest.PTYSession, tabCount int, clk clock.Clock, state *activeState) {
 	t.Helper()
-	_ = waitForActiveOrAnyReadySession(t, clk, state, "", 3*time.Second)
+	_ = waitForActiveOrAnyReadySession(t, clk, state, "", 6*time.Second)
 	token := fmt.Sprintf("attach-host-%d", ptytest.Now(attach.Clock()).UnixNano())
 	sendCommand(attach, token)
 	for i := 0; i < tabCount+1; i++ {

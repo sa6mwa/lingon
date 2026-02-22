@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"pkt.systems/lingon/internal/config"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/terminal/emu"
@@ -51,7 +52,7 @@ type Host struct {
 // Run starts the host session.
 func (h *Host) Run(ctx context.Context) error {
 	if h.Logger == nil {
-		h.Logger = pslog.LoggerFromEnv().With("app", "lingon")
+		h.Logger = logging.Default()
 	}
 	if h.SessionID == "" {
 		return fmt.Errorf("session id is required")

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/pslog"
 )
 
@@ -27,7 +28,7 @@ func startUserReloadLoop(ctx context.Context, path string, store *UserStore, log
 		return fmt.Errorf("users file is required")
 	}
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	if ctx == nil {
 		ctx = context.Background()

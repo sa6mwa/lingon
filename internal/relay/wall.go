@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/pslog"
 )
 
@@ -62,7 +63,7 @@ type WallService struct {
 
 func newWallService(store *Store, hub *Hub, logger pslog.Logger, timeout time.Duration, inactiveAfterLevels []time.Duration) *WallService {
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	s := &WallService{
 		store:        store,

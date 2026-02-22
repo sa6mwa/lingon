@@ -19,6 +19,7 @@ import (
 	"github.com/coder/websocket"
 
 	"pkt.systems/lingon/internal/config"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/theme"
@@ -75,7 +76,7 @@ type shareSession struct {
 // NewHTTPServer constructs a relay HTTP server.
 func NewHTTPServer(store *Store, users *UserStore, auth *Authenticator, logger pslog.Logger, hub *Hub) *HTTPServer {
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	if hub == nil {
 		hub = NewHub(logger)
@@ -1015,14 +1016,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 	if s.Store == nil && s.Hub.HasHost(frame.SessionId) {
 		reconnected = true
 	}
-	if err := s.Hub.RegisterHost(ws, frame.SessionId, cols, rows); err != nil {
-		if errors.Is(err, errSessionHasActiveHost) {
-			_ = ws.SendImmediate(ctx, frameErrorSessionRejected(err.Error()))
-		} else {
-			_ = ws.SendImmediate(ctx, frameError(err.Error()))
-		}
-		return
-	}
+	replacedHost := s.Hub.registerHost(ws, frame.SessionId, cols, rows)
 	if s.Store != nil {
 		now := time.Now().UTC()
 		if !sessionExists {
@@ -1055,6 +1049,15 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 			unregistered = true
 			return
 		}
+	}
+	if replacedHost != nil {
+		rejected := frameErrorSessionRejected("superseded by reconnect")
+		if replacedWS, ok := replacedHost.(*wsConn); ok {
+			_ = replacedWS.SendImmediate(context.Background(), rejected)
+		} else {
+			_ = replacedHost.Send(context.Background(), rejected)
+		}
+		_ = replacedHost.Close(context.Background(), "superseded by reconnect")
 	}
 	if svc := s.wallService(); svc != nil {
 		svc.markActivity(frame.SessionId, time.Now().UTC())
@@ -1228,6 +1231,15 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 					if ws.logger != nil {
 						ws.logger.Info("relay.host.session.closed", "session", ws.sessionID)
 					}
+					return
+				}
+				if errors.Is(err, errStaleHostConnection) {
+					if ws.logger != nil {
+						ws.logger.Debug("relay.host.stale.connection", "session", ws.sessionID, "conn", ws.ID())
+					}
+					rejectCtx, rejectCancel := context.WithTimeout(context.Background(), time.Second)
+					_ = ws.SendImmediate(rejectCtx, frameErrorSessionRejected("superseded by reconnect"))
+					rejectCancel()
 					return
 				}
 				_ = ws.Send(ctx, frameError(err.Error()))

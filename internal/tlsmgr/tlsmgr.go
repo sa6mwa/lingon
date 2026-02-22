@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/pslog"
 )
 
@@ -109,7 +110,7 @@ func ensureLogger(logger pslog.Logger) pslog.Logger {
 	if logger != nil {
 		return logger
 	}
-	return pslog.LoggerFromEnv().With("app", "lingon")
+	return logging.Default()
 }
 
 func wrapMissing(err error, hint string) error {

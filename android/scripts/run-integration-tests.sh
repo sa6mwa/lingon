@@ -142,8 +142,11 @@ start_harness() {
   echo "Starting harness (sessions=${session_count})..."
   "${HARNESS_BIN}" -config "${CONFIG_PATH}" -sessions "${session_count}" "${HARNESS_ARGS[@]}" >"${HARNESS_LOG}" 2>&1 &
   HARNESS_PID=$!
-  for _ in {1..50}; do
+  for _ in {1..200}; do
     if [[ -s "${CONFIG_PATH}" ]]; then
+      break
+    fi
+    if ! kill -0 "${HARNESS_PID}" >/dev/null 2>&1; then
       break
     fi
     sleep 0.1

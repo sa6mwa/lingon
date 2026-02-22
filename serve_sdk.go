@@ -28,7 +28,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	cfg := opts.Config
 	logger := opts.Logger
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = pslog.LoggerFromEnv(context.Background()).With("app", "lingon")
 	}
 
 	base, err := server.NormalizeBasePath(cfg.Server.BasePath)

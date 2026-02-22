@@ -37,7 +37,13 @@ func TestClientTLSConfigUsesProvidedDir(t *testing.T) {
 		t.Fatalf("clientTLSConfig: %v", err)
 	}
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Transport: &http.Transport{
+			TLSClientConfig:   tlsCfg,
+			DisableKeepAlives: true,
+		},
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
 	}
 	resp, err := client.Get(server.URL)
 	if err != nil {

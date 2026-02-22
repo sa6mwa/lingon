@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ func openClientLogger(path string) (pslog.Logger, io.Closer, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	logger := pslog.LoggerFromEnv(pslog.WithEnvWriter(file))
+	logger := pslog.LoggerFromEnv(context.Background(), pslog.WithEnvWriter(file))
 	return logger.With("app", "lingon"), file, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/pslog"
 )
 
@@ -16,7 +17,7 @@ func AccessLog(logger pslog.Logger, handler http.Handler) http.Handler {
 		handler = http.DefaultServeMux
 	}
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

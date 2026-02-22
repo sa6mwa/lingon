@@ -138,8 +138,14 @@ func fetchSessions(endpoint, token string) ([]sessionRow, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, // test harness TLS
-		Timeout:   time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, // test harness TLS
+			DisableKeepAlives: true,
+		},
+		Timeout: time.Second,
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
 	}
 	resp, err := client.Do(req)
 	if err != nil {

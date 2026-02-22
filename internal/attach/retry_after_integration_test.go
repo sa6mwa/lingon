@@ -72,8 +72,14 @@ func TestAttachHonorsRetryAfter(t *testing.T) {
 func drainConnectTokens(t *testing.T, endpoint string, count int) {
 	t.Helper()
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, // test harness TLS
-		Timeout:   time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true}, // test harness TLS
+			DisableKeepAlives: true,
+		},
+		Timeout: time.Second,
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
 	}
 	for i := 0; i < count; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)

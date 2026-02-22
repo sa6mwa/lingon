@@ -9,12 +9,14 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
 	"github.com/mattn/go-runewidth"
 	"github.com/pmezard/go-difflib/difflib"
+	"golang.org/x/sys/unix"
 
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/terminal"
@@ -88,6 +90,7 @@ type PTYSession struct {
 	cancel  context.CancelFunc
 	runErr  chan error
 	cleanup func()
+	closeMu sync.Once
 
 	mu     sync.Mutex
 	rawBuf bytes.Buffer
@@ -161,11 +164,28 @@ func OpenPTY(t *testing.T, cols, rows int) (*os.File, *os.File) {
 
 func (s *PTYSession) readLoop() {
 	buf := make([]byte, 4096)
+	pfd := []unix.PollFd{{Fd: int32(s.master.Fd()), Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR}}
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		default:
+		}
+		ready, pollErr := unix.Poll(pfd, 1)
+		if pollErr != nil {
+			if errors.Is(pollErr, syscall.EINTR) {
+				continue
+			}
+			s.readErrMu.Lock()
+			if !s.readErrSet {
+				s.readErrSet = true
+				s.lastReadErr = pollErr
+			}
+			s.readErrMu.Unlock()
+			return
+		}
+		if ready == 0 {
+			continue
 		}
 		n, err := s.master.Read(buf)
 		if n > 0 {
@@ -188,12 +208,7 @@ func (s *PTYSession) readLoop() {
 
 // Close stops the PTY session and reports any run errors.
 func (s *PTYSession) Close() {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	if s.cleanup != nil {
-		s.cleanup()
-	}
+	s.shutdown()
 	s.errMu.Lock()
 	if s.errSet {
 		s.errMu.Unlock()
@@ -202,6 +217,10 @@ func (s *PTYSession) Close() {
 	s.errMu.Unlock()
 	select {
 	case err := <-s.runErr:
+		s.errMu.Lock()
+		s.lastErr = err
+		s.errSet = true
+		s.errMu.Unlock()
 		if errors.Is(err, context.Canceled) {
 			return
 		}
@@ -214,9 +233,18 @@ func (s *PTYSession) Close() {
 
 // Cancel requests the session to stop without asserting on errors.
 func (s *PTYSession) Cancel() {
-	if s.cancel != nil {
-		s.cancel()
-	}
+	s.shutdown()
+}
+
+func (s *PTYSession) shutdown() {
+	s.closeMu.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		if s.cleanup != nil {
+			s.cleanup()
+		}
+	})
 }
 
 // Send writes the provided string to the PTY master.

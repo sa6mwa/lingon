@@ -150,17 +150,7 @@ func TestWebUIControlFlow(t *testing.T) {
 	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
 		t.Fatalf("user data dir: %v", err)
 	}
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-			chromedp.Flag("disable-dev-shm-usage", true),
-			chromedp.Flag("ignore-certificate-errors", true),
-			chromedp.Flag("allow-insecure-localhost", true),
-			chromedp.UserDataDir(userDataDir),
-		)...,
-	)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), chromedpAllocatorOptions(userDataDir)...)
 	defer allocCancel()
 
 	ctx, cancel := chromedp.NewContext(allocCtx)
@@ -743,17 +733,7 @@ func TestWebUIWebSocketBackoff(t *testing.T) {
 	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
 		t.Fatalf("user data dir: %v", err)
 	}
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-			chromedp.Flag("disable-dev-shm-usage", true),
-			chromedp.Flag("ignore-certificate-errors", true),
-			chromedp.Flag("allow-insecure-localhost", true),
-			chromedp.UserDataDir(userDataDir),
-		)...,
-	)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), chromedpAllocatorOptions(userDataDir)...)
 	defer allocCancel()
 
 	ctx, cancel := chromedp.NewContext(allocCtx)
@@ -909,17 +889,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 		}
 	}
 
-	waitUntilDebug(t, 30*time.Second, func() bool {
-		var ready bool
-		_ = chromedp.Run(ctx, chromedp.Evaluate(`(() => {
-  const terminal = document.getElementById("terminal-view");
-  if (!terminal || terminal.classList.contains("hidden")) return false;
-  return Boolean(window.__bifrons && window.__bifrons.term);
-})()`, &ready))
-		return ready
-	}, func() string {
-		return "terminal view not ready after login"
-	}, hostErr)
+	waitForTerminalReady(t, ctx, 60*time.Second, hostErr)
 
 	waitUntilDebug(t, 10*time.Second, func() bool {
 		ids, err := fetchSessionIDs(ctx)
@@ -1398,17 +1368,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
 	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
 		t.Fatalf("user data dir: %v", err)
 	}
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-			chromedp.Flag("disable-dev-shm-usage", true),
-			chromedp.Flag("ignore-certificate-errors", true),
-			chromedp.Flag("allow-insecure-localhost", true),
-			chromedp.UserDataDir(userDataDir),
-		)...,
-	)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), chromedpAllocatorOptions(userDataDir)...)
 	defer allocCancel()
 
 	ctx, cancel := chromedp.NewContext(allocCtx)
@@ -1763,8 +1723,12 @@ func loginViaAPI(loginURL, username, password, totp string) (string, string, err
 	authURL := strings.TrimRight(loginURL, "/") + "/auth/login"
 	client := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+			DisableKeepAlives: true,
 		},
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
 	}
 	resp, err := client.Post(authURL, "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -1799,8 +1763,12 @@ func shareViaAPI(loginURL, token string) (string, error) {
 	shareURL := strings.TrimRight(loginURL, "/") + "/auth/share"
 	client := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+			DisableKeepAlives: true,
 		},
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
 	}
 	resp, err := client.Post(shareURL, "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -1829,17 +1797,7 @@ func newChromedpContext(t *testing.T, userDataDir string) (context.Context, cont
 	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
 		t.Fatalf("user data dir: %v", err)
 	}
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(),
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-			chromedp.Flag("disable-dev-shm-usage", true),
-			chromedp.Flag("ignore-certificate-errors", true),
-			chromedp.Flag("allow-insecure-localhost", true),
-			chromedp.UserDataDir(userDataDir),
-		)...,
-	)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), chromedpAllocatorOptions(userDataDir)...)
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	ctx, timeoutCancel := context.WithTimeout(ctx, 90*time.Second)
 	return ctx, func() {
@@ -1847,6 +1805,42 @@ func newChromedpContext(t *testing.T, userDataDir string) (context.Context, cont
 		cancel()
 		allocCancel()
 	}
+}
+
+func chromedpAllocatorOptions(userDataDir string) []chromedp.ExecAllocatorOption {
+	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	opts = append(opts,
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("ignore-certificate-errors", true),
+		chromedp.Flag("allow-insecure-localhost", true),
+		chromedp.UserDataDir(userDataDir),
+	)
+	if execPath := chromeExecPath(); execPath != "" {
+		opts = append(opts, chromedp.ExecPath(execPath))
+	}
+	return opts
+}
+
+func chromeExecPath() string {
+	if explicit := strings.TrimSpace(os.Getenv("LINGON_CHROME_PATH")); explicit != "" {
+		return explicit
+	}
+	candidates := []string{
+		"/usr/bin/google-chrome",
+		"/usr/bin/google-chrome-stable",
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		"/snap/bin/chromium",
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func totpCode(t *testing.T, secret string) string {

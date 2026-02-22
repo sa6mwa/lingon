@@ -11,8 +11,10 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import android.util.Log
@@ -378,6 +380,7 @@ class AppViewModel(
                     repository.clearAuth()
                 } catch (_: Exception) {
                 }
+                repository.clearLastActiveSession()
                 suppressReconnect = false
                 _state.update {
                     it.copy(
@@ -458,6 +461,9 @@ class AppViewModel(
             return
         }
         _state.update { it.copy(activeSessionId = sessionId, activeSnapshot = null) }
+        if (current.shareToken.isNullOrBlank()) {
+            persistActiveSession(current.endpoint, sessionId)
+        }
         connectActiveSession()
     }
 
@@ -548,8 +554,8 @@ class AppViewModel(
         }
         try {
             val sessions = listSessionsWithRecovery()
-            _state.update { it.copy(loggedIn = true, sessions = sessions) }
-            ensureActiveSession(sessions)
+            _state.update { it.copy(loggedIn = true) }
+            updateSessions(sessions)
             syncWallPollingSchedule()
             if (sessions.isEmpty()) {
                 scheduleSessionPoll()
@@ -561,29 +567,62 @@ class AppViewModel(
                 return
             }
             _state.update { it.copy(status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error)) }
+        } catch (err: CancellationException) {
+            throw err
         } catch (err: Exception) {
             _state.update { it.copy(status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error)) }
         }
     }
 
-    private fun updateSessions(sessions: List<RelaySession>) {
+    private suspend fun updateSessions(sessions: List<RelaySession>) {
         if (_state.value.shareToken != null) return
-        if (sessions.isNotEmpty()) {
-            stopSessionPoll()
-        }
         _state.update { it.copy(sessions = sessions) }
         syncWallPollingSchedule()
         ensureActiveSession(sessions)
+        if (sessions.isNotEmpty()) {
+            stopSessionPoll()
+        }
     }
 
-    private fun ensureActiveSession(sessions: List<RelaySession>) {
+    private suspend fun ensureActiveSession(sessions: List<RelaySession>) {
         val current = _state.value.activeSessionId
         val hasCurrent = current != null && sessions.any { it.id == current }
-        val next = if (hasCurrent) current else sessions.firstOrNull()?.id
+        if (hasCurrent) {
+            if (ws == null || _state.value.connectionState != ConnectionState.Connected) {
+                connectActiveSession()
+            }
+            return
+        }
+        val endpoint = resolveEndpointForPersistence()
+        val preferredSessionId = withTimeoutOrNull(1500) {
+            repository.loadLastActiveSessionId(endpoint)
+        }
+        val next = when {
+            !preferredSessionId.isNullOrBlank() && sessions.any { it.id == preferredSessionId } -> preferredSessionId
+            else -> sessions.firstOrNull()?.id
+        }
         _state.update { it.copy(activeSessionId = next) }
+        if (!next.isNullOrBlank()) {
+            persistActiveSession(endpoint, next)
+        }
         if (next != null && next != current) {
             connectActiveSession()
         }
+    }
+
+    private suspend fun resolveEndpointForPersistence(): String {
+        val current = _state.value.endpoint.trim()
+        if (current.isNotBlank()) {
+            return current
+        }
+        return repository.endpointFlow.first().trim()
+    }
+
+    private fun persistActiveSession(endpoint: String, sessionId: String) {
+        val cleanedEndpoint = endpoint.trim()
+        val cleanedSessionId = sessionId.trim()
+        if (cleanedEndpoint.isBlank() || cleanedSessionId.isBlank()) return
+        repository.saveLastActiveSessionId(cleanedEndpoint, cleanedSessionId)
     }
 
     private fun connectActiveSession() {
@@ -593,7 +632,21 @@ class AppViewModel(
             return
         }
         val shareToken = state.shareToken
-        val sessionId = if (!shareToken.isNullOrBlank()) null else state.activeSessionId
+        var sessionId = if (!shareToken.isNullOrBlank()) {
+            null
+        } else {
+            state.activeSessionId?.takeIf { candidate ->
+                state.sessions.any { session -> session.id == candidate }
+            }
+        }
+        if (shareToken.isNullOrBlank() && sessionId.isNullOrBlank()) {
+            val fallback = state.sessions.firstOrNull()?.id
+            if (!fallback.isNullOrBlank()) {
+                sessionId = fallback
+                _state.update { it.copy(activeSessionId = fallback, activeSnapshot = null) }
+                persistActiveSession(state.endpoint, fallback)
+            }
+        }
         if (sessionId.isNullOrBlank() && shareToken.isNullOrBlank()) {
             if (state.loggedIn) {
                 scheduleSessionPoll()
@@ -614,12 +667,9 @@ class AppViewModel(
         }
         if (shareToken.isNullOrBlank()) {
             viewModelScope.launch {
-                val refreshed = runCatching { repository.refreshAuth() }.getOrDefault(false)
-                if (!refreshed) {
-                    setStatus("session expired", StatusLevel.Error)
-                    handleAuthFailureWithoutLogout()
-                    return@launch
-                }
+                // Refreshing auth can fail transiently on mobile networks; attempt WS anyway and
+                // rely on explicit 401 handling from the WS connection path.
+                runCatching { repository.refreshAuth() }
                 openWebSocket(baseUrl, sessionId, shareToken, state)
             }
             return
@@ -682,7 +732,9 @@ class AppViewModel(
                                 status = session.status,
                             )
                         }
-                        updateSessions(updated)
+                        viewModelScope.launch {
+                            updateSessions(updated)
+                        }
                         _state.update {
                             it.copy(
                                 lastFrameSeq = frame.seq,
@@ -941,6 +993,7 @@ class AppViewModel(
         stopSessionPoll()
         stopWallPoll(resetCursor = true)
         closeWebSocket("session expired")
+        repository.clearLastActiveSession()
         lastBackgroundAtMs = null
         resetScrollbackBuffer()
         liveSnapshot = null
@@ -1054,6 +1107,8 @@ class AppViewModel(
                 return
             }
             _state.update { it.copy(status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error)) }
+        } catch (err: CancellationException) {
+            throw err
         } catch (err: Exception) {
             _state.update { it.copy(status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error)) }
         }
@@ -1148,6 +1203,7 @@ class AppViewModel(
         stopSessionPoll()
         stopWallPoll(resetCursor = true)
         closeWebSocket("session expired")
+        repository.clearLastActiveSession()
         resetScrollbackBuffer()
         liveSnapshot = null
         _state.update {

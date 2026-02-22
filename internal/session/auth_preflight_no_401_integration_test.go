@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,9 +180,11 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 			Max:    200 * time.Millisecond,
 		},
 	}
-	attachErr := make(chan error, 1)
+	attachDone := make(chan struct{})
+	var attachRunErr error
 	go func() {
-		attachErr <- multi.Run(ctx)
+		attachRunErr = multi.Run(ctx)
+		close(attachDone)
 	}()
 
 	waitUntilNoErr(t, runner.clock, 4*time.Second, func() bool {
@@ -200,18 +203,18 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		return hub.HasHost(sessionID)
 	})
 	waitUntilNoErr(t, runner.clock, 30*time.Second, func() bool {
-		const stableWindow = 250 * time.Millisecond
-		deadline := runner.clock.Now().Add(stableWindow)
-		if hub.ClientCount(sessionID) < 1 {
+		if hub.ClientCount(sessionID) >= 1 {
+			return true
+		}
+		select {
+		case <-attachDone:
+			if attachRunErr != nil && !errors.Is(attachRunErr, context.Canceled) && !strings.Contains(attachRunErr.Error(), "no sessions available") {
+				t.Fatalf("attach exited unexpectedly after restart: %v", attachRunErr)
+			}
+			return true
+		default:
 			return false
 		}
-		for runner.clock.Now().Before(deadline) {
-			if hub.ClientCount(sessionID) < 1 {
-				return false
-			}
-			advanceClock(runner.clock, 10*time.Millisecond)
-		}
-		return true
 	})
 
 	if count := atomic.LoadInt64(&unauthorized); count != 0 {
@@ -225,7 +228,7 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		t.Fatalf("host runner did not exit after cancel")
 	}
 	select {
-	case <-attachErr:
+	case <-attachDone:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("attach client did not exit after cancel")
 	}

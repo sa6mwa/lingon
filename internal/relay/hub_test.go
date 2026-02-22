@@ -2,7 +2,6 @@ package relay
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"pkt.systems/lingon/internal/protocolpb"
@@ -60,7 +59,7 @@ func TestHubControlTakesLeaseOnInput(t *testing.T) {
 func TestHubViewOnlyDeniedControl(t *testing.T) {
 	hub := NewHub(nil)
 	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
-	_ = hub.RegisterHost(host, "s1", 80, 24)
+	hub.RegisterHost(host, "s1", 80, 24)
 
 	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeView}
 	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
@@ -74,7 +73,7 @@ func TestHubViewOnlyDeniedControl(t *testing.T) {
 func TestHubBroadcastFromHost(t *testing.T) {
 	hub := NewHub(nil)
 	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
-	_ = hub.RegisterHost(host, "s1", 80, 24)
+	hub.RegisterHost(host, "s1", 80, 24)
 
 	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
 	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
@@ -94,7 +93,7 @@ func TestHubBroadcastFromHost(t *testing.T) {
 func TestHubBroadcastSessionFrame(t *testing.T) {
 	hub := NewHub(nil)
 	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
-	_ = hub.RegisterHost(host, "s1", 80, 24)
+	hub.RegisterHost(host, "s1", 80, 24)
 	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
 	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
 
@@ -113,7 +112,7 @@ func TestHubBroadcastSessionFrame(t *testing.T) {
 	}
 }
 
-func TestHubRegisterHostRejectsActiveHostOverride(t *testing.T) {
+func TestHubRegisterHostReplacesActiveHost(t *testing.T) {
 	hub := NewHub(nil)
 	hostA := &fakeConn{id: "host-a", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
 	hostB := &fakeConn{id: "host-b", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
@@ -121,18 +120,39 @@ func TestHubRegisterHostRejectsActiveHostOverride(t *testing.T) {
 	if err := hub.RegisterHost(hostA, "s1", 80, 24); err != nil {
 		t.Fatalf("RegisterHost(hostA): %v", err)
 	}
-	err := hub.RegisterHost(hostB, "s1", 120, 40)
-	if !errors.Is(err, errSessionHasActiveHost) {
-		t.Fatalf("RegisterHost(hostB): got %v, want %v", err, errSessionHasActiveHost)
+	replaced := hub.registerHost(hostB, "s1", 120, 40)
+	if replaced == nil || replaced.ID() != hostA.ID() {
+		t.Fatalf("RegisterHost(hostB): replaced=%v, want host-a", replaced)
 	}
 	if hostA.closed != 0 {
-		t.Fatalf("expected existing host to remain connected; closed=%d", hostA.closed)
+		t.Fatalf("hub should not close replaced host directly; closed=%d", hostA.closed)
 	}
 	if hostB.closed != 0 {
-		t.Fatalf("expected rejected host to remain untouched by hub; closed=%d", hostB.closed)
+		t.Fatalf("expected new host to remain untouched by hub; closed=%d", hostB.closed)
 	}
 	_, cols, rows, _ := hub.SessionState("s1")
-	if cols != 80 || rows != 24 {
-		t.Fatalf("session size mutated on rejected override: cols=%d rows=%d", cols, rows)
+	if cols != 120 || rows != 40 {
+		t.Fatalf("session size should reflect takeover host dimensions: cols=%d rows=%d", cols, rows)
+	}
+}
+
+func TestHubHandleHostFrameRejectsStaleHost(t *testing.T) {
+	hub := NewHub(nil)
+	hostA := &fakeConn{id: "host-a", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	hostB := &fakeConn{id: "host-b", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+
+	if err := hub.RegisterHost(hostA, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost(hostA): %v", err)
+	}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+	hub.registerHost(hostB, "s1", 120, 40)
+
+	frame := &protocolpb.Frame{SessionId: "s1", Payload: &protocolpb.Frame_Out{Out: &protocolpb.Out{Data: []byte("stale")}}}
+	if err := hub.HandleHostFrame(context.Background(), hostA, frame); err != errStaleHostConnection {
+		t.Fatalf("stale host frame err = %v, want %v", err, errStaleHostConnection)
+	}
+	if len(client.sent) != 0 {
+		t.Fatalf("stale host should not broadcast frames; got %d", len(client.sent))
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/relayclient"
@@ -110,6 +111,7 @@ type sessionView struct {
 
 	connecting    bool
 	connected     bool
+	flushingInput bool
 	connectedOnce bool
 	reconnectAt   time.Time
 	reconnectGen  uint64
@@ -143,7 +145,7 @@ func selectRenderableView(views map[string]*sessionView, activeID string) (*sess
 // Run starts the multi-session attach client.
 func (m *MultiClient) Run(ctx context.Context) error {
 	if m.Logger == nil {
-		m.Logger = pslog.LoggerFromEnv().With("app", "lingon")
+		m.Logger = logging.Default()
 	}
 	if m.Endpoint == "" {
 		return fmt.Errorf("endpoint is required")
@@ -194,6 +196,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	stdin := m.stdinReader()
 	stdout := m.stdoutWriter()
 	termSize := m.TermSize
+	ownsStdin := m.Stdin != nil
 	defer restoreCursor(m.Clock, stdout)
 	if enterAltScreen(m.Clock, stdout) {
 		defer exitAltScreen(m.Clock, stdout)
@@ -204,6 +207,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 
 	if closer, ok := stdin.(io.Closer); ok {
 		m.stdinCloser = closer
+		if ownsStdin {
+			defer func() {
+				_ = m.stdinCloser.Close()
+			}()
+		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -525,8 +533,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			if m.Logger != nil {
 				m.Logger.Debug("attach.view.ready", "session", session.ID)
 			}
-			var pending [][]byte
 			showStatus := false
+			var pending [][]byte
 			mu.Lock()
 			view.connected = true
 			view.connecting = false
@@ -534,6 +542,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			view.reconnectAt = time.Time{}
 			view.reconnectGen++
 			view.readyAt = readyAt
+			view.flushingInput = true
 			if activeID == session.ID {
 				view.visible = true
 				view.hiddenAt = time.Time{}
@@ -544,16 +553,27 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				view.pendingInput = nil
 			}
 			mu.Unlock()
-			for _, out := range pending {
-				if len(out) == 0 {
-					continue
-				}
-				if err := client.SendInput(ctx, out); err != nil {
-					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.send.flush.failed", "session", session.ID, "err", err)
+			for {
+				for _, out := range pending {
+					if len(out) == 0 {
+						continue
 					}
-					continue
+					if err := client.SendInput(ctx, out); err != nil {
+						if m.Logger != nil {
+							m.Logger.Debug("attach.stdin.send.flush.failed", "session", session.ID, "err", err)
+						}
+					}
 				}
+				pending = nil
+				mu.Lock()
+				if len(view.pendingInput) == 0 {
+					view.flushingInput = false
+					mu.Unlock()
+					break
+				}
+				pending = append(pending, view.pendingInput...)
+				view.pendingInput = nil
+				mu.Unlock()
 			}
 			m.Clock.AfterFunc(2*time.Second, func() {
 				mu.Lock()
@@ -603,6 +623,10 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}()
 		go func(current SessionInfo, v *sessionView) {
 			err := <-v.done
+			if v.cancel != nil {
+				// Ensure per-view resources are released after RunDetached exits.
+				v.cancel()
+			}
 			if ctx.Err() != nil {
 				return
 			}
@@ -721,6 +745,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			mu.Lock()
 			currentView.connected = false
 			currentView.connecting = false
+			currentView.flushingInput = false
 			if view := views[current.ID]; view == currentView {
 				view.reconnectAt = time.Time{}
 			}
@@ -906,17 +931,17 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				reconnectGen := view.reconnectGen
 				view.cancel()
 				nextView, err := connectView(*nextSession, true, view)
-					if err != nil {
-						return err
-					}
-					if len(view.pendingInput) > 0 {
-						nextView.pendingInput = append(nextView.pendingInput, view.pendingInput...)
-						view.pendingInput = nil
-					}
-					if !reconnectAt.IsZero() {
-						nextView.reconnectAt = reconnectAt
-						nextView.reconnectGen = reconnectGen
-					}
+				if err != nil {
+					return err
+				}
+				if len(view.pendingInput) > 0 {
+					nextView.pendingInput = append(nextView.pendingInput, view.pendingInput...)
+					view.pendingInput = nil
+				}
+				if !reconnectAt.IsZero() {
+					nextView.reconnectAt = reconnectAt
+					nextView.reconnectGen = reconnectGen
+				}
 				views[nextID] = nextView
 				activeID = nextID
 				mu.Unlock()
@@ -1406,6 +1431,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				}
 				connected := view != nil && view.connected
 				connecting := view != nil && view.connecting
+				flushing := view != nil && view.flushingInput
 				targetClient := (*Client)(nil)
 				if view != nil {
 					targetClient = view.client
@@ -1417,11 +1443,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					}
 					return true
 				}
-				if !connected {
+				if !connected || flushing {
 					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.dropped.disconnected", "session", activeID, "connecting", connecting)
+						m.Logger.Debug("attach.stdin.dropped.disconnected", "session", activeID, "connecting", connecting, "flushing", flushing)
 					}
-					if connecting {
+					if connecting || flushing {
 						queued := append([]byte(nil), out...)
 						mu.Lock()
 						view.pendingInput = append(view.pendingInput, queued)
@@ -1476,11 +1502,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 						case scrollBottom:
 							client.ScrollbackBottom()
 							changed = true
-							case scrollWheelUp:
-								changed = client.ScrollbackPage(1, 3)
-							case scrollWheelDown:
-								changed = client.ScrollbackPage(-1, 3)
-							}
+						case scrollWheelUp:
+							changed = client.ScrollbackPage(1, 3)
+						case scrollWheelDown:
+							changed = client.ScrollbackPage(-1, 3)
+						}
 						if changed {
 							client.RenderCurrent()
 						}
@@ -1540,7 +1566,13 @@ func (m *MultiClient) fetchSessions(ctx context.Context, httpURL string) ([]Sess
 		return nil, err
 	}
 	client := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Transport: &http.Transport{
+			TLSClientConfig:   tlsCfg,
+			DisableKeepAlives: true,
+		},
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
 	}
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {

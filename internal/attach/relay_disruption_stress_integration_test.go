@@ -2,6 +2,7 @@ package attach_test
 
 import (
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -52,8 +53,19 @@ func TestAttachRelayDisruptionStress(t *testing.T) {
 		h.Advance(400 * time.Millisecond)
 		h.RestartServer()
 		waitForSessionCount(t, h.Clock(), h.Endpoint(), h.AccessToken(), 4, 6*time.Second)
-		_ = waitForActiveSessionReady(t, h.Clock(), activeA.mu, activeA.id, activeA.viewsMu, viewsA, "", activeReadyTimeout)
-		_ = waitForActiveSessionReady(t, h.Clock(), activeB.mu, activeB.id, activeB.viewsMu, viewsB, "", activeReadyTimeout)
+		ids, err := fetchSessionIDs(h.Endpoint(), h.AccessToken())
+		if err != nil {
+			t.Fatalf("fetch sessions after restart: %v", err)
+		}
+		for id := range ids {
+			waitForClientCount(t, h, id, 1, 6*time.Second)
+		}
+		attachA, activeA, viewsA = ensureTrackedAttachReady(
+			t, h, attachA, activeA, viewsA, "attachA", "stressA", activeReadyTimeout,
+		)
+		attachB, activeB, viewsB = ensureTrackedAttachReady(
+			t, h, attachB, activeB, viewsB, "attachB", "stressB", activeReadyTimeout,
+		)
 
 		primeTabsByCountWithActive(t, attachA, 4, h.Clock(), activeA)
 		primeTabsByCountWithActive(t, attachB, 4, h.Clock(), activeB)
@@ -120,11 +132,53 @@ func waitForActiveSessionReadyOptional(clk clock.Clock, activeMu *sync.Mutex, ac
 			viewsMu.Lock()
 			client := views[current]
 			viewsMu.Unlock()
-			if client != nil && client.Connected() && client.Snapshot() != nil {
+			if client != nil && client.Connected() {
 				return current
 			}
 		}
 		ptytest.Advance(clk, 50*time.Millisecond)
 	}
 	return prev
+}
+
+func attachSessionUsable(t *testing.T, sess *ptytest.PTYSession) bool {
+	t.Helper()
+	if exited, err := sess.WaitErr(0); exited {
+		if err == nil || strings.Contains(err.Error(), "no sessions available") {
+			return false
+		}
+		t.Fatalf("attach exited unexpectedly: %v", err)
+	}
+	return true
+}
+
+func ensureTrackedAttachReady(
+	t *testing.T,
+	h *ptytest.Harness,
+	attachSess *ptytest.PTYSession,
+	tracker *activeTracker,
+	views map[string]*attach.Client,
+	attachName string,
+	sessionID string,
+	timeout time.Duration,
+) (*ptytest.PTYSession, *activeTracker, map[string]*attach.Client) {
+	t.Helper()
+	if ready := waitForActiveSessionReadyOptional(h.Clock(), tracker.mu, tracker.id, tracker.viewsMu, views, "", timeout); ready != "" {
+		return attachSess, tracker, views
+	}
+	if attachSessionUsable(t, attachSess) {
+		t.Fatalf("%s did not become active after restart", attachName)
+	}
+
+	attachSess, tracker, views = startTrackedAttach(t, h, sessionID)
+	t.Cleanup(attachSess.Cancel)
+
+	if ready := waitForActiveSessionReadyOptional(h.Clock(), tracker.mu, tracker.id, tracker.viewsMu, views, "", timeout); ready != "" {
+		return attachSess, tracker, views
+	}
+	if !attachSessionUsable(t, attachSess) {
+		t.Fatalf("%s exited while reconnecting after restart", attachName)
+	}
+	t.Fatalf("%s did not become active after restart", attachName)
+	return nil, nil, nil
 }

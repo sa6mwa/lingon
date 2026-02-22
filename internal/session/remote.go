@@ -16,6 +16,7 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/protocolpb"
@@ -120,7 +121,7 @@ var remoteSessionsRequestTimeout = 12 * time.Second
 func newRemoteManager(opts remoteOptions) *remoteManager {
 	logger := opts.Logger
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	inactive := opts.InactiveTTL
 	if inactive == 0 {

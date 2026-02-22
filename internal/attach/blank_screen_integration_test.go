@@ -182,7 +182,7 @@ func clientReady(viewsMu *sync.Mutex, views map[string]*attach.Client, id string
 	viewsMu.Lock()
 	client := views[id]
 	viewsMu.Unlock()
-	return client != nil && client.Connected() && client.Snapshot() != nil
+	return client != nil && client.Connected()
 }
 
 func readySessionID(viewsMu *sync.Mutex, views map[string]*attach.Client, exclude string) string {
@@ -192,7 +192,7 @@ func readySessionID(viewsMu *sync.Mutex, views map[string]*attach.Client, exclud
 		if id == exclude {
 			continue
 		}
-		if client != nil && client.Connected() && client.Snapshot() != nil {
+		if client != nil && client.Connected() {
 			ids = append(ids, id)
 		}
 	}

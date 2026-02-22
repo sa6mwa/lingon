@@ -9,6 +9,7 @@ import systems.pkt.lingon.data.AuthClient
 import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.data.EndpointStore
 import systems.pkt.lingon.data.FontSizeStore
+import systems.pkt.lingon.data.LastActiveSessionStore
 import systems.pkt.lingon.data.LingonRepository
 import systems.pkt.lingon.data.PersistentCookieJar
 import systems.pkt.lingon.data.TerminalResizeStore
@@ -44,6 +45,7 @@ class LingonApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         val endpointStore = EndpointStore(dataStore, appScope)
+        val lastActiveSessionStore = LastActiveSessionStore(dataStore, appScope)
         val fontSizeStore = FontSizeStore(dataStore, appScope)
         val zoomStore = ZoomStore(dataStore, appScope)
         val terminalResizeStore = TerminalResizeStore(dataStore, appScope)
@@ -62,6 +64,7 @@ class LingonApplication : Application() {
             sessionsClient,
             certificateStore,
             endpointStore,
+            lastActiveSessionStore,
             fontSizeStore,
             zoomStore,
             terminalResizeStore,

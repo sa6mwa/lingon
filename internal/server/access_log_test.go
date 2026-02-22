@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 func TestAccessLogEmitsStatusAndIP(t *testing.T) {
 	var buf bytes.Buffer
-	logger := pslog.NewWithOptions(&buf, pslog.Options{
+	logger := pslog.NewWithOptions(context.Background(), &buf, pslog.Options{
 		Mode:             pslog.ModeStructured,
 		DisableTimestamp: true,
 		NoColor:          true,

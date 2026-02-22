@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/pslog"
 )
 
@@ -39,7 +40,7 @@ type stdServer struct {
 func NewServer(cfg Config, handler http.Handler) Server {
 	logger := cfg.Logger
 	if logger == nil {
-		logger = pslog.LoggerFromEnv().With("app", "lingon")
+		logger = logging.Default()
 	}
 	errorLog := pslog.LogLogger(logger)
 	return &stdServer{

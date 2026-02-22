@@ -61,12 +61,14 @@ func TestHostPlainModePSAuxTrailingBlankAttrsDefault(t *testing.T) {
 func assertPlainTrailingBlankAttrsDefault(t *testing.T, host *ptytest.PTYSession, cols, rows int) {
 	t.Helper()
 	foundRowWithTail := false
+	snap := host.Snapshot()
+	lines := snapshotRows(snap)
 
 	// Row 1 may be tab/status overlay depending on runtime state.
 	for row := 2; row <= rows; row++ {
 		lastContentCol := 0
 		for col := 1; col <= cols; col++ {
-			cell, ok := host.CellAt(row, col)
+			cell, ok := snapshotCellAt(snap, row, col)
 			if !ok {
 				continue
 			}
@@ -105,14 +107,17 @@ func assertPlainTrailingBlankAttrsDefault(t *testing.T, host *ptytest.PTYSession
 			foundRowWithTail = true
 		}
 		for col := lastContentCol + 1; col <= cols; col++ {
-			cell, ok := host.CellAt(row, col)
+			cell, ok := snapshotCellAt(snap, row, col)
 			if !ok {
 				continue
 			}
 			if cell.Mode == 0 && cell.FG == terminal.ColorDefault && cell.BG == terminal.ColorDefault {
 				continue
 			}
-			line := host.Screen().Row(row - 1)
+			line := ""
+			if row-1 >= 0 && row-1 < len(lines) {
+				line = lines[row-1]
+			}
 			t.Fatalf("plain-mode trailing attrs leak row=%d col=%d last=%d rune=%q mode=%d fg=%#x bg=%#x line=%q", row, col, lastContentCol, cell.Rune, cell.Mode, cell.FG, cell.BG, line)
 		}
 	}

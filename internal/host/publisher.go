@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/retryafter"
 	"pkt.systems/lingon/internal/terminal"
@@ -84,14 +86,26 @@ type Publisher struct {
 const HostControlID = "host"
 
 var publisherWSDialTimeout = 12 * time.Second
-var publisherPingInterval = 2 * time.Second
-var publisherPingTimeout = 2 * time.Second
+var publisherPingInterval = durationFromEnv("LINGON_HOST_PUBLISHER_PING_INTERVAL", 2*time.Second)
+var publisherPingTimeout = durationFromEnv("LINGON_HOST_PUBLISHER_PING_TIMEOUT", 2*time.Second)
 var publisherSessionCloseTimeout = 1500 * time.Millisecond
+
+func durationFromEnv(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
 
 // NewPublisher constructs a Publisher.
 func NewPublisher(opts PublishOptions) *Publisher {
 	if opts.Logger == nil {
-		opts.Logger = pslog.LoggerFromEnv().With("app", "lingon")
+		opts.Logger = logging.Default()
 	}
 	if opts.Clock == nil {
 		opts.Clock = clock.New()

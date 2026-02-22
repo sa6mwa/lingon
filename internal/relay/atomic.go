@@ -2,7 +2,6 @@ package relay
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -48,10 +47,6 @@ func writeFileAtomicOnce(path string, data []byte, perm fs.FileMode) error {
 		cleanup()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return err
-	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return err
@@ -59,16 +54,6 @@ func writeFileAtomicOnce(path string, data []byte, perm fs.FileMode) error {
 	if err := atomicRename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return err
-	}
-	dirFile, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = dirFile.Close()
-	}()
-	if err := dirFile.Sync(); err != nil {
-		return fmt.Errorf("fsync dir: %w", err)
 	}
 	return nil
 }

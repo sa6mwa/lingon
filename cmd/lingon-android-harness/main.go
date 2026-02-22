@@ -130,6 +130,12 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	if os.Getenv("LINGON_DEBUG_INPUT") == "" {
 		_ = os.Setenv("LINGON_DEBUG_INPUT", "1")
 	}
+	if os.Getenv("LINGON_HOST_PUBLISHER_PING_INTERVAL") == "" {
+		_ = os.Setenv("LINGON_HOST_PUBLISHER_PING_INTERVAL", "5s")
+	}
+	if os.Getenv("LINGON_HOST_PUBLISHER_PING_TIMEOUT") == "" {
+		_ = os.Setenv("LINGON_HOST_PUBLISHER_PING_TIMEOUT", "10s")
+	}
 	hostEchoLog := filepath.Join(os.TempDir(), fmt.Sprintf("lingon-host-echo-%d.log", time.Now().UnixNano()))
 	if os.Getenv("LINGON_HOST_ECHO_LOG") == "" {
 		_ = os.Setenv("LINGON_HOST_ECHO_LOG", hostEchoLog)

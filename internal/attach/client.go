@@ -27,6 +27,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/relayclient"
@@ -167,7 +168,7 @@ func (c *Client) RunDetached(ctx context.Context) error {
 
 func (c *Client) run(ctx context.Context, opts runOptions) error {
 	if c.Logger == nil {
-		c.Logger = pslog.LoggerFromEnv().With("app", "lingon")
+		c.Logger = logging.Default()
 	}
 	c.clock()
 	if c.Endpoint == "" {
@@ -205,6 +206,7 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	c.stdin = c.stdinReader()
 	c.stdout = c.stdoutWriter()
 	c.stderr = c.stderrWriter()
+	ownsStdin := c.Stdin != nil
 	if closer, ok := c.stdin.(io.Closer); ok {
 		c.stdinCloser = closer
 	}
@@ -238,8 +240,14 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 
 	dialOptions := &websocket.DialOptions{
 		HTTPClient: &http.Client{
-			Transport: &http.Transport{TLSClientConfig: clientTLS},
+			Transport: &http.Transport{
+				TLSClientConfig:   clientTLS,
+				DisableKeepAlives: true,
+			},
 		},
+	}
+	if transport, ok := dialOptions.HTTPClient.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
 	}
 
 	wsEndpoint := wsURL + "/ws/client"
@@ -373,7 +381,7 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	} else {
 		<-ctx.Done()
 	}
-	if c.stdinCloser != nil && !c.shouldWaitForSignals() {
+	if c.stdinCloser != nil && (ownsStdin || !c.shouldWaitForSignals()) {
 		_ = c.stdinCloser.Close()
 	}
 	<-wsDone
@@ -1650,11 +1658,11 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 					case scrollBottom:
 						c.ScrollbackBottom()
 						changed = true
-						case scrollWheelUp:
-							changed = c.scrollbackPage(1, 3)
-						case scrollWheelDown:
-							changed = c.scrollbackPage(-1, 3)
-						}
+					case scrollWheelUp:
+						changed = c.scrollbackPage(1, 3)
+					case scrollWheelDown:
+						changed = c.scrollbackPage(-1, 3)
+					}
 					if changed {
 						c.renderCurrent()
 					}

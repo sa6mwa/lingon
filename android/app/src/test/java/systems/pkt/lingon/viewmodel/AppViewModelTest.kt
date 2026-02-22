@@ -89,6 +89,106 @@ class AppViewModelTest {
     }
 
     @Test
+    fun bootstrapRestoresLastActiveSessionForEndpoint() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(
+                RelaySession(id = "alpha", name = "Alpha", status = "active"),
+                RelaySession(id = "beta", name = "Beta", status = "active"),
+            ),
+            failListSessions = false,
+            initialLastActiveSessionByEndpoint = mapOf("https://localhost:12843/v1" to "beta"),
+        )
+        val wsClient = FakeWsClient()
+
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        assertEquals("beta", viewModel.state.value.activeSessionId)
+    }
+
+    @Test
+    fun connectActiveSessionFallsBackToFirstSessionWhenActiveMissing() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "stale",
+                shareToken = null,
+                connectionState = ConnectionState.Disconnected,
+            ),
+        )
+        viewModel.selectSession("stale")
+        advanceUntilIdle()
+
+        assertEquals("host-1", viewModel.state.value.activeSessionId)
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("host-1", wsClient.lastConnectOptions?.sessionId)
+    }
+
+    @Test
+    fun connectActiveSessionContinuesWhenRefreshAuthReturnsFalse() = runTest {
+        val repository = FakeRepository(
+            refreshAuthResult = false,
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                shareToken = null,
+                connectionState = ConnectionState.Disconnected,
+            ),
+        )
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+
+        assertEquals(1, repository.refreshAuthCalls)
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("host-1", viewModel.state.value.activeSessionId)
+    }
+
+    @Test
+    fun connectActiveSessionContinuesWhenRefreshAuthThrows() = runTest {
+        val repository = FakeRepository(
+            refreshAuthError = RuntimeException("network down"),
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                shareToken = null,
+                connectionState = ConnectionState.Disconnected,
+            ),
+        )
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+
+        assertEquals(1, repository.refreshAuthCalls)
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("host-1", viewModel.state.value.activeSessionId)
+    }
+
+    @Test
     fun onAppForegroundRequiresUnlockAfterTimeout() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
@@ -200,6 +300,11 @@ class MainDispatcherRule : TestWatcher() {
 
 private class FakeRepository(
     appLockMinutes: Int = 30,
+    private val sessions: List<RelaySession> = emptyList(),
+    private val failListSessions: Boolean = true,
+    private val refreshAuthResult: Boolean = true,
+    private val refreshAuthError: Throwable? = null,
+    initialLastActiveSessionByEndpoint: Map<String, String> = emptyMap(),
 ) : LingonClient {
     override val endpointFlow: Flow<String> = MutableStateFlow("https://localhost:12843/v1")
     override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
@@ -208,6 +313,8 @@ private class FakeRepository(
     override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
     override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(listOf("https://localhost:12843/v1"))
     override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
+    private val lastActiveSessionByEndpoint = initialLastActiveSessionByEndpoint.toMutableMap()
+    var refreshAuthCalls: Int = 0
 
     override fun setEndpoint(value: String) {
         // no-op
@@ -229,6 +336,17 @@ private class FakeRepository(
         // no-op
     }
 
+    override fun saveLastActiveSessionId(endpoint: String, sessionId: String) {
+        val cleanedEndpoint = endpoint.trim()
+        val cleanedSessionId = sessionId.trim()
+        if (cleanedEndpoint.isBlank() || cleanedSessionId.isBlank()) return
+        lastActiveSessionByEndpoint[cleanedEndpoint] = cleanedSessionId
+    }
+
+    override fun clearLastActiveSession() {
+        lastActiveSessionByEndpoint.clear()
+    }
+
     override suspend fun login(username: String, password: String, totp: String) {
         // no-op
     }
@@ -241,10 +359,23 @@ private class FakeRepository(
         // no-op
     }
 
-    override suspend fun refreshAuth(): Boolean = true
+    override suspend fun refreshAuth(): Boolean {
+        refreshAuthCalls += 1
+        refreshAuthError?.let { throw it }
+        return refreshAuthResult
+    }
+
+    override suspend fun loadLastActiveSessionId(endpoint: String): String? {
+        val cleanedEndpoint = endpoint.trim()
+        if (cleanedEndpoint.isBlank()) return null
+        return lastActiveSessionByEndpoint[cleanedEndpoint]
+    }
 
     override suspend fun listSessions(): List<RelaySession> {
-        throw ApiException("invalid session", 401)
+        if (failListSessions) {
+            throw ApiException("invalid session", 401)
+        }
+        return sessions
     }
 
     override suspend fun listWallEvents(sinceId: Long, limit: Int): RelayWallEventsPage {
@@ -265,7 +396,12 @@ private class FakeRepository(
 private class FakeWsClient : RelayWebSocketClient(
     testHttpClientProvider(),
 ) {
+    var connectCount: Int = 0
+    var lastConnectOptions: ConnectOptions? = null
+
     override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
+        connectCount += 1
+        lastConnectOptions = options
         return object : WebSocket {
             override fun request(): okhttp3.Request = okhttp3.Request.Builder().url(options.baseUrl).build()
             override fun queueSize(): Long = 0
@@ -295,6 +431,14 @@ private fun setActiveSnapshotForTest(viewModel: AppViewModel, snapshot: Terminal
     @Suppress("UNCHECKED_CAST")
     val stateFlow = stateField.get(viewModel) as MutableStateFlow<UiState>
     stateFlow.value = stateFlow.value.copy(activeSnapshot = snapshot)
+}
+
+private fun setUiStateForTest(viewModel: AppViewModel, state: UiState) {
+    val stateField = AppViewModel::class.java.getDeclaredField("_state")
+    stateField.isAccessible = true
+    @Suppress("UNCHECKED_CAST")
+    val stateFlow = stateField.get(viewModel) as MutableStateFlow<UiState>
+    stateFlow.value = state
 }
 
 private fun testHttpClientProvider(): HttpClientProvider {

@@ -19,11 +19,14 @@ interface LingonClient {
     fun setZoom(value: Float)
     fun setResizeHostEnabled(value: Boolean)
     fun setAppLockTimeoutMinutes(value: Int)
+    fun saveLastActiveSessionId(endpoint: String, sessionId: String)
+    fun clearLastActiveSession()
 
     suspend fun login(username: String, password: String, totp: String)
     suspend fun logout()
     suspend fun clearAuth()
     suspend fun refreshAuth(): Boolean
+    suspend fun loadLastActiveSessionId(endpoint: String): String?
     suspend fun listSessions(): List<RelaySession>
     suspend fun listWallEvents(sinceId: Long, limit: Int): RelayWallEventsPage
     fun streamSessions(): Flow<List<RelaySession>>

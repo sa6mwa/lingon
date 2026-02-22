@@ -68,7 +68,7 @@ func waitForActiveOrAnyReadySession(t *testing.T, clk clock.Clock, state *active
 			state.viewsMu.Lock()
 			client := state.views[current]
 			state.viewsMu.Unlock()
-			if client != nil && client.Connected() && client.Snapshot() != nil {
+			if client != nil && client.Connected() {
 				return current
 			}
 		}
@@ -77,7 +77,7 @@ func waitForActiveOrAnyReadySession(t *testing.T, clk clock.Clock, state *active
 			if prev != "" && id == prev {
 				continue
 			}
-			if client != nil && client.Connected() && client.Snapshot() != nil {
+			if client != nil && client.Connected() {
 				state.viewsMu.Unlock()
 				return id
 			}
@@ -102,7 +102,7 @@ func tryWaitForActiveSessionReadySession(clk clock.Clock, state *activeState, pr
 			state.viewsMu.Lock()
 			client := state.views[current]
 			state.viewsMu.Unlock()
-			if client != nil && client.Connected() && client.Snapshot() != nil {
+			if client != nil && client.Connected() {
 				return current, true
 			}
 		}

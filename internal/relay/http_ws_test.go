@@ -28,7 +28,7 @@ func TestHostConnectLogsReconnected(t *testing.T) {
 	auth := NewAuthenticator(users)
 
 	var buf bytes.Buffer
-	logger := pslog.NewWithOptions(&buf, pslog.Options{
+	logger := pslog.NewWithOptions(context.Background(), &buf, pslog.Options{
 		Mode:             pslog.ModeStructured,
 		DisableTimestamp: true,
 		NoColor:          true,
@@ -85,7 +85,7 @@ func TestHostConnectLogsReconnected(t *testing.T) {
 	}
 }
 
-func TestWSHostRejectsDuplicateSessionID(t *testing.T) {
+func TestWSHostReconnectTakesOverDuplicateSessionID(t *testing.T) {
 	store := NewStore()
 	users := NewUserStore()
 	user, err := SeedTestUser(users)
@@ -136,6 +136,7 @@ func TestWSHostRejectsDuplicateSessionID(t *testing.T) {
 		_ = hostA.Close(websocket.StatusNormalClosure, "bye")
 	}()
 	sendHostHello(hostA, "session-dup")
+	waitForActiveSessionCount(t, ts.URL, access.Token, 1, 2*time.Second)
 
 	hostB, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/host"), &websocket.DialOptions{
 		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + access.Token}},
@@ -147,30 +148,46 @@ func TestWSHostRejectsDuplicateSessionID(t *testing.T) {
 		_ = hostB.Close(websocket.StatusNormalClosure, "bye")
 	}()
 	sendHostHello(hostB, "session-dup")
+	waitForActiveSessionCount(t, ts.URL, access.Token, 1, 2*time.Second)
 
-	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer readCancel()
-	_, payload, err := hostB.Read(readCtx)
-	if err != nil {
-		t.Fatalf("read duplicate-host rejection: %v", err)
+	readUntil := time.Now().Add(2 * time.Second)
+	var supersededErr *protocolpb.Error
+	for time.Now().Before(readUntil) {
+		readCtx, readCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		_, message, err := hostA.Read(readCtx)
+		readCancel()
+		if err != nil {
+			continue
+		}
+		var frame protocolpb.Frame
+		if err := proto.Unmarshal(message, &frame); err != nil {
+			t.Fatalf("decode superseded host frame: %v", err)
+		}
+		if frame.GetError() == nil {
+			continue
+		}
+		supersededErr = frame.GetError()
+		break
 	}
-	var frame protocolpb.Frame
-	if err := proto.Unmarshal(payload, &frame); err != nil {
-		t.Fatalf("decode rejection frame: %v", err)
+	if supersededErr == nil {
+		t.Fatalf("expected superseded error frame for old host")
 	}
-	if frame.GetError() == nil {
-		t.Fatalf("expected error frame for duplicate host, got %+v", frame.Payload)
+	if !supersededErr.GetSessionRejected() {
+		t.Fatalf("expected session_rejected=true for superseded host")
 	}
-	if got := frame.GetError().GetMessage(); got != errSessionHasActiveHost.Error() {
-		t.Fatalf("duplicate-host message=%q, want %q", got, errSessionHasActiveHost.Error())
+	if !strings.Contains(supersededErr.GetMessage(), "superseded by reconnect") {
+		t.Fatalf("unexpected superseded host message: %q", supersededErr.GetMessage())
 	}
-	if !frame.GetError().GetSessionRejected() {
-		t.Fatalf("expected session_rejected marker on duplicate-host rejection")
-	}
+
+	_ = hostA.Close(websocket.StatusNormalClosure, "bye")
+	waitForActiveSessionCount(t, ts.URL, access.Token, 1, 2*time.Second)
 
 	if !server.Hub.HasHost("session-dup") {
-		t.Fatalf("expected original host to remain active")
+		t.Fatalf("expected replacement host to remain active")
 	}
+
+	_ = hostB.Close(websocket.StatusNormalClosure, "bye")
+	waitForActiveSessionCount(t, ts.URL, access.Token, 0, 2*time.Second)
 }
 
 func TestClientConnectLogsReconnected(t *testing.T) {
@@ -183,7 +200,7 @@ func TestClientConnectLogsReconnected(t *testing.T) {
 	auth := NewAuthenticator(users)
 
 	var buf bytes.Buffer
-	logger := pslog.NewWithOptions(&buf, pslog.Options{
+	logger := pslog.NewWithOptions(context.Background(), &buf, pslog.Options{
 		Mode:             pslog.ModeStructured,
 		DisableTimestamp: true,
 		NoColor:          true,
@@ -381,7 +398,7 @@ func TestWSReadEOFSuppressed(t *testing.T) {
 	auth := NewAuthenticator(users)
 
 	var buf bytes.Buffer
-	logger := pslog.NewWithOptions(&buf, pslog.Options{
+	logger := pslog.NewWithOptions(context.Background(), &buf, pslog.Options{
 		Mode:             pslog.ModeStructured,
 		DisableTimestamp: true,
 		NoColor:          true,

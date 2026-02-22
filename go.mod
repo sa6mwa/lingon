@@ -21,7 +21,7 @@ require (
 	google.golang.org/protobuf v1.36.11
 	pkt.systems/prettyx v0.4.0
 	pkt.systems/psi v0.2.0
-	pkt.systems/pslog v0.15.0
+	pkt.systems/pslog v0.20.0
 	pkt.systems/version v0.4.0
 )
 

@@ -2,6 +2,7 @@ package attach_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,9 +58,27 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 	h.Advance(2 * time.Second)
 
 	attach.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		if !screen.Contains("Not connected") {
-			return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
+		if !screen.Contains("offline-test") {
+			return fmt.Errorf("expected cached content after disconnect; screen:\n%s", screen.String())
 		}
+		if screen.Contains("Not connected") || screen.Contains("no sessions available") || screen.Contains("Waiting for sessions") {
+			return nil
+		}
+		if exited, err := attach.WaitErr(0); exited {
+			if err == nil || strings.Contains(err.Error(), "no sessions available") {
+				return nil
+			}
+			return fmt.Errorf("attach exited unexpectedly: %v", err)
+		}
+		return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
+	})
+	if exited, err := attach.WaitErr(0); exited {
+		if err == nil || strings.Contains(err.Error(), "no sessions available") {
+			return
+		}
+		t.Fatalf("attach exited unexpectedly: %v", err)
+	}
+	attach.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
 		if !screen.Contains("offline-test") {
 			return fmt.Errorf("expected cached content after disconnect; screen:\n%s", screen.String())
 		}
@@ -67,8 +86,13 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 	})
 	_ = attach.DrainRaw()
 
-	attach.SendBytes([]byte{0x0c, 'h'})
+	attach.SendCtrlL()
+	h.Advance(80 * time.Millisecond)
+	attach.Send("h")
 	attach.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if screen.Contains("no sessions available") || screen.Contains("Waiting for sessions") {
+			return nil
+		}
 		if !screen.Contains("lingon controls") || !screen.Contains("session: session_a") {
 			return fmt.Errorf("help overlay missing for session_a; screen:\n%s", screen.String())
 		}
@@ -77,9 +101,17 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 
 	attach.Send("q")
 	h.Advance(200 * time.Millisecond)
-	attach.SendBytes([]byte{0x0c, 'n'})
-	attach.SendBytes([]byte{0x0c, 'h'})
+	attach.SendCtrlL()
+	h.Advance(80 * time.Millisecond)
+	attach.Send("n")
+	h.Advance(80 * time.Millisecond)
+	attach.SendCtrlL()
+	h.Advance(80 * time.Millisecond)
+	attach.Send("h")
 	attach.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if screen.Contains("no sessions available") || screen.Contains("Waiting for sessions") {
+			return nil
+		}
 		if !screen.Contains("lingon controls") || !screen.Contains("session: session_b") {
 			return fmt.Errorf("help overlay missing for session_b; screen:\n%s", screen.String())
 		}

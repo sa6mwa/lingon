@@ -64,6 +64,9 @@ func SendWall(ctx context.Context, endpoint, accessToken, message, tlsDir string
 		return WallResponse{}, err
 	}
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return WallResponse{}, err
@@ -129,6 +132,9 @@ func postWallInactivity(ctx context.Context, endpoint, accessToken, sessionID st
 		return WallInactivityResponse{}, err
 	}
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg}}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		defer transport.CloseIdleConnections()
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return WallInactivityResponse{}, err

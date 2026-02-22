@@ -139,9 +139,20 @@ func TestMultiHostSwitchWhileReconnect(t *testing.T) {
 
 	h.RestartServer()
 	waitForSessionCount(t, h.Clock(), h.Endpoint(), h.AccessToken(), count, 6*time.Second)
+	ids, err = fetchSessionIDs(h.Endpoint(), h.AccessToken())
+	if err != nil {
+		t.Fatalf("fetch sessions after restart: %v", err)
+	}
+	for id := range ids {
+		waitForClientCount(t, h, id, 1, 6*time.Second)
+	}
 	reconnectReadyTimeout := 10 * time.Second
-	_ = waitForActiveSessionReady(t, h.Clock(), &activeMuA, &activeIDA, &viewsMuA, viewsA, "", reconnectReadyTimeout)
-	_ = waitForActiveSessionReady(t, h.Clock(), &activeMuB, &activeIDB, &viewsMuB, viewsB, "", reconnectReadyTimeout)
+	if ready := waitForActiveSessionReadyOptional(h.Clock(), &activeMuA, &activeIDA, &viewsMuA, viewsA, "", reconnectReadyTimeout); ready == "" {
+		t.Fatalf("attachA did not become active after restart")
+	}
+	if ready := waitForActiveSessionReadyOptional(h.Clock(), &activeMuB, &activeIDB, &viewsMuB, viewsB, "", reconnectReadyTimeout); ready == "" {
+		t.Fatalf("attachB did not become active after restart")
+	}
 
 	sendTokenAcrossTabsPhase1(t, attachA, "RECONNECT_MULTI_A", count+1)
 	sendTokenAcrossTabsPhase1(t, attachB, "RECONNECT_MULTI_B", count+1)
