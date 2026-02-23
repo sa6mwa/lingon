@@ -54,6 +54,7 @@ data class UiState(
     val hasControl: Boolean = false,
     val terminalCols: Int = 80,
     val terminalRows: Int = 24,
+    val scrollbackOffsetRows: Int = 0,
     val lastFrameSeq: Long = 0,
     val lastFrameType: String? = null,
     val lastFrameAtMs: Long = 0,

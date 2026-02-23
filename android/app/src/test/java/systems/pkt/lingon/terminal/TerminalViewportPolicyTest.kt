@@ -17,6 +17,103 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
+    fun `auto follow bottom anchor matches full bottom when cursor at prompt row`() {
+        assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 99, totalRows = 100, visibleRows = 20))
+    }
+
+    @Test
+    fun `zoomed cursor follow pans horizontally to keep typing visible`() {
+        assertEquals(
+            0f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 0,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            110f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 19,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            50f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 100f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 6,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow is disabled outside live zoomed typing mode`() {
+        assertEquals(
+            42f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                zoomFactor = DefaultTerminalZoom,
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 42f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 25,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            42f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                panActive = true,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 42f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 25,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            42f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                panActive = false,
+                scrollbackOffsetRows = 3,
+                cameraOffsetXPx = 42f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 25,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
     fun `auto follow disabled when not eligible`() {
         assertFalse(
             TerminalViewportPolicy.shouldAutoFollowCursor(
@@ -97,6 +194,42 @@ class TerminalViewportPolicyTest {
                 panOffsetRows = 0,
                 totalRows = 100,
                 visibleRows = 20,
+            ),
+        )
+    }
+
+    @Test
+    fun `live reentry rows consume pan rows while preserving viewport continuity`() {
+        assertEquals(
+            0,
+            TerminalViewportPolicy.scrollbackRowsToExitForLiveReentry(
+                scrollbackOffsetRows = 4,
+                cameraOffsetYPx = 0f,
+                scaledCellHeightPx = 10f,
+            ),
+        )
+        assertEquals(
+            3,
+            TerminalViewportPolicy.scrollbackRowsToExitForLiveReentry(
+                scrollbackOffsetRows = 4,
+                cameraOffsetYPx = 39.9f,
+                scaledCellHeightPx = 10f,
+            ),
+        )
+        assertEquals(
+            4,
+            TerminalViewportPolicy.scrollbackRowsToExitForLiveReentry(
+                scrollbackOffsetRows = 4,
+                cameraOffsetYPx = 40f,
+                scaledCellHeightPx = 10f,
+            ),
+        )
+        assertEquals(
+            4,
+            TerminalViewportPolicy.scrollbackRowsToExitForLiveReentry(
+                scrollbackOffsetRows = 4,
+                cameraOffsetYPx = 92f,
+                scaledCellHeightPx = 10f,
             ),
         )
     }

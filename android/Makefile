@@ -5,6 +5,7 @@ SDKMANAGER := $(CMDLINE_TOOLS)/bin/sdkmanager
 AVDMANAGER := $(CMDLINE_TOOLS)/bin/avdmanager
 EMULATOR := $(ANDROID_SDK_ROOT)/emulator/emulator
 ADB := $(ANDROID_SDK_ROOT)/platform-tools/adb
+EMULATOR_FLAGS ?= -gpu host -no-snapshot
 
 PRESET ?=
 AVD_NAME ?= lingon-aosp-35
@@ -41,15 +42,18 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sdk licenses avd emulator build release install run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-install adb-push integration-test
+.PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-install adb-push integration-test
 VERSION_CMD := cd .. && go run ./cmd/lingon version --version
 
 help:
 	@echo "lingon android make targets:"
 	@echo "  make sdk          - install Android SDK + emulator (API 35 target + API 36 compile)"
 	@echo "  make licenses     - accept Android SDK licenses"
-	@echo "  make avd          - create AVD $(AVD_NAME) under ~/.android/avd (hardware keyboard enabled)"
-	@echo "  make emulator     - start emulator for $(AVD_NAME) (forces keyboard + adb reverse + debug endpoint)"
+	@echo "  make avd          - create AVD $(AVD_NAME) under ~/.android/avd (perf tune: GPU/RAM/cores; hardware keyboard enabled)"
+	@echo "  make emulator     - start emulator for $(AVD_NAME) (-gpu host -no-snapshot + adb reverse + debug endpoint)"
+	@echo "                      also enforces host emulator shortcuts/pinch defaults (Ctrl+wheel/gesture zoom)"
+	@echo "                      auto-pushes $$HOME/.lingon/tls/ca.pem to Downloads when present (set AUTO_PUSH_CA_PEM=0 to disable)"
+	@echo "  make avd-clean-snapshots - remove stale Quick Boot snapshot state for $(AVD_NAME)"
 	@echo "  make build        - assemble debug APK"
 	@echo "  make release      - assemble release APK (auto-generates a local dev keystore if needed)"
 	@echo "  make install      - install debug APK"
@@ -71,6 +75,7 @@ help:
 	@echo ""
 	@echo "Overrides:"
 	@echo "  make avd AVD_NAME=... DEVICE_PROFILE=... SYSTEM_IMAGE=..."
+	@echo "  make emulator PRESET=medium AVD_RAM_MB=2048   - lower emulator RAM when needed"
 	@echo "  make adb-install ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
 
 list-presets:
@@ -105,18 +110,23 @@ avd:
 		mkdir -p "$(HOME)/.android/avd"; \
 		echo "no" | $(AVDMANAGER) create avd -n "$(AVD_NAME)" -k "$(SYSTEM_IMAGE)" -d "$(DEVICE_PROFILE)"; \
 	fi
-	@AVD_NAME=$(AVD_NAME) ./scripts/configure-avd.sh
+	@AVD_NAME=$(AVD_NAME) AVD_RAM_MB="$${AVD_RAM_MB:-}" ./scripts/configure-avd.sh
+
+avd-clean-snapshots:
+	@AVD_NAME=$(AVD_NAME) ./scripts/cleanup-avd-snapshots.sh
 
 emulator:
 	@./scripts/cleanup-managed-devices.sh
 	@ADB=$(ADB) ./scripts/cleanup-offline-emulators.sh
 	@$(ADB) kill-server >/dev/null 2>&1 || true
 	@$(ADB) start-server >/dev/null 2>&1 || true
-	@AVD_NAME=$(AVD_NAME) ./scripts/configure-avd.sh
+	@./scripts/configure-emulator-host.sh
+	@AVD_NAME=$(AVD_NAME) AVD_RAM_MB="$${AVD_RAM_MB:-}" ./scripts/configure-avd.sh
+	@AVD_NAME=$(AVD_NAME) ./scripts/cleanup-avd-snapshots.sh
 	@EMU_PORT="$${EMU_PORT:-$$(ADB=$(ADB) ./scripts/find-emu-port.sh)}"; \
 	echo "Starting emulator $(AVD_NAME) on port $${EMU_PORT}"; \
 	ADB=$(ADB) ADB_SERIAL="emulator-$${EMU_PORT}" ./scripts/ensure-emu-keyboard.sh & \
-	$(EMULATOR) -avd $(AVD_NAME) -port "$${EMU_PORT}"
+	$(EMULATOR) -avd $(AVD_NAME) -port "$${EMU_PORT}" $(EMULATOR_FLAGS)
 
 build: local-properties
 	@VERSION="$$($(VERSION_CMD))"; \

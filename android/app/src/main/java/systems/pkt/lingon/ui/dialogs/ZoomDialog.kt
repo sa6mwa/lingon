@@ -16,9 +16,7 @@ import androidx.compose.ui.text.font.FontWeight
 import systems.pkt.lingon.DefaultTerminalZoom
 import systems.pkt.lingon.MaxTerminalZoom
 import systems.pkt.lingon.MinTerminalZoom
-import systems.pkt.lingon.TerminalZoomStep
 import systems.pkt.lingon.ui.TestTags
-import kotlin.math.roundToInt
 
 @Composable
 fun ZoomDialog(
@@ -28,24 +26,20 @@ fun ZoomDialog(
 ) {
     val minZoom = MinTerminalZoom
     val maxZoom = MaxTerminalZoom
-    val step = TerminalZoomStep
     val initial = zoomFactor.coerceIn(minZoom, maxZoom)
     var value by rememberSaveable { mutableStateOf(initial) }
-    val steps = ((maxZoom - minZoom) / step).roundToInt().coerceAtLeast(1)
-    val rounded = ((value - minZoom) / step).roundToInt().let { idx ->
-        (minZoom + (idx * step)).coerceIn(minZoom, maxZoom)
-    }
-    val label = if (rounded == DefaultTerminalZoom) {
+    val normalized = value.coerceIn(minZoom, maxZoom)
+    val label = if (kotlin.math.abs(normalized - DefaultTerminalZoom) < 0.001f) {
         "1.0x"
     } else {
-        String.format("%.1fx", rounded)
+        String.format("%.2fx", normalized)
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
             TextButton(
-                onClick = { onSave(rounded) },
+                onClick = { onSave(normalized) },
                 modifier = Modifier.testTag(TestTags.ZoomSave),
             ) {
                 Text(text = "Save")
@@ -68,7 +62,7 @@ fun ZoomDialog(
                     value = value,
                     onValueChange = { next -> value = next.coerceIn(minZoom, maxZoom) },
                     valueRange = minZoom..maxZoom,
-                    steps = (steps - 1).coerceAtLeast(0),
+                    steps = 0,
                     modifier = Modifier.testTag(TestTags.ZoomSlider),
                 )
             }

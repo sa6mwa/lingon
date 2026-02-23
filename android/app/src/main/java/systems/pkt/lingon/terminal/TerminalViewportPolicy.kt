@@ -1,6 +1,9 @@
 package systems.pkt.lingon.terminal
 
 import systems.pkt.lingon.DefaultTerminalZoom
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
 
 internal object TerminalViewportPolicy {
     private const val zoomEpsilon = 0.001f
@@ -34,5 +37,50 @@ internal object TerminalViewportPolicy {
         }
         val centered = clampedCursor - (visibleRows / 2)
         return centered.coerceIn(0, maxOffset)
+    }
+
+    fun autoFollowCursorCameraOffsetX(
+        zoomFactor: Float,
+        panActive: Boolean,
+        scrollbackOffsetRows: Int,
+        cameraOffsetXPx: Float,
+        scaledCellWidthPx: Float,
+        viewportWidthPx: Int,
+        totalCols: Int,
+        cursorX: Int,
+    ): Float {
+        if (zoomFactor <= DefaultTerminalZoom + zoomEpsilon) return cameraOffsetXPx
+        if (panActive) return cameraOffsetXPx
+        if (scrollbackOffsetRows > 0) return cameraOffsetXPx
+        if (scaledCellWidthPx <= 0f || viewportWidthPx <= 0 || totalCols <= 0) return cameraOffsetXPx
+
+        val maxOffsetXPx = max(0f, (totalCols * scaledCellWidthPx) - viewportWidthPx.toFloat())
+        if (maxOffsetXPx <= 0f) return 0f
+
+        val current = cameraOffsetXPx.coerceIn(0f, maxOffsetXPx)
+        val clampedCursorX = cursorX.coerceIn(0, totalCols - 1)
+        val cursorLeftPx = clampedCursorX * scaledCellWidthPx
+        val cursorRightPx = cursorLeftPx + scaledCellWidthPx
+        val marginPx = scaledCellWidthPx
+        val viewportRightPx = current + viewportWidthPx
+
+        val desired = when {
+            cursorLeftPx < current + marginPx -> cursorLeftPx - marginPx
+            cursorRightPx > viewportRightPx - marginPx -> cursorRightPx + marginPx - viewportWidthPx
+            else -> current
+        }
+        return desired.coerceIn(0f, maxOffsetXPx)
+    }
+
+    fun scrollbackRowsToExitForLiveReentry(
+        scrollbackOffsetRows: Int,
+        cameraOffsetYPx: Float,
+        scaledCellHeightPx: Float,
+    ): Int {
+        if (scrollbackOffsetRows <= 0) return 0
+        if (cameraOffsetYPx <= 0f || scaledCellHeightPx <= 0f) return 0
+        val topRow = floor(cameraOffsetYPx / scaledCellHeightPx).toInt().coerceAtLeast(0)
+        if (topRow <= 0) return 0
+        return min(topRow, scrollbackOffsetRows)
     }
 }

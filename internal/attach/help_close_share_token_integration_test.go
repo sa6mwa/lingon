@@ -33,12 +33,13 @@ func TestAttachShareTokenHelpModalClosesOnQAndQOnly(t *testing.T) {
 	})
 	t.Cleanup(attach.Cancel)
 
-	helpRe := regexp.MustCompile(`press\s+q\s+or\s+Q\s+to\s+close\s+help`)
+	helpVisibleRe := regexp.MustCompile(`session:\s+host-help-share`)
+	helpControlRe := regexp.MustCompile(`Ctrl\+L\s+h\s+help`)
 
 	showHelp := func() {
 		attach.SendBytes([]byte{0x0c, 'h'})
 		attach.Eventually(3*time.Second, 20*time.Millisecond, func(screen ptytest.Screen) error {
-			if screen.Match(helpRe) {
+			if screen.Match(helpVisibleRe) && screen.Match(helpControlRe) {
 				return nil
 			}
 			return fmt.Errorf("help not visible:\n%s", screen.String())
@@ -46,7 +47,7 @@ func TestAttachShareTokenHelpModalClosesOnQAndQOnly(t *testing.T) {
 	}
 	waitForHelpHidden := func() {
 		attach.Eventually(3*time.Second, 20*time.Millisecond, func(screen ptytest.Screen) error {
-			if !screen.Match(helpRe) {
+			if !screen.Match(helpVisibleRe) {
 				return nil
 			}
 			return fmt.Errorf("help still visible:\n%s", screen.String())

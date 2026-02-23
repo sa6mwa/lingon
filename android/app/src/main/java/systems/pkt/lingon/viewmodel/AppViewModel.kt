@@ -29,10 +29,13 @@ import systems.pkt.lingon.terminal.TerminalSnapshot
 import systems.pkt.lingon.terminal.buildScrollbackSnapshot
 import systems.pkt.lingon.DefaultScrollbackLines
 import systems.pkt.lingon.DefaultTerminalZoom
+import systems.pkt.lingon.MaxTerminalZoom
+import systems.pkt.lingon.MinTerminalZoom
 import systems.pkt.lingon.protocol.ScrollbackRow
 import systems.pkt.lingon.work.NoopWallWorkScheduler
 import systems.pkt.lingon.work.WallWorkScheduler
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -65,6 +68,7 @@ class AppViewModel(
     private var lastBackgroundAtMs: Long? = null
     private var appInForeground = true
     private val recentWallNotifications = LinkedHashMap<String, Long>()
+    private var persistZoomJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -286,6 +290,7 @@ class AppViewModel(
                 activeSessionId = null,
                 shareToken = null,
                 shareTokenError = null,
+                scrollbackOffsetRows = 0,
                 hasControl = false,
                 lastFrameSeq = 0,
                 lastFrameType = null,
@@ -309,10 +314,19 @@ class AppViewModel(
     }
 
     fun updateZoomFactor(value: Float) {
-        repository.setZoom(value)
+        val normalized = value.coerceIn(MinTerminalZoom, MaxTerminalZoom)
+        _state.update {
+            if (abs(it.zoomFactor - normalized) < 0.0005f) {
+                it
+            } else {
+                it.copy(zoomFactor = normalized)
+            }
+        }
+        persistZoomDebounced(normalized)
     }
 
     fun resetZoomAndPan() {
+        persistZoomJob?.cancel()
         repository.setZoom(DefaultTerminalZoom)
         _state.update {
             it.copy(
@@ -393,6 +407,7 @@ class AppViewModel(
                         shareTokenError = null,
                         showCertificates = false,
                         certificateError = null,
+                        scrollbackOffsetRows = 0,
                         connectionState = ConnectionState.Idle,
                         hasControl = false,
                         lastFrameSeq = 0,
@@ -425,6 +440,7 @@ class AppViewModel(
                 sessions = listOf(sharedSession()),
                 activeSessionId = sharedSessionId,
                 activeSnapshot = null,
+                scrollbackOffsetRows = 0,
                 hasControl = false,
                 requiresAppUnlock = false,
                 unlockPromptPending = false,
@@ -460,7 +476,7 @@ class AppViewModel(
             }
             return
         }
-        _state.update { it.copy(activeSessionId = sessionId, activeSnapshot = null) }
+        _state.update { it.copy(activeSessionId = sessionId, activeSnapshot = null, scrollbackOffsetRows = 0) }
         if (current.shareToken.isNullOrBlank()) {
             persistActiveSession(current.endpoint, sessionId)
         }
@@ -469,6 +485,8 @@ class AppViewModel(
 
     fun updateTerminalSize(cols: Int, rows: Int) {
         if (cols <= 0 || rows <= 0) return
+        val current = _state.value
+        if (current.terminalCols == cols && current.terminalRows == rows) return
         _state.update { it.copy(terminalCols = cols, terminalRows = rows) }
         maybeSendResize(_state.value)
     }
@@ -486,13 +504,13 @@ class AppViewModel(
         } else {
             live
         }
-        _state.update { it.copy(activeSnapshot = display) }
+        _state.update { it.copy(activeSnapshot = display, scrollbackOffsetRows = scrollbackOffset) }
     }
 
     private fun resetScrollbackView() {
         if (scrollbackOffset == 0) return
         scrollbackOffset = 0
-        _state.update { it.copy(activeSnapshot = liveSnapshot) }
+        _state.update { it.copy(activeSnapshot = liveSnapshot, scrollbackOffsetRows = 0) }
     }
 
     private fun resetScrollbackBuffer() {
@@ -643,7 +661,7 @@ class AppViewModel(
             val fallback = state.sessions.firstOrNull()?.id
             if (!fallback.isNullOrBlank()) {
                 sessionId = fallback
-                _state.update { it.copy(activeSessionId = fallback, activeSnapshot = null) }
+                _state.update { it.copy(activeSessionId = fallback, activeSnapshot = null, scrollbackOffsetRows = 0) }
                 persistActiveSession(state.endpoint, fallback)
             }
         }
@@ -691,6 +709,7 @@ class AppViewModel(
             it.copy(
                 connectionState = ConnectionState.Connecting,
                 activeSnapshot = null,
+                scrollbackOffsetRows = 0,
                 hasControl = false,
             )
         }
@@ -784,6 +803,7 @@ class AppViewModel(
                         _state.update {
                             it.copy(
                                 activeSnapshot = display,
+                                scrollbackOffsetRows = scrollbackOffset,
                                 connectionState = ConnectionState.Connected,
                                 lastFrameSeq = frame.seq,
                                 lastFrameType = "snapshot",
@@ -810,6 +830,7 @@ class AppViewModel(
                         _state.update {
                             it.copy(
                                 activeSnapshot = display,
+                                scrollbackOffsetRows = scrollbackOffset,
                                 connectionState = ConnectionState.Connected,
                                 lastFrameSeq = frame.seq,
                                 lastFrameType = "diff",
@@ -889,6 +910,7 @@ class AppViewModel(
                             _state.update {
                                 it.copy(
                                     activeSnapshot = display,
+                                    scrollbackOffsetRows = scrollbackOffset,
                                     lastFrameSeq = frame.seq,
                                     lastFrameType = "scrollback",
                                     lastFrameAtMs = System.currentTimeMillis(),
@@ -898,6 +920,7 @@ class AppViewModel(
                         } else {
                             _state.update {
                                 it.copy(
+                                    scrollbackOffsetRows = scrollbackOffset,
                                     lastFrameSeq = frame.seq,
                                     lastFrameType = "scrollback",
                                     lastFrameAtMs = System.currentTimeMillis(),
@@ -1005,6 +1028,7 @@ class AppViewModel(
                 activeSessionId = null,
                 activeSnapshot = null,
                 shareToken = null,
+                scrollbackOffsetRows = 0,
                 showCertificates = false,
                 certificateError = null,
                 connectionState = ConnectionState.Disconnected,
@@ -1212,6 +1236,7 @@ class AppViewModel(
                 activeSessionId = null,
                 activeSnapshot = null,
                 shareToken = null,
+                scrollbackOffsetRows = 0,
                 showCertificates = false,
                 certificateError = null,
                 connectionState = ConnectionState.Disconnected,
@@ -1233,6 +1258,14 @@ class AppViewModel(
             max(backoffMs, retryAfterSeconds * 1000)
         } else {
             backoffMs
+        }
+    }
+
+    private fun persistZoomDebounced(value: Float) {
+        persistZoomJob?.cancel()
+        persistZoomJob = viewModelScope.launch {
+            delay(150)
+            repository.setZoom(value)
         }
     }
 

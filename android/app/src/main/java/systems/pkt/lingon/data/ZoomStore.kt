@@ -9,11 +9,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 import systems.pkt.lingon.DefaultTerminalZoom
 import systems.pkt.lingon.MaxTerminalZoom
 import systems.pkt.lingon.MinTerminalZoom
-import systems.pkt.lingon.TerminalZoomStep
 
 class ZoomStore(
     private val dataStore: DataStore<Preferences>,
@@ -39,8 +37,6 @@ class ZoomStore(
     }
 
     private fun normalize(value: Float): Float {
-        val clamped = value.coerceIn(MinTerminalZoom, MaxTerminalZoom)
-        val steps = ((clamped - MinTerminalZoom) / TerminalZoomStep).roundToInt()
-        return (MinTerminalZoom + (steps * TerminalZoomStep)).coerceIn(MinTerminalZoom, MaxTerminalZoom)
+        return value.coerceIn(MinTerminalZoom, MaxTerminalZoom)
     }
 }

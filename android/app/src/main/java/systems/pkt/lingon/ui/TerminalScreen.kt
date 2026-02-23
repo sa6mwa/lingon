@@ -503,6 +503,7 @@ private fun TerminalPanel(
                         fitToViewWidth = fitToViewWidth,
                         zoomFactor = state.zoomFactor,
                         panResetNonce = state.panResetNonce,
+                        scrollbackOffsetRows = state.scrollbackOffsetRows,
                         imeVisible = imeVisible,
                     )
                     view.setOnViewSizeChanged { cols, rows ->

@@ -40,6 +40,13 @@ func TestHelpOverlayPersistsAcrossRenders(t *testing.T) {
 	client.renderSnapshot(snap)
 	client.renderSnapshot(snap)
 
+	helpLines := mvu.HelpLines(client.compositor.Read())
+	wrapped, _, _, ok := mvu.HelpBoxLayout(80, 24, helpLines, mvu.HelpBoxMinWidth(80))
+	if !ok || len(wrapped) == 0 {
+		t.Fatalf("expected help box layout for test snapshot")
+	}
+	expectedLine := wrapped[0]
+
 	e := emu.New(80, 24)
 	if err := e.Write(buf.Bytes()); err != nil {
 		t.Fatalf("emulator write: %v", err)
@@ -62,7 +69,7 @@ func TestHelpOverlayPersistsAcrossRenders(t *testing.T) {
 		if string(row) == "" {
 			continue
 		}
-		if bytes.Contains([]byte(string(row)), []byte(mvu.HelpTitle())) {
+		if bytes.Contains([]byte(string(row)), []byte(expectedLine)) {
 			found = true
 			break
 		}

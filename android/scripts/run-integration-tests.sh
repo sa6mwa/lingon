@@ -7,6 +7,7 @@ ANDROID_DIR="${ROOT_DIR}/android"
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
 ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
 EMULATOR_BIN="${EMULATOR:-${ANDROID_SDK_ROOT}/emulator/emulator}"
+EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-snapshot}"
 PRESET="${PRESET:-medium}"
 AVD_NAME="${AVD_NAME:-}"
 HARNESS_BIN="${ROOT_DIR}/bin/lingon-android-harness"
@@ -195,6 +196,8 @@ if [[ ! -x "${ADB_BIN}" ]]; then
   exit 1
 fi
 
+"${ANDROID_DIR}/scripts/configure-emulator-host.sh" || true
+
 DEVICE_SERIAL="$("${ADB_BIN}" devices | awk 'NR>1 && $2=="device" {print $1; exit}')"
 if [[ -z "${DEVICE_SERIAL}" ]]; then
   AVD_NAME="$(resolve_avd_name)"
@@ -202,9 +205,10 @@ if [[ -z "${DEVICE_SERIAL}" ]]; then
     echo "Creating AVD ${AVD_NAME} (PRESET=${PRESET})..."
     (cd "${ANDROID_DIR}" && make avd PRESET="${PRESET}")
   fi
+  AVD_NAME="${AVD_NAME}" "${ANDROID_DIR}/scripts/cleanup-avd-snapshots.sh" || true
   EMU_PORT="$(ADB="${ADB_BIN}" "${ANDROID_DIR}/scripts/find-emu-port.sh")"
   echo "Starting emulator ${AVD_NAME} on port ${EMU_PORT}..."
-  "${EMULATOR_BIN}" -avd "${AVD_NAME}" -port "${EMU_PORT}" >/dev/null 2>&1 &
+  "${EMULATOR_BIN}" -avd "${AVD_NAME}" -port "${EMU_PORT}" ${EMULATOR_FLAGS} >/dev/null 2>&1 &
   DEVICE_SERIAL="emulator-${EMU_PORT}"
   EMULATOR_STARTED="1"
 fi
