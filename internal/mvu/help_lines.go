@@ -1,9 +1,20 @@
 package mvu
 
+import (
+	"fmt"
+
+	"pkt.systems/version"
+)
+
+// HelpTitle returns the help modal title with the current Lingon version.
+func HelpTitle() string {
+	return fmt.Sprintf("lingon %s controls", version.Current())
+}
+
 // HelpLines returns the help modal content lines.
 func HelpLines(state State) []string {
 	return []string{
-		"lingon controls",
+		HelpTitle(),
 		"session: " + state.SessionID,
 		"endpoint: " + state.Endpoint,
 		"",

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/ptytest"
 )
 
@@ -29,7 +30,7 @@ func TestHelpModalBlocksInputUntilDismissed(t *testing.T) {
 	host.SendCtrlL()
 	host.Send("h")
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		if !host.Screen().Contains("lingon controls") {
+		if !host.Screen().Contains(mvu.HelpTitle()) {
 			return fmt.Errorf("expected help modal visible")
 		}
 		return nil
@@ -46,7 +47,7 @@ func TestHelpModalBlocksInputUntilDismissed(t *testing.T) {
 
 	host.Send("q")
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		if host.Screen().Contains("lingon controls") {
+		if host.Screen().Contains(mvu.HelpTitle()) {
 			return fmt.Errorf("expected help modal dismissed")
 		}
 		return nil
@@ -82,14 +83,14 @@ func TestHelpModalDismissKeysAndRejectedEscEnter(t *testing.T) {
 		host.SendCtrlL()
 		host.Send("h")
 		eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-			if !host.Screen().Contains("lingon controls") {
+			if !host.Screen().Contains(mvu.HelpTitle()) {
 				return fmt.Errorf("expected help modal visible")
 			}
 			return nil
 		})
 	}
 	helpHidden := func() error {
-		if host.Screen().Contains("lingon controls") {
+		if host.Screen().Contains(mvu.HelpTitle()) {
 			return fmt.Errorf("expected help modal hidden")
 		}
 		return nil
@@ -102,7 +103,7 @@ func TestHelpModalDismissKeysAndRejectedEscEnter(t *testing.T) {
 	showHelp()
 	host.SendBytes([]byte{0x1b})
 	host.ExpectAfter(700*time.Millisecond, func(screen ptytest.Screen) error {
-		if !screen.Contains("lingon controls") {
+		if !screen.Contains(mvu.HelpTitle()) {
 			return fmt.Errorf("expected help modal to remain visible after ESC")
 		}
 		return nil
@@ -110,7 +111,7 @@ func TestHelpModalDismissKeysAndRejectedEscEnter(t *testing.T) {
 
 	host.Send("\n")
 	host.ExpectAfter(700*time.Millisecond, func(screen ptytest.Screen) error {
-		if !screen.Contains("lingon controls") {
+		if !screen.Contains(mvu.HelpTitle()) {
 			return fmt.Errorf("expected help modal to remain visible after Enter")
 		}
 		return nil

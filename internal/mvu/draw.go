@@ -314,7 +314,7 @@ func DrawBannerAtRow(w *bytes.Buffer, cols, row int, message string, style Banne
 	}
 	colorOn := "\x1b[97;41m"
 	if style == BannerGreen {
-		colorOn = "\x1b[97;42m"
+		colorOn = "\x1b[38;2;0;0;0;42m"
 	}
 	colorOff := ui.Reset
 	text := message
@@ -346,7 +346,7 @@ func DrawIndicatorAtRow(w *bytes.Buffer, cols, row int, message string, style Ba
 	}
 	colorOn := "\x1b[97;41m"
 	if style == BannerGreen {
-		colorOn = "\x1b[97;42m"
+		colorOn = "\x1b[38;2;0;0;0;42m"
 	}
 	colorOff := ui.Reset
 	text := message

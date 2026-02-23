@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/ptytest"
 )
 
@@ -93,7 +94,7 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 		if screen.Contains("no sessions available") || screen.Contains("Waiting for sessions") {
 			return nil
 		}
-		if !screen.Contains("lingon controls") || !screen.Contains("session: session_a") {
+		if !screen.Contains(mvu.HelpTitle()) || !screen.Contains("session: session_a") {
 			return fmt.Errorf("help overlay missing for session_a; screen:\n%s", screen.String())
 		}
 		return nil
@@ -112,7 +113,7 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 		if screen.Contains("no sessions available") || screen.Contains("Waiting for sessions") {
 			return nil
 		}
-		if !screen.Contains("lingon controls") || !screen.Contains("session: session_b") {
+		if !screen.Contains(mvu.HelpTitle()) || !screen.Contains("session: session_b") {
 			return fmt.Errorf("help overlay missing for session_b; screen:\n%s", screen.String())
 		}
 		return nil

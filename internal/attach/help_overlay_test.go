@@ -62,7 +62,7 @@ func TestHelpOverlayPersistsAcrossRenders(t *testing.T) {
 		if string(row) == "" {
 			continue
 		}
-		if bytes.Contains([]byte(string(row)), []byte("lingon controls")) {
+		if bytes.Contains([]byte(string(row)), []byte(mvu.HelpTitle())) {
 			found = true
 			break
 		}
