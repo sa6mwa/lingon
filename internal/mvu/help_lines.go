@@ -20,6 +20,7 @@ func HelpLines(state State) []string {
 		"",
 		"Ctrl+L c  new session",
 		"Ctrl+L Q  close session",
+		"Ctrl+L d  send Ctrl+D",
 		"Ctrl+L [  scrollback (PgUp/PgDn/w/s half page; Up/Down or p/n line; Home/End/a/d top/bottom; wheel scrolls)",
 		"Ctrl+L r  toggle respawn",
 		"Ctrl+L o  toggle offline (host local-only)",

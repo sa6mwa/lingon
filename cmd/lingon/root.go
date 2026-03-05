@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"pkt.systems/lingon"
+	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/pslog"
 )
 
@@ -52,6 +54,7 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	var authFile string
 	var shellPath string
 	var scrollbackLines int
+	var wallInactiveAfter string
 	var termName string
 	var respawn bool
 	var offline bool
@@ -60,6 +63,8 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	var logFile string
 	var traceEnabled bool
 	var traceFile string
+	headlessDefault := headlessAliasEnabled(os.Args[0])
+	var headlessMode bool
 
 	v := loader.Viper()
 	v.SetDefault("client.endpoint", lingon.DefaultClientEndpoint)
@@ -70,6 +75,7 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	v.SetDefault("terminal.respawn", lingon.DefaultTerminalRespawn)
 	v.SetDefault("terminal.theme", lingon.DefaultTerminalTheme)
 	v.SetDefault("terminal.hostname_only", lingon.DefaultTerminalHostnameOnly)
+	v.SetDefault("terminal.wall_inactive_after", lingon.DefaultWallInactiveAfterCSV)
 
 	cmd := &cobra.Command{
 		Use:           "lingon",
@@ -86,6 +92,23 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			envForeground := headless.IsForegroundEnv(os.Getenv(headless.EnvForeground))
+			headlessRequested := headlessMode || envForeground
+			if headlessRequested {
+				cfg, err := loader.Load()
+				if err != nil {
+					return err
+				}
+				cfgDir := configDirForLoader(loader)
+				if !envForeground {
+					return startHeadlessReexec(cmd, cfgDir)
+				}
+				if err := os.Unsetenv(headless.EnvForeground); err != nil {
+					return err
+				}
+				return runHeadlessForeground(cmd, loader, cfgDir, cfg)
+			}
+
 			cfg, err := loader.Load()
 			if err != nil {
 				return err
@@ -225,6 +248,7 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 
 	cmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "config file path")
 	cmd.PersistentFlags().BoolP("insecure", "k", false, "skip TLS verification")
+	cmd.PersistentFlags().BoolVarP(&headlessMode, "headless", "x", headlessDefault, "use local headless session mode")
 
 	flags := cmd.Flags()
 	flags.StringVarP(&endpoint, "endpoint", "e", lingon.DefaultClientEndpoint, "relay endpoint (https/wss base URL; assumes https:// if omitted)")
@@ -235,6 +259,7 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	flags.StringVar(&authFile, "auth-file", lingon.DefaultAuthPath(), "path to auth file")
 	flags.StringVar(&shellPath, "shell", "", "override login shell path")
 	flags.IntVar(&scrollbackLines, "scrollback-lines", lingon.DefaultScrollbackLines, "max scrollback lines to buffer")
+	flags.StringVar(&wallInactiveAfter, "wall-inactive-after", lingon.DefaultWallInactiveAfterCSV, "CSV inactivity levels for Ctrl+L w cycling in local headless mode; empty uses defaults")
 	flags.StringVar(&termName, "term", lingon.DefaultTerminalTermValue(), "TERM for the PTY session")
 	flags.BoolVarP(&respawn, "respawn", "r", lingon.DefaultTerminalRespawn, "respawn shell on exit (host sessions only)")
 	flags.BoolVarP(&offline, "offline", "o", false, "start host sessions offline (no relay publish/connect until Ctrl+L o)")
@@ -253,6 +278,7 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	cmd.AddCommand(NewLogoutCommand(loader))
 	cmd.AddCommand(NewUsersCommand(loader))
 	cmd.AddCommand(NewSessionsCommand(loader))
+	cmd.AddCommand(NewDetachCommand(loader))
 	cmd.AddCommand(NewThemesCommand())
 	cmd.AddCommand(NewServeCommand(loader))
 	cmd.AddCommand(NewTLSCommand())

@@ -299,6 +299,20 @@ func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File,
 				}
 			}
 		}
+		if command := frame.GetCommand(); command != nil {
+			switch command.GetKind() {
+			case protocolpb.CommandKind_COMMAND_KIND_SEND_EOF:
+				cp := []byte{0x04}
+				if h.OnInput != nil {
+					h.OnInput(cp)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case ptyInput <- cp:
+				}
+			}
+		}
 		if resize := frame.GetResize(); resize != nil {
 			cols := int(resize.Cols)
 			rows := int(resize.Rows)

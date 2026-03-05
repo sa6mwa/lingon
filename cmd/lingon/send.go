@@ -28,6 +28,11 @@ func NewSendCommand(loader *lingon.Loader) *cobra.Command {
 		Short: "Send input to a Lingon session",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			headlessMode, err := cmd.Flags().GetBool("headless")
+			if err != nil {
+				return err
+			}
+
 			cfg, err := loader.Load()
 			if err != nil {
 				return err
@@ -51,6 +56,63 @@ func NewSendCommand(loader *lingon.Loader) *cobra.Command {
 			defer func() {
 				_ = closer.Close()
 			}()
+			if headlessMode {
+				if shareToken != "" {
+					return fmt.Errorf("share token mode is unavailable for --headless send")
+				}
+				if accessToken != "" {
+					return fmt.Errorf("access token mode is unavailable for --headless send")
+				}
+				sessions, err := listLocalHeadlessSessions(configDirForLoader(loader))
+				if err != nil {
+					return err
+				}
+				if len(sessions) == 0 {
+					return fmt.Errorf("no local headless sessions available")
+				}
+				if len(args) == 0 {
+					return fmt.Errorf("input tokens are required; pass them after --")
+				}
+				argsBeforeDash := cmd.ArgsLenAtDash()
+				if argsBeforeDash > 1 {
+					return fmt.Errorf("at most one session id may be provided before -- in --headless mode")
+				}
+
+				sessionIndex := -1
+				for idx, session := range sessions {
+					if args[0] == session.ID {
+						sessionIndex = idx
+						break
+					}
+				}
+				if argsBeforeDash == 1 && sessionIndex < 0 {
+					return fmt.Errorf("headless session %q not found", args[0])
+				}
+
+				var target localHeadlessSession
+				inputTokens := args
+				if sessionIndex >= 0 {
+					target = sessions[sessionIndex]
+					inputTokens = args[1:]
+				} else {
+					target, err = firstLocalHeadlessSession(sessions)
+					if err != nil {
+						return err
+					}
+				}
+				if len(inputTokens) == 0 {
+					return fmt.Errorf("input tokens are required; pass them after --")
+				}
+				return lingon.SendInput(cmd.Context(), lingon.SendInputOptions{
+					Endpoint:       "local://headless",
+					UnixSocket:     target.SocketPath,
+					SessionID:      target.ID,
+					RequestControl: true,
+					Tokens:         inputTokens,
+					NoNewline:      noNewline,
+					Logger:         logger,
+				})
+			}
 
 			endpointValue := endpoint
 			if !cmd.Flags().Changed("endpoint") {

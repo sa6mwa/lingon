@@ -8,6 +8,7 @@ import (
 
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/authstore"
+	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/trace"
 	"pkt.systems/pslog"
@@ -15,13 +16,15 @@ import (
 
 // AttachOptions configures an attach client session.
 type AttachOptions struct {
-	Endpoint       string
-	SessionID      string
-	AccessToken    string
-	ShareToken     string
-	RequestControl bool
-	HostnameOnly   bool
-	Theme          string
+	Endpoint          string
+	SessionID         string
+	UnixSocket        string
+	HeadlessConfigDir string
+	AccessToken       string
+	ShareToken        string
+	RequestControl    bool
+	HostnameOnly      bool
+	Theme             string
 	// AuthFile is the path to the auth state file used for refresh.
 	AuthFile string
 	TLSDir   string
@@ -32,6 +35,43 @@ type AttachOptions struct {
 
 // Attach connects to a relay session and renders output locally.
 func Attach(ctx context.Context, opts AttachOptions) error {
+	if opts.HeadlessConfigDir != "" {
+		events, stopWatcher, err := headless.StartStateWatcher(ctx, opts.HeadlessConfigDir)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = stopWatcher()
+		}()
+		client := &attach.MultiClient{
+			Endpoint:           opts.Endpoint,
+			SessionID:          opts.SessionID,
+			RequestControl:     opts.RequestControl,
+			AllowOfflineToggle: true,
+			HostnameOnly:       opts.HostnameOnly,
+			Theme:              opts.Theme,
+			Logger:             opts.Logger,
+			Trace:              opts.Trace,
+			SessionSource:      headlessSessionSource(opts.HeadlessConfigDir),
+			SocketResolver:     headlessSocketResolver(opts.HeadlessConfigDir),
+			SessionEvents:      events,
+		}
+		return client.Run(ctx)
+	}
+	if opts.UnixSocket != "" {
+		client := &attach.Client{
+			Endpoint:           opts.Endpoint,
+			SessionID:          opts.SessionID,
+			UnixSocket:         opts.UnixSocket,
+			RequestControl:     opts.RequestControl,
+			AllowOfflineToggle: true,
+			HostnameOnly:       opts.HostnameOnly,
+			Theme:              opts.Theme,
+			Logger:             opts.Logger,
+			Trace:              opts.Trace,
+		}
+		return client.Run(ctx)
+	}
 	if opts.ShareToken != "" {
 		client := &attach.Client{
 			Endpoint:       opts.Endpoint,

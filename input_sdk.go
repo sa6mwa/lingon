@@ -15,6 +15,7 @@ import (
 // SendInputOptions configures a non-interactive attach input session.
 type SendInputOptions struct {
 	Endpoint       string
+	UnixSocket     string
 	SessionID      string
 	AccessToken    string
 	ShareToken     string
@@ -28,7 +29,7 @@ type SendInputOptions struct {
 
 // SendInput connects to a session and sends input tokens, then disconnects.
 func SendInput(ctx context.Context, opts SendInputOptions) error {
-	if opts.Endpoint == "" {
+	if opts.Endpoint == "" && opts.UnixSocket == "" {
 		return fmt.Errorf("endpoint is required")
 	}
 	if opts.SessionID == "" && opts.ShareToken == "" {
@@ -42,16 +43,18 @@ func SendInput(ctx context.Context, opts SendInputOptions) error {
 		return err
 	}
 	client := &attach.Client{
-		Endpoint:       opts.Endpoint,
-		SessionID:      opts.SessionID,
-		AccessToken:    opts.AccessToken,
-		ShareToken:     opts.ShareToken,
-		RequestControl: opts.RequestControl,
-		TLSDir:         opts.TLSDir,
-		Insecure:       opts.Insecure,
-		Logger:         opts.Logger,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
+		Endpoint:           opts.Endpoint,
+		SessionID:          opts.SessionID,
+		UnixSocket:         opts.UnixSocket,
+		AccessToken:        opts.AccessToken,
+		ShareToken:         opts.ShareToken,
+		RequestControl:     opts.RequestControl,
+		AllowOfflineToggle: true,
+		TLSDir:             opts.TLSDir,
+		Insecure:           opts.Insecure,
+		Logger:             opts.Logger,
+		Stdout:             io.Discard,
+		Stderr:             io.Discard,
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)

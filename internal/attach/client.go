@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/protocolpb"
@@ -56,12 +58,15 @@ type Client struct {
 	HostnameOnly   bool
 	TLSDir         string
 	Insecure       bool
+	UnixSocket     string
 	Theme          string
 	ClientID       string
-	Stdin          io.Reader
-	Stdout         io.Writer
-	Stderr         io.Writer
-	TermSize       func() (int, int)
+	// AllowOfflineToggle permits Ctrl+L o to be forwarded to a local host transport.
+	AllowOfflineToggle bool
+	Stdin              io.Reader
+	Stdout             io.Writer
+	Stderr             io.Writer
+	TermSize           func() (int, int)
 	// Clock controls time for timers and ping loops.
 	Clock clock.Clock
 	// NoHostTimeout controls how long to wait for the first snapshot before failing.
@@ -119,6 +124,8 @@ type Client struct {
 	OnSendHello func(error)
 	// OnWall is invoked when a wall frame arrives.
 	OnWall func(*protocolpb.Wall)
+	// OnRoutedHeadlessStatus handles routed status walls from local headless hosts.
+	OnRoutedHeadlessStatus func(*protocolpb.Wall)
 	// OnOverlayStateChange is invoked when overlay state changes asynchronously.
 	OnOverlayStateChange func()
 }
@@ -171,14 +178,18 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		c.Logger = logging.Default()
 	}
 	c.clock()
-	if c.Endpoint == "" {
+	if c.Endpoint == "" && c.UnixSocket == "" {
 		return fmt.Errorf("endpoint is required")
 	}
 	compositor := c.ensureCompositor()
+	endpointLabel := c.Endpoint
+	if endpointLabel == "" {
+		endpointLabel = "local://headless"
+	}
 	compositor.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
 		Clock:     c.clock(),
 		SessionID: c.SessionID,
-		Endpoint:  c.Endpoint,
+		Endpoint:  endpointLabel,
 		Theme:     theme.TUI(resolveThemeName(c.Theme)),
 	}})
 	c.setTheme(resolveThemeName(c.Theme))
@@ -194,9 +205,14 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	}
 	c.scrollbackMu.Unlock()
 
-	wsURL, httpURL, err := normalizeEndpoint(c.Endpoint)
-	if err != nil {
-		return err
+	wsURL := ""
+	httpURL := ""
+	if c.UnixSocket == "" {
+		var err error
+		wsURL, httpURL, err = normalizeEndpoint(c.Endpoint)
+		if err != nil {
+			return err
+		}
 	}
 
 	if c.ClientID == "" {
@@ -233,25 +249,34 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
 	}
 
-	clientTLS, err := clientTLSConfig(c.TLSDir, c.Insecure)
-	if err != nil {
-		return err
-	}
-
-	dialOptions := &websocket.DialOptions{
-		HTTPClient: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig:   clientTLS,
-				DisableKeepAlives: true,
+	dialOptions := &websocket.DialOptions{HTTPClient: &http.Client{}}
+	if c.UnixSocket != "" {
+		transport := &http.Transport{
+			DisableKeepAlives: true,
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				dialer := &net.Dialer{Timeout: 5 * time.Second}
+				return dialer.DialContext(ctx, "unix", c.UnixSocket)
 			},
-		},
+		}
+		dialOptions.HTTPClient.Transport = transport
+	} else {
+		clientTLS, err := clientTLSConfig(c.TLSDir, c.Insecure)
+		if err != nil {
+			return err
+		}
+		dialOptions.HTTPClient.Transport = &http.Transport{
+			TLSClientConfig:   clientTLS,
+			DisableKeepAlives: true,
+		}
 	}
 	if transport, ok := dialOptions.HTTPClient.Transport.(*http.Transport); ok && transport != nil {
 		defer transport.CloseIdleConnections()
 	}
 
 	wsEndpoint := wsURL + "/ws/client"
-	if c.ShareToken == "" {
+	if c.UnixSocket != "" {
+		wsEndpoint = "ws://unix/ws/client"
+	} else if c.ShareToken == "" {
 		if c.TokenRefresher != nil {
 			if _, err := c.refreshToken(ctx); err != nil {
 				return authExpiredError(c.Endpoint, err)
@@ -647,6 +672,27 @@ func (c *Client) SendInput(ctx context.Context, data []byte) error {
 	return c.writeFrame(ctx, ws, frame)
 }
 
+// SendCommand forwards a control command to the server.
+func (c *Client) SendCommand(ctx context.Context, kind protocolpb.CommandKind) error {
+	if kind == protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED {
+		return nil
+	}
+	if c.isViewOnly() {
+		c.showViewOnlyBanner(c.viewOnlyMessage())
+		return nil
+	}
+	c.mu.RLock()
+	ws := c.ws
+	c.mu.RUnlock()
+	if ws == nil {
+		return fmt.Errorf("client not connected")
+	}
+	frame := &protocolpb.Frame{
+		Payload: &protocolpb.Frame_Command{Command: &protocolpb.Command{Kind: kind}},
+	}
+	return c.writeFrame(ctx, ws, frame)
+}
+
 // SendResize forwards a resize request to the server.
 func (c *Client) SendResize(ctx context.Context, cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
@@ -776,6 +822,15 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 			continue
 		}
 		if wall := frame.GetWall(); wall != nil {
+			if headless.IsRoutedStatusSender(wall.GetSender()) {
+				if c.OnRoutedHeadlessStatus != nil {
+					c.OnRoutedHeadlessStatus(wall)
+					continue
+				}
+				if c.handleRoutedHeadlessStatus(wall) {
+					continue
+				}
+			}
 			if c.OnWall != nil {
 				c.OnWall(wall)
 			}
@@ -1387,6 +1442,67 @@ func (c *Client) handleWall(wall *protocolpb.Wall) {
 	})
 }
 
+func (c *Client) handleRoutedHeadlessStatus(wall *protocolpb.Wall) bool {
+	if wall == nil || !headless.IsRoutedStatusSender(wall.GetSender()) {
+		return false
+	}
+	message := strings.TrimSpace(wall.GetMessage())
+	if message == "" {
+		return true
+	}
+	input := mvu.StatusInput{
+		Endpoint: c.Endpoint,
+		Message:  message,
+	}
+	switch wall.GetSender() {
+	case headless.RoutedStatusSenderConnected:
+		input.Kind = mvu.StatusConnected
+		timeout := wallTimeout(wall)
+		if timeout <= 0 {
+			timeout = 3 * time.Second
+		}
+		input.Duration = timeout
+	case headless.RoutedStatusSenderLost:
+		input.Kind = mvu.StatusConnectionLost
+	case headless.RoutedStatusSenderBackoff:
+		input.Kind = mvu.StatusConnectionBackoff
+		if wall.TimeoutSeconds > 0 {
+			input.Remaining = time.Duration(wall.TimeoutSeconds) * time.Second
+		}
+	case headless.RoutedStatusSenderInfo:
+		input.Kind = mvu.StatusConnected
+		timeout := wallTimeout(wall)
+		if timeout <= 0 {
+			timeout = 2 * time.Second
+		}
+		input.Duration = timeout
+	case headless.RoutedStatusSenderError:
+		input.Kind = mvu.StatusError
+		timeout := wallTimeout(wall)
+		if timeout <= 0 {
+			timeout = 2 * time.Second
+		}
+		input.Duration = timeout
+	default:
+		return false
+	}
+	effect := c.ensureCompositor().ApplyAction(mvu.StatusAction{Input: input})
+	c.RenderCurrent()
+	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
+		Scheduler: c.effects,
+		Ctx:       c.runCtx,
+		Key:       mvu.EffectKeyStateExpiry,
+		Result:    effect,
+		Callback: func(_ bool) {
+			if cb := c.OnOverlayStateChange; cb != nil {
+				cb()
+			}
+			c.RenderCurrent()
+		},
+	})
+	return true
+}
+
 func (c *Client) toggleWallInactivity(ctx context.Context) {
 	if strings.TrimSpace(c.ShareToken) != "" {
 		c.showViewOnlyBanner("wall inactivity toggle unavailable for share sessions")
@@ -1532,6 +1648,7 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 	var prefix control.Prefix
 	pending := make([]byte, 0, 2048)
 	var scrollState scrollInputState
+	var mouseFilter mouseReportFilter
 	for {
 		select {
 		case <-ctx.Done():
@@ -1544,6 +1661,9 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				c.Logger.Debug("attach.stdin.read.failed", "err", err)
 			}
 			return
+		}
+		if n == 0 {
+			continue
 		}
 		data := buf[:n]
 		pending = pending[:0]
@@ -1602,13 +1722,45 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				case control.ActionQuit:
 					_ = ws.Close(websocket.StatusNormalClosure, "detached")
 					return false
+				case control.ActionSendCtrlD:
+					if err := c.SendCommand(ctx, protocolpb.CommandKind_COMMAND_KIND_SEND_EOF); err != nil {
+						c.Logger.Debug("attach.ws.write.failed", "err", err)
+						c.setError(err)
+						return false
+					}
 				case control.ActionScrollback:
 					c.setScrollbackActive(true)
 					c.renderCurrent()
 				case control.ActionToggleWallInactivity:
-					c.toggleWallInactivity(ctx)
+					if c.AllowOfflineToggle {
+						if err := c.SendCommand(ctx, protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY); err != nil {
+							c.Logger.Debug("attach.ws.write.failed", "err", err)
+							c.setError(err)
+							return false
+						}
+					} else {
+						c.toggleWallInactivity(ctx)
+					}
+				case control.ActionToggleRespawn:
+					if c.AllowOfflineToggle {
+						if err := c.SendCommand(ctx, protocolpb.CommandKind_COMMAND_KIND_TOGGLE_RESPAWN); err != nil {
+							c.Logger.Debug("attach.ws.write.failed", "err", err)
+							c.setError(err)
+							return false
+						}
+					} else {
+						c.showInfoStatus("respawn toggle is host local-only")
+					}
 				case control.ActionToggleOffline:
-					c.showInfoStatus("offline toggle is host local-only")
+					if c.AllowOfflineToggle {
+						if err := c.SendCommand(ctx, protocolpb.CommandKind_COMMAND_KIND_TOGGLE_OFFLINE); err != nil {
+							c.Logger.Debug("attach.ws.write.failed", "err", err)
+							c.setError(err)
+							return false
+						}
+					} else {
+						c.showInfoStatus("offline toggle is host local-only")
+					}
 				case control.ActionNextTheme:
 					c.cycleTheme()
 				}
@@ -1628,6 +1780,7 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 			}
 			return true
 		}
+		filtered := make([]byte, 0, 8)
 		for _, b := range data {
 			if c.ScrollbackActive() {
 				cmd := scrollState.feed(b)
@@ -1669,8 +1822,11 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				}
 				continue
 			}
-			if !processNormalByte(b) {
-				return
+			filtered = filterMouseByte(&mouseFilter, b, filtered)
+			for _, fb := range filtered {
+				if !processNormalByte(fb) {
+					return
+				}
 			}
 		}
 		if !flushPending() {

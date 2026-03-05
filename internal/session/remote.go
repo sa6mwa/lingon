@@ -892,6 +892,34 @@ func (m *remoteManager) SendInput(ctx context.Context, sessionID string, data []
 	return nil
 }
 
+func (m *remoteManager) SendCommand(ctx context.Context, sessionID string, kind protocolpb.CommandKind, stdout io.Writer) error {
+	if kind == protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED {
+		return nil
+	}
+	m.mu.Lock()
+	view := m.views[sessionID]
+	disabled := m.disabled[sessionID]
+	if view != nil && view.disabled {
+		disabled = true
+	}
+	awaiting := view != nil && view.awaiting
+	m.mu.Unlock()
+	if disabled || awaiting {
+		m.Enable(ctx, sessionID, stdout)
+		return nil
+	}
+	if view == nil || view.client == nil {
+		m.Enable(ctx, sessionID, stdout)
+		return nil
+	}
+	if err := view.client.SendCommand(ctx, kind); err != nil {
+		m.Enable(ctx, sessionID, stdout)
+		return nil
+	}
+	m.logViewState("send_command", view, nil)
+	return nil
+}
+
 func (m *remoteManager) notifyOverlayChange(sessionID string) {
 	if sessionID == "" {
 		return

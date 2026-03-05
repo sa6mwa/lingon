@@ -22,6 +22,7 @@ message Frame {
     Sessions sessions = 20;
     Wall wall = 21;
     SessionClosed session_closed = 22;
+    Command command = 23;
   }
 }
 
@@ -94,6 +95,18 @@ message Out {
 
 message In {
   bytes data = 1;
+}
+
+enum CommandKind {
+  COMMAND_KIND_UNSPECIFIED = 0;
+  COMMAND_KIND_SEND_EOF = 1;
+  COMMAND_KIND_TOGGLE_OFFLINE = 2;
+  COMMAND_KIND_TOGGLE_RESPAWN = 3;
+  COMMAND_KIND_CYCLE_WALL_INACTIVITY = 4;
+}
+
+message Command {
+  CommandKind kind = 1;
 }
 
 message Resize {

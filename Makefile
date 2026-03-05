@@ -130,6 +130,8 @@ test-all:
 
 install: $(BIN)
 	$(INSTALL) -m $(INSTALL_MODE) $(BIN) $(BINDIR)/lingon
+	rm -f $(BINDIR)/lingonx
+	ln -s lingon $(BINDIR)/lingonx
 
 release: build android-release
 	@mkdir -p $(dir $(BIN))

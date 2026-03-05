@@ -49,6 +49,7 @@ type Publisher struct {
 	Logger            pslog.Logger
 	OnInput           func([]byte)
 	OnResize          func(cols, rows int)
+	OnCommand         func(kind protocolpb.CommandKind)
 	OnControl         func(holderID string)
 	OnFrame           func(*protocolpb.Frame)
 	OnSessions        func([]*protocolpb.SessionInfo)
@@ -571,6 +572,10 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 		}
 		if in := frame.GetIn(); in != nil && p.OnInput != nil {
 			p.OnInput(in.Data)
+			continue
+		}
+		if command := frame.GetCommand(); command != nil && p.OnCommand != nil {
+			p.OnCommand(command.GetKind())
 			continue
 		}
 		if resize := frame.GetResize(); resize != nil && p.OnResize != nil {

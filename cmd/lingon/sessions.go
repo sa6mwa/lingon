@@ -22,6 +22,21 @@ func NewSessionsCommand(loader *lingon.Loader) *cobra.Command {
 		Use:   "sessions",
 		Short: "List and manage sessions",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			headlessMode, err := cmd.Flags().GetBool("headless")
+			if err != nil {
+				return err
+			}
+			if headlessMode {
+				if _, err := loader.Load(); err != nil {
+					return err
+				}
+				sessions, err := listLocalHeadlessSessions(configDirForLoader(loader))
+				if err != nil {
+					return err
+				}
+				return printJSON(cmd.OutOrStdout(), sessions)
+			}
+
 			cfg, err := loader.Load()
 			if err != nil {
 				return err

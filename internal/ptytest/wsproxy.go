@@ -74,6 +74,8 @@ func (r *WSRecorder) record(role string, dir Direction, data []byte) {
 			rec.Payload = "welcome"
 		case *protocolpb.Frame_In:
 			rec.Payload = "input"
+		case *protocolpb.Frame_Command:
+			rec.Payload = "command"
 		case *protocolpb.Frame_Resize:
 			rec.Payload = "resize"
 		case *protocolpb.Frame_Control:

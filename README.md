@@ -144,6 +144,30 @@ Interactive host options (selection):
 - `--log-file` client log file path (empty disables)
 - `--trace`, `--trace-file` write a JSONL trace
 
+### Headless local PTY host
+
+Run a detached local PTY host (no local interactive host TUI), accessible through
+local unix-socket attach/send/sessions commands:
+
+```bash
+lingon -x -s local-shell
+```
+
+You can also invoke the same mode by binary name:
+
+```bash
+lingonx -s local-shell
+```
+
+(`lingonx` includes symlink invocations where `argv[0]` basename is `lingonx`.)
+
+Headless local mode notes:
+
+- `-x, --headless` switches root/attach/send/sessions to local headless mode.
+- Metadata and sockets are stored under `~/.lingon/headless/`.
+- `lingon attach -x` works even when relay publishing is offline/disconnected.
+- In `attach -x`, `Ctrl+l o` is local-host control and is allowed.
+
 ### Attach
 
 Attach to a session over a TUI client:
@@ -161,6 +185,7 @@ lingon attach --token <token>
 Attach options (selection):
 
 - `-e, --endpoint` relay endpoint (https/wss base URL; assumes `https://` if omitted)
+- `-x, --headless` attach via local headless unix socket sessions
 - `-t, --token` share token for anonymous attach
 - `--access-token` access token for authenticated attach
 - `--request-control` request controller lease on connect
@@ -311,10 +336,15 @@ config values; use absolute paths or relative paths instead.
 - `lingon serve` - run relay server
 - `lingon login` - authenticate and cache tokens
 - `lingon` - start an interactive host session (default command)
+- `lingon -x` / `lingonx` - start a detached local headless PTY host session
 - `lingon attach` - attach to a session
+- `lingon attach -x` - attach to a local headless PTY session
 - `lingon send` - send input to a session
+- `lingon send -x` - send input to a local headless PTY session
 - `lingon users` - manage users
 - `lingon sessions` - list sessions
+- `lingon sessions -x` - list local headless PTY sessions
+- `lingon detach <session-id>` - force-stop a local headless PTY session
 - `lingon share` - create/revoke share tokens
 - `lingon tls` - manage TLS assets
 - `lingon completion` - generate shell completion scripts

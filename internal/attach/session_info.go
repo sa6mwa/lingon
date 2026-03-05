@@ -7,6 +7,7 @@ type SessionInfo struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name,omitempty"`
 	Status       string    `json:"status"`
+	Offline      bool      `json:"offline,omitempty"`
 	LastActiveAt time.Time `json:"last_active_at"`
 }
 

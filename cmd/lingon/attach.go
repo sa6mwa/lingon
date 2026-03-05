@@ -40,6 +40,11 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 		Short: "Attach to a Lingon session",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			headlessMode, err := cmd.Flags().GetBool("headless")
+			if err != nil {
+				return err
+			}
+
 			cfg, err := loader.Load()
 			if err != nil {
 				return err
@@ -63,6 +68,87 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 			defer func() {
 				_ = closer.Close()
 			}()
+
+			var sessionID string
+			if len(args) > 0 {
+				sessionID = args[0]
+			}
+			if pick && sessionID != "" {
+				return fmt.Errorf("cannot use --pick with an explicit session id")
+			}
+
+			themeValue := themeName
+			if !cmd.Flags().Changed("theme") {
+				themeValue = cfg.Terminal.Theme
+			}
+			hostnameOnlyValue := hostnameOnly
+			if !cmd.Flags().Changed("hostname-only") {
+				hostnameOnlyValue = cfg.Terminal.HostnameOnly
+			}
+			resolvedTheme, err := resolveTheme(themeValue)
+			if err != nil {
+				return err
+			}
+
+			startedAt := time.Now()
+			traceWriter, tracePath, err := setupTrace(traceEnabled, traceFile)
+			if err != nil {
+				return err
+			}
+			if traceWriter != nil {
+				defer func() {
+					_ = traceWriter.Close()
+					fmt.Fprintln(cmd.OutOrStdout(), formatItalicGray(fmt.Sprintf("-- trace saved to %s --", tracePath)))
+				}()
+			}
+
+			if headlessMode {
+				if shareToken != "" {
+					return fmt.Errorf("share token mode is unavailable for --headless attach")
+				}
+				if accessToken != "" {
+					return fmt.Errorf("access token mode is unavailable for --headless attach")
+				}
+				sessions, err := listLocalHeadlessSessions(configDirForLoader(loader))
+				if err != nil {
+					return err
+				}
+				if pick {
+					selected, err := chooseSession(localSessionsAsRelaySessions(sessions))
+					if err != nil {
+						return err
+					}
+					if selected == "" {
+						return fmt.Errorf("no local headless sessions available")
+					}
+					sessionID = selected
+				}
+				if len(sessions) == 0 {
+					return fmt.Errorf("no local headless sessions available")
+				}
+				if sessionID != "" {
+					if _, err := findLocalHeadlessSession(sessions, sessionID); err != nil {
+						return err
+					}
+				}
+				err = lingon.Attach(cmd.Context(), lingon.AttachOptions{
+					Endpoint:          "local://headless",
+					SessionID:         sessionID,
+					HeadlessConfigDir: configDirForLoader(loader),
+					RequestControl:    requestControl,
+					HostnameOnly:      hostnameOnlyValue,
+					Theme:             resolvedTheme,
+					Logger:            logger,
+					Trace:             traceWriter,
+				})
+				if err != nil {
+					return err
+				}
+				elapsed := time.Since(startedAt).Round(time.Second)
+				fmt.Fprintln(cmd.OutOrStdout(), formatItalicGray(fmt.Sprintf("-- detached (attached for %s) --", elapsed)))
+				return nil
+			}
+
 			endpointValue := endpoint
 			if !cmd.Flags().Changed("endpoint") {
 				endpointValue = cfg.Client.Endpoint
@@ -85,14 +171,6 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 			if !cmd.Flags().Changed("auth-file") {
 				authPath = cfg.Client.AuthFile
 			}
-			var sessionID string
-			if len(args) > 0 {
-				sessionID = args[0]
-			}
-
-			if pick && sessionID != "" {
-				return fmt.Errorf("cannot use --pick with an explicit session id")
-			}
 			if pick && shareToken != "" {
 				return fmt.Errorf("cannot use --pick with a share token")
 			}
@@ -114,19 +192,6 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 			} else if cmd.Flags().Changed("access-token") && !cmd.Flags().Changed("auth-file") {
 				authPathValue = ""
 			}
-			themeValue := themeName
-			if !cmd.Flags().Changed("theme") {
-				themeValue = cfg.Terminal.Theme
-			}
-			hostnameOnlyValue := hostnameOnly
-			if !cmd.Flags().Changed("hostname-only") {
-				hostnameOnlyValue = cfg.Terminal.HostnameOnly
-			}
-			resolvedTheme, err := resolveTheme(themeValue)
-			if err != nil {
-				return err
-			}
-
 			if pick {
 				sessions, err := lingon.ListSessionsWithTLSDirInsecure(cmd.Context(), endpointValue, tokenValue, tlsDir, insecure)
 				if err != nil {
@@ -151,18 +216,6 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 					return fmt.Errorf("no sessions available")
 				}
 				sessionID = sessions[0].ID
-			}
-
-			startedAt := time.Now()
-			traceWriter, tracePath, err := setupTrace(traceEnabled, traceFile)
-			if err != nil {
-				return err
-			}
-			if traceWriter != nil {
-				defer func() {
-					_ = traceWriter.Close()
-					fmt.Fprintln(cmd.OutOrStdout(), formatItalicGray(fmt.Sprintf("-- trace saved to %s --", tracePath)))
-				}()
 			}
 			err = lingon.Attach(cmd.Context(), lingon.AttachOptions{
 				Endpoint:       endpointValue,
@@ -250,6 +303,23 @@ func attachSessionCompletion(loader *lingon.Loader, endpoint, accessToken, authF
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) > 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		headlessMode, err := cmd.Flags().GetBool("headless")
+		if err == nil && headlessMode {
+			if _, loadErr := loader.Load(); loadErr != nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			sessions, listErr := listLocalHeadlessSessions(configDirForLoader(loader))
+			if listErr != nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			suggestions := make([]string, 0, len(sessions))
+			for _, session := range sessions {
+				if strings.HasPrefix(session.ID, toComplete) {
+					suggestions = append(suggestions, session.ID)
+				}
+			}
+			return suggestions, cobra.ShellCompDirectiveNoFileComp
 		}
 
 		cfg, err := loader.Load()

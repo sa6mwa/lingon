@@ -337,10 +337,10 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 		return host.Send(ctx, frame)
 	}
 
-	// Control policy: any client input/resize can take control if scope allows.
+	// Control policy: any client input/resize/command can take control if scope allows.
 	controlChanged := false
 	if conn.Scope() == ShareScopeControl {
-		if frame.GetIn() != nil || frame.GetResize() != nil {
+		if frame.GetIn() != nil || frame.GetResize() != nil || frame.GetCommand() != nil {
 			if state.controller != conn.ID() {
 				state.controller = conn.ID()
 				controlChanged = true
@@ -354,7 +354,7 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 	}
 	h.mu.Unlock()
 
-	if conn.Scope() != ShareScopeControl && (frame.GetIn() != nil || frame.GetResize() != nil) {
+	if conn.Scope() != ShareScopeControl && (frame.GetIn() != nil || frame.GetResize() != nil || frame.GetCommand() != nil) {
 		return fmt.Errorf("control not permitted")
 	}
 

@@ -14,6 +14,8 @@ const (
 	ActionNone Action = iota
 	// ActionQuit quits the local session/attach.
 	ActionQuit
+	// ActionSendCtrlD sends an explicit Ctrl-D to the remote session.
+	ActionSendCtrlD
 	// ActionNewPTY creates a new local PTY session.
 	ActionNewPTY
 	// ActionToggleRespawn toggles respawn for the active local session.
@@ -48,6 +50,10 @@ func (p *Prefix) Feed(b byte) (Action, []byte) {
 		switch b {
 		case 'Q':
 			return ActionQuit, nil
+		case 'd', 'D':
+			return ActionSendCtrlD, nil
+		case 'l', 'L':
+			return ActionNone, []byte{CtrlL}
 		case 'c', 'C':
 			return ActionNewPTY, nil
 		case 'r', 'R':

@@ -60,11 +60,62 @@ type Options struct {
 	DisableRaw       bool
 	Logger           pslog.Logger
 	// Clock controls time-based behavior (reconnects, overlays).
-	Clock          clock.Clock
-	OnPTYRead      func([]byte)
-	OnPublishFrame func(*protocolpb.Frame)
-	OnSnapshot     func(terminal.Snapshot)
-	Trace          *trace.Writer
+	Clock           clock.Clock
+	OnPTYRead       func([]byte)
+	OnPublishFrame  func(*protocolpb.Frame)
+	OnPublishStatus func(PublishStatus)
+	OnPublishWall   func(*protocolpb.Wall)
+	OnStatus        func(StatusUpdate)
+	// ToggleWallInactivityFallback handles local-only wall inactivity cycling
+	// when relay-backed toggle is unavailable.
+	ToggleWallInactivityFallback func(context.Context, string) (WallInactivityToggleResult, error)
+	OnSnapshot                   func(terminal.Snapshot)
+	Trace                        *trace.Writer
+}
+
+// PublishStatusKind identifies host publish connectivity transitions.
+type PublishStatusKind string
+
+const (
+	// PublishStatusConnected indicates relay connectivity was restored.
+	PublishStatusConnected PublishStatusKind = "connected"
+	// PublishStatusConnectionLost indicates relay connectivity was lost.
+	PublishStatusConnectionLost PublishStatusKind = "connection_lost"
+	// PublishStatusConnectionBackoff indicates reconnect backoff countdown is active.
+	PublishStatusConnectionBackoff PublishStatusKind = "connection_backoff"
+)
+
+// PublishStatus describes a host publish connectivity state change.
+type PublishStatus struct {
+	SessionID string
+	Kind      PublishStatusKind
+	Message   string
+	Endpoint  string
+	Remaining time.Duration
+}
+
+// StatusKind identifies generic status banner kinds.
+type StatusKind string
+
+const (
+	// StatusKindInfo maps to a non-error status banner.
+	StatusKindInfo StatusKind = "info"
+	// StatusKindError maps to an error status banner.
+	StatusKindError StatusKind = "error"
+)
+
+// StatusUpdate describes a transient status banner update.
+type StatusUpdate struct {
+	SessionID string
+	Kind      StatusKind
+	Message   string
+	Duration  time.Duration
+}
+
+// WallInactivityToggleResult describes post-toggle wall inactivity state.
+type WallInactivityToggleResult struct {
+	Enabled       bool
+	InactiveAfter string
 }
 
 // Runner executes a local interactive session with optional relay publishing.
@@ -122,6 +173,8 @@ type Runner struct {
 	scrollbackMu      sync.Mutex
 	scrollbackView    mvu.ScrollbackViewport
 	scrollbackSession string
+
+	tokenRefresher func(context.Context) (string, error)
 
 	themeName string
 }
@@ -261,6 +314,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.opts.Publish && r.opts.Token == "" && tokenRefresher == nil {
 		return fmt.Errorf("access token is required when publishing")
 	}
+	r.tokenRefresher = tokenRefresher
 
 	ctx, cancel := context.WithCancel(ctx)
 	r.stopFunc = cancel
@@ -516,6 +570,40 @@ func (r *Runner) Run(ctx context.Context) error {
 							return true
 						}
 						r.closeLocalSession(activeID, stdout, stdin)
+					case control.ActionSendCtrlD:
+						eof := []byte{0x04}
+						if activeLocal {
+							local := r.localSession(activeID)
+							if local == nil {
+								return true
+							}
+							for {
+								if _, err := local.writePTY(eof); err != nil {
+									if errors.Is(err, errPTYNotReady) {
+										if r.logger != nil {
+											r.logger.Debug("session.pty.write.waiting", "session", activeID)
+										}
+										select {
+										case <-sigCtx.Done():
+											return false
+										default:
+										}
+										r.clock.Sleep(10 * time.Millisecond)
+										continue
+									}
+									r.logger.Debug("session.pty.write.failed", "err", err, "session", activeID)
+									return true
+								}
+								break
+							}
+							r.noteLocalEnterInput(activeID, eof)
+							return true
+						}
+						if r.remoteSessions != nil {
+							if err := r.remoteSessions.SendCommand(sigCtx, activeID, protocolpb.CommandKind_COMMAND_KIND_SEND_EOF, stdout); err != nil {
+								r.logger.Debug("session.remote.command.failed", "session", activeID, "kind", protocolpb.CommandKind_COMMAND_KIND_SEND_EOF.String(), "err", err)
+							}
+						}
 					case control.ActionNewPTY:
 						r.createLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput)
 					case control.ActionScrollback:
@@ -525,14 +613,7 @@ func (r *Runner) Run(ctx context.Context) error {
 							r.showStatus("respawn toggle is local-only", stdout, 2*time.Second)
 							return true
 						}
-						if local := r.localSession(activeID); local != nil {
-							enabled := local.ToggleRespawn()
-							if enabled {
-								r.showStatus("respawn enabled", stdout, 2*time.Second)
-							} else {
-								r.showStatus("respawn disabled", stdout, 2*time.Second)
-							}
-						}
+						r.toggleRespawn(activeID, stdout)
 					case control.ActionToggleOffline:
 						if !activeLocal {
 							r.showErrorStatus("offline toggle is host local-only", stdout, 2*time.Second)
@@ -1585,6 +1666,21 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			if session.Offline() {
 				return
 			}
+			if r.opts.OnPublishStatus != nil {
+				status := PublishStatus{
+					SessionID: session.ID(),
+					Endpoint:  endpointLabel,
+					Remaining: 0,
+				}
+				if connected {
+					status.Kind = PublishStatusConnected
+					status.Message = mvu.ConnectedToMessage(endpointLabel)
+				} else {
+					status.Kind = PublishStatusConnectionLost
+					status.Message = mvu.ConnectionLostMessage(endpointLabel)
+				}
+				r.opts.OnPublishStatus(status)
+			}
 			if gate != nil {
 				if connected {
 					gate.Allow()
@@ -1614,6 +1710,15 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			if session.Offline() {
 				return
 			}
+			if r.opts.OnPublishStatus != nil {
+				r.opts.OnPublishStatus(PublishStatus{
+					SessionID: session.ID(),
+					Kind:      PublishStatusConnectionBackoff,
+					Message:   mvu.ConnectionLostBackoffMessage(endpointLabel, remaining),
+					Endpoint:  endpointLabel,
+					Remaining: remaining,
+				})
+			}
 			if gate != nil {
 				gate.BlockFor(remaining)
 			}
@@ -1635,6 +1740,9 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 		}
 		publisher.OnInput = func(data []byte) {
 			r.handleRemoteInput(session, data, debugRemoteInput)
+		}
+		publisher.OnCommand = func(kind protocolpb.CommandKind) {
+			r.HandleSessionCommand(session.ctx, session.ID(), kind)
 		}
 		publisher.OnResize = func(cols, rows int) {
 			if cols <= 0 || rows <= 0 {
@@ -1662,6 +1770,9 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 		publisher.OnWall = func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
+			}
+			if r.opts.OnPublishWall != nil {
+				r.opts.OnPublishWall(wall)
 			}
 			r.showWall(wall, stdout)
 		}
@@ -2019,6 +2130,14 @@ func (r *Runner) showStatus(message string, stdout *os.File, d time.Duration) {
 	if message == "" {
 		return
 	}
+	if r.opts.OnStatus != nil {
+		r.opts.OnStatus(StatusUpdate{
+			SessionID: r.opts.SessionID,
+			Kind:      StatusKindInfo,
+			Message:   message,
+			Duration:  d,
+		})
+	}
 	effect := r.runtime().ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{
 		Kind:     mvu.StatusConnected,
 		Message:  message,
@@ -2030,6 +2149,14 @@ func (r *Runner) showStatus(message string, stdout *os.File, d time.Duration) {
 func (r *Runner) showErrorStatus(message string, stdout *os.File, d time.Duration) {
 	if message == "" {
 		return
+	}
+	if r.opts.OnStatus != nil {
+		r.opts.OnStatus(StatusUpdate{
+			SessionID: r.opts.SessionID,
+			Kind:      StatusKindError,
+			Message:   message,
+			Duration:  d,
+		})
 	}
 	effect := r.runtime().ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{
 		Kind:     mvu.StatusError,
@@ -2118,6 +2245,24 @@ func (r *Runner) showWall(wall *protocolpb.Wall, stdout *os.File) {
 	})
 }
 
+func (r *Runner) toggleRespawn(sessionID string, stdout *os.File) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	local := r.localSession(sessionID)
+	if local == nil {
+		r.showStatus("respawn toggle is local-only", stdout, 2*time.Second)
+		return
+	}
+	enabled := local.ToggleRespawn()
+	if enabled {
+		r.showStatus("respawn enabled", stdout, 2*time.Second)
+		return
+	}
+	r.showStatus("respawn disabled", stdout, 2*time.Second)
+}
+
 func (r *Runner) toggleOffline(sessionID string, stdout *os.File) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -2148,11 +2293,37 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 	if sessionID == "" {
 		return
 	}
+	fallbackToggle := func() bool {
+		if r.opts.ToggleWallInactivityFallback == nil {
+			return false
+		}
+		result, err := r.opts.ToggleWallInactivityFallback(ctx, sessionID)
+		if err != nil {
+			r.showErrorStatus("wall inactivity toggle failed", stdout, 2*time.Second)
+			return true
+		}
+		if result.Enabled {
+			status := "wall inactivity on"
+			if label := strings.TrimSpace(result.InactiveAfter); label != "" {
+				status = "wall inactivity " + label
+			}
+			r.showStatus(status, stdout, 2*time.Second)
+			return true
+		}
+		r.showStatus("wall inactivity off", stdout, 2*time.Second)
+		return true
+	}
 	if local := r.localSession(sessionID); local != nil && local.Offline() {
+		if fallbackToggle() {
+			return
+		}
 		r.showErrorStatus("wall inactivity requires online session", stdout, 2*time.Second)
 		return
 	}
 	if strings.TrimSpace(r.opts.Endpoint) == "" {
+		if fallbackToggle() {
+			return
+		}
 		r.showStatus("wall inactivity requires relay endpoint", stdout, 2*time.Second)
 		return
 	}
@@ -2160,6 +2331,9 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 	if token == "" && tokenRefresher != nil {
 		refreshed, err := tokenRefresher(ctx)
 		if err != nil {
+			if fallbackToggle() {
+				return
+			}
 			r.showErrorStatus("wall inactivity toggle failed: token refresh", stdout, 2*time.Second)
 			return
 		}
@@ -2169,6 +2343,9 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		}
 	}
 	if token == "" {
+		if fallbackToggle() {
+			return
+		}
 		r.showStatus("wall inactivity requires authentication", stdout, 2*time.Second)
 		return
 	}
@@ -2181,6 +2358,9 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		r.opts.Insecure,
 	)
 	if err != nil {
+		if fallbackToggle() {
+			return
+		}
 		r.showErrorStatus("wall inactivity toggle failed", stdout, 2*time.Second)
 		return
 	}

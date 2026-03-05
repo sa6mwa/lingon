@@ -78,3 +78,13 @@ linters:
   - Row-1 base repaint followed by row-1 tab overlay repaint as separate visible phases.
 - Regression tests enforcing this invariant are permanent and must not be removed or weakened.
 - Do not remove or soften these tests. Ask the developer three times before touching this.
+
+## Regression discipline (mandatory)
+- Every user-reported bug must be converted into a failing regression test before the fix is merged.
+- For TUI/attach/headless flows, regressions must be real PTY integration tests (`ptytest`) that drive actual keypresses and assert observable screen/state outcomes.
+- For timing-sensitive behavior, tests must use injected `clock.Clock` and explicitly advance mock time; do not rely on wall-clock sleeps or polling loops as proof of correctness.
+- A bug is not marked resolved until:
+  - the new regression test fails before the fix,
+  - passes after the fix,
+  - and relevant existing suites still pass.
+- If a report contains multiple failure modes, add one explicit assertion per failure mode (or separate tests) so coverage is auditable.

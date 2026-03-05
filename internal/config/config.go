@@ -49,11 +49,12 @@ type ClientConfig struct {
 
 // TerminalConfig configures local terminal emulation defaults.
 type TerminalConfig struct {
-	Term            string `mapstructure:"term" yaml:"term"`
-	Respawn         bool   `mapstructure:"respawn" yaml:"respawn"`
-	ScrollbackLines int    `mapstructure:"scrollback_lines" yaml:"scrollback_lines"`
-	Theme           string `mapstructure:"theme" yaml:"theme"`
-	HostnameOnly    bool   `mapstructure:"hostname_only" yaml:"hostname_only"`
+	Term              string `mapstructure:"term" yaml:"term"`
+	Respawn           bool   `mapstructure:"respawn" yaml:"respawn"`
+	ScrollbackLines   int    `mapstructure:"scrollback_lines" yaml:"scrollback_lines"`
+	Theme             string `mapstructure:"theme" yaml:"theme"`
+	HostnameOnly      bool   `mapstructure:"hostname_only" yaml:"hostname_only"`
+	WallInactiveAfter string `mapstructure:"wall_inactive_after" yaml:"wall_inactive_after"`
 }
 
 // TLSConfig configures TLS behavior for the relay/server.
@@ -97,6 +98,11 @@ func NewLoader() *Loader {
 // Viper exposes the underlying Viper instance for flag binding and defaults.
 func (l *Loader) Viper() *viper.Viper {
 	return l.v
+}
+
+// ConfigFileUsed reports the resolved config path used by Viper, if any.
+func (l *Loader) ConfigFileUsed() string {
+	return l.v.ConfigFileUsed()
 }
 
 // SetConfigFile sets an explicit config file path.

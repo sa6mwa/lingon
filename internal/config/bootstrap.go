@@ -43,10 +43,12 @@ func BootstrapConfig() Config {
 			LoginNonInteractive: false,
 		},
 		Terminal: TerminalConfig{
-			Term:            DefaultTerminalTermValue(),
-			Respawn:         DefaultTerminalRespawn,
-			ScrollbackLines: DefaultScrollbackLines,
-			Theme:           DefaultTerminalTheme,
+			Term:              DefaultTerminalTermValue(),
+			Respawn:           DefaultTerminalRespawn,
+			ScrollbackLines:   DefaultScrollbackLines,
+			Theme:             DefaultTerminalTheme,
+			HostnameOnly:      DefaultTerminalHostnameOnly,
+			WallInactiveAfter: DefaultWallInactiveAfterCSV,
 		},
 	}
 }

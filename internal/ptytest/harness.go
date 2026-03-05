@@ -426,6 +426,7 @@ type HostOptions struct {
 	Cols        int
 	Rows        int
 	Clock       clock.Clock
+	DisableRaw  bool
 	// AccessToken overrides the harness default access token.
 	AccessToken string
 	// AuthFile is the path to the auth state file used for refresh.
@@ -485,6 +486,7 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		Publish:     true,
 		Stdin:       slave,
 		Stdout:      slave,
+		DisableRaw:  opts.DisableRaw,
 		Clock:       clk,
 		Trace:       h.trace,
 	})
@@ -613,10 +615,20 @@ type MultiAttachOptions struct {
 	SessionID string
 	Cols      int
 	Rows      int
+	// Endpoint overrides the harness relay endpoint.
+	Endpoint string
 	// AccessToken overrides the harness default access token.
 	AccessToken string
 	// AuthFile is the path to the auth state file used for refresh.
 	AuthFile string
+	// AllowOfflineToggle forwards Ctrl+L o to local host transports.
+	AllowOfflineToggle bool
+	// SessionSource overrides relay /sessions with a custom local source.
+	SessionSource func(context.Context) ([]attach.SessionInfo, error)
+	// SocketResolver maps session id to a unix domain socket path.
+	SocketResolver func(sessionID string) (string, error)
+	// SessionEvents triggers immediate local session-list refreshes.
+	SessionEvents <-chan struct{}
 	// Clock controls attach time in tests.
 	Clock clock.Clock
 	// OnView is called when a session view is created.
@@ -633,6 +645,9 @@ type MultiAttachOptions struct {
 	InactiveTTL time.Duration
 	// RefreshInterval overrides the default session refresh interval.
 	RefreshInterval time.Duration
+	// RequestControl overrides the default control request behavior.
+	// Nil means default true for test backward compatibility.
+	RequestControl *bool
 }
 
 // StartMultiAttach launches a multi-session attach client attached to a PTY.
@@ -667,28 +682,40 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 	if token == "" {
 		token = h.accessToken
 	}
-	if opts.AuthFile == "" && opts.AccessToken == "" {
+	if opts.AuthFile == "" && opts.AccessToken == "" && opts.SessionSource == nil {
 		opts.AuthFile = h.authPath
 	}
-	client := &attach.MultiClient{
-		Endpoint:        h.endpoint,
-		AccessToken:     token,
-		RequestControl:  true,
-		SessionID:       opts.SessionID,
-		Stdin:           slave,
-		Stdout:          slave,
-		Stderr:          io.Discard,
-		TermSize:        size.Size,
-		AuthFile:        opts.AuthFile,
-		Clock:           clk,
-		OnView:          opts.OnView,
-		OnReconnect:     opts.OnReconnect,
-		OnViewClosed:    opts.OnViewClosed,
-		OnActive:        opts.OnActive,
-		BackoffPolicy:   opts.BackoffPolicy,
-		InactiveTTL:     opts.InactiveTTL,
-		RefreshInterval: opts.RefreshInterval,
+	endpoint := opts.Endpoint
+	if endpoint == "" {
+		endpoint = h.endpoint
 	}
+	client := &attach.MultiClient{
+		Endpoint:           endpoint,
+		AccessToken:        token,
+		SessionID:          opts.SessionID,
+		Stdin:              slave,
+		Stdout:             slave,
+		Stderr:             io.Discard,
+		TermSize:           size.Size,
+		AuthFile:           opts.AuthFile,
+		AllowOfflineToggle: opts.AllowOfflineToggle,
+		SessionSource:      opts.SessionSource,
+		SocketResolver:     opts.SocketResolver,
+		SessionEvents:      opts.SessionEvents,
+		Clock:              clk,
+		OnView:             opts.OnView,
+		OnReconnect:        opts.OnReconnect,
+		OnViewClosed:       opts.OnViewClosed,
+		OnActive:           opts.OnActive,
+		BackoffPolicy:      opts.BackoffPolicy,
+		InactiveTTL:        opts.InactiveTTL,
+		RefreshInterval:    opts.RefreshInterval,
+	}
+	requestControl := true
+	if opts.RequestControl != nil {
+		requestControl = *opts.RequestControl
+	}
+	client.RequestControl = requestControl
 
 	go func() {
 		sess.runErr <- client.Run(sess.ctx)

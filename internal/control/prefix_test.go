@@ -42,6 +42,10 @@ func TestPrefixTabActions(t *testing.T) {
 func TestPrefixSessionActions(t *testing.T) {
 	var p Prefix
 	_, _ = p.Feed(CtrlL)
+	if action, out := p.Feed('d'); action != ActionSendCtrlD || len(out) != 0 {
+		t.Fatalf("expected send ctrl+d action, got action=%v out=%v", action, out)
+	}
+	_, _ = p.Feed(CtrlL)
 	if action, out := p.Feed('c'); action != ActionNewPTY || len(out) != 0 {
 		t.Fatalf("expected new pty action, got action=%v out=%v", action, out)
 	}
@@ -80,6 +84,18 @@ func TestPrefixLiteralCtrlL(t *testing.T) {
 	}
 	if len(out) != 1 || out[0] != CtrlL {
 		t.Fatalf("expected literal ctrl+l, got %v", out)
+	}
+}
+
+func TestPrefixLiteralCtrlLWithLShortcut(t *testing.T) {
+	var p Prefix
+	_, _ = p.Feed(CtrlL)
+	action, out := p.Feed('l')
+	if action != ActionNone {
+		t.Fatalf("expected no action, got %v", action)
+	}
+	if len(out) != 1 || out[0] != CtrlL {
+		t.Fatalf("expected literal ctrl+l via l shortcut, got %v", out)
 	}
 }
 

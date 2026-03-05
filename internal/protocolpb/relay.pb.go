@@ -21,6 +21,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type CommandKind int32
+
+const (
+	CommandKind_COMMAND_KIND_UNSPECIFIED           CommandKind = 0
+	CommandKind_COMMAND_KIND_SEND_EOF              CommandKind = 1
+	CommandKind_COMMAND_KIND_TOGGLE_OFFLINE        CommandKind = 2
+	CommandKind_COMMAND_KIND_TOGGLE_RESPAWN        CommandKind = 3
+	CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY CommandKind = 4
+)
+
+// Enum value maps for CommandKind.
+var (
+	CommandKind_name = map[int32]string{
+		0: "COMMAND_KIND_UNSPECIFIED",
+		1: "COMMAND_KIND_SEND_EOF",
+		2: "COMMAND_KIND_TOGGLE_OFFLINE",
+		3: "COMMAND_KIND_TOGGLE_RESPAWN",
+		4: "COMMAND_KIND_CYCLE_WALL_INACTIVITY",
+	}
+	CommandKind_value = map[string]int32{
+		"COMMAND_KIND_UNSPECIFIED":           0,
+		"COMMAND_KIND_SEND_EOF":              1,
+		"COMMAND_KIND_TOGGLE_OFFLINE":        2,
+		"COMMAND_KIND_TOGGLE_RESPAWN":        3,
+		"COMMAND_KIND_CYCLE_WALL_INACTIVITY": 4,
+	}
+)
+
+func (x CommandKind) Enum() *CommandKind {
+	p := new(CommandKind)
+	*p = x
+	return p
+}
+
+func (x CommandKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CommandKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_protocolpb_relay_proto_enumTypes[0].Descriptor()
+}
+
+func (CommandKind) Type() protoreflect.EnumType {
+	return &file_internal_protocolpb_relay_proto_enumTypes[0]
+}
+
+func (x CommandKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CommandKind.Descriptor instead.
+func (CommandKind) EnumDescriptor() ([]byte, []int) {
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{0}
+}
+
 type Frame struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -40,6 +95,7 @@ type Frame struct {
 	//	*Frame_Sessions
 	//	*Frame_Wall
 	//	*Frame_SessionClosed
+	//	*Frame_Command
 	Payload       isFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -213,6 +269,15 @@ func (x *Frame) GetSessionClosed() *SessionClosed {
 	return nil
 }
 
+func (x *Frame) GetCommand() *Command {
+	if x != nil {
+		if x, ok := x.Payload.(*Frame_Command); ok {
+			return x.Command
+		}
+	}
+	return nil
+}
+
 type isFrame_Payload interface {
 	isFrame_Payload()
 }
@@ -269,6 +334,10 @@ type Frame_SessionClosed struct {
 	SessionClosed *SessionClosed `protobuf:"bytes,22,opt,name=session_closed,json=sessionClosed,proto3,oneof"`
 }
 
+type Frame_Command struct {
+	Command *Command `protobuf:"bytes,23,opt,name=command,proto3,oneof"`
+}
+
 func (*Frame_Hello) isFrame_Payload() {}
 
 func (*Frame_Welcome) isFrame_Payload() {}
@@ -294,6 +363,8 @@ func (*Frame_Sessions) isFrame_Payload() {}
 func (*Frame_Wall) isFrame_Payload() {}
 
 func (*Frame_SessionClosed) isFrame_Payload() {}
+
+func (*Frame_Command) isFrame_Payload() {}
 
 type Hello struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -971,6 +1042,50 @@ func (x *In) GetData() []byte {
 	return nil
 }
 
+type Command struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          CommandKind            `protobuf:"varint,1,opt,name=kind,proto3,enum=lingon.protocol.CommandKind" json:"kind,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Command) Reset() {
+	*x = Command{}
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Command) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Command) ProtoMessage() {}
+
+func (x *Command) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Command.ProtoReflect.Descriptor instead.
+func (*Command) Descriptor() ([]byte, []int) {
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *Command) GetKind() CommandKind {
+	if x != nil {
+		return x.Kind
+	}
+	return CommandKind_COMMAND_KIND_UNSPECIFIED
+}
+
 type Resize struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Cols          uint32                 `protobuf:"varint,1,opt,name=cols,proto3" json:"cols,omitempty"`
@@ -981,7 +1096,7 @@ type Resize struct {
 
 func (x *Resize) Reset() {
 	*x = Resize{}
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[10]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -993,7 +1108,7 @@ func (x *Resize) String() string {
 func (*Resize) ProtoMessage() {}
 
 func (x *Resize) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[10]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1006,7 +1121,7 @@ func (x *Resize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Resize.ProtoReflect.Descriptor instead.
 func (*Resize) Descriptor() ([]byte, []int) {
-	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{10}
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Resize) GetCols() uint32 {
@@ -1032,7 +1147,7 @@ type Control struct {
 
 func (x *Control) Reset() {
 	*x = Control{}
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[11]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1044,7 +1159,7 @@ func (x *Control) String() string {
 func (*Control) ProtoMessage() {}
 
 func (x *Control) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[11]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1057,7 +1172,7 @@ func (x *Control) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Control.ProtoReflect.Descriptor instead.
 func (*Control) Descriptor() ([]byte, []int) {
-	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{11}
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Control) GetHolderClientId() string {
@@ -1078,7 +1193,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[12]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1090,7 +1205,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[12]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1103,7 +1218,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{12}
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Error) GetMessage() string {
@@ -1137,7 +1252,7 @@ type Cursor struct {
 
 func (x *Cursor) Reset() {
 	*x = Cursor{}
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[13]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1149,7 +1264,7 @@ func (x *Cursor) String() string {
 func (*Cursor) ProtoMessage() {}
 
 func (x *Cursor) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[13]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1162,7 +1277,7 @@ func (x *Cursor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Cursor.ProtoReflect.Descriptor instead.
 func (*Cursor) Descriptor() ([]byte, []int) {
-	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{13}
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Cursor) GetX() uint32 {
@@ -1188,7 +1303,7 @@ type Sessions struct {
 
 func (x *Sessions) Reset() {
 	*x = Sessions{}
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[14]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1200,7 +1315,7 @@ func (x *Sessions) String() string {
 func (*Sessions) ProtoMessage() {}
 
 func (x *Sessions) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[14]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1213,7 +1328,7 @@ func (x *Sessions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Sessions.ProtoReflect.Descriptor instead.
 func (*Sessions) Descriptor() ([]byte, []int) {
-	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{14}
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Sessions) GetSessions() []*SessionInfo {
@@ -1235,7 +1350,7 @@ type SessionInfo struct {
 
 func (x *SessionInfo) Reset() {
 	*x = SessionInfo{}
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[15]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1247,7 +1362,7 @@ func (x *SessionInfo) String() string {
 func (*SessionInfo) ProtoMessage() {}
 
 func (x *SessionInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[15]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1260,7 +1375,7 @@ func (x *SessionInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionInfo.ProtoReflect.Descriptor instead.
 func (*SessionInfo) Descriptor() ([]byte, []int) {
-	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{15}
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SessionInfo) GetId() string {
@@ -1302,7 +1417,7 @@ type Wall struct {
 
 func (x *Wall) Reset() {
 	*x = Wall{}
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[16]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1314,7 +1429,7 @@ func (x *Wall) String() string {
 func (*Wall) ProtoMessage() {}
 
 func (x *Wall) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[16]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1327,7 +1442,7 @@ func (x *Wall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Wall.ProtoReflect.Descriptor instead.
 func (*Wall) Descriptor() ([]byte, []int) {
-	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{16}
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Wall) GetSender() string {
@@ -1360,7 +1475,7 @@ type SessionClosed struct {
 
 func (x *SessionClosed) Reset() {
 	*x = SessionClosed{}
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[17]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1372,7 +1487,7 @@ func (x *SessionClosed) String() string {
 func (*SessionClosed) ProtoMessage() {}
 
 func (x *SessionClosed) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protocolpb_relay_proto_msgTypes[17]
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1385,7 +1500,7 @@ func (x *SessionClosed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionClosed.ProtoReflect.Descriptor instead.
 func (*SessionClosed) Descriptor() ([]byte, []int) {
-	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{17}
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SessionClosed) GetReason() string {
@@ -1399,7 +1514,7 @@ var File_internal_protocolpb_relay_proto protoreflect.FileDescriptor
 
 const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\n" +
-	"\x1finternal/protocolpb/relay.proto\x12\x0flingon.protocol\"\xe7\x05\n" +
+	"\x1finternal/protocolpb/relay.proto\x12\x0flingon.protocol\"\x9d\x06\n" +
 	"\x05Frame\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x10\n" +
@@ -1419,7 +1534,8 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"scrollback\x127\n" +
 	"\bsessions\x18\x14 \x01(\v2\x19.lingon.protocol.SessionsH\x00R\bsessions\x12+\n" +
 	"\x04wall\x18\x15 \x01(\v2\x15.lingon.protocol.WallH\x00R\x04wall\x12G\n" +
-	"\x0esession_closed\x18\x16 \x01(\v2\x1e.lingon.protocol.SessionClosedH\x00R\rsessionClosedB\t\n" +
+	"\x0esession_closed\x18\x16 \x01(\v2\x1e.lingon.protocol.SessionClosedH\x00R\rsessionClosed\x124\n" +
+	"\acommand\x18\x17 \x01(\v2\x18.lingon.protocol.CommandH\x00R\acommandB\t\n" +
 	"\apayload\"\xad\x01\n" +
 	"\x05Hello\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x12\n" +
@@ -1478,7 +1594,9 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\x03Out\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\"\x18\n" +
 	"\x02In\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\"0\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\";\n" +
+	"\aCommand\x120\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1c.lingon.protocol.CommandKindR\x04kind\"0\n" +
 	"\x06Resize\x12\x12\n" +
 	"\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\rR\x04rows\"3\n" +
@@ -1503,7 +1621,13 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12'\n" +
 	"\x0ftimeout_seconds\x18\x03 \x01(\rR\x0etimeoutSeconds\"'\n" +
 	"\rSessionClosed\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reasonB3Z1pkt.systems/lingon/internal/protocolpb;protocolpbb\x06proto3"
+	"\x06reason\x18\x01 \x01(\tR\x06reason*\xb0\x01\n" +
+	"\vCommandKind\x12\x1c\n" +
+	"\x18COMMAND_KIND_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15COMMAND_KIND_SEND_EOF\x10\x01\x12\x1f\n" +
+	"\x1bCOMMAND_KIND_TOGGLE_OFFLINE\x10\x02\x12\x1f\n" +
+	"\x1bCOMMAND_KIND_TOGGLE_RESPAWN\x10\x03\x12&\n" +
+	"\"COMMAND_KIND_CYCLE_WALL_INACTIVITY\x10\x04B3Z1pkt.systems/lingon/internal/protocolpb;protocolpbb\x06proto3"
 
 var (
 	file_internal_protocolpb_relay_proto_rawDescOnce sync.Once
@@ -1517,51 +1641,56 @@ func file_internal_protocolpb_relay_proto_rawDescGZIP() []byte {
 	return file_internal_protocolpb_relay_proto_rawDescData
 }
 
-var file_internal_protocolpb_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_internal_protocolpb_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_internal_protocolpb_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_internal_protocolpb_relay_proto_goTypes = []any{
-	(*Frame)(nil),         // 0: lingon.protocol.Frame
-	(*Hello)(nil),         // 1: lingon.protocol.Hello
-	(*Welcome)(nil),       // 2: lingon.protocol.Welcome
-	(*Snapshot)(nil),      // 3: lingon.protocol.Snapshot
-	(*DiffRow)(nil),       // 4: lingon.protocol.DiffRow
-	(*Diff)(nil),          // 5: lingon.protocol.Diff
-	(*ScrollbackRow)(nil), // 6: lingon.protocol.ScrollbackRow
-	(*Scrollback)(nil),    // 7: lingon.protocol.Scrollback
-	(*Out)(nil),           // 8: lingon.protocol.Out
-	(*In)(nil),            // 9: lingon.protocol.In
-	(*Resize)(nil),        // 10: lingon.protocol.Resize
-	(*Control)(nil),       // 11: lingon.protocol.Control
-	(*Error)(nil),         // 12: lingon.protocol.Error
-	(*Cursor)(nil),        // 13: lingon.protocol.Cursor
-	(*Sessions)(nil),      // 14: lingon.protocol.Sessions
-	(*SessionInfo)(nil),   // 15: lingon.protocol.SessionInfo
-	(*Wall)(nil),          // 16: lingon.protocol.Wall
-	(*SessionClosed)(nil), // 17: lingon.protocol.SessionClosed
+	(CommandKind)(0),      // 0: lingon.protocol.CommandKind
+	(*Frame)(nil),         // 1: lingon.protocol.Frame
+	(*Hello)(nil),         // 2: lingon.protocol.Hello
+	(*Welcome)(nil),       // 3: lingon.protocol.Welcome
+	(*Snapshot)(nil),      // 4: lingon.protocol.Snapshot
+	(*DiffRow)(nil),       // 5: lingon.protocol.DiffRow
+	(*Diff)(nil),          // 6: lingon.protocol.Diff
+	(*ScrollbackRow)(nil), // 7: lingon.protocol.ScrollbackRow
+	(*Scrollback)(nil),    // 8: lingon.protocol.Scrollback
+	(*Out)(nil),           // 9: lingon.protocol.Out
+	(*In)(nil),            // 10: lingon.protocol.In
+	(*Command)(nil),       // 11: lingon.protocol.Command
+	(*Resize)(nil),        // 12: lingon.protocol.Resize
+	(*Control)(nil),       // 13: lingon.protocol.Control
+	(*Error)(nil),         // 14: lingon.protocol.Error
+	(*Cursor)(nil),        // 15: lingon.protocol.Cursor
+	(*Sessions)(nil),      // 16: lingon.protocol.Sessions
+	(*SessionInfo)(nil),   // 17: lingon.protocol.SessionInfo
+	(*Wall)(nil),          // 18: lingon.protocol.Wall
+	(*SessionClosed)(nil), // 19: lingon.protocol.SessionClosed
 }
 var file_internal_protocolpb_relay_proto_depIdxs = []int32{
-	1,  // 0: lingon.protocol.Frame.hello:type_name -> lingon.protocol.Hello
-	2,  // 1: lingon.protocol.Frame.welcome:type_name -> lingon.protocol.Welcome
-	3,  // 2: lingon.protocol.Frame.snapshot:type_name -> lingon.protocol.Snapshot
-	5,  // 3: lingon.protocol.Frame.diff:type_name -> lingon.protocol.Diff
-	8,  // 4: lingon.protocol.Frame.out:type_name -> lingon.protocol.Out
-	9,  // 5: lingon.protocol.Frame.in:type_name -> lingon.protocol.In
-	10, // 6: lingon.protocol.Frame.resize:type_name -> lingon.protocol.Resize
-	11, // 7: lingon.protocol.Frame.control:type_name -> lingon.protocol.Control
-	12, // 8: lingon.protocol.Frame.error:type_name -> lingon.protocol.Error
-	7,  // 9: lingon.protocol.Frame.scrollback:type_name -> lingon.protocol.Scrollback
-	14, // 10: lingon.protocol.Frame.sessions:type_name -> lingon.protocol.Sessions
-	16, // 11: lingon.protocol.Frame.wall:type_name -> lingon.protocol.Wall
-	17, // 12: lingon.protocol.Frame.session_closed:type_name -> lingon.protocol.SessionClosed
-	13, // 13: lingon.protocol.Snapshot.cursor:type_name -> lingon.protocol.Cursor
-	4,  // 14: lingon.protocol.Diff.diff_rows:type_name -> lingon.protocol.DiffRow
-	13, // 15: lingon.protocol.Diff.cursor:type_name -> lingon.protocol.Cursor
-	6,  // 16: lingon.protocol.Scrollback.rows:type_name -> lingon.protocol.ScrollbackRow
-	15, // 17: lingon.protocol.Sessions.sessions:type_name -> lingon.protocol.SessionInfo
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	2,  // 0: lingon.protocol.Frame.hello:type_name -> lingon.protocol.Hello
+	3,  // 1: lingon.protocol.Frame.welcome:type_name -> lingon.protocol.Welcome
+	4,  // 2: lingon.protocol.Frame.snapshot:type_name -> lingon.protocol.Snapshot
+	6,  // 3: lingon.protocol.Frame.diff:type_name -> lingon.protocol.Diff
+	9,  // 4: lingon.protocol.Frame.out:type_name -> lingon.protocol.Out
+	10, // 5: lingon.protocol.Frame.in:type_name -> lingon.protocol.In
+	12, // 6: lingon.protocol.Frame.resize:type_name -> lingon.protocol.Resize
+	13, // 7: lingon.protocol.Frame.control:type_name -> lingon.protocol.Control
+	14, // 8: lingon.protocol.Frame.error:type_name -> lingon.protocol.Error
+	8,  // 9: lingon.protocol.Frame.scrollback:type_name -> lingon.protocol.Scrollback
+	16, // 10: lingon.protocol.Frame.sessions:type_name -> lingon.protocol.Sessions
+	18, // 11: lingon.protocol.Frame.wall:type_name -> lingon.protocol.Wall
+	19, // 12: lingon.protocol.Frame.session_closed:type_name -> lingon.protocol.SessionClosed
+	11, // 13: lingon.protocol.Frame.command:type_name -> lingon.protocol.Command
+	15, // 14: lingon.protocol.Snapshot.cursor:type_name -> lingon.protocol.Cursor
+	5,  // 15: lingon.protocol.Diff.diff_rows:type_name -> lingon.protocol.DiffRow
+	15, // 16: lingon.protocol.Diff.cursor:type_name -> lingon.protocol.Cursor
+	7,  // 17: lingon.protocol.Scrollback.rows:type_name -> lingon.protocol.ScrollbackRow
+	0,  // 18: lingon.protocol.Command.kind:type_name -> lingon.protocol.CommandKind
+	17, // 19: lingon.protocol.Sessions.sessions:type_name -> lingon.protocol.SessionInfo
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_internal_protocolpb_relay_proto_init() }
@@ -1583,19 +1712,21 @@ func file_internal_protocolpb_relay_proto_init() {
 		(*Frame_Sessions)(nil),
 		(*Frame_Wall)(nil),
 		(*Frame_SessionClosed)(nil),
+		(*Frame_Command)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_protocolpb_relay_proto_rawDesc), len(file_internal_protocolpb_relay_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   18,
+			NumEnums:      1,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_internal_protocolpb_relay_proto_goTypes,
 		DependencyIndexes: file_internal_protocolpb_relay_proto_depIdxs,
+		EnumInfos:         file_internal_protocolpb_relay_proto_enumTypes,
 		MessageInfos:      file_internal_protocolpb_relay_proto_msgTypes,
 	}.Build()
 	File_internal_protocolpb_relay_proto = out.File

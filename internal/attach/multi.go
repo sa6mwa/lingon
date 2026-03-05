@@ -21,9 +21,11 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/netgate"
+	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/retryafter"
 	"pkt.systems/lingon/internal/theme"
@@ -40,12 +42,23 @@ type MultiClient struct {
 	SessionID      string
 	TLSDir         string
 	Insecure       bool
-	Stdin          io.Reader
-	Stdout         io.Writer
-	Stderr         io.Writer
-	TermSize       func() (int, int)
-	Logger         pslog.Logger
-	Theme          string
+	// SessionSource lists sessions for tab discovery/refresh.
+	// When nil, sessions are fetched from relay /sessions.
+	SessionSource func(context.Context) ([]SessionInfo, error)
+	// SocketResolver maps a session id to a unix domain socket path.
+	// Used for local transports (for example headless local PTY mode).
+	SocketResolver func(sessionID string) (string, error)
+	// AllowOfflineToggle forwards Ctrl+L o to local transports.
+	AllowOfflineToggle bool
+	// SessionEvents triggers immediate session-list refreshes.
+	// Intended for local transports to avoid long polling intervals.
+	SessionEvents <-chan struct{}
+	Stdin         io.Reader
+	Stdout        io.Writer
+	Stderr        io.Writer
+	TermSize      func() (int, int)
+	Logger        pslog.Logger
+	Theme         string
 	// AuthFile is the path to the auth state file used for refresh.
 	AuthFile string
 	// TokenRefresher returns a fresh access token when the current one is invalid.
@@ -115,7 +128,12 @@ type sessionView struct {
 	connectedOnce bool
 	reconnectAt   time.Time
 	reconnectGen  uint64
-	pendingInput  [][]byte
+	pendingOps    []pendingOp
+}
+
+type pendingOp struct {
+	input   []byte
+	command protocolpb.CommandKind
 }
 
 func selectRenderableView(views map[string]*sessionView, activeID string) (*sessionView, string) {
@@ -150,6 +168,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	if m.Endpoint == "" {
 		return fmt.Errorf("endpoint is required")
 	}
+	localSessionMode := m.SessionSource != nil
 	if m.Clock == nil {
 		m.Clock = clock.New()
 	}
@@ -160,27 +179,33 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		m.InactiveTTL = 60 * time.Second
 	}
 	if m.RefreshInterval == 0 {
-		m.RefreshInterval = 60 * time.Second
+		if !localSessionMode {
+			m.RefreshInterval = 60 * time.Second
+		}
 	}
-	if m.TokenRefresher == nil && m.AuthFile != "" {
+	if !localSessionMode && m.TokenRefresher == nil && m.AuthFile != "" {
 		m.TokenRefresher = relayclient.TokenRefresher(m.Endpoint, m.AuthFile, m.TLSDir, m.Insecure, func(token string) {
 			m.AccessToken = token
 		})
 	}
-	if m.AccessToken == "" && m.TokenRefresher != nil {
+	if !localSessionMode && m.AccessToken == "" && m.TokenRefresher != nil {
 		token, err := m.refreshToken(ctx)
 		if err != nil {
 			return authExpiredError(m.Endpoint, err)
 		}
 		m.AccessToken = token
 	}
-	if m.AccessToken == "" {
+	if !localSessionMode && m.AccessToken == "" {
 		return fmt.Errorf("access token is required")
 	}
 
-	_, httpURL, err := normalizeEndpoint(m.Endpoint)
-	if err != nil {
-		return err
+	httpURL := ""
+	if !localSessionMode {
+		_, normalizedHTTPURL, err := normalizeEndpoint(m.Endpoint)
+		if err != nil {
+			return err
+		}
+		httpURL = normalizedHTTPURL
 	}
 
 	ui := mvu.NewRuntime()
@@ -392,18 +417,39 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		current := make([]SessionInfo, len(sessions))
 		copy(current, sessions)
 		mu.Unlock()
+		muted := map[string]bool{}
+		for _, session := range current {
+			if session.Offline || strings.EqualFold(strings.TrimSpace(session.Status), "offline") {
+				muted[session.ID] = true
+			}
+		}
 		sources := mvu.SessionTabSourcesFrom(current)
 		ui.ApplyAction(mvu.SessionTabsAction{Input: mvu.SessionTabsInput{
 			Endpoint: m.Endpoint,
 			Sources:  sources,
 			ActiveID: active,
-			Options:  mvu.BuildSessionTabsOptions{},
+			Options: mvu.BuildSessionTabsOptions{
+				Muted: muted,
+			},
 		}})
 	}
 	renderTabs := func() {
 		_, client, _, _, _ := activeViewSnapshot()
 		if client == nil || !client.HasSnapshot() {
 			return
+		}
+		if !localSessionMode {
+			if snap := client.Snapshot(); snap != nil {
+				cols, rows := client.terminalSize()
+				if cols <= 0 || rows <= 0 {
+					cols, rows = int(snap.Cols), int(snap.Rows)
+				}
+				cursor := mvu.CursorFromSnapshot(snap, cols, rows)
+				if cursor.Row <= 1 {
+					client.SuppressTabsUntilCursorLeavesTopRow()
+					return
+				}
+			}
 		}
 		ui.ApplyAction(mvu.TabWakeAction{Duration: 0})
 		client.ForceTabsVisibleOnce()
@@ -421,7 +467,167 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			},
 		})
 	}
+	type routedHeadlessStatus struct {
+		Input     mvu.StatusInput
+		ExpiresAt time.Time
+		Sender    string
+	}
+	var routedStatusMu sync.Mutex
+	routedStatuses := make(map[string]routedHeadlessStatus)
+	applyConnectionStatus := func(input mvu.StatusInput) {
+		effect := ui.ApplyAction(mvu.StatusAction{Input: input})
+		renderActiveCurrent()
+		scheduleOverlayRedraw(effect)
+	}
+	clearConnectionStatus := func() {
+		effect := ui.ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{Kind: mvu.StatusClear}})
+		renderActiveCurrent()
+		scheduleOverlayRedraw(effect)
+	}
+	activeSessionID := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return activeID
+	}
+	activeSessionOffline := func(id string) bool {
+		if strings.TrimSpace(id) == "" {
+			return false
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, session := range sessions {
+			if session.ID != id {
+				continue
+			}
+			if session.Offline || strings.EqualFold(strings.TrimSpace(session.Status), "offline") {
+				return true
+			}
+			return false
+		}
+		return false
+	}
+	toggleActiveSessionOffline := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		id := strings.TrimSpace(activeID)
+		if id == "" {
+			return false
+		}
+		for i := range sessions {
+			if sessions[i].ID != id {
+				continue
+			}
+			sessions[i].Offline = !sessions[i].Offline
+			if sessions[i].Offline {
+				sessions[i].Status = "offline"
+			} else if strings.EqualFold(strings.TrimSpace(sessions[i].Status), "offline") {
+				sessions[i].Status = "running"
+			}
+			return true
+		}
+		return false
+	}
+	clearActiveRoutedStatus := func() {
+		current := activeSessionID()
+		if current == "" {
+			return
+		}
+		routedStatusMu.Lock()
+		delete(routedStatuses, current)
+		routedStatusMu.Unlock()
+		clearConnectionStatus()
+	}
+	syncActiveRoutedStatus := func() {
+		current := activeSessionID()
+		if current == "" {
+			return
+		}
+		isOffline := activeSessionOffline(current)
+		now := m.Clock.Now()
+		routedStatusMu.Lock()
+		status, ok := routedStatuses[current]
+		if ok && !status.ExpiresAt.IsZero() && !now.Before(status.ExpiresAt) {
+			delete(routedStatuses, current)
+			ok = false
+		}
+		routedStatusMu.Unlock()
+		if !ok {
+			clearConnectionStatus()
+			return
+		}
+		if isOffline {
+			switch status.Sender {
+			case headless.RoutedStatusSenderConnected, headless.RoutedStatusSenderLost, headless.RoutedStatusSenderBackoff:
+				clearConnectionStatus()
+				return
+			}
+		}
+		applyConnectionStatus(status.Input)
+	}
+	handleRoutedStatus := func(sessionID string, wall *protocolpb.Wall) {
+		if wall == nil || !headless.IsRoutedStatusSender(wall.GetSender()) {
+			return
+		}
+		message := strings.TrimSpace(wall.GetMessage())
+		if message == "" {
+			return
+		}
+		input := mvu.StatusInput{
+			Endpoint: m.Endpoint,
+			Message:  message,
+		}
+		expiresAt := time.Time{}
+		switch wall.GetSender() {
+		case headless.RoutedStatusSenderConnected:
+			input.Kind = mvu.StatusConnected
+			timeout := wallTimeout(wall)
+			if timeout <= 0 {
+				timeout = 3 * time.Second
+			}
+			input.Duration = timeout
+			expiresAt = m.Clock.Now().Add(timeout)
+		case headless.RoutedStatusSenderLost:
+			input.Kind = mvu.StatusConnectionLost
+		case headless.RoutedStatusSenderBackoff:
+			input.Kind = mvu.StatusConnectionBackoff
+			if wall.GetTimeoutSeconds() > 0 {
+				input.Remaining = time.Duration(wall.GetTimeoutSeconds()) * time.Second
+			}
+		case headless.RoutedStatusSenderInfo:
+			input.Kind = mvu.StatusConnected
+			timeout := wallTimeout(wall)
+			if timeout <= 0 {
+				timeout = 2 * time.Second
+			}
+			input.Duration = timeout
+			expiresAt = m.Clock.Now().Add(timeout)
+		case headless.RoutedStatusSenderError:
+			input.Kind = mvu.StatusError
+			timeout := wallTimeout(wall)
+			if timeout <= 0 {
+				timeout = 2 * time.Second
+			}
+			input.Duration = timeout
+			expiresAt = m.Clock.Now().Add(timeout)
+		default:
+			return
+		}
+
+		routedStatusMu.Lock()
+		routedStatuses[sessionID] = routedHeadlessStatus{
+			Input:     input,
+			ExpiresAt: expiresAt,
+			Sender:    strings.TrimSpace(wall.GetSender()),
+		}
+		routedStatusMu.Unlock()
+		// Resolve through active-session state every time so inactive-session
+		// updates cannot transiently overwrite the visible banner.
+		syncActiveRoutedStatus()
+	}
 	updateDisconnectOverlay = func() {
+		if localSessionMode {
+			return
+		}
 		waitMu.Lock()
 		waitingActive := waitCtrl.Waiting()
 		until := waitCtrl.WaitUntil()
@@ -488,9 +694,20 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		if m.Logger != nil {
 			m.Logger.Debug("attach.view.connect.start", "session", session.ID, "visible", visible, "has_prev", prev != nil)
 		}
-		if m.TokenRefresher != nil {
+		if !localSessionMode && m.TokenRefresher != nil {
 			if _, err := m.refreshToken(ctx); err != nil {
 				return nil, authExpiredError(m.Endpoint, err)
+			}
+		}
+		unixSocket := ""
+		if m.SocketResolver != nil {
+			resolvedSocket, err := m.SocketResolver(session.ID)
+			if err != nil {
+				return nil, err
+			}
+			unixSocket = strings.TrimSpace(resolvedSocket)
+			if unixSocket == "" {
+				return nil, fmt.Errorf("session %q has no local socket", session.ID)
 			}
 		}
 		view := &sessionView{
@@ -510,20 +727,27 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			tokenRefresher = m.refreshToken
 		}
 		client := &Client{
-			Endpoint:       m.Endpoint,
-			SessionID:      session.ID,
-			AccessToken:    m.AccessToken,
-			RequestControl: visible && m.RequestControl,
-			HostnameOnly:   m.HostnameOnly,
-			TLSDir:         m.TLSDir,
-			Insecure:       m.Insecure,
-			Theme:          themeName,
-			Stdin:          io.NopCloser(strings.NewReader("")),
-			TermSize:       termSize,
-			Logger:         m.Logger,
-			TokenRefresher: tokenRefresher,
-			Clock:          m.Clock,
-			Trace:          m.Trace,
+			Endpoint:           m.Endpoint,
+			SessionID:          session.ID,
+			UnixSocket:         unixSocket,
+			AccessToken:        m.AccessToken,
+			RequestControl:     visible && m.RequestControl,
+			AllowOfflineToggle: m.AllowOfflineToggle,
+			HostnameOnly:       m.HostnameOnly,
+			TLSDir:             m.TLSDir,
+			Insecure:           m.Insecure,
+			Theme:              themeName,
+			Stdin:              io.NopCloser(strings.NewReader("")),
+			TermSize:           termSize,
+			Logger:             m.Logger,
+			TokenRefresher:     tokenRefresher,
+			Clock:              m.Clock,
+			Trace:              m.Trace,
+		}
+		if localSessionMode {
+			client.OnRoutedHeadlessStatus = func(wall *protocolpb.Wall) {
+				handleRoutedStatus(session.ID, wall)
+			}
 		}
 		if prev != nil && prev.client != nil {
 			client.SeedFrom(prev.client)
@@ -534,7 +758,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				m.Logger.Debug("attach.view.ready", "session", session.ID)
 			}
 			showStatus := false
-			var pending [][]byte
+			var pending []pendingOp
 			mu.Lock()
 			view.connected = true
 			view.connecting = false
@@ -548,31 +772,39 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				view.hiddenAt = time.Time{}
 			}
 			showStatus = view.visible || activeID == session.ID
-			if len(view.pendingInput) > 0 {
-				pending = append(pending, view.pendingInput...)
-				view.pendingInput = nil
+			if len(view.pendingOps) > 0 {
+				pending = append(pending, view.pendingOps...)
+				view.pendingOps = nil
 			}
 			mu.Unlock()
 			for {
-				for _, out := range pending {
-					if len(out) == 0 {
+				for _, op := range pending {
+					if len(op.input) > 0 {
+						if err := client.SendInput(ctx, op.input); err != nil {
+							if m.Logger != nil {
+								m.Logger.Debug("attach.stdin.send.flush.failed", "session", session.ID, "err", err)
+							}
+						}
 						continue
 					}
-					if err := client.SendInput(ctx, out); err != nil {
+					if op.command == protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED {
+						continue
+					}
+					if err := client.SendCommand(ctx, op.command); err != nil {
 						if m.Logger != nil {
-							m.Logger.Debug("attach.stdin.send.flush.failed", "session", session.ID, "err", err)
+							m.Logger.Debug("attach.command.send.flush.failed", "session", session.ID, "kind", op.command.String(), "err", err)
 						}
 					}
 				}
 				pending = nil
 				mu.Lock()
-				if len(view.pendingInput) == 0 {
+				if len(view.pendingOps) == 0 {
 					view.flushingInput = false
 					mu.Unlock()
 					break
 				}
-				pending = append(pending, view.pendingInput...)
-				view.pendingInput = nil
+				pending = append(pending, view.pendingOps...)
+				view.pendingOps = nil
 				mu.Unlock()
 			}
 			m.Clock.AfterFunc(2*time.Second, func() {
@@ -589,6 +821,15 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				setTabs()
 			}
 			if showStatus {
+				cols, rows := client.terminalSize()
+				if cols == 0 || rows == 0 {
+					cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+				}
+				if localSessionMode || client.isController() {
+					_ = client.SendResize(ctx, cols, rows)
+				}
+			}
+			if showStatus && !localSessionMode {
 				showConnected(mvu.ConnectedToMessage(endpointLabel), 3*time.Second)
 			}
 			if showStatus && m.OnActive != nil {
@@ -756,7 +997,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			_, removedBySession := removedSessions[current.ID]
 			attempt := backoffAttempts[current.ID]
 			mu.Unlock()
-			if currentView.connectedOnce && !isTerminalHostError(err) {
+			if !localSessionMode && currentView.connectedOnce && !isTerminalHostError(err) {
 				result := ui.ApplyAction(mvu.AttachConnectivityAction{Input: mvu.AttachConnectivityInput{
 					Connected:     false,
 					ConnectedOnce: true,
@@ -878,9 +1119,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					continue
 				}
 				mu.Lock()
-				if len(currentView.pendingInput) > 0 {
-					nextView.pendingInput = append(nextView.pendingInput, currentView.pendingInput...)
-					currentView.pendingInput = nil
+				if len(currentView.pendingOps) > 0 {
+					nextView.pendingOps = append(nextView.pendingOps, currentView.pendingOps...)
+					currentView.pendingOps = nil
 				}
 				views[current.ID] = nextView
 				mu.Unlock()
@@ -934,9 +1175,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				if err != nil {
 					return err
 				}
-				if len(view.pendingInput) > 0 {
-					nextView.pendingInput = append(nextView.pendingInput, view.pendingInput...)
-					view.pendingInput = nil
+				if len(view.pendingOps) > 0 {
+					nextView.pendingOps = append(nextView.pendingOps, view.pendingOps...)
+					view.pendingOps = nil
 				}
 				if !reconnectAt.IsZero() {
 					nextView.reconnectAt = reconnectAt
@@ -954,6 +1195,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				}
 				renderActiveCurrent()
 				updateDisconnectOverlay()
+				if localSessionMode {
+					syncActiveRoutedStatus()
+				}
 				if m.OnActive != nil && changedActive {
 					m.OnActive(nextID)
 				}
@@ -975,6 +1219,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				renderActiveCurrent()
 			}
 			updateDisconnectOverlay()
+			if localSessionMode {
+				syncActiveRoutedStatus()
+			}
 			if m.OnActive != nil && changedActive {
 				m.OnActive(nextID)
 			}
@@ -1010,6 +1257,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		renderActiveCurrent()
 		updateDisconnectOverlay()
+		if localSessionMode {
+			syncActiveRoutedStatus()
+		}
 		if m.OnActive != nil && changedActive {
 			m.OnActive(nextID)
 		}
@@ -1048,7 +1298,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 		}
 		mu.Unlock()
-		if len(updated) == 0 && (allowWait || waitActive || isOffline() || transientEmpty) {
+		if !localSessionMode && len(updated) == 0 && (allowWait || waitActive || isOffline() || transientEmpty) {
 			if !waitActive {
 				startWaitForSessions()
 			} else {
@@ -1074,6 +1324,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		for id, view := range views {
 			if _, ok := allIDs[id]; ok {
 				continue
+			}
+			if localSessionMode {
+				routedStatusMu.Lock()
+				delete(routedStatuses, id)
+				routedStatusMu.Unlock()
 			}
 			view.removed = true
 			removedSessions[id] = struct{}{}
@@ -1104,7 +1359,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		mu.Unlock()
 		if len(sessions) > 0 {
 			stopWaitForSessions()
-			if !isOffline() {
+			if !localSessionMode && !isOffline() {
 				_ = ui.ApplyAction(mvu.AttachConnectivityAction{Input: mvu.AttachConnectivityInput{
 					Connected: true,
 					Endpoint:  endpointLabel,
@@ -1113,6 +1368,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 		}
 		setTabs()
+		if localSessionMode {
+			syncActiveRoutedStatus()
+		}
 		if shouldExit {
 			m.setFatal(errNoSessions)
 			cancel()
@@ -1164,31 +1422,51 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		return refreshSessions()
 	}
 
-	refreshTicker := m.Clock.NewTicker(m.RefreshInterval)
-	defer refreshTicker.Stop()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-refreshTicker.C:
+	var refreshTicker *clock.Ticker
+	if m.RefreshInterval > 0 {
+		refreshTicker = m.Clock.NewTicker(m.RefreshInterval)
+		defer refreshTicker.Stop()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-refreshTicker.C:
+				}
+				refreshSessions()
 			}
-			refreshSessions()
-		}
-	}()
+		}()
+	}
+	if m.SessionEvents != nil {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case _, ok := <-m.SessionEvents:
+					if !ok {
+						return
+					}
+					forceRefreshSessions()
+				}
+			}
+		}()
+	}
 
-	overlayTicker := m.Clock.NewTicker(time.Second)
-	defer overlayTicker.Stop()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-overlayTicker.C:
+	if !localSessionMode {
+		overlayTicker := m.Clock.NewTicker(time.Second)
+		defer overlayTicker.Stop()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-overlayTicker.C:
+				}
+				updateDisconnectOverlay()
 			}
-			updateDisconnectOverlay()
-		}
-	}()
+		}()
+	}
 
 	idleTicker := m.Clock.NewTicker(time.Second)
 	defer idleTicker.Stop()
@@ -1257,6 +1535,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	}()
 	var prefix control.Prefix
 	var scrollState scrollInputState
+	var mouseFilter mouseReportFilter
 	resolveNextTab := func(delta int) (string, string) {
 		mu.Lock()
 		current := make([]SessionInfo, len(sessions))
@@ -1311,6 +1590,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 			return err
 		case data := <-readCh:
+			if len(data) == 0 {
+				continue
+			}
 			if m.Logger != nil && len(data) > 0 {
 				m.Logger.Debug("attach.stdin.read", "bytes", len(data))
 			}
@@ -1331,6 +1613,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					return false
 				}
 				action, out := prefix.Feed(b)
+				cmdKind := protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED
+				cmdSet := false
 				if action != control.ActionNone {
 					switch action {
 					case control.ActionHelp:
@@ -1351,11 +1635,18 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					case control.ActionQuit:
 						cancel()
 						return false
+					case control.ActionSendCtrlD:
+						cmdKind = protocolpb.CommandKind_COMMAND_KIND_SEND_EOF
+						cmdSet = true
 					case control.ActionScrollback:
 						if client != nil {
 							client.SetScrollbackActive(true)
 							client.RenderCurrent()
 						}
+					case control.ActionNewPTY:
+						// Attach does not support spawning host local PTY sessions.
+						// Keep Ctrl+L c as a no-op in both relay and local-headless modes.
+						return true
 					case control.ActionNextTab:
 						next, active := resolveNextTab(1)
 						if next == "" || next == active {
@@ -1370,7 +1661,17 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							return true
 						}
 						_ = activateView(next)
+					case control.ActionToggleRespawn:
+						if localSessionMode {
+							cmdKind = protocolpb.CommandKind_COMMAND_KIND_TOGGLE_RESPAWN
+							cmdSet = true
+						}
 					case control.ActionToggleWallInactivity:
+						if localSessionMode {
+							cmdKind = protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY
+							cmdSet = true
+							break
+						}
 						targetView, _, _, _, _ := activeViewSnapshot()
 						if targetView == nil || strings.TrimSpace(targetView.id) == "" {
 							showConnected("wall inactivity toggle unavailable", 2*time.Second)
@@ -1412,9 +1713,85 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							showConnected("wall inactivity off", 2*time.Second)
 						}
 					case control.ActionToggleOffline:
-						showError("offline toggle is host local-only", 2*time.Second)
+						if localSessionMode && m.AllowOfflineToggle {
+							cmdKind = protocolpb.CommandKind_COMMAND_KIND_TOGGLE_OFFLINE
+							cmdSet = true
+							clearActiveRoutedStatus()
+							if toggleActiveSessionOffline() {
+								setTabs()
+								syncActiveRoutedStatus()
+							}
+						} else {
+							showError("offline toggle is host local-only", 2*time.Second)
+							return true
+						}
 					case control.ActionNextTheme:
 						setTheme(nextThemeName(themeName), true)
+					}
+					if !cmdSet && len(out) == 0 {
+						return true
+					}
+				}
+				if cmdSet {
+					mu.Lock()
+					view := views[activeID]
+					if view == nil && len(views) == 1 {
+						for _, v := range views {
+							view = v
+							break
+						}
+					}
+					targetClient := (*Client)(nil)
+					if view != nil {
+						targetClient = view.client
+					}
+					connected := view != nil && view.connected
+					flushing := view != nil && view.flushingInput
+					viewID := activeID
+					if view != nil {
+						viewID = view.id
+					}
+					mu.Unlock()
+					if view == nil || targetClient == nil {
+						if m.Logger != nil {
+							m.Logger.Debug("attach.stdin.no.view.command", "session", activeID)
+						}
+						return true
+					}
+					if !connected || flushing {
+						var immediateClient *Client
+						mu.Lock()
+						current := views[viewID]
+						if current == nil && len(views) == 1 {
+							for _, v := range views {
+								current = v
+								break
+							}
+						}
+						switch {
+						case current == nil || current.client == nil:
+						case current.connected && !current.flushingInput:
+							immediateClient = current.client
+						default:
+							current.pendingOps = append(current.pendingOps, pendingOp{command: cmdKind})
+						}
+						mu.Unlock()
+						if immediateClient == nil {
+							return true
+						}
+						targetClient = immediateClient
+					}
+					if err := targetClient.SendCommand(ctx, cmdKind); err != nil {
+						if m.Logger != nil {
+							m.Logger.Debug("attach.stdin.command.send.failed", "err", err, "kind", cmdKind.String(), "session", activeID)
+						}
+						mu.Lock()
+						current := views[viewID]
+						if current != nil {
+							current.pendingOps = append(current.pendingOps, pendingOp{command: cmdKind})
+						}
+						mu.Unlock()
+						return true
 					}
 					return true
 				}
@@ -1432,6 +1809,10 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				connected := view != nil && view.connected
 				connecting := view != nil && view.connecting
 				flushing := view != nil && view.flushingInput
+				viewID := activeID
+				if view != nil {
+					viewID = view.id
+				}
 				targetClient := (*Client)(nil)
 				if view != nil {
 					targetClient = view.client
@@ -1447,13 +1828,28 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					if m.Logger != nil {
 						m.Logger.Debug("attach.stdin.dropped.disconnected", "session", activeID, "connecting", connecting, "flushing", flushing)
 					}
-					if connecting || flushing {
-						queued := append([]byte(nil), out...)
-						mu.Lock()
-						view.pendingInput = append(view.pendingInput, queued)
-						mu.Unlock()
+					var immediateClient *Client
+					queued := append([]byte(nil), out...)
+					mu.Lock()
+					current := views[viewID]
+					if current == nil && len(views) == 1 {
+						for _, v := range views {
+							current = v
+							break
+						}
 					}
-					return true
+					switch {
+					case current == nil || current.client == nil:
+					case current.connected && !current.flushingInput:
+						immediateClient = current.client
+					default:
+						current.pendingOps = append(current.pendingOps, pendingOp{input: queued})
+					}
+					mu.Unlock()
+					if immediateClient == nil {
+						return true
+					}
+					targetClient = immediateClient
 				}
 				if m.Logger != nil {
 					m.Logger.Debug("attach.stdin.send", "bytes", len(out))
@@ -1468,6 +1864,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				}
 				return true
 			}
+			filtered := make([]byte, 0, 8)
 			for _, b := range data {
 				_, client, _, _, _ := activeViewSnapshot()
 				if client != nil && client.ScrollbackActive() {
@@ -1513,8 +1910,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					}
 					continue
 				}
-				if !processNormalByte(b) {
-					return nil
+				filtered = filterMouseByte(&mouseFilter, b, filtered)
+				for _, fb := range filtered {
+					if !processNormalByte(fb) {
+						return nil
+					}
 				}
 			}
 		}
@@ -1544,13 +1944,24 @@ func (m *MultiClient) handleResize(ctx context.Context, mu *sync.Mutex, views *m
 			cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
 		}
 		view.client.RenderCurrent()
-		if view.client.isController() {
+		if m.SessionSource != nil || view.client.isController() {
 			_ = view.client.SendResize(ctx, cols, rows)
 		}
 	}
 }
 
 func (m *MultiClient) fetchSessions(ctx context.Context, httpURL string) ([]SessionInfo, error) {
+	if m.SessionSource != nil {
+		sessions, err := m.SessionSource(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if sessions == nil {
+			sessions = []SessionInfo{}
+		}
+		mvu.SortSessionsByLastActive(sessions)
+		return sessions, nil
+	}
 	if m.Gate != nil {
 		if err := m.Gate.Wait(ctx); err != nil {
 			return nil, err

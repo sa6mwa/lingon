@@ -70,6 +70,54 @@ func TestHubViewOnlyDeniedControl(t *testing.T) {
 	}
 }
 
+func TestHubControlTakesLeaseOnCommand(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	granted, _, _, _ := hub.RegisterClient(client, "s1", "client", false)
+	if granted {
+		t.Fatalf("unexpected control on register")
+	}
+
+	frame := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Command{Command: &protocolpb.Command{
+			Kind: protocolpb.CommandKind_COMMAND_KIND_SEND_EOF,
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, frame); err != nil {
+		t.Fatalf("HandleClientFrame: %v", err)
+	}
+
+	controller, _, _, _ := hub.SessionState("s1")
+	if controller != client.ID() {
+		t.Fatalf("controller = %q, want %q", controller, client.ID())
+	}
+}
+
+func TestHubViewOnlyDeniedCommand(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	hub.RegisterHost(host, "s1", 80, 24)
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeView}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	frame := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Command{Command: &protocolpb.Command{
+			Kind: protocolpb.CommandKind_COMMAND_KIND_SEND_EOF,
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, frame); err == nil {
+		t.Fatalf("expected error for view-only client command")
+	}
+}
+
 func TestHubBroadcastFromHost(t *testing.T) {
 	hub := NewHub(nil)
 	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}

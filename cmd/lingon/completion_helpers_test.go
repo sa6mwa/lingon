@@ -95,6 +95,10 @@ func TestSessionIDCompletionRegisteredOnRequestedCommands(t *testing.T) {
 	if send.ValidArgsFunction == nil {
 		t.Fatalf("send command missing ValidArgsFunction")
 	}
+	detach := NewDetachCommand(loader)
+	if detach.ValidArgsFunction == nil {
+		t.Fatalf("detach command missing ValidArgsFunction")
+	}
 	share := NewShareCommand(loader)
 	create := findSubcommandByName(t, share, "create")
 	if create.ValidArgsFunction == nil {

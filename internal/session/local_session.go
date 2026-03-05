@@ -467,6 +467,39 @@ func (s *localSession) writePTY(data []byte) (int, error) {
 	return writeAllWithRetry(s.ctx, sleep, data, ptyFile.Write)
 }
 
+func (s *localSession) sendRemoteEOF() error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	s.ptyMu.RLock()
+	ptyFile := s.pty
+	ttyFile := s.tty
+	s.ptyMu.RUnlock()
+	if ptyFile == nil {
+		return errPTYNotReady
+	}
+
+	veof := byte(0x04)
+	s.veofMu.Lock()
+	if s.veofSet && s.veofOrig != 0 {
+		veof = s.veofOrig
+	}
+	s.veofMu.Unlock()
+	if ttyFile != nil {
+		_ = setVEOF(ttyFile, veof)
+		defer func() {
+			s.applyVEOF(s.holder())
+		}()
+	}
+
+	sleep := time.Sleep
+	if s.clock != nil {
+		sleep = s.clock.Sleep
+	}
+	_, err := writeAllWithRetry(s.ctx, sleep, []byte{veof}, ptyFile.Write)
+	return err
+}
+
 func writeAllWithRetry(ctx context.Context, sleep func(time.Duration), data []byte, write func([]byte) (int, error)) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
