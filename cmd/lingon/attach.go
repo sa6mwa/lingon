@@ -149,14 +149,11 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 				return nil
 			}
 
-			endpointValue := endpoint
-			if !cmd.Flags().Changed("endpoint") {
-				endpointValue = cfg.Client.Endpoint
+			authPath := authFile
+			if !cmd.Flags().Changed("auth-file") {
+				authPath = cfg.Client.AuthFile
 			}
-			if endpointValue == "" {
-				return fmt.Errorf("endpoint is required")
-			}
-
+			endpointValue := ""
 			if shareToken != "" {
 				resolvedToken, tokenEndpoint, err := resolveShareToken(shareToken)
 				if err != nil {
@@ -167,9 +164,14 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 					endpointValue = tokenEndpoint
 				}
 			}
-			authPath := authFile
-			if !cmd.Flags().Changed("auth-file") {
-				authPath = cfg.Client.AuthFile
+			if endpointValue == "" {
+				endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint, authPath)
+				if err != nil {
+					return err
+				}
+			}
+			if endpointValue == "" {
+				return fmt.Errorf("endpoint is required")
 			}
 			if pick && shareToken != "" {
 				return fmt.Errorf("cannot use --pick with a share token")
@@ -332,17 +334,13 @@ func attachSessionCompletion(loader *lingon.Loader, endpoint, accessToken, authF
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 
-		endpointValue := *endpoint
-		if !cmd.Flags().Changed("endpoint") {
-			endpointValue = cfg.Client.Endpoint
-		}
-		if endpointValue == "" {
-			return nil, cobra.ShellCompDirectiveNoFileComp
-		}
-
 		authPath := *authFile
 		if !cmd.Flags().Changed("auth-file") {
 			authPath = cfg.Client.AuthFile
+		}
+		endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, *endpoint, authPath)
+		if err != nil || endpointValue == "" {
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 
 		tokenValue := *accessToken

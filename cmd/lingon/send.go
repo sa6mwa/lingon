@@ -114,14 +114,12 @@ func NewSendCommand(loader *lingon.Loader) *cobra.Command {
 				})
 			}
 
-			endpointValue := endpoint
-			if !cmd.Flags().Changed("endpoint") {
-				endpointValue = cfg.Client.Endpoint
-			}
-			if endpointValue == "" {
-				return fmt.Errorf("endpoint is required")
+			authPath := authFile
+			if !cmd.Flags().Changed("auth-file") {
+				authPath = cfg.Client.AuthFile
 			}
 
+			endpointValue := ""
 			if shareToken != "" {
 				resolvedToken, tokenEndpoint, err := resolveShareToken(shareToken)
 				if err != nil {
@@ -132,10 +130,14 @@ func NewSendCommand(loader *lingon.Loader) *cobra.Command {
 					endpointValue = tokenEndpoint
 				}
 			}
-
-			authPath := authFile
-			if !cmd.Flags().Changed("auth-file") {
-				authPath = cfg.Client.AuthFile
+			if endpointValue == "" {
+				endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint, authPath)
+				if err != nil {
+					return err
+				}
+			}
+			if endpointValue == "" {
+				return fmt.Errorf("endpoint is required")
 			}
 
 			if len(args) == 0 {
