@@ -46,6 +46,10 @@ func TestAttachRemovesTerminatedSession(t *testing.T) {
 		Rows:      30,
 	})
 
+	attach.Send("echo ATTACH_TERMINATED_TAB_BAR_READY\n")
+	if !screenContainsWithin(attach, "ATTACH_TERMINATED_TAB_BAR_READY", 2*time.Second) {
+		t.Fatalf("expected active attach view to move below top row before asserting tabs")
+	}
 	attach.Eventually(6*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
 		row := screen.Row(0)
 		if hasConnectionStatusBanner(row) {

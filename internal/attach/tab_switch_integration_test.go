@@ -48,6 +48,15 @@ func TestAttachTabSwitchUpdatesTabBar(t *testing.T) {
 		Rows:      30,
 	})
 
+	wakeTabBar := func(token string) {
+		t.Helper()
+		attach.Send("echo " + token + "\n")
+		if !screenContainsWithin(attach, token, 2*time.Second) {
+			t.Fatalf("expected active attach view to move below top row before asserting tabs")
+		}
+	}
+
+	wakeTabBar("ATTACH_TAB_BAR_READY")
 	attach.Eventually(6*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
 		row := screen.Row(0)
 		if hasConnectionStatusBanner(row) {
@@ -72,6 +81,7 @@ func TestAttachTabSwitchUpdatesTabBar(t *testing.T) {
 	for i := 0; i < len(order)-1; i++ {
 		attach.SendCtrlL()
 		attach.Send("n")
+		wakeTabBar(fmt.Sprintf("ATTACH_TAB_PRIME_%d", i))
 		attach.Eventually(5*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
 			active, err := activeTabLabel(attach, []string{"alpha", "beta", "gamma"})
 			if err != nil {
@@ -107,6 +117,7 @@ func TestAttachTabSwitchUpdatesTabBar(t *testing.T) {
 
 	attach.SendCtrlL()
 	attach.Send("n")
+	wakeTabBar("ATTACH_TAB_SWITCH_ONE")
 
 	expect1 := nextLabel(order, active0)
 	attach.Eventually(5*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
@@ -122,6 +133,7 @@ func TestAttachTabSwitchUpdatesTabBar(t *testing.T) {
 
 	attach.SendCtrlL()
 	attach.Send("n")
+	wakeTabBar("ATTACH_TAB_SWITCH_TWO")
 
 	expect2 := nextLabel(order, expect1)
 	attach.Eventually(5*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
@@ -137,6 +149,7 @@ func TestAttachTabSwitchUpdatesTabBar(t *testing.T) {
 
 	attach.SendCtrlL()
 	attach.Send("p")
+	wakeTabBar("ATTACH_TAB_SWITCH_PREV")
 
 	expect3 := prevLabel(order, expect2)
 	attach.Eventually(5*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
