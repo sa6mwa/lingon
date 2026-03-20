@@ -17,7 +17,7 @@ func TestReconnectCountdownTypingCursorAndPromptRemainStableE2E(t *testing.T) {
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "reconnect-live-e2e",
 		SessionName: "reconnect-live-e2e",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        120,
 		Rows:        30,
 	})
@@ -28,6 +28,7 @@ func TestReconnectCountdownTypingCursorAndPromptRemainStableE2E(t *testing.T) {
 	host.SendCtrlL()
 	host.SendCtrlL()
 	host.Send("ls -lq")
+	waitForRawIdle(t, host, 150*time.Millisecond, 2*time.Second)
 
 	h.StopServer()
 

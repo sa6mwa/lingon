@@ -975,14 +975,6 @@ func (r *Runner) renderHostMVU(ctx context.Context, stdout *os.File, snap *proto
 	ui := r.runtime()
 	now := r.clock.Now()
 	cursor := mvu.CursorFromSnapshot(snap, cols, rows)
-	row := cursor.Row
-	col := cursor.Col
-	visible := cursor.Visible
-	r.renderCursorMu.Lock()
-	r.renderCursorRow = row
-	r.renderCursorCol = col
-	r.renderCursorVisible = visible
-	r.renderCursorMu.Unlock()
 	r.stdoutMu.Lock()
 	defer r.stdoutMu.Unlock()
 	frame, err := ui.RenderHostFrame(mvu.RuntimeHostFrameInput{
@@ -999,6 +991,18 @@ func (r *Runner) renderHostMVU(ctx context.Context, stdout *os.File, snap *proto
 		return err
 	}
 	rendered := frame.Rendered
+	renderCursor := cursor
+	if rendered.ComposedSnapshot != nil {
+		renderCursor = mvu.CursorFromSnapshot(rendered.ComposedSnapshot, cols, rows)
+	}
+	row := renderCursor.Row
+	col := renderCursor.Col
+	visible := renderCursor.Visible
+	r.renderCursorMu.Lock()
+	r.renderCursorRow = row
+	r.renderCursorCol = col
+	r.renderCursorVisible = visible
+	r.renderCursorMu.Unlock()
 	if r.trace != nil {
 		activeID, activeLocal := r.activeSession()
 		r.trace.Event("render", map[string]any{
@@ -1281,32 +1285,18 @@ func (r *Runner) cursorQueryFunc(stdout, stdin *os.File) func(terminal.Snapshot)
 			cols = raw.Cols
 			rows = raw.Rows
 		}
+		r.stdoutMu.Lock()
+		topOverlayVisible := r.renderCache.TopOverlayVisible()
+		r.stdoutMu.Unlock()
 		r.renderCursorMu.Lock()
-		if r.renderCursorVisible {
+		if topOverlayVisible && r.renderCursorVisible {
 			row = r.renderCursorRow
 			col = r.renderCursorCol
 			r.renderCursorMu.Unlock()
-			if raw.Cols == cols && raw.Rows == rows {
-				row = raw.Cursor.Y + 1
-				col = raw.Cursor.X + 1
-				if r.trace != nil {
-					r.trace.Event("cursor_query_source", map[string]any{
-						"component": "host",
-						"source":    "raw_full",
-						"row":       row,
-						"col":       col,
-						"cursor_x":  raw.Cursor.X,
-						"cursor_y":  raw.Cursor.Y,
-						"cols":      raw.Cols,
-						"rows":      raw.Rows,
-					})
-				}
-				return row, col, true
-			}
 			if r.trace != nil {
 				r.trace.Event("cursor_query_source", map[string]any{
 					"component": "host",
-					"source":    "render_cache",
+					"source":    "render_overlay",
 					"row":       row,
 					"col":       col,
 					"cursor_x":  raw.Cursor.X,
@@ -1320,6 +1310,23 @@ func (r *Runner) cursorQueryFunc(stdout, stdin *os.File) func(terminal.Snapshot)
 			return row, col, true
 		}
 		r.renderCursorMu.Unlock()
+		if raw.CursorVisible && raw.Cols == cols && raw.Rows == rows {
+			row = raw.Cursor.Y + 1
+			col = raw.Cursor.X + 1
+			if r.trace != nil {
+				r.trace.Event("cursor_query_source", map[string]any{
+					"component": "host",
+					"source":    "raw_full",
+					"row":       row,
+					"col":       col,
+					"cursor_x":  raw.Cursor.X,
+					"cursor_y":  raw.Cursor.Y,
+					"cols":      raw.Cols,
+					"rows":      raw.Rows,
+				})
+			}
+			return row, col, true
+		}
 		snap := protocol.SnapshotToProto(raw)
 		row, col, ok = r.cursorQueryPosition(snap, cols, rows)
 		if r.trace != nil {

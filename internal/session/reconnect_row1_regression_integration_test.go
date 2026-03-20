@@ -16,7 +16,7 @@ func TestOnlineReconnectClearKeepsRow1FreeOfTabBar(t *testing.T) {
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "row1-reconnect",
 		SessionName: "row1-reconnect",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        120,
 		Rows:        30,
 	})
@@ -37,6 +37,7 @@ func TestOnlineReconnectClearKeepsRow1FreeOfTabBar(t *testing.T) {
 		}
 		return nil
 	})
+	waitForRawIdle(t, host, 150*time.Millisecond, 2*time.Second)
 
 	_ = host.DrainRaw()
 	host.SendCtrlL()
@@ -70,7 +71,7 @@ func TestOnlineReconnectBannerKeepsCursorOnRow1(t *testing.T) {
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "row1-reconnect-cursor",
 		SessionName: "row1-reconnect-cursor",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        120,
 		Rows:        30,
 	})
@@ -87,6 +88,7 @@ func TestOnlineReconnectBannerKeepsCursorOnRow1(t *testing.T) {
 		}
 		return nil
 	})
+	waitForRawIdle(t, host, 150*time.Millisecond, 2*time.Second)
 
 	h.StopServer()
 
@@ -110,7 +112,7 @@ func TestOnlineReconnectBannerCountdownNoBleed(t *testing.T) {
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "row1-reconnect-bleed",
 		SessionName: "row1-reconnect-bleed",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        120,
 		Rows:        30,
 	})
@@ -149,7 +151,7 @@ func TestOnlineReconnectCountdownDoesNotDuplicatePromptRows(t *testing.T) {
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "row1-reconnect-prompt-dup",
 		SessionName: "row1-reconnect-prompt-dup",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        120,
 		Rows:        30,
 	})
@@ -166,6 +168,7 @@ func TestOnlineReconnectCountdownDoesNotDuplicatePromptRows(t *testing.T) {
 		}
 		return nil
 	})
+	waitForRawIdle(t, host, 150*time.Millisecond, 2*time.Second)
 
 	h.StopServer()
 
@@ -209,7 +212,7 @@ func TestOnlineReconnectTypingDuringCountdownDoesNotDuplicatePromptRows(t *testi
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "row1-reconnect-prompt-typing-dup",
 		SessionName: "row1-reconnect-prompt-typing-dup",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        120,
 		Rows:        30,
 	})
@@ -267,7 +270,7 @@ func TestOnlineReconnectBannerPreservesPromptLeftOfBadgeOnRowOne(t *testing.T) {
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "row1-reconnect-prompt-preserve",
 		SessionName: "row1-reconnect-prompt-preserve",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        220,
 		Rows:        30,
 	})
@@ -316,7 +319,7 @@ func TestOnlineReconnectBannerKeepsTabBarVisibleWhenCursorNotTopRow(t *testing.T
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "row1-reconnect-tabs",
 		SessionName: "row1-reconnect-tabs",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        220,
 		Rows:        30,
 	})

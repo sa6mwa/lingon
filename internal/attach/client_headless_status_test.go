@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/protocolpb"
@@ -126,5 +127,38 @@ func TestHandleRoutedHeadlessStatusBackoffWithoutTimeout(t *testing.T) {
 	state = client.ensureCompositor().State()
 	if state.ConnectionMessage == "" {
 		t.Fatalf("expected backoff banner to remain visible")
+	}
+}
+
+func TestPrepareForCtrlLClearStopsPendingRedrawEffects(t *testing.T) {
+	clk := clock.NewMock()
+	client := &Client{}
+	client.runCtx = context.Background()
+	client.effects = mvu.NewEffectScheduler(clk)
+	defer client.effects.StopAll()
+
+	tabFired := false
+	stateFired := false
+	client.effects.Schedule(client.runCtx, mvu.EffectKeyTabAutoHide, time.Second, func() {
+		tabFired = true
+	})
+	client.effects.Schedule(client.runCtx, mvu.EffectKeyStateExpiry, time.Second, func() {
+		stateFired = true
+	})
+
+	client.PrepareForCtrlLClear()
+	clk.Add(2 * time.Second)
+
+	if tabFired {
+		t.Fatalf("expected tab auto-hide effect to be canceled")
+	}
+	if stateFired {
+		t.Fatalf("expected state-expiry effect to be canceled")
+	}
+	client.renderMu.Lock()
+	forceClear := client.forceClear
+	client.renderMu.Unlock()
+	if !forceClear {
+		t.Fatalf("expected forceClear to remain armed")
 	}
 }

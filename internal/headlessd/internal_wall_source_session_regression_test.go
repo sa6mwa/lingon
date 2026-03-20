@@ -107,7 +107,6 @@ func TestDaemonInternalWallPreservesSourceSessionID(t *testing.T) {
 				continue
 			}
 			gotSource = frame.sessionID
-			break
 		default:
 			time.Sleep(20 * time.Millisecond)
 		}

@@ -22,12 +22,14 @@ func resolveEndpointValue(cmd *cobra.Command, loader *lingon.Loader, configuredE
 		return configuredEndpoint, nil
 	}
 
-	inferredEndpoint, err := inferEndpointFromAuth(authPath)
-	if err != nil {
-		return "", err
-	}
-	if inferredEndpoint != "" {
-		return inferredEndpoint, nil
+	if authEndpointInferenceEnabled(cmd) {
+		inferredEndpoint, err := inferEndpointFromAuth(authPath)
+		if err != nil {
+			return "", err
+		}
+		if inferredEndpoint != "" {
+			return inferredEndpoint, nil
+		}
 	}
 
 	if configuredEndpoint != "" {
@@ -67,4 +69,19 @@ func endpointExplicitlyConfigured(loader *lingon.Loader) bool {
 		return false
 	}
 	return loader.Viper().InConfig("client.endpoint")
+}
+
+func authEndpointInferenceEnabled(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return true
+	}
+	return !flagChanged(cmd, "token") && !flagChanged(cmd, "access-token")
+}
+
+func flagChanged(cmd *cobra.Command, name string) bool {
+	if cmd == nil {
+		return false
+	}
+	flag := cmd.Flags().Lookup(name)
+	return flag != nil && flag.Changed
 }

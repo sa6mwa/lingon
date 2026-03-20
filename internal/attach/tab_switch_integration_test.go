@@ -114,10 +114,10 @@ func TestAttachTabSwitchUpdatesTabBar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("active tab after priming: %v", err)
 	}
+	waitForRawIdle(t, attach, 120*time.Millisecond, 2*time.Second)
 
 	attach.SendCtrlL()
 	attach.Send("n")
-	wakeTabBar("ATTACH_TAB_SWITCH_ONE")
 
 	expect1 := nextLabel(order, active0)
 	attach.Eventually(5*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
@@ -131,9 +131,9 @@ func TestAttachTabSwitchUpdatesTabBar(t *testing.T) {
 		return nil
 	})
 
+	waitForRawIdle(t, attach, 120*time.Millisecond, 2*time.Second)
 	attach.SendCtrlL()
 	attach.Send("n")
-	wakeTabBar("ATTACH_TAB_SWITCH_TWO")
 
 	expect2 := nextLabel(order, expect1)
 	attach.Eventually(5*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
@@ -147,9 +147,9 @@ func TestAttachTabSwitchUpdatesTabBar(t *testing.T) {
 		return nil
 	})
 
+	waitForRawIdle(t, attach, 120*time.Millisecond, 2*time.Second)
 	attach.SendCtrlL()
 	attach.Send("p")
-	wakeTabBar("ATTACH_TAB_SWITCH_PREV")
 
 	expect3 := prevLabel(order, expect2)
 	attach.Eventually(5*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {

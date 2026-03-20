@@ -167,3 +167,91 @@ func TestResolveEndpointValueFallsBackToLocalhostWithoutStoredAuth(t *testing.T)
 		t.Fatalf("endpointValue = %q, want %q", endpointValue, lingon.DefaultClientEndpoint)
 	}
 }
+
+func TestResolveEndpointValueIgnoresStoredAuthForExplicitTokenFlag(t *testing.T) {
+	home := testutil.TempDir(t)
+	t.Setenv("HOME", home)
+
+	authPath := filepath.Join(home, ".lingon", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(auth dir): %v", err)
+	}
+	if err := os.WriteFile(authPath, []byte("{not-json"), 0o600); err != nil {
+		t.Fatalf("WriteFile(auth): %v", err)
+	}
+
+	loader := lingon.NewLoader()
+	loader.Viper().SetDefault("client.endpoint", lingon.DefaultClientEndpoint)
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("endpoint", lingon.DefaultClientEndpoint, "")
+	cmd.Flags().String("token", "", "")
+	if err := cmd.Flags().Set("token", "explicit-token"); err != nil {
+		t.Fatalf("Set(token): %v", err)
+	}
+
+	endpointValue, err := resolveEndpointValue(cmd, loader, lingon.DefaultClientEndpoint, lingon.DefaultClientEndpoint, authPath)
+	if err != nil {
+		t.Fatalf("resolveEndpointValue: %v", err)
+	}
+	if endpointValue != lingon.DefaultClientEndpoint {
+		t.Fatalf("endpointValue = %q, want %q", endpointValue, lingon.DefaultClientEndpoint)
+	}
+}
+
+func TestSessionsCommandIgnoresStoredAuthForExplicitAccessToken(t *testing.T) {
+	home := testutil.TempDir(t)
+	t.Setenv("HOME", home)
+
+	authPath := filepath.Join(home, ".lingon", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(auth dir): %v", err)
+	}
+	if err := os.WriteFile(authPath, []byte("{not-json"), 0o600); err != nil {
+		t.Fatalf("WriteFile(auth): %v", err)
+	}
+
+	var gotPath string
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := filepath.Join(home, ".lingon", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(config dir): %v", err)
+	}
+	configBody := []byte("client:\n  endpoint: " + server.URL + "/v1\n")
+	if err := os.WriteFile(configPath, configBody, 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+
+	loader := lingon.NewLoader()
+	cmd := NewRootCommand(loader)
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"sessions", "--access-token", "explicit-access-token"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotPath != "/v1/sessions" {
+		t.Fatalf("sessions path = %q, want %q", gotPath, "/v1/sessions")
+	}
+	if gotAuth != "Bearer explicit-access-token" {
+		t.Fatalf("authorization header = %q, want %q", gotAuth, "Bearer explicit-access-token")
+	}
+	if strings.TrimSpace(out.String()) != "[]" {
+		t.Fatalf("output = %q, want []", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr output, got %q", errOut.String())
+	}
+}

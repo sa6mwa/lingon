@@ -86,11 +86,23 @@ func TestAttachNeverBlankAfterMultiPTYLifecycle(t *testing.T) {
 
 	waitForClientReady(t, h.Clock(), &viewsMu, views, "host-1", 3*time.Second)
 
+	currentActive := waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
+	attachSess.Send("echo ATTACH_BOOTSTRAP\n")
+	if !screenContainsWithin(attachSess, "ATTACH_BOOTSTRAP", 3*time.Second) {
+		t.Fatalf("expected attach bootstrap output before asserting tab labels")
+	}
+	attachSess.Eventually(3*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
+		cur := attachSess.Cursor()
+		if cur.Row <= 1 {
+			return fmt.Errorf("expected active cursor below row 1 before asserting tab labels; got row %d col %d", cur.Row, cur.Col)
+		}
+		return nil
+	})
+
 	attachSess.SendCtrlL()
 	attachSess.Send("b")
 	waitForTabLabels(t, attachSess, labels, 5*time.Second)
 
-	currentActive := waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
 	for i := 0; i < 3; i++ {
 		token := fmt.Sprintf("ATTACH_READY_%d", i)
 		attachSess.Send("echo " + token + "\n")

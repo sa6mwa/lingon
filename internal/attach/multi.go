@@ -1720,6 +1720,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							if toggleActiveSessionOffline() {
 								setTabs()
 								syncActiveRoutedStatus()
+								wakeTabsForNoOpSwitch()
 							}
 						} else {
 							showError("offline toggle is host local-only", 2*time.Second)
@@ -1855,7 +1856,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					m.Logger.Debug("attach.stdin.send", "bytes", len(out))
 				}
 				if len(out) == 1 && out[0] == 0x0c {
-					targetClient.SuppressTabsUntilCursorLeavesTopRow()
+					targetClient.PrepareForCtrlLClear()
 				}
 				if err := targetClient.SendInput(ctx, out); err != nil {
 					if m.Logger != nil {

@@ -16,7 +16,7 @@ func TestReconnectBannerDoesNotShiftUnchangedTopContentDown(t *testing.T) {
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "reconnect-shift",
 		SessionName: "reconnect-shift",
-		Shell:       ctrlLShell(t),
+		Shell:       reconnectShell(t),
 		Cols:        120,
 		Rows:        30,
 	})
@@ -37,6 +37,7 @@ func TestReconnectBannerDoesNotShiftUnchangedTopContentDown(t *testing.T) {
 		}
 		return nil
 	})
+	waitForRawIdle(t, host, 150*time.Millisecond, 2*time.Second)
 
 	h.StopServer()
 
