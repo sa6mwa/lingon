@@ -85,49 +85,13 @@ func TestMultiHostSwitchWhileReconnect(t *testing.T) {
 		t.Fatalf("expected >=4 sessions, got %d", count)
 	}
 
-	var activeMuA sync.Mutex
-	activeIDA := ""
-	var viewsMuA sync.Mutex
-	viewsA := make(map[string]*attach.Client)
-	attachA := h.StartMultiAttach(ptytest.MultiAttachOptions{
-		SessionID: "host-a",
-		Cols:      120,
-		Rows:      30,
-		OnActive: func(id string) {
-			activeMuA.Lock()
-			activeIDA = id
-			activeMuA.Unlock()
-		},
-		OnView: func(id string, client *attach.Client) {
-			viewsMuA.Lock()
-			viewsA[id] = client
-			viewsMuA.Unlock()
-		},
-	})
-	var activeMuB sync.Mutex
-	activeIDB := ""
-	var viewsMuB sync.Mutex
-	viewsB := make(map[string]*attach.Client)
-	attachB := h.StartMultiAttach(ptytest.MultiAttachOptions{
-		SessionID: "host-b",
-		Cols:      120,
-		Rows:      30,
-		OnActive: func(id string) {
-			activeMuB.Lock()
-			activeIDB = id
-			activeMuB.Unlock()
-		},
-		OnView: func(id string, client *attach.Client) {
-			viewsMuB.Lock()
-			viewsB[id] = client
-			viewsMuB.Unlock()
-		},
-	})
-	_ = waitForActiveSessionReady(t, h.Clock(), &activeMuA, &activeIDA, &viewsMuA, viewsA, "", 3*time.Second)
-	_ = waitForActiveSessionReady(t, h.Clock(), &activeMuB, &activeIDB, &viewsMuB, viewsB, "", 3*time.Second)
+	attachA, activeA, viewsA := startTrackedAttach(t, h, "host-a")
+	attachB, activeB, viewsB := startTrackedAttach(t, h, "host-b")
+	t.Cleanup(attachA.Cancel)
+	t.Cleanup(attachB.Cancel)
 
-	primeTabsByCount(t, attachA, count)
-	primeTabsByCount(t, attachB, count)
+	primeTabsByCountWithActive(t, attachA, count, h.Clock(), activeA)
+	primeTabsByCountWithActive(t, attachB, count, h.Clock(), activeB)
 
 	h.StopServer()
 
@@ -139,23 +103,19 @@ func TestMultiHostSwitchWhileReconnect(t *testing.T) {
 
 	h.RestartServer()
 	waitForSessionCount(t, h.Clock(), h.Endpoint(), h.AccessToken(), count, 6*time.Second)
-	ids, err = fetchSessionIDs(h.Endpoint(), h.AccessToken())
-	if err != nil {
+	if _, err := fetchSessionIDs(h.Endpoint(), h.AccessToken()); err != nil {
 		t.Fatalf("fetch sessions after restart: %v", err)
 	}
-	for id := range ids {
-		waitForClientCount(t, h, id, 1, 6*time.Second)
-	}
 	reconnectReadyTimeout := 10 * time.Second
-	if ready := waitForActiveSessionReadyOptional(h.Clock(), &activeMuA, &activeIDA, &viewsMuA, viewsA, "", reconnectReadyTimeout); ready == "" {
-		t.Fatalf("attachA did not become active after restart")
-	}
-	if ready := waitForActiveSessionReadyOptional(h.Clock(), &activeMuB, &activeIDB, &viewsMuB, viewsB, "", reconnectReadyTimeout); ready == "" {
-		t.Fatalf("attachB did not become active after restart")
-	}
+	attachA, activeA, viewsA = ensureTrackedAttachReady(
+		t, h, attachA, activeA, viewsA, "attachA", "host-a", reconnectReadyTimeout,
+	)
+	attachB, activeB, viewsB = ensureTrackedAttachReady(
+		t, h, attachB, activeB, viewsB, "attachB", "host-b", reconnectReadyTimeout,
+	)
 
-	sendTokenAcrossTabsPhase1(t, attachA, "RECONNECT_MULTI_A", count+1)
-	sendTokenAcrossTabsPhase1(t, attachB, "RECONNECT_MULTI_B", count+1)
+	_ = cycleSendTokensWithActive(t, attachA, 1, "RECONNECT_MULTI_A", h.Clock(), activeA.mu, activeA.id, activeA.viewsMu, viewsA)
+	_ = cycleSendTokensWithActive(t, attachB, 1, "RECONNECT_MULTI_B", h.Clock(), activeB.mu, activeB.id, activeB.viewsMu, viewsB)
 	_ = hostA
 	_ = hostB
 }
@@ -176,27 +136,9 @@ func TestAttachScrollbackDuringDisconnect(t *testing.T) {
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"host-scroll"})
 
-	var activeMu sync.Mutex
-	activeID := ""
-	var viewsMu sync.Mutex
-	views := make(map[string]*attach.Client)
-	attachSess := h.StartMultiAttach(ptytest.MultiAttachOptions{
-		SessionID: "host-scroll",
-		Cols:      120,
-		Rows:      30,
-		OnActive: func(id string) {
-			activeMu.Lock()
-			activeID = id
-			activeMu.Unlock()
-		},
-		OnView: func(id string, client *attach.Client) {
-			viewsMu.Lock()
-			views[id] = client
-			viewsMu.Unlock()
-		},
-	})
+	attachSess, active, views := startTrackedAttach(t, h, "host-scroll")
+	t.Cleanup(attachSess.Cancel)
 
-	_ = waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
 	attachSess.Send("for i in $(seq 1 200); do echo SCROLL_$i; done\n")
 	if !screenContainsWithin(attachSess, "SCROLL_200", 5*time.Second) {
 		t.Fatalf("expected scroll output")
@@ -213,7 +155,9 @@ func TestAttachScrollbackDuringDisconnect(t *testing.T) {
 	attachSess.Send("q")
 	h.RestartServer()
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"host-scroll"})
-	_ = waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
+	attachSess, _, _ = ensureTrackedAttachReady(
+		t, h, attachSess, active, views, "attach-scroll", "host-scroll", 10*time.Second,
+	)
 	attachSess.Send("q")
 	h.Advance(100 * time.Millisecond)
 
@@ -222,21 +166,4 @@ func TestAttachScrollbackDuringDisconnect(t *testing.T) {
 		t.Fatalf("expected attach after scrollback + reconnect")
 	}
 	_ = host
-}
-
-func sendTokenAcrossTabsPhase1(t *testing.T, sess *ptytest.PTYSession, token string, attempts int) {
-	t.Helper()
-	if attempts <= 0 {
-		attempts = 1
-	}
-	for i := 0; i < attempts; i++ {
-		sess.Send("echo " + token + "\n")
-		if screenContainsWithin(sess, token, 3*time.Second) {
-			return
-		}
-		sess.SendCtrlL()
-		sess.Send("n")
-		ptytest.Advance(sess.Clock(), 200*time.Millisecond)
-	}
-	t.Fatalf("expected output %q after reconnect", token)
 }

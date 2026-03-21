@@ -1,17 +1,27 @@
 package attach_test
 
 import (
+	"context"
 	"regexp"
 	"strconv"
+	"strings"
+	"testing"
 	"time"
 
 	"pkt.systems/lingon/internal/ptytest"
 )
 
-func collectCountdownSamples(sess *ptytest.PTYSession, re *regexp.Regexp, d time.Duration) []int {
+func collectCountdownSamples(t *testing.T, sess *ptytest.PTYSession, re *regexp.Regexp, d time.Duration) []int {
+	t.Helper()
 	deadline := ptytest.Now(sess.Clock()).Add(d)
 	values := make([]int, 0, 8)
 	for ptytest.Now(sess.Clock()).Before(deadline) {
+		if exited, err := sess.WaitErr(0); exited {
+			if err == nil || errorsIsCanceledOrNoSessions(err) {
+				break
+			}
+			t.Fatalf("attach exited unexpectedly while sampling countdown: %v", err)
+		}
 		screen := sess.Screen()
 		match := re.FindStringSubmatch(screen.String())
 		if len(match) == 2 {
@@ -22,6 +32,14 @@ func collectCountdownSamples(sess *ptytest.PTYSession, re *regexp.Regexp, d time
 		ptytest.Advance(sess.Clock(), 200*time.Millisecond)
 	}
 	return values
+}
+
+func errorsIsCanceledOrNoSessions(err error) bool {
+	return errorsIsCanceled(err) || strings.Contains(err.Error(), "no sessions available")
+}
+
+func errorsIsCanceled(err error) bool {
+	return err == context.Canceled || strings.Contains(err.Error(), context.Canceled.Error())
 }
 
 func hasInterleavedZero(values []int) bool {

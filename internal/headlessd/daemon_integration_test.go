@@ -385,6 +385,11 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	if err := sendHeadlessCommand(context.Background(), socketPath, sessionID, protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY); err != nil {
 		t.Fatalf("send command enable inactivity wall: %v", err)
 	}
+	waitUntil(t, 2*time.Second, func() bool {
+		return localWallState(d, func(enabled bool, after time.Duration, armed bool, _ time.Time) bool {
+			return enabled && armed && after == 2*time.Second
+		})
+	})
 
 	clk.Add(2500 * time.Millisecond)
 	waitUntil(t, 2*time.Second, func() bool {
@@ -408,6 +413,14 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SendInput activity: %v", err)
 	}
+	waitUntil(t, 2*time.Second, func() bool {
+		return strings.Contains(out.String(), "REARM_INACTIVITY_WALL")
+	})
+	waitUntil(t, 2*time.Second, func() bool {
+		return localWallState(d, func(enabled bool, after time.Duration, armed bool, lastActivity time.Time) bool {
+			return enabled && armed && after == 2*time.Second
+		})
+	})
 
 	clk.Add(2500 * time.Millisecond)
 	waitUntil(t, 2*time.Second, func() bool {
@@ -814,4 +827,10 @@ func waitUntil(t *testing.T, timeout time.Duration, fn func() bool) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out after %v", timeout)
+}
+
+func localWallState(d *Daemon, fn func(enabled bool, after time.Duration, armed bool, lastActivity time.Time) bool) bool {
+	d.wallMu.Lock()
+	defer d.wallMu.Unlock()
+	return fn(d.wallEnabled, d.wallAfter, d.wallArmed, d.wallLastActivity)
 }

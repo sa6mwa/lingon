@@ -183,7 +183,7 @@ func TestDisconnectModalCountdownStableAfterTabSwitch(t *testing.T) {
 		return
 	}
 
-	values := collectCountdownSamples(attachSess, re, 900*time.Millisecond)
+	values := collectCountdownSamples(t, attachSess, re, 900*time.Millisecond)
 	if hasInterleavedZero(values) {
 		t.Fatalf("countdown flickered to 0s after tab switch: %v", values)
 	}

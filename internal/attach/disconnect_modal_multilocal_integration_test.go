@@ -71,7 +71,7 @@ func TestDisconnectModalCountdownStableAfterLocalPtyTabSwitch(t *testing.T) {
 	attachSess.Wait(200 * time.Millisecond)
 
 	re := regexp.MustCompile(`reconnecting in (\d+)s`)
-	values := collectCountdownSamples(attachSess, re, 1200*time.Millisecond)
+	values := collectCountdownSamples(t, attachSess, re, 1200*time.Millisecond)
 	if hasInterleavedZero(values) {
 		t.Fatalf("countdown flickered to 0s after local pty tab switch: %v", values)
 	}
