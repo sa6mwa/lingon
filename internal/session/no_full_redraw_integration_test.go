@@ -543,8 +543,10 @@ func hasFullViewportRepaint(data string, rows int) bool {
 func waitForRawContains(t *testing.T, sess *ptytest.PTYSession, substr string, timeout, step time.Duration, msg string) {
 	t.Helper()
 	deadline := sess.Clock().Now().Add(timeout)
+	var seen strings.Builder
 	for sess.Clock().Now().Before(deadline) {
-		if strings.Contains(sess.DrainRaw(), substr) {
+		seen.WriteString(sess.DrainRaw())
+		if strings.Contains(seen.String(), substr) {
 			return
 		}
 		advanceTestClock(sess.Clock(), step)
@@ -554,13 +556,16 @@ func waitForRawContains(t *testing.T, sess *ptytest.PTYSession, substr string, t
 
 func waitForRawContainsOptional(sess *ptytest.PTYSession, substr string, timeout, step time.Duration) bool {
 	deadline := sess.Clock().Now().Add(timeout)
+	var seen strings.Builder
 	for sess.Clock().Now().Before(deadline) {
-		if strings.Contains(sess.DrainRaw(), substr) {
+		seen.WriteString(sess.DrainRaw())
+		if strings.Contains(seen.String(), substr) {
 			return true
 		}
 		advanceTestClock(sess.Clock(), step)
 	}
-	return strings.Contains(sess.DrainRaw(), substr)
+	seen.WriteString(sess.DrainRaw())
+	return strings.Contains(seen.String(), substr)
 }
 
 func waitForRawIdle(t *testing.T, sess *ptytest.PTYSession, idle, timeout time.Duration) {

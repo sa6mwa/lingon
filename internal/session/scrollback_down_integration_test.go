@@ -1,7 +1,6 @@
 package session_test
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -15,10 +14,7 @@ var hostWheelDownSeq = []byte{0x1b, '[', '<', '6', '5', ';', '1', ';', '1', 'M'}
 
 func TestHostScrollbackDownMovesImmediately(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
-	}
+	shell := scrollbackShell(t)
 
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
@@ -30,15 +26,12 @@ func TestHostScrollbackDownMovesImmediately(t *testing.T) {
 	})
 
 	waitForHost(t, h, "scroll_host_down", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostCommandReady(t, host, "__SCROLL_DOWN_READY__", 3*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
 
-	host.Send("i=1; while [ $i -le 80 ]; do printf 'LINE-%02d\\n' $i; i=$((i+1)); done\n")
-	eventuallyWithClock(t, host.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
-		screen := host.Screen()
-		if !screen.Contains("LINE-80") {
-			return ptytest.FormatRowDiff("host", 0, screen.Row(0))
-		}
-		return nil
-	})
+	host.Send("emit-lines LINE 2 80\n")
+	waitForStableSeededHostOutput(t, host, "LINE-80", 3*time.Second)
 
 	host.SendBytes([]byte{0x0c, '['})
 	advanceTestClock(h.Clock(), 150*time.Millisecond)
@@ -72,10 +65,7 @@ func TestHostScrollbackDownMovesImmediately(t *testing.T) {
 
 func TestHostScrollbackEndDoesNotExit(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
-	}
+	shell := scrollbackShell(t)
 
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
@@ -87,15 +77,12 @@ func TestHostScrollbackEndDoesNotExit(t *testing.T) {
 	})
 
 	waitForHost(t, h, "scroll_host_end", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostCommandReady(t, host, "__SCROLL_END_READY__", 3*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
 
-	host.Send("i=1; while [ $i -le 80 ]; do printf 'LINE-%02d\\n' $i; i=$((i+1)); done\n")
-	eventuallyWithClock(t, host.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
-		screen := host.Screen()
-		if !screen.Contains("LINE-80") {
-			return ptytest.FormatRowDiff("host", 0, screen.Row(0))
-		}
-		return nil
-	})
+	host.Send("emit-lines LINE 2 80\n")
+	waitForStableSeededHostOutput(t, host, "LINE-80", 3*time.Second)
 
 	host.SendBytes([]byte{0x0c, '['})
 	advanceTestClock(h.Clock(), 150*time.Millisecond)
@@ -114,10 +101,7 @@ func TestHostScrollbackEndDoesNotExit(t *testing.T) {
 
 func TestHostWheelRequiresCtrlLBracketToEnterAndWheelDownAutoExit(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
-	}
+	shell := scrollbackShell(t)
 
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
@@ -129,19 +113,16 @@ func TestHostWheelRequiresCtrlLBracketToEnterAndWheelDownAutoExit(t *testing.T) 
 	})
 
 	waitForHost(t, h, "scroll_host_wheel_auto", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostCommandReady(t, host, "__SCROLL_WHEEL_READY__", 3*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
 
-	host.Send("i=1; while [ $i -le 80 ]; do printf 'LINE-%02d\\n' $i; i=$((i+1)); done\n")
-	eventuallyWithClock(t, host.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
-		screen := host.Screen()
-		if !screen.Contains("LINE-80") {
-			return ptytest.FormatRowDiff("host", 0, screen.Row(0))
-		}
-		return nil
-	})
+	host.Send("emit-lines LINE 2 80\n")
+	waitForStableSeededHostOutput(t, host, "LINE-80", 3*time.Second)
 
 	host.SendBytes(hostWheelUpSeq)
 	advanceTestClock(h.Clock(), 120*time.Millisecond)
-	host.Send("\nprintf 'LIVE_NO_AUTO_ENTER\\n'\n")
+	host.Send("emit LIVE_NO_AUTO_ENTER\n")
 	eventuallyWithClock(t, host.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
 		if !host.Screen().Contains("LIVE_NO_AUTO_ENTER") {
 			return ptytest.FormatRowDiff("host", 0, host.Screen().Row(0))
@@ -152,7 +133,7 @@ func TestHostWheelRequiresCtrlLBracketToEnterAndWheelDownAutoExit(t *testing.T) 
 	host.SendBytes([]byte{0x0c, '['})
 	advanceTestClock(h.Clock(), 120*time.Millisecond)
 
-	host.Send("\nprintf 'BLOCKED_IN_SCROLLBACK\\n'\n")
+	host.Send("emit BLOCKED_IN_SCROLLBACK\n")
 	advanceTestClock(h.Clock(), 150*time.Millisecond)
 	if host.Screen().Contains("BLOCKED_IN_SCROLLBACK") {
 		t.Fatalf("expected input blocked while scrollback active")
@@ -160,7 +141,7 @@ func TestHostWheelRequiresCtrlLBracketToEnterAndWheelDownAutoExit(t *testing.T) 
 
 	host.SendBytes([]byte{0x1b, '[', 'F'})
 	advanceTestClock(h.Clock(), 100*time.Millisecond)
-	host.Send("\nprintf 'STILL_BLOCKED_BY_END\\n'\n")
+	host.Send("emit STILL_BLOCKED_BY_END\n")
 	advanceTestClock(h.Clock(), 150*time.Millisecond)
 	if host.Screen().Contains("STILL_BLOCKED_BY_END") {
 		t.Fatalf("expected End to keep scrollback active (no auto-exit)")
@@ -171,7 +152,7 @@ func TestHostWheelRequiresCtrlLBracketToEnterAndWheelDownAutoExit(t *testing.T) 
 		advanceTestClock(h.Clock(), 20*time.Millisecond)
 	}
 
-	host.Send("\nprintf 'STILL_BLOCKED_AFTER_WHEEL_DOWN\\n'\n")
+	host.Send("emit STILL_BLOCKED_AFTER_WHEEL_DOWN\n")
 	advanceTestClock(h.Clock(), 150*time.Millisecond)
 	if host.Screen().Contains("STILL_BLOCKED_AFTER_WHEEL_DOWN") {
 		t.Fatalf("expected wheel down to stay in scrollback mode")
@@ -191,10 +172,7 @@ func TestHostWheelRequiresCtrlLBracketToEnterAndWheelDownAutoExit(t *testing.T) 
 
 func TestHostScrollbackIndicatorRightAlignedNoBleedFrom100To0(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
-	}
+	shell := scrollbackShell(t)
 
 	const cols = 80
 	sessionID := "scroll_host_indicator"
@@ -208,7 +186,10 @@ func TestHostScrollbackIndicatorRightAlignedNoBleedFrom100To0(t *testing.T) {
 	})
 
 	waitForHost(t, h, sessionID, 3*time.Second)
-	host.Send("i=1; while [ $i -le 140 ]; do printf 'LINE-%03d\\n' $i; i=$((i+1)); done\n")
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostCommandReady(t, host, "__SCROLL_INDICATOR_READY__", 3*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
+	host.Send("emit-lines LINE 3 140\n")
 	eventuallyWithClock(t, host.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
 		if !host.Screen().Contains("LINE-140") {
 			return ptytest.FormatRowDiff("host", 0, host.Screen().Row(0))
@@ -277,12 +258,59 @@ func TestHostScrollbackIndicatorRightAlignedNoBleedFrom100To0(t *testing.T) {
 	assertRightAligned("[0%]")
 }
 
+func waitForStableSeededHostOutput(t *testing.T, host *ptytest.PTYSession, token string, timeout time.Duration) {
+	t.Helper()
+	eventuallyWithClock(t, host.Clock(), timeout, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains(token) {
+			return ptytest.FormatRowDiff("host", 0, host.Screen().Row(0))
+		}
+		return nil
+	})
+	waitForHostPromptIdle(t, host, timeout, 50*time.Millisecond, 3)
+}
+
+func waitForHostCommandReady(t *testing.T, host *ptytest.PTYSession, marker string, timeout time.Duration) {
+	t.Helper()
+	host.Send("emit " + marker + "\n")
+	waitForRawContains(t, host, marker, timeout, 50*time.Millisecond, "expected host command-ready marker")
+}
+
+func waitForConnectedBannerClear(t *testing.T, host *ptytest.PTYSession, timeout time.Duration) {
+	t.Helper()
+	eventuallyWithClock(t, host.Clock(), timeout, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if screen.Contains("connected to ") {
+			return ptytest.FormatRowDiff("host", 0, screen.Row(0))
+		}
+		return nil
+	})
+}
+
+func waitForHostPromptIdle(t *testing.T, host *ptytest.PTYSession, timeout, step time.Duration, stableSteps int) {
+	t.Helper()
+	if stableSteps <= 0 {
+		stableSteps = 1
+	}
+	deadline := host.Clock().Now().Add(timeout)
+	quiet := 0
+	for host.Clock().Now().Before(deadline) {
+		raw := host.DrainRaw()
+		if raw == "" && host.Screen().Contains("PROMPT> ") {
+			quiet++
+			if quiet >= stableSteps {
+				return
+			}
+		} else {
+			quiet = 0
+		}
+		advanceTestClock(host.Clock(), step)
+	}
+	t.Fatalf("timed out waiting for host prompt to become idle")
+}
+
 func TestHostScrollbackIndicatorSuppressesReconnectBanner(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
-	}
+	shell := scrollbackShell(t)
 
 	const cols = 120
 	sessionID := "scroll_host_reconnect_suppressed"
