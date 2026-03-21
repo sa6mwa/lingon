@@ -229,7 +229,12 @@ func TestHostScrollbackIndicatorRightAlignedNoBleedFrom100To0(t *testing.T) {
 
 	assertRightAligned := func(token string) {
 		t.Helper()
-		row := host.Screen().Row(0)
+		row := waitForStableTopRow(t, host, 2*time.Second, 50*time.Millisecond, 3, func(row string) error {
+			if !strings.Contains(row, token) {
+				return ptytest.FormatRowDiff("host", 0, row)
+			}
+			return nil
+		})
 		if strings.Contains(row, sessionID) {
 			t.Fatalf("expected tab bar hidden in scrollback, got row=%q", row)
 		}
@@ -252,13 +257,6 @@ func TestHostScrollbackIndicatorRightAlignedNoBleedFrom100To0(t *testing.T) {
 		}
 	}
 
-	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		row := host.Screen().Row(0)
-		if !strings.Contains(row, "[100%]") {
-			return ptytest.FormatRowDiff("host", 0, row)
-		}
-		return nil
-	})
 	assertRightAligned("[100%]")
 
 	for i := 0; i < 180; i++ {
@@ -266,14 +264,12 @@ func TestHostScrollbackIndicatorRightAlignedNoBleedFrom100To0(t *testing.T) {
 		advanceTestClock(h.Clock(), 15*time.Millisecond)
 	}
 
-	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		row := host.Screen().Row(0)
+	row := waitForStableTopRow(t, host, 2*time.Second, 50*time.Millisecond, 3, func(row string) error {
 		if !strings.Contains(row, "[0%]") {
 			return ptytest.FormatRowDiff("host", 0, row)
 		}
 		return nil
 	})
-	row := host.Screen().Row(0)
 	// These columns were occupied by "[100%]" but must be cleared when rendering "[0%]".
 	if row[cols-6:cols-4] != "  " {
 		t.Fatalf("expected cleared columns when moving from [100%%] to [0%%], got row=%q", row)
@@ -320,8 +316,7 @@ func TestHostScrollbackIndicatorSuppressesReconnectBanner(t *testing.T) {
 	host.SendBytes([]byte{0x0c, '['})
 	advanceTestClock(h.Clock(), 120*time.Millisecond)
 
-	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		row := host.Screen().Row(0)
+	waitForStableTopRow(t, host, 2*time.Second, 50*time.Millisecond, 3, func(row string) error {
 		if strings.Contains(row, "connection lost") || strings.Contains(row, "reconnecting") {
 			return ptytest.FormatRowDiff("host", 0, row)
 		}

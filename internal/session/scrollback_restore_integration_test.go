@@ -3,6 +3,7 @@ package session_test
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,12 +40,11 @@ func TestHostScrollbackRestore(t *testing.T) {
 	before := host.Screen().String()
 
 	host.SendBytes([]byte{0x0c, '['})
-	eventuallyWithClock(t, host.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		screen := host.Screen()
-		if !screen.Contains("[100%]") {
-			return ptytest.FormatRowDiff("host", 0, screen.Row(0))
+	waitForStableTopRow(t, host, 2*time.Second, 50*time.Millisecond, 3, func(row string) error {
+		if !strings.Contains(row, "[100%]") {
+			return ptytest.FormatRowDiff("host", 0, row)
 		}
-		if row := screen.Row(0); row[len(row)-len("[100%]"):] != "[100%]" {
+		if row[len(row)-len("[100%]"):] != "[100%]" {
 			return fmt.Errorf("expected scrollback indicator right-aligned, got %q", row)
 		}
 		return nil

@@ -40,8 +40,8 @@ func TestHostResizePreservesScrollbackHistory(t *testing.T) {
 	})
 
 	host.SendBytes([]byte{0x0c, '['})
-	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		if !host.Screen().Contains("[100%]") {
+	waitForStableTopRow(t, host, 2*time.Second, 50*time.Millisecond, 3, func(row string) error {
+		if _, ok := scrollbackPercent(row); !ok {
 			return fmt.Errorf("waiting for scrollback indicator")
 		}
 		return nil
@@ -101,8 +101,8 @@ func TestHostScrollbackResizeRepaintsIndicatorWithoutInput(t *testing.T) {
 	})
 
 	host.SendBytes([]byte{0x0c, '['})
-	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		if _, ok := scrollbackPercent(host.Screen().Row(0)); !ok {
+	waitForStableTopRow(t, host, 2*time.Second, 50*time.Millisecond, 3, func(row string) error {
+		if _, ok := scrollbackPercent(row); !ok {
 			return fmt.Errorf("waiting for scrollback indicator")
 		}
 		return nil
@@ -127,8 +127,7 @@ func TestHostScrollbackResizeRepaintsIndicatorWithoutInput(t *testing.T) {
 	host.Resize(60, 24)
 	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 
-	eventuallyWithClock(t, h.Clock(), 1200*time.Millisecond, 50*time.Millisecond, func() error {
-		row := host.Screen().Row(0)
+	waitForStableTopRow(t, host, 1200*time.Millisecond, 50*time.Millisecond, 3, func(row string) error {
 		_, ok := scrollbackPercent(row)
 		if !ok {
 			return fmt.Errorf("expected right-aligned scrollback indicator to repaint after width resize, got row=%q", row)
