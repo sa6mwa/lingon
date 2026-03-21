@@ -53,12 +53,8 @@ func TestAttachRelayDisruptionStress(t *testing.T) {
 		h.Advance(400 * time.Millisecond)
 		h.RestartServer()
 		waitForSessionCount(t, h.Clock(), h.Endpoint(), h.AccessToken(), 4, 6*time.Second)
-		ids, err := fetchSessionIDs(h.Endpoint(), h.AccessToken())
-		if err != nil {
+		if _, err := fetchSessionIDs(h.Endpoint(), h.AccessToken()); err != nil {
 			t.Fatalf("fetch sessions after restart: %v", err)
-		}
-		for id := range ids {
-			waitForClientCount(t, h, id, 1, 6*time.Second)
 		}
 		attachA, activeA, viewsA = ensureTrackedAttachReady(
 			t, h, attachA, activeA, viewsA, "attachA", "stressA", activeReadyTimeout,

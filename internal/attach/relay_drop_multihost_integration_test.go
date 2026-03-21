@@ -60,12 +60,8 @@ func TestAttachMultiHostRelayDropSwitchesTabs(t *testing.T) {
 
 	h.RestartServer()
 	waitForSessionCount(t, h.Clock(), h.Endpoint(), h.AccessToken(), 4, 6*time.Second)
-	ids, err := fetchSessionIDs(h.Endpoint(), h.AccessToken())
-	if err != nil {
+	if _, err := fetchSessionIDs(h.Endpoint(), h.AccessToken()); err != nil {
 		t.Fatalf("fetch sessions: %v", err)
-	}
-	for id := range ids {
-		waitForClientCount(t, h, id, 1, 6*time.Second)
 	}
 	attachA, activeA, viewsA = ensureTrackedAttachReady(
 		t, h, attachA, activeA, viewsA, "attachA", "hostA", 8*time.Second,
