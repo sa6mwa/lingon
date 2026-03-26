@@ -199,6 +199,33 @@ func TestResolveEndpointValueIgnoresStoredAuthForExplicitTokenFlag(t *testing.T)
 	}
 }
 
+func TestResolveEndpointValueIgnoresBrokenAuthForLogin(t *testing.T) {
+	home := testutil.TempDir(t)
+	t.Setenv("HOME", home)
+
+	authPath := filepath.Join(home, ".lingon", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(auth dir): %v", err)
+	}
+	if err := os.WriteFile(authPath, []byte("{not-json"), 0o600); err != nil {
+		t.Fatalf("WriteFile(auth): %v", err)
+	}
+
+	loader := lingon.NewLoader()
+	loader.Viper().SetDefault("client.endpoint", lingon.DefaultClientEndpoint)
+
+	cmd := &cobra.Command{Use: "login"}
+	cmd.Flags().String("endpoint", lingon.DefaultClientEndpoint, "")
+
+	endpointValue, err := resolveEndpointValue(cmd, loader, lingon.DefaultClientEndpoint, lingon.DefaultClientEndpoint, authPath)
+	if err != nil {
+		t.Fatalf("resolveEndpointValue: %v", err)
+	}
+	if endpointValue != lingon.DefaultClientEndpoint {
+		t.Fatalf("endpointValue = %q, want %q", endpointValue, lingon.DefaultClientEndpoint)
+	}
+}
+
 func TestSessionsCommandIgnoresStoredAuthForExplicitAccessToken(t *testing.T) {
 	home := testutil.TempDir(t)
 	t.Setenv("HOME", home)

@@ -100,13 +100,37 @@ func TestCursorQueryFuncUsesRenderedOverlayCursorBeforeRawCursor(t *testing.T) {
 		Cols:          80,
 		Rows:          24,
 		Cursor:        terminal.Cursor{X: 8, Y: 1},
-		CursorVisible: true,
+		CursorVisible: false,
 	})
 	if !ok {
 		t.Fatalf("expected cursor position")
 	}
 	if row != 1 || col != 5 {
 		t.Fatalf("expected rendered overlay cursor row=1 col=5, got row=%d col=%d", row, col)
+	}
+}
+
+func TestCursorQueryFuncPrefersCurrentRawCursorOverStaleOverlayCursor(t *testing.T) {
+	r := &Runner{}
+	r.renderCursorMu.Lock()
+	r.renderCursorRow = 1
+	r.renderCursorCol = 5
+	r.renderCursorVisible = true
+	r.renderCursorMu.Unlock()
+	r.renderCache.Frame.LastTopOverlayVisible = true
+
+	query := r.cursorQueryFunc(nil, nil)
+	row, col, ok := query(terminal.Snapshot{
+		Cols:          80,
+		Rows:          24,
+		Cursor:        terminal.Cursor{X: 8, Y: 1},
+		CursorVisible: true,
+	})
+	if !ok {
+		t.Fatalf("expected cursor position")
+	}
+	if row != 2 || col != 9 {
+		t.Fatalf("expected current raw cursor row=2 col=9, got row=%d col=%d", row, col)
 	}
 }
 

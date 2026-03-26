@@ -1285,6 +1285,23 @@ func (r *Runner) cursorQueryFunc(stdout, stdin *os.File) func(terminal.Snapshot)
 			cols = raw.Cols
 			rows = raw.Rows
 		}
+		if raw.CursorVisible && raw.Cols == cols && raw.Rows == rows {
+			row = raw.Cursor.Y + 1
+			col = raw.Cursor.X + 1
+			if r.trace != nil {
+				r.trace.Event("cursor_query_source", map[string]any{
+					"component": "host",
+					"source":    "raw_full",
+					"row":       row,
+					"col":       col,
+					"cursor_x":  raw.Cursor.X,
+					"cursor_y":  raw.Cursor.Y,
+					"cols":      raw.Cols,
+					"rows":      raw.Rows,
+				})
+			}
+			return row, col, true
+		}
 		r.stdoutMu.Lock()
 		topOverlayVisible := r.renderCache.TopOverlayVisible()
 		r.stdoutMu.Unlock()
@@ -1310,23 +1327,6 @@ func (r *Runner) cursorQueryFunc(stdout, stdin *os.File) func(terminal.Snapshot)
 			return row, col, true
 		}
 		r.renderCursorMu.Unlock()
-		if raw.CursorVisible && raw.Cols == cols && raw.Rows == rows {
-			row = raw.Cursor.Y + 1
-			col = raw.Cursor.X + 1
-			if r.trace != nil {
-				r.trace.Event("cursor_query_source", map[string]any{
-					"component": "host",
-					"source":    "raw_full",
-					"row":       row,
-					"col":       col,
-					"cursor_x":  raw.Cursor.X,
-					"cursor_y":  raw.Cursor.Y,
-					"cols":      raw.Cols,
-					"rows":      raw.Rows,
-				})
-			}
-			return row, col, true
-		}
 		snap := protocol.SnapshotToProto(raw)
 		row, col, ok = r.cursorQueryPosition(snap, cols, rows)
 		if r.trace != nil {

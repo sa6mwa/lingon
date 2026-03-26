@@ -75,6 +75,9 @@ func authEndpointInferenceEnabled(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return true
 	}
+	if cmd.Name() == "login" {
+		return false
+	}
 	return !flagChanged(cmd, "token") && !flagChanged(cmd, "access-token")
 }
 

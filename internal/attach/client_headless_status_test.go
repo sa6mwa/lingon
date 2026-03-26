@@ -2,6 +2,8 @@ package attach
 
 import (
 	"context"
+	"fmt"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/terminal/emu"
 )
 
 func TestHandleRoutedHeadlessStatus(t *testing.T) {
@@ -160,5 +163,102 @@ func TestPrepareForCtrlLClearStopsPendingRedrawEffects(t *testing.T) {
 	client.renderMu.Unlock()
 	if !forceClear {
 		t.Fatalf("expected forceClear to remain armed")
+	}
+}
+
+func TestPrepareForCtrlLClearPreservesStateExpiryOnNextRender(t *testing.T) {
+	clk := clock.NewMock()
+	client := &Client{
+		SessionID: "s1",
+		Endpoint:  "https://example",
+		Clock:     clk,
+		TermSize: func() (int, int) {
+			return 80, 24
+		},
+		compositor: mvu.NewRuntime(),
+	}
+	client.runCtx = context.Background()
+	client.effects = mvu.NewEffectScheduler(clk)
+	defer client.effects.StopAll()
+	expired := make(chan struct{}, 1)
+	client.OnOverlayStateChange = func() {
+		select {
+		case expired <- struct{}{}:
+		default:
+		}
+	}
+	client.compositor.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
+		Clock:     clk,
+		SessionID: client.SessionID,
+		Endpoint:  client.Endpoint,
+	}})
+
+	snap := &protocolpb.Snapshot{
+		Cols:          80,
+		Rows:          24,
+		Runes:         make([]uint32, 80*24),
+		Modes:         make([]int32, 80*24),
+		Fg:            make([]uint32, 80*24),
+		Bg:            make([]uint32, 80*24),
+		Cursor:        &protocolpb.Cursor{X: 0, Y: 1},
+		CursorVisible: true,
+	}
+
+	client.renderSnapshot(snap)
+	client.showInfoStatus("wall inactivity: on")
+	client.RenderCurrent()
+
+	client.PrepareForCtrlLClear()
+
+	var buf strings.Builder
+	client.Stdout = &buf
+	client.renderSnapshot(snap)
+	buf.Reset()
+
+	clk.Add(2100 * time.Millisecond)
+	for i := 0; i < 50; i++ {
+		select {
+		case <-expired:
+			goto expiredObserved
+		default:
+			goruntime.Gosched()
+		}
+	}
+	t.Fatalf("expected state-expiry callback after Ctrl+L clear")
+
+expiredObserved:
+	if buf.Len() == 0 {
+		t.Fatalf("expected expiry redraw after Ctrl+L clear")
+	}
+	e := emu.New(80, 24)
+	if err := e.Write([]byte(buf.String())); err != nil {
+		t.Fatalf("emulator write: %v", err)
+	}
+	screen, err := e.Snapshot()
+	if err != nil {
+		t.Fatalf("emulator snapshot: %v", err)
+	}
+	var rows []string
+	for y := 0; y < screen.Rows; y++ {
+		row := make([]rune, 0, screen.Cols)
+		for x := 0; x < screen.Cols; x++ {
+			cell := screen.Cells[y*screen.Cols+x]
+			if cell.Rune == 0 {
+				row = append(row, ' ')
+				continue
+			}
+			row = append(row, cell.Rune)
+		}
+		rows = append(rows, string(row))
+	}
+	joined := strings.Join(rows, "\n")
+	if strings.Contains(joined, "wall inactivity: on") {
+		t.Fatalf("expected expiring overlay to disappear after Ctrl+L clear redraw, got:\n%s", joined)
+	}
+	if strings.Contains(buf.String(), "\x1b[2J\x1b[H") {
+		t.Fatalf("expected expiry redraw without full clear")
+	}
+	if screen.Rows != 24 {
+		t.Fatalf("unexpected emulator state: %s", fmt.Sprintf("%dx%d", screen.Cols, screen.Rows))
 	}
 }

@@ -1151,6 +1151,7 @@ func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 	}
 	_ = writeAll(c.clock(), c.stdoutWriter(), rendered.Bytes)
 	c.scheduleRedrawEffect(mvu.EffectKeyTabAutoHide, frame.TabDelay, false)
+	c.scheduleRedrawEffect(mvu.EffectKeyStateExpiry, frame.StateDelay, true)
 }
 
 func (c *Client) renderCurrent() {
