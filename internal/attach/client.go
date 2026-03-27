@@ -735,6 +735,7 @@ func (c *Client) PrepareForCtrlLClear() {
 	c.renderCache.Reset()
 	c.forceClear = true
 	c.renderMu.Unlock()
+	c.RenderCurrent()
 }
 
 // ForceTabsVisibleOnce forces the next active-view render passes to keep the tab

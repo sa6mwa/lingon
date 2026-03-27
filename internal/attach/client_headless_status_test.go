@@ -3,7 +3,7 @@ package attach
 import (
 	"context"
 	"fmt"
-	goruntime "runtime"
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -135,7 +135,14 @@ func TestHandleRoutedHeadlessStatusBackoffWithoutTimeout(t *testing.T) {
 
 func TestPrepareForCtrlLClearStopsPendingRedrawEffects(t *testing.T) {
 	clk := clock.NewMock()
-	client := &Client{}
+	var buf bytes.Buffer
+	client := &Client{
+		Clock:  clk,
+		Stdout: &buf,
+		TermSize: func() (int, int) {
+			return 80, 24
+		},
+	}
 	client.runCtx = context.Background()
 	client.effects = mvu.NewEffectScheduler(clk)
 	defer client.effects.StopAll()
@@ -161,17 +168,77 @@ func TestPrepareForCtrlLClearStopsPendingRedrawEffects(t *testing.T) {
 	client.renderMu.Lock()
 	forceClear := client.forceClear
 	client.renderMu.Unlock()
-	if !forceClear {
-		t.Fatalf("expected forceClear to remain armed")
+	if forceClear {
+		t.Fatalf("expected immediate render to consume forceClear")
 	}
 }
 
-func TestPrepareForCtrlLClearPreservesStateExpiryOnNextRender(t *testing.T) {
+func TestPrepareForCtrlLClearRendersImmediatelyAndAvoidsDeferredFullClear(t *testing.T) {
 	clk := clock.NewMock()
+	var buf bytes.Buffer
 	client := &Client{
 		SessionID: "s1",
 		Endpoint:  "https://example",
 		Clock:     clk,
+		Stdout:    &buf,
+		TermSize: func() (int, int) {
+			return 80, 24
+		},
+		compositor: mvu.NewRuntime(),
+	}
+	client.runCtx = context.Background()
+	client.effects = mvu.NewEffectScheduler(clk)
+	defer client.effects.StopAll()
+	client.compositor.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
+		Clock:     clk,
+		SessionID: client.SessionID,
+		Endpoint:  client.Endpoint,
+	}})
+
+	snap := &protocolpb.Snapshot{
+		Cols:          80,
+		Rows:          24,
+		Runes:         make([]uint32, 80*24),
+		Modes:         make([]int32, 80*24),
+		Fg:            make([]uint32, 80*24),
+		Bg:            make([]uint32, 80*24),
+		Cursor:        &protocolpb.Cursor{X: 0, Y: 1},
+		CursorVisible: true,
+	}
+
+	client.renderSnapshot(snap)
+	client.showInfoStatus("wall inactivity: on")
+	buf.Reset()
+
+	client.PrepareForCtrlLClear()
+	if buf.Len() == 0 {
+		t.Fatalf("expected immediate redraw during Ctrl+L clear")
+	}
+	if !strings.Contains(buf.String(), "\x1b[2J\x1b[H") {
+		t.Fatalf("expected immediate Ctrl+L redraw to clear the viewport")
+	}
+
+	buf.Reset()
+	client.RenderCurrent()
+	if strings.Contains(buf.String(), "\x1b[2J\x1b[H") {
+		t.Fatalf("expected subsequent unrelated redraw to avoid deferred full clear")
+	}
+	client.renderMu.Lock()
+	forceClear := client.forceClear
+	client.renderMu.Unlock()
+	if forceClear {
+		t.Fatalf("expected immediate redraw to consume forceClear")
+	}
+}
+
+func TestPrepareForCtrlLClearPreservesStateExpiryWithoutRemoteSnapshot(t *testing.T) {
+	clk := clock.NewMock()
+	var buf bytes.Buffer
+	client := &Client{
+		SessionID: "s1",
+		Endpoint:  "https://example",
+		Clock:     clk,
+		Stdout:    &buf,
 		TermSize: func() (int, int) {
 			return 80, 24
 		},
@@ -206,32 +273,22 @@ func TestPrepareForCtrlLClearPreservesStateExpiryOnNextRender(t *testing.T) {
 
 	client.renderSnapshot(snap)
 	client.showInfoStatus("wall inactivity: on")
-	client.RenderCurrent()
+	buf.Reset()
 
 	client.PrepareForCtrlLClear()
-
-	var buf strings.Builder
-	client.Stdout = &buf
-	client.renderSnapshot(snap)
 	buf.Reset()
 
 	clk.Add(2100 * time.Millisecond)
-	for i := 0; i < 50; i++ {
-		select {
-		case <-expired:
-			goto expiredObserved
-		default:
-			goruntime.Gosched()
-		}
+	select {
+	case <-expired:
+	default:
+		t.Fatalf("expected state-expiry callback after Ctrl+L clear without remote snapshot")
 	}
-	t.Fatalf("expected state-expiry callback after Ctrl+L clear")
-
-expiredObserved:
 	if buf.Len() == 0 {
 		t.Fatalf("expected expiry redraw after Ctrl+L clear")
 	}
 	e := emu.New(80, 24)
-	if err := e.Write([]byte(buf.String())); err != nil {
+	if err := e.Write(buf.Bytes()); err != nil {
 		t.Fatalf("emulator write: %v", err)
 	}
 	screen, err := e.Snapshot()
@@ -256,7 +313,7 @@ expiredObserved:
 		t.Fatalf("expected expiring overlay to disappear after Ctrl+L clear redraw, got:\n%s", joined)
 	}
 	if strings.Contains(buf.String(), "\x1b[2J\x1b[H") {
-		t.Fatalf("expected expiry redraw without full clear")
+		t.Fatalf("expected expiry redraw without deferred full clear")
 	}
 	if screen.Rows != 24 {
 		t.Fatalf("unexpected emulator state: %s", fmt.Sprintf("%dx%d", screen.Cols, screen.Rows))
