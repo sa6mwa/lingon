@@ -95,7 +95,7 @@ acquire_lock
 echo "Building harness..."
 (
   cd "${ROOT_DIR}"
-  go build -o "${HARNESS_BIN}" ./cmd/lingon-android-harness
+  go build -buildvcs=true -o "${HARNESS_BIN}" ./cmd/lingon-android-harness
 )
 
 HARNESS_ARGS=()

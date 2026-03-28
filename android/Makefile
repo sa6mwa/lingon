@@ -43,7 +43,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-install adb-push integration-test
-VERSION_CMD := cd .. && go run ./cmd/lingon version --version
+VERSION_CMD := cd .. && go run -buildvcs=true ./cmd/lingon version --version
 
 help:
 	@echo "lingon android make targets:"
