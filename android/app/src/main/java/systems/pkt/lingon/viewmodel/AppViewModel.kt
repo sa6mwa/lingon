@@ -32,6 +32,8 @@ import systems.pkt.lingon.DefaultTerminalZoom
 import systems.pkt.lingon.MaxTerminalZoom
 import systems.pkt.lingon.MinTerminalZoom
 import systems.pkt.lingon.protocol.ScrollbackRow
+import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
+import systems.pkt.lingon.ui.translateAppCursorKeys
 import systems.pkt.lingon.work.NoopWallWorkScheduler
 import systems.pkt.lingon.work.WallWorkScheduler
 import java.util.UUID
@@ -541,7 +543,7 @@ class AppViewModel(
             setStatus("view-only session", StatusLevel.Warn)
             return
         }
-        ws?.let { wsClient.sendInput(it, data) } ?: setStatus("not connected", StatusLevel.Warn)
+        sendProcessedInput(data.toByteArray())
     }
 
     fun sendRawBytes(bytes: ByteArray) {
@@ -560,7 +562,13 @@ class AppViewModel(
             setStatus("view-only session", StatusLevel.Warn)
             return
         }
-        ws?.let { wsClient.sendInput(it, bytes) } ?: setStatus("not connected", StatusLevel.Warn)
+        sendProcessedInput(bytes)
+    }
+
+    private fun sendProcessedInput(bytes: ByteArray) {
+        val appCursorActive = (liveSnapshot?.mode ?: _state.value.activeSnapshot?.mode ?: 0) and SNAPSHOT_MODE_APP_CURSOR != 0
+        val payload = translateAppCursorKeys(bytes, appCursorActive)
+        ws?.let { wsClient.sendInput(it, payload) } ?: setStatus("not connected", StatusLevel.Warn)
     }
 
     private suspend fun bootstrapSessions() {

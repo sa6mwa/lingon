@@ -20,6 +20,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertArrayEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TestWatcher
@@ -36,6 +37,7 @@ import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.data.certs.CertificateStore
 import systems.pkt.lingon.protocol.ScrollbackRow
 import systems.pkt.lingon.terminal.TerminalSnapshot
+import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppViewModelTest {
@@ -339,6 +341,42 @@ class AppViewModelTest {
         assertEquals(1, repository.setZoomCalls)
         assertEquals(1.6f, repository.lastZoom, 0.0001f)
     }
+
+    @Test
+    fun sendRawBytesTranslatesArrowKeysWhenAppCursorModeActive() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        val liveSnapshot = TerminalSnapshot(
+            cols = 80,
+            rows = 24,
+            runes = IntArray(80 * 24),
+            modes = IntArray(80 * 24),
+            fg = IntArray(80 * 24),
+            bg = IntArray(80 * 24),
+            graphemes = null,
+            cursorX = 0,
+            cursorY = 0,
+            cursorVisible = true,
+            mode = SNAPSHOT_MODE_APP_CURSOR,
+            title = "",
+        )
+        setLiveSnapshotForTest(viewModel, liveSnapshot)
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                connectionState = ConnectionState.Connected,
+                activeSnapshot = liveSnapshot,
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+
+        viewModel.sendRawBytes("\u001b[B".encodeToByteArray())
+
+        assertArrayEquals("\u001bOB".encodeToByteArray(), wsClient.lastSentBytes)
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -457,26 +495,28 @@ private class FakeWsClient : RelayWebSocketClient(
 ) {
     var connectCount: Int = 0
     var lastConnectOptions: ConnectOptions? = null
+    var lastSentBytes: ByteArray? = null
+    val fakeSocket: WebSocket = object : WebSocket {
+        override fun request(): okhttp3.Request = okhttp3.Request.Builder().url("https://localhost/").build()
+        override fun queueSize(): Long = 0
+        override fun send(text: String): Boolean = true
+        override fun send(bytes: okio.ByteString): Boolean = true
+        override fun close(code: Int, reason: String?): Boolean = true
+        override fun cancel() {}
+    }
 
     override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
         connectCount += 1
         lastConnectOptions = options
-        return object : WebSocket {
-            override fun request(): okhttp3.Request = okhttp3.Request.Builder().url(options.baseUrl).build()
-            override fun queueSize(): Long = 0
-            override fun send(text: String): Boolean = true
-            override fun send(bytes: okio.ByteString): Boolean = true
-            override fun close(code: Int, reason: String?): Boolean = true
-            override fun cancel() {}
-        }
+        return fakeSocket
     }
 
     override fun sendInput(webSocket: WebSocket, data: ByteArray) {
-        // no-op
+        lastSentBytes = data.copyOf()
     }
 
     override fun sendInput(webSocket: WebSocket, text: String) {
-        // no-op
+        lastSentBytes = text.toByteArray()
     }
 
     override fun sendResize(webSocket: WebSocket, cols: Int, rows: Int) {
@@ -513,6 +553,12 @@ private fun setUiStateForTest(viewModel: AppViewModel, state: UiState) {
     @Suppress("UNCHECKED_CAST")
     val stateFlow = stateField.get(viewModel) as MutableStateFlow<UiState>
     stateFlow.value = state
+}
+
+private fun setWebSocketForTest(viewModel: AppViewModel, webSocket: WebSocket) {
+    val field = AppViewModel::class.java.getDeclaredField("ws")
+    field.isAccessible = true
+    field.set(viewModel, webSocket)
 }
 
 private fun testHttpClientProvider(): HttpClientProvider {

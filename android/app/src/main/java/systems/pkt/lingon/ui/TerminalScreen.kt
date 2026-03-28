@@ -127,23 +127,10 @@ fun TerminalScreen(
         val ctrlActiveNative = native.metaState and AndroidKeyEvent.META_CTRL_ON != 0
         val altActiveNative = native.metaState and AndroidKeyEvent.META_ALT_ON != 0
 
-        when (native.keyCode) {
-            AndroidKeyEvent.KEYCODE_ENTER -> {
-                viewModel.sendRawBytes(byteArrayOf('\r'.code.toByte()))
-                return true
-            }
-            AndroidKeyEvent.KEYCODE_DEL -> {
-                viewModel.sendRawBytes(byteArrayOf(0x7f.toByte()))
-                return true
-            }
-            AndroidKeyEvent.KEYCODE_TAB -> {
-                viewModel.sendRawBytes(byteArrayOf('\t'.code.toByte()))
-                return true
-            }
-            AndroidKeyEvent.KEYCODE_ESCAPE -> {
-                viewModel.sendRawBytes(byteArrayOf(0x1b.toByte()))
-                return true
-            }
+        val directBytes = hardwareKeyBytes(native.keyCode)
+        if (directBytes != null && !ctrlActiveNative && !altActiveNative) {
+            viewModel.sendRawBytes(directBytes)
+            return true
         }
 
         val unicode = native.unicodeChar

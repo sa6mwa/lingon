@@ -28,6 +28,7 @@ import (
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/retryafter"
+	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/trace"
 	"pkt.systems/pslog"
@@ -1548,6 +1549,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	var prefix control.Prefix
 	var scrollState scrollInputState
 	var mouseFilter mouseReportFilter
+	pending := make([]byte, 0, 2048)
 	resolveNextTab := func(delta int) (string, string) {
 		mu.Lock()
 		current := make([]SessionInfo, len(sessions))
@@ -1586,6 +1588,79 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		client.ForceTabsVisibleOnce()
 		client.RenderCurrent()
 	}
+	flushPending := func() bool {
+		if len(pending) == 0 {
+			return true
+		}
+		mu.Lock()
+		view := views[activeID]
+		if view == nil && len(views) == 1 {
+			for _, v := range views {
+				view = v
+				break
+			}
+		}
+		connected := view != nil && view.connected
+		connecting := view != nil && view.connecting
+		flushing := view != nil && view.flushingInput
+		viewID := activeID
+		if view != nil {
+			viewID = view.id
+		}
+		targetClient := (*Client)(nil)
+		if view != nil {
+			targetClient = view.client
+		}
+		mu.Unlock()
+		if view == nil || targetClient == nil {
+			if m.Logger != nil {
+				m.Logger.Debug("attach.stdin.no.view", "session", activeID, "hasView", view != nil, "hasClient", targetClient != nil)
+			}
+			pending = pending[:0]
+			return true
+		}
+		if !connected || flushing {
+			if m.Logger != nil {
+				m.Logger.Debug("attach.stdin.dropped.disconnected", "session", activeID, "connecting", connecting, "flushing", flushing)
+			}
+			var immediateClient *Client
+			queued := append([]byte(nil), pending...)
+			mu.Lock()
+			current := views[viewID]
+			if current == nil && len(views) == 1 {
+				for _, v := range views {
+					current = v
+					break
+				}
+			}
+			switch {
+			case current == nil || current.client == nil:
+			case current.connected && !current.flushingInput:
+				immediateClient = current.client
+			default:
+				current.pendingOps = append(current.pendingOps, pendingOp{input: queued})
+			}
+			mu.Unlock()
+			if immediateClient == nil {
+				pending = pending[:0]
+				return true
+			}
+			targetClient = immediateClient
+		}
+		if m.Logger != nil {
+			m.Logger.Debug("attach.stdin.send", "bytes", len(pending))
+		}
+		if len(pending) == 1 && pending[0] == 0x0c {
+			targetClient.PrepareForCtrlLClear()
+		}
+		if err := targetClient.SendInput(ctx, pending); err != nil {
+			if m.Logger != nil {
+				m.Logger.Debug("attach.stdin.send.failed", "err", err)
+			}
+		}
+		pending = pending[:0]
+		return true
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1621,6 +1696,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					return true
 				}
 				if b == 0x04 {
+					if !flushPending() {
+						return false
+					}
 					cancel()
 					return false
 				}
@@ -1628,6 +1706,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				cmdKind := protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED
 				cmdSet := false
 				if action != control.ActionNone {
+					if !flushPending() {
+						return false
+					}
 					switch action {
 					case control.ActionHelp:
 						ui.ApplyAction(mvu.HelpVisibleAction{Visible: true})
@@ -1811,73 +1892,12 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				if len(out) == 0 {
 					return true
 				}
-				mu.Lock()
-				view := views[activeID]
-				if view == nil && len(views) == 1 {
-					for _, v := range views {
-						view = v
-						break
-					}
-				}
-				connected := view != nil && view.connected
-				connecting := view != nil && view.connecting
-				flushing := view != nil && view.flushingInput
-				viewID := activeID
-				if view != nil {
-					viewID = view.id
-				}
-				targetClient := (*Client)(nil)
-				if view != nil {
-					targetClient = view.client
-				}
-				mu.Unlock()
-				if view == nil || targetClient == nil {
-					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.no.view", "session", activeID, "hasView", view != nil, "hasClient", targetClient != nil)
-					}
-					return true
-				}
-				if !connected || flushing {
-					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.dropped.disconnected", "session", activeID, "connecting", connecting, "flushing", flushing)
-					}
-					var immediateClient *Client
-					queued := append([]byte(nil), out...)
-					mu.Lock()
-					current := views[viewID]
-					if current == nil && len(views) == 1 {
-						for _, v := range views {
-							current = v
-							break
-						}
-					}
-					switch {
-					case current == nil || current.client == nil:
-					case current.connected && !current.flushingInput:
-						immediateClient = current.client
-					default:
-						current.pendingOps = append(current.pendingOps, pendingOp{input: queued})
-					}
-					mu.Unlock()
-					if immediateClient == nil {
-						return true
-					}
-					targetClient = immediateClient
-				}
-				if m.Logger != nil {
-					m.Logger.Debug("attach.stdin.send", "bytes", len(out))
-				}
-				if len(out) == 1 && out[0] == 0x0c {
-					targetClient.PrepareForCtrlLClear()
-				}
-				if err := targetClient.SendInput(ctx, out); err != nil {
-					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.send.failed", "err", err)
-					}
-				}
+				pending = append(pending, out...)
 				return true
 			}
-			filtered := make([]byte, 0, 8)
+			filtered := make([]byte, 0, len(data))
+			mouseChunk := make([]byte, 0, 8)
+			allHandledByScrollback := true
 			for _, b := range data {
 				_, client, _, _, _ := activeViewSnapshot()
 				if client != nil && client.ScrollbackActive() {
@@ -1923,12 +1943,22 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					}
 					continue
 				}
-				filtered = filterMouseByte(&mouseFilter, b, filtered)
-				for _, fb := range filtered {
-					if !processNormalByte(fb) {
-						return nil
-					}
+				allHandledByScrollback = false
+				mouseChunk = filterMouseByte(&mouseFilter, b, mouseChunk)
+				filtered = append(filtered, mouseChunk...)
+			}
+			if allHandledByScrollback {
+				continue
+			}
+			_, client, _, _, _ := activeViewSnapshot()
+			filtered = terminal.TranslateAppCursorKeys(filtered, client != nil && client.appCursorActive())
+			for _, fb := range filtered {
+				if !processNormalByte(fb) {
+					return nil
 				}
+			}
+			if !flushPending() {
+				return nil
 			}
 		}
 	}

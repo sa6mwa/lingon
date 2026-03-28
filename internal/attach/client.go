@@ -34,6 +34,7 @@ import (
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/retryafter"
+	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/tlsmgr"
 	"pkt.systems/lingon/internal/trace"
@@ -662,6 +663,7 @@ func (c *Client) SendInput(ctx context.Context, data []byte) error {
 		c.showViewOnlyBanner(c.viewOnlyMessage())
 		return nil
 	}
+	data = terminal.TranslateAppCursorKeys(data, c.appCursorActive())
 	c.mu.RLock()
 	ws := c.ws
 	c.mu.RUnlock()
@@ -670,6 +672,14 @@ func (c *Client) SendInput(ctx context.Context, data []byte) error {
 	}
 	frame := &protocolpb.Frame{Payload: &protocolpb.Frame_In{In: &protocolpb.In{Data: data}}}
 	return c.writeFrame(ctx, ws, frame)
+}
+
+func (c *Client) appCursorActive() bool {
+	snap := c.getSnapshot()
+	if snap == nil {
+		return false
+	}
+	return snap.GetMode()&terminal.SnapshotModeAppCursor != 0
 }
 
 // SendCommand forwards a control command to the server.
@@ -1687,8 +1697,7 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 			if len(pending) == 0 {
 				return true
 			}
-			frame := &protocolpb.Frame{Payload: &protocolpb.Frame_In{In: &protocolpb.In{Data: pending}}}
-			if err := c.writeFrame(ctx, ws, frame); err != nil {
+			if err := c.SendInput(ctx, pending); err != nil {
 				c.Logger.Debug("attach.ws.write.failed", "err", err)
 				c.setError(err)
 				return false
