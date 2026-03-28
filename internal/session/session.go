@@ -662,6 +662,10 @@ func (r *Runner) Run(ctx context.Context) error {
 							r.scrollbackPage(1, 1, stdout, stdin)
 						case scrollLineDown:
 							r.scrollbackPage(-1, 1, stdout, stdin)
+						case scrollFiveUp:
+							r.scrollbackPage(1, 5, stdout, stdin)
+						case scrollFiveDown:
+							r.scrollbackPage(-1, 5, stdout, stdin)
 						case scrollTop:
 							r.scrollbackTop(rows, stdout, stdin)
 						case scrollBottom:

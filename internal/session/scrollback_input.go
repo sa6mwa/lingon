@@ -11,6 +11,8 @@ const (
 	scrollPageDown
 	scrollLineUp
 	scrollLineDown
+	scrollFiveUp
+	scrollFiveDown
 	scrollTop
 	scrollBottom
 	scrollWheelUp
@@ -32,17 +34,21 @@ func (s *scrollInputState) feed(b byte) scrollCommand {
 	case 'q', 'Q':
 		s.reset()
 		return scrollExit
-	case 'n', 'N':
-		return scrollLineDown
-	case 'p', 'P':
+	case 'k':
 		return scrollLineUp
-	case 'w':
+	case 'j':
+		return scrollLineDown
+	case 'K':
+		return scrollFiveUp
+	case 'J':
+		return scrollFiveDown
+	case 'w', 'u':
 		return scrollPageUp
-	case 's':
+	case 's', 'd':
 		return scrollPageDown
-	case 'a':
+	case 'g':
 		return scrollTop
-	case 'd':
+	case 'G':
 		return scrollBottom
 	}
 	switch s.escState {

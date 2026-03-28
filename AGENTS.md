@@ -49,6 +49,8 @@ You are collaborating with a highly opinionated Go architect. Optimize for Go-id
 - `go vet ./...`
 - `golint ./...`
 - `golangci-lint run ./...`
+- All test failures must be addressed before the task is considered done, even if a failure appears unrelated to the current change.
+- Do not leave the repo with known failing tests and describe them as “unrelated”; fix them in the same task or explicitly stop and escalate if they cannot be resolved safely.
 
 ## Repo hygiene
 - If `.golangci.yml` does not exist in repo root, create and seed it with the contents below.

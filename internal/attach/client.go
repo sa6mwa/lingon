@@ -1820,6 +1820,10 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 						changed = c.scrollbackPage(1, 1)
 					case scrollLineDown:
 						changed = c.scrollbackPage(-1, 1)
+					case scrollFiveUp:
+						changed = c.scrollbackPage(1, 5)
+					case scrollFiveDown:
+						changed = c.scrollbackPage(-1, 5)
 					case scrollTop:
 						c.ScrollbackTop(rows)
 						changed = true

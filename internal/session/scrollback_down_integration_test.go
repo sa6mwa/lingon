@@ -63,6 +63,94 @@ func TestHostScrollbackDownMovesImmediately(t *testing.T) {
 	}
 }
 
+func TestHostScrollbackVimKeysControlViewport(t *testing.T) {
+	t.Setenv("PS1", "PROMPT> ")
+	shell := scrollbackShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "scroll_host_vim_keys",
+		SessionName: "scroll_host_vim_keys",
+		Shell:       shell,
+		Cols:        80,
+		Rows:        20,
+	})
+
+	waitForHost(t, h, "scroll_host_vim_keys", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostCommandReady(t, host, "__SCROLL_VIM_READY__", 3*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
+
+	host.Send("emit-lines LINE 2 80\n")
+	waitForStableSeededHostOutput(t, host, "LINE-80", 3*time.Second)
+
+	host.SendBytes([]byte{0x0c, '['})
+	advanceTestClock(h.Clock(), 150*time.Millisecond)
+
+	host.SendBytes([]byte("g"))
+	topPct := waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct == 0
+	})
+
+	host.SendBytes([]byte("J"))
+	afterBigJ := waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct > topPct
+	})
+
+	host.SendBytes([]byte("j"))
+	afterJ := waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct > afterBigJ
+	})
+
+	host.SendBytes([]byte("k"))
+	afterK := waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct < afterJ
+	})
+	if afterK >= afterJ {
+		t.Fatalf("expected k to scroll up one line, got percent %d after %d", afterK, afterJ)
+	}
+
+	host.SendBytes([]byte("K"))
+	waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct == 0
+	})
+
+	host.SendBytes([]byte("G"))
+	bottomPct := waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct == 100
+	})
+	host.SendBytes([]byte("u"))
+	afterU := waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct < bottomPct
+	})
+
+	host.SendBytes([]byte("d"))
+	afterD := waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct > afterU
+	})
+	if afterD <= afterU {
+		t.Fatalf("expected d to page down, got percent %d after %d", afterD, afterU)
+	}
+
+	host.SendBytes([]byte("g"))
+	waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct == 0
+	})
+	host.SendBytes([]byte{0x1b, '[', '5', '~'})
+	waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct == 0
+	})
+
+	host.SendBytes([]byte("G"))
+	waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct == 100
+	})
+	host.SendBytes([]byte{0x1b, '[', '6', '~'})
+	waitForHostScrollbackPercent(t, host, 2*time.Second, func(pct int) bool {
+		return pct == 100
+	})
+}
+
 func TestHostScrollbackEndDoesNotExit(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
 	shell := scrollbackShell(t)
@@ -267,6 +355,29 @@ func waitForStableSeededHostOutput(t *testing.T, host *ptytest.PTYSession, token
 		return nil
 	})
 	waitForHostPromptIdle(t, host, timeout, 50*time.Millisecond, 3)
+}
+
+func waitForHostScrollbackPercent(t *testing.T, host *ptytest.PTYSession, timeout time.Duration, want func(int) bool) int {
+	t.Helper()
+	var lastRow string
+	var lastPct int
+	eventuallyWithClock(t, host.Clock(), timeout, 50*time.Millisecond, func() error {
+		row := host.Screen().Row(0)
+		pct, ok := scrollbackPercent(row)
+		lastRow = row
+		lastPct = pct
+		if !ok {
+			return ptytest.FormatRowDiff("host", 0, row)
+		}
+		if !want(pct) {
+			return ptytest.FormatRowDiff("host", 0, row)
+		}
+		return nil
+	})
+	if !want(lastPct) {
+		t.Fatalf("expected scrollback percent condition, last row=%q pct=%d", lastRow, lastPct)
+	}
+	return lastPct
 }
 
 func waitForHostCommandReady(t *testing.T, host *ptytest.PTYSession, marker string, timeout time.Duration) {
