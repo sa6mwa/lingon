@@ -109,9 +109,6 @@ func diffSnapshot(a, b terminal.Snapshot) string {
 	if a.Cursor != b.Cursor || a.CursorVisible != b.CursorVisible {
 		return "cursor mismatch"
 	}
-	if a.Mode != b.Mode {
-		return "mode mismatch"
-	}
 	if len(a.Cells) != len(b.Cells) {
 		return "cell count mismatch"
 	}

@@ -9,13 +9,6 @@ import (
 	"pkt.systems/lingon/internal/terminal"
 )
 
-const (
-	flagWrap      uint32 = 1 << 0
-	flagOrigin    uint32 = 1 << 1
-	flagInsert    uint32 = 1 << 2
-	flagAltScreen uint32 = 1 << 3
-)
-
 // Emulator implements a minimal VT-style terminal emulator for Lingon.
 type Emulator struct {
 	cols int
@@ -33,6 +26,7 @@ type Emulator struct {
 	originMode  bool
 	insertMode  bool
 	newLineMode bool
+	appCursor   bool
 
 	attr cellAttr
 
@@ -106,6 +100,7 @@ type State struct {
 	WrapMode        bool
 	InsertMode      bool
 	NewLineMode     bool
+	AppCursorMode   bool
 	CursorVisible   bool
 	InlineOriginRow int
 	InlineOriginSet bool
@@ -211,16 +206,19 @@ func (e *Emulator) AltScreenActive() bool {
 func (e *Emulator) modeFlags() uint32 {
 	var flags uint32
 	if e.wrapMode {
-		flags |= flagWrap
+		flags |= terminal.SnapshotModeWrap
 	}
 	if e.originMode {
-		flags |= flagOrigin
+		flags |= terminal.SnapshotModeOrigin
 	}
 	if e.insertMode {
-		flags |= flagInsert
+		flags |= terminal.SnapshotModeInsert
 	}
 	if e.scr == &e.alt {
-		flags |= flagAltScreen
+		flags |= terminal.SnapshotModeAltScreen
+	}
+	if e.appCursor {
+		flags |= terminal.SnapshotModeAppCursor
 	}
 	return flags
 }
@@ -300,6 +298,7 @@ func (e *Emulator) snapshotState() State {
 		WrapMode:        e.wrapMode,
 		InsertMode:      e.insertMode,
 		NewLineMode:     e.newLineMode,
+		AppCursorMode:   e.appCursor,
 		CursorVisible:   e.cursorVisible,
 		InlineOriginRow: e.inlineOriginRow,
 		InlineOriginSet: e.inlineOriginSet,
@@ -1204,6 +1203,8 @@ func (e *Emulator) setMode(params []int, private byte, enable bool) {
 			case 6:
 				e.originMode = enable
 				e.cursorPositionWithReason(1, 1, "DECOM")
+			case 1:
+				e.appCursor = enable
 			case 47, 1047, 1049:
 				e.setAltScreen(enable, p == 1049)
 			}

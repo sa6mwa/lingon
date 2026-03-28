@@ -479,6 +479,13 @@ func (r *Runner) Run(ctx context.Context) error {
 			if len(filtered) == 0 {
 				continue
 			}
+			if activeID, activeLocal := r.activeSession(); activeLocal {
+				if local := r.localSession(activeID); local != nil {
+					if snap := local.Snapshot(); snap != nil {
+						filtered = terminal.TranslateAppCursorKeys(filtered, snap.Mode&terminal.SnapshotModeAppCursor != 0)
+					}
+				}
+			}
 			pending = pending[:0]
 			flushPending := func() bool {
 				if len(pending) == 0 {
