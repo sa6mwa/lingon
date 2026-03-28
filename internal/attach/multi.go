@@ -840,6 +840,18 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			if applySessions == nil {
 				return
 			}
+			if !localSessionMode && len(updated) == 0 {
+				mu.Lock()
+				hasViews := len(views) > 0
+				mu.Unlock()
+				if hasViews {
+					if m.Logger != nil {
+						m.Logger.Debug("attach.sessions.empty.ignored")
+					}
+					startWaitForSessions()
+					return
+				}
+			}
 			if len(updated) > 0 {
 				mvu.SortSessionsByLastActive(updated)
 			}
