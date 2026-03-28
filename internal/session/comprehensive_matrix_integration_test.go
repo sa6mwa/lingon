@@ -189,8 +189,8 @@ func verifySessionIO(t *testing.T, sess *ptytest.PTYSession, tabCount int, tag s
 	for i := 0; i < tabCount; i++ {
 		if i > 0 {
 			ctrlLCommand(sess, "n")
-			ptytest.Advance(sess.Clock(), 120*time.Millisecond)
 		}
+		waitForCurrentTabIOReady(t, sess, tag, i)
 		token := fmt.Sprintf("io-%s-%d", tag, i)
 		ensureTabBarHidden(sess)
 		sendCommand(sess, token)
@@ -233,6 +233,14 @@ func ensureTabBarHidden(sess *ptytest.PTYSession) {
 
 func sendCommand(sess *ptytest.PTYSession, token string) {
 	sess.Send(fmt.Sprintf("echo %s\n", token))
+}
+
+func waitForCurrentTabIOReady(t *testing.T, sess *ptytest.PTYSession, tag string, index int) {
+	t.Helper()
+	ensureTabBarHidden(sess)
+	probe := fmt.Sprintf("ready-%s-%d-%d", tag, index, ptytest.Now(sess.Clock()).UnixNano())
+	sendCommand(sess, probe)
+	assertScreenContains(t, sess, probe)
 }
 
 func assertScreenContains(t *testing.T, sess *ptytest.PTYSession, token string) {
