@@ -76,6 +76,22 @@ Log out from an endpoint (remote revoke + local token removal):
 lingon logout -e https://localhost:12843/v1
 ```
 
+### Endpoint selection
+
+When `-e/--endpoint` is omitted, Lingon resolves the endpoint in this order:
+
+1. `--endpoint`
+2. explicitly configured `client.endpoint` (config file or `LINGON_CLIENT_ENDPOINT`)
+3. single stored endpoint in `~/.lingon/auth.json` when the command is using stored auth
+4. built-in default endpoint (`https://localhost:12843/v1`)
+
+Important exceptions:
+
+- `lingon login` never depends on `auth.json`; without `--endpoint` it uses the configured endpoint or the built-in default.
+- Explicit `--token` / `--access-token` disables auth-file endpoint inference. Those flows use `--endpoint`, configured `client.endpoint`, or the built-in default.
+- Share tokens with an embedded endpoint use that embedded endpoint unless `--endpoint` is explicitly passed. Bare share tokens use `--endpoint`, configured `client.endpoint`, or the built-in default.
+- If stored auth contains multiple endpoints, auto-inference fails with an ambiguity error until you pass `--endpoint` or set `client.endpoint`.
+
 ### 5) Start a host session (default CLI)
 
 ```bash
@@ -181,6 +197,10 @@ Attach to a share token:
 ```bash
 lingon attach --token <token>
 ```
+
+If the share token embeds an endpoint, attach uses it automatically unless you
+also pass `--endpoint`. Bare share tokens do not infer from `auth.json`; they
+use `--endpoint`, configured `client.endpoint`, or the built-in default.
 
 Attach options (selection):
 

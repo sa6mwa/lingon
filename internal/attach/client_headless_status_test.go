@@ -1,9 +1,9 @@
 package attach
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"bytes"
 	"strings"
 	"testing"
 	"time"

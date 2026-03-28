@@ -333,11 +333,11 @@ func TestSendHeadlessRejectsUnknownSessionIDBeforeFallback(t *testing.T) {
 	if err := store.WithLock(func(state *headless.State) error {
 		now := time.Now().UTC()
 		state.Sessions["local-a"] = headless.SessionRecord{
-			SessionID: "local-a",
-			PID:       os.Getpid(),
-			StartedAt: now,
+			SessionID:  "local-a",
+			PID:        os.Getpid(),
+			StartedAt:  now,
 			LastSeenAt: now,
-			Status:    "running",
+			Status:     "running",
 		}
 		return nil
 	}); err != nil {

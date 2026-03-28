@@ -83,9 +83,9 @@ func assertNoBlink(t *testing.T, sess *ptytest.PTYSession, needle string, durati
 		} else {
 			seenOff = true
 		}
-	if seenOn && seenOff {
-		t.Fatalf("disconnect modal blinked while switching tabs")
-	}
-	ptytest.Advance(clk, interval)
+		if seenOn && seenOff {
+			t.Fatalf("disconnect modal blinked while switching tabs")
+		}
+		ptytest.Advance(clk, interval)
 	}
 }

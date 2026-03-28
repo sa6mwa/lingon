@@ -77,6 +77,15 @@
 //     TLS assets relative to the config file location. Use -s/--set to override
 //     config values, -f/--force to overwrite the config, and
 //     --regenerate-certificates to regenerate TLS assets.
+//   - Endpoint resolution order is: --endpoint, explicitly configured
+//     client.endpoint, single stored auth endpoint (for stored-auth flows), then
+//     the built-in default endpoint.
+//   - lingon login never depends on auth.json endpoint inference; without
+//     --endpoint it uses configured client.endpoint or the built-in default.
+//   - Explicit --token / --access-token disables auth-file endpoint inference.
+//     Those flows use --endpoint, configured client.endpoint, or the built-in
+//     default. Share tokens with embedded endpoints use the embedded endpoint
+//     unless --endpoint is passed explicitly.
 //   - Example (networked TLS): lingon bootstrap -s server.tls.hostname=lingon.my.domain.tld -s server.listen=:8443
 //     generates a CA and server cert for lingon.my.domain.tld (CN/SAN) and
 //     listens on all interfaces at port 8443 (use a non-127.0.0.1 listen

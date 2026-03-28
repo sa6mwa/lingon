@@ -35,4 +35,3 @@ func TestDrawIndicatorAtRowGreenUsesBlackTextOnGreenBackground(t *testing.T) {
 		t.Fatalf("unexpected white-on-green sequence in indicator output, got %q", raw)
 	}
 }
-
