@@ -10,8 +10,8 @@ INSTALL ?= install
 INSTALL_MODE ?= 0755
 CONTAINER_BUILDER ?= $(shell command -v podman || command -v nerdctl || command -v docker)
 IMAGE ?= docker.io/pktsystems/lingon
-LINGON_VERSION ?= $(shell $(GO) run ./cmd/lingon version --version)
-LINGON_SEMVER ?= $(shell $(GO) run ./cmd/lingon version --semver)
+LINGON_VERSION ?= $(shell $(GO) run -buildvcs=true ./cmd/lingon version --version)
+LINGON_SEMVER ?= $(shell $(GO) run -buildvcs=true ./cmd/lingon version --semver)
 
 GOFLAGS ?=
 BUILD_FLAGS ?= -trimpath
