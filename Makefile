@@ -144,7 +144,7 @@ release: build android-release
 	zip -j $(ZIP_OUT) $(BIN) $(APK_OUT)
 
 podman.yaml:
-	envsubst < podman.yaml.template > podman.yaml
+	envsubst < podman.template.yaml > podman.yaml
 
 container: $(BIN) podman.yaml
 	@if [ -z "$(CONTAINER_BUILDER)" ]; then \
@@ -161,6 +161,7 @@ push-container:
 clean:
 	rm -rf $(dir $(BIN))
 	$(GO) clean ./...
+	$(MAKE) -C $(ANDROID_DIR) clean
 
 android-sdk:
 	$(MAKE) -C $(ANDROID_DIR) sdk

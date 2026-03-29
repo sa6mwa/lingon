@@ -48,21 +48,27 @@ Files created (git-ignored):
 
 ### Use your own signing key
 Generate a keystore:
+
+Note: the default Java keystore format here is `PKCS12`. For `PKCS12`,
+`storepass` and `keypass` must be the same in practice. Do not generate the key
+with different passwords or Gradle signing can fail with `Get Key failed` /
+`Given final block not properly padded`.
+
 ```bash
 keytool -genkeypair -v \
   -keystore /absolute/path/to/lingon-release.jks \
   -alias lingon \
   -keyalg RSA -keysize 2048 -validity 10000 \
-  -storepass "your-store-pass" -keypass "your-key-pass" \
+  -storepass "your-pass" -keypass "your-pass" \
   -dname "CN=Lingon, OU=Dev, O=Lingon, L=Local, S=Local, C=US"
 ```
 
 Create `android/signing.properties`:
 ```properties
 storeFile=/absolute/path/to/lingon-release.jks
-storePassword=your-store-pass
+storePassword=your-pass
 keyAlias=lingon
-keyPassword=your-key-pass
+keyPassword=your-pass
 ```
 
 Then build:
