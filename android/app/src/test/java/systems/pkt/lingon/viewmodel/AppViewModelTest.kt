@@ -21,6 +21,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TestWatcher
@@ -377,6 +378,159 @@ class AppViewModelTest {
 
         assertArrayEquals("\u001bOB".encodeToByteArray(), wsClient.lastSentBytes)
     }
+
+    @Test
+    fun manualRefreshForcesReconnectForActiveSession() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Connected,
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        setActiveConnectionForTest(viewModel, "host-1", null)
+        wsClient.connectCount = 0
+
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.closeCount)
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("host-1", wsClient.lastConnectOptions?.sessionId)
+    }
+
+    @Test
+    fun onAppForegroundHealthyConnectionDoesNotReconnect() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Connected,
+                lastFrameAtMs = 1_000L,
+                status = null,
+                lastFrameError = null,
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        setActiveConnectionForTest(viewModel, "host-1", null)
+        wsClient.connectCount = 0
+
+        viewModel.onAppBackgroundAt(0L)
+        viewModel.onAppForegroundAt(5_000L)
+        advanceUntilIdle()
+
+        assertEquals(0, wsClient.closeCount)
+        assertEquals(0, wsClient.connectCount)
+    }
+
+    @Test
+    fun onAppForegroundRecoverableFailureReconnectsOnceAndIsThrottled() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                status = StatusMessage("Unable to resolve host \"pkt.systems\"", StatusLevel.Error),
+                lastFrameError = "Unable to resolve host \"pkt.systems\"",
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        setActiveConnectionForTest(viewModel, "host-1", null)
+        wsClient.connectCount = 0
+
+        viewModel.onAppBackgroundAt(0L)
+        viewModel.onAppForegroundAt(31_000L)
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.closeCount)
+        assertEquals(1, wsClient.connectCount)
+
+        viewModel.onAppForegroundAt(40_000L)
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.closeCount)
+        assertEquals(1, wsClient.connectCount)
+    }
+
+    @Test
+    fun shouldRecoverConnectionOnForegroundOnlyWhenBrokenAndNotThrottled() {
+        val broken = AppViewModel.shouldRecoverConnectionOnForeground(
+            state = UiState(
+                loggedIn = true,
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                status = StatusMessage("Unable to resolve host", StatusLevel.Error),
+                lastFrameError = "Unable to resolve host",
+            ),
+            hasSocket = false,
+            nowMs = 60_000L,
+            lastForegroundRecoveryAtMs = 0L,
+        )
+        assertTrue(broken)
+
+        val healthy = AppViewModel.shouldRecoverConnectionOnForeground(
+            state = UiState(
+                loggedIn = true,
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Connected,
+            ),
+            hasSocket = true,
+            nowMs = 60_000L,
+            lastForegroundRecoveryAtMs = 0L,
+        )
+        assertFalse(healthy)
+
+        val throttled = AppViewModel.shouldRecoverConnectionOnForeground(
+            state = UiState(
+                loggedIn = true,
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                status = StatusMessage("Unable to resolve host", StatusLevel.Error),
+                lastFrameError = "Unable to resolve host",
+            ),
+            hasSocket = false,
+            nowMs = 20_000L,
+            lastForegroundRecoveryAtMs = 10_000L,
+        )
+        assertFalse(throttled)
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -496,12 +650,16 @@ private class FakeWsClient : RelayWebSocketClient(
     var connectCount: Int = 0
     var lastConnectOptions: ConnectOptions? = null
     var lastSentBytes: ByteArray? = null
+    var closeCount: Int = 0
     val fakeSocket: WebSocket = object : WebSocket {
         override fun request(): okhttp3.Request = okhttp3.Request.Builder().url("https://localhost/").build()
         override fun queueSize(): Long = 0
         override fun send(text: String): Boolean = true
         override fun send(bytes: okio.ByteString): Boolean = true
-        override fun close(code: Int, reason: String?): Boolean = true
+        override fun close(code: Int, reason: String?): Boolean {
+            closeCount += 1
+            return true
+        }
         override fun cancel() {}
     }
 
@@ -559,6 +717,16 @@ private fun setWebSocketForTest(viewModel: AppViewModel, webSocket: WebSocket) {
     val field = AppViewModel::class.java.getDeclaredField("ws")
     field.isAccessible = true
     field.set(viewModel, webSocket)
+}
+
+private fun setActiveConnectionForTest(viewModel: AppViewModel, sessionId: String?, shareToken: String?) {
+    val companionClass = Class.forName("systems.pkt.lingon.viewmodel.AppViewModel\$ConnectionKey")
+    val ctor = companionClass.getDeclaredConstructor(String::class.java, String::class.java)
+    ctor.isAccessible = true
+    val key = ctor.newInstance(sessionId, shareToken)
+    val field = AppViewModel::class.java.getDeclaredField("activeConnection")
+    field.isAccessible = true
+    field.set(viewModel, key)
 }
 
 private fun testHttpClientProvider(): HttpClientProvider {

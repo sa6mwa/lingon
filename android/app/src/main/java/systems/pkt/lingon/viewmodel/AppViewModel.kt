@@ -71,6 +71,7 @@ class AppViewModel(
     private var appInForeground = true
     private val recentWallNotifications = LinkedHashMap<String, Long>()
     private var persistZoomJob: Job? = null
+    private var lastForegroundRecoveryAtMs: Long = 0
 
     init {
         viewModelScope.launch {
@@ -194,8 +195,7 @@ class AppViewModel(
         refreshJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
             _state.update { it.copy(isRefreshing = true, lastManualRefreshAtMs = startedAt) }
-            stopReconnect()
-            refreshSessionsAndReconnect()
+            forceRecoverActiveConnection(refreshSessionsFirst = true)
             val elapsed = System.currentTimeMillis() - startedAt
             val minRefreshMs = 750L
             if (elapsed < minRefreshMs) {
@@ -1059,6 +1059,17 @@ class AppViewModel(
         syncWallPollingSchedule()
     }
 
+    private suspend fun forceRecoverActiveConnection(refreshSessionsFirst: Boolean) {
+        stopReconnect()
+        stopSessionPoll()
+        closeWebSocket("manual recovery")
+        if (refreshSessionsFirst) {
+            refreshSessionsAndReconnect()
+        } else {
+            connectActiveSession()
+        }
+    }
+
     private fun scheduleReconnect(reason: String?, retryAfterSeconds: Int? = null, statusPrefix: String? = null) {
         if (suppressReconnect) return
         if (reconnectJob?.isActive == true) return
@@ -1333,6 +1344,18 @@ class AppViewModel(
                 syncWallPollingSchedule()
                 return@launch
             }
+            if (shouldRecoverConnectionOnForeground(
+                    state = _state.value,
+                    hasSocket = ws != null,
+                    nowMs = nowMs,
+                    lastForegroundRecoveryAtMs = lastForegroundRecoveryAtMs,
+                )
+            ) {
+                lastForegroundRecoveryAtMs = nowMs
+                forceRecoverActiveConnection(refreshSessionsFirst = true)
+                syncWallPollingSchedule()
+                return@launch
+            }
             bootstrapSessions()
             syncWallPollingSchedule()
         }
@@ -1380,6 +1403,7 @@ class AppViewModel(
     companion object {
         private const val sharedSessionId = "shared"
         private const val wallDedupeWindowMs = 30_000L
+        private const val foregroundRecoveryMinIntervalMs = 30_000L
 
         @VisibleForTesting
         internal fun shouldRequireAppUnlock(
@@ -1413,6 +1437,27 @@ class AppViewModel(
             }
             val connected = connectionState == ConnectionState.Connected && hasSocket
             return !connected
+        }
+
+        @VisibleForTesting
+        internal fun shouldRecoverConnectionOnForeground(
+            state: UiState,
+            hasSocket: Boolean,
+            nowMs: Long,
+            lastForegroundRecoveryAtMs: Long,
+        ): Boolean {
+            if (state.requiresAppUnlock) return false
+            if (!state.canAttach) return false
+            if (nowMs-lastForegroundRecoveryAtMs < foregroundRecoveryMinIntervalMs) return false
+            if (state.connectionState == ConnectionState.Connected && hasSocket) return false
+            if (state.isRefreshing) return false
+
+            val hasRecoverableError = !state.lastFrameError.isNullOrBlank() || !state.status?.message.isNullOrBlank()
+            val hasStaleConnectionState = state.connectionState == ConnectionState.Disconnected ||
+                state.connectionState == ConnectionState.Waiting ||
+                (state.connectionState == ConnectionState.Connected && !hasSocket)
+
+            return hasRecoverableError || hasStaleConnectionState
         }
 
         private fun sharedSession(): RelaySession {
