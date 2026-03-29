@@ -120,4 +120,11 @@ class TerminalInputDispatchTest {
         assertArrayEquals("\u001b[H".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_MOVE_HOME))
         assertArrayEquals("\u001b[F".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_MOVE_END))
     }
+
+    @Test
+    fun imeDeleteSurroundingTextIsNotForwardedAsTerminalBackspace() {
+        assertEquals(false, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 1, rightLength = 0))
+        assertEquals(false, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 3, rightLength = 0))
+        assertEquals(false, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 1, rightLength = 1))
+    }
 }

@@ -115,3 +115,13 @@ internal fun hardwareKeyBytes(keyCode: Int): ByteArray? {
         else -> null
     }
 }
+
+internal fun shouldForwardImeDeleteSurroundingTextAsBackspace(
+    leftLength: Int,
+    rightLength: Int,
+): Boolean {
+    if (leftLength < 0 || rightLength < 0) {
+        return false
+    }
+    return false
+}

@@ -1,5 +1,5 @@
 .PHONY: help generate build test test-short test-webui test-last-fail test-android lint fmt vet golangci-lint install release clean container push-container \
-	android-sdk android-avd android-emulator android-build android-release android-install android-integration-test
+	android-clean android-sdk android-avd android-emulator android-build android-release android-install android-integration-test
 
 GO ?= go
 CGO_ENABLED ?= 0
@@ -161,6 +161,8 @@ push-container:
 clean:
 	rm -rf $(dir $(BIN))
 	$(GO) clean ./...
+
+android-clean:
 	$(MAKE) -C $(ANDROID_DIR) clean
 
 android-sdk:

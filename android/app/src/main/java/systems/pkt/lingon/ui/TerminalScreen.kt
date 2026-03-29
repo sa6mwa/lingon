@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -91,7 +92,10 @@ fun TerminalScreen(
     val screenPadding = if (isCompact) 8.dp else 12.dp
     val spacing = if (isCompact) 6.dp else 8.dp
 
-    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val imeVisible = isTerminalImeVisible(
+        imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current),
+        navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current),
+    )
     val palette = rememberTerminalPalette()
     val focusInput: () -> Unit = {
         requestInputFocus?.invoke()
@@ -815,10 +819,11 @@ private class TerminalInputView(
             }
 
             override fun deleteSurroundingText(leftLength: Int, rightLength: Int): Boolean {
-                if (leftLength > 0) {
+                if (shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength, rightLength) && leftLength > 0) {
                     onBackspaceCallback(leftLength)
+                    return true
                 }
-                return true
+                return super.deleteSurroundingText(leftLength, rightLength)
             }
 
             override fun sendKeyEvent(event: AndroidKeyEvent): Boolean {
