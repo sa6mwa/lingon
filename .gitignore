@@ -13,5 +13,5 @@ bin/
 *.log
 *.test
 *.pprof
-vendor/
+/vendor/
 .env*

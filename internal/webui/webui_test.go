@@ -64,3 +64,23 @@ func TestHandlerNoBannerRendersAnonymousIndex(t *testing.T) {
 		}
 	})
 }
+
+func TestHandlerServesVendoredXTermAssets(t *testing.T) {
+	handler := HandlerWithOptions(Options{})
+
+	for _, asset := range []string{
+		"/vendor/xterm.js",
+		"/vendor/xterm-addon-fit.js",
+		"/vendor/xterm.css",
+	} {
+		req := httptest.NewRequest(http.MethodGet, asset, nil)
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want %d", asset, resp.Code, http.StatusOK)
+		}
+		if resp.Body.Len() == 0 {
+			t.Fatalf("%s served empty body", asset)
+		}
+	}
+}

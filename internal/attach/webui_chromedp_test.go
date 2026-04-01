@@ -168,6 +168,24 @@ func TestWebUIControlFlow(t *testing.T) {
 	}
 	waitForTerminalView(t, ctx, 15*time.Second, hostErr)
 	waitForTerminalReady(t, ctx, 15*time.Second, hostErr)
+	waitUntilDebug(t, 10*time.Second, func() bool {
+		text, err := xtermText(ctx)
+		return err == nil && strings.Contains(text, "HELLO")
+	}, func() string {
+		text, err := xtermText(ctx)
+		if err != nil {
+			debug, _ := readDebugInfo(ctx)
+			if debug != "" {
+				return fmt.Sprintf("xterm text read failed: %v debug=%s", err, debug)
+			}
+			return fmt.Sprintf("xterm text read failed: %v", err)
+		}
+		debug, _ := readDebugInfo(ctx)
+		if debug != "" {
+			return fmt.Sprintf("terminal missing rendered HELLO, text=%q debug=%s", text, debug)
+		}
+		return fmt.Sprintf("terminal missing rendered HELLO, text=%q", text)
+	}, hostErr)
 	waitUntilDebug(t, 5*time.Second, func() bool {
 		banner, err := readStatusBanner(ctx)
 		if err != nil {
