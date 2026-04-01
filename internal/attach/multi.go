@@ -1926,6 +1926,10 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							changed = client.ScrollbackPage(1, 1)
 						case scrollLineDown:
 							changed = client.ScrollbackPage(-1, 1)
+						case scrollFiveUp:
+							changed = client.ScrollbackPage(1, 5)
+						case scrollFiveDown:
+							changed = client.ScrollbackPage(-1, 5)
 						case scrollTop:
 							client.ScrollbackTop(rows)
 							changed = true

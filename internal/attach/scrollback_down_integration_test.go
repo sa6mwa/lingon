@@ -126,16 +126,14 @@ func TestAttachScrollbackVimKeysControlViewport(t *testing.T) {
 		return line == 1
 	})
 
-	for i := 0; i < 5; i++ {
-		attach.SendBytes([]byte("j"))
-	}
-	afterFiveDown := waitForAttachVisibleTopLine(t, h, attach, 2*time.Second, func(line int) bool {
-		return line >= topLine+5
+	attach.SendBytes([]byte("J"))
+	afterBigJ := waitForAttachVisibleTopLine(t, h, attach, 2*time.Second, func(line int) bool {
+		return line == topLine+4
 	})
 
 	attach.SendBytes([]byte("j"))
 	afterJ := waitForAttachVisibleTopLine(t, h, attach, 2*time.Second, func(line int) bool {
-		return line == afterFiveDown+1
+		return line == afterBigJ+1
 	})
 
 	attach.SendBytes([]byte("k"))
@@ -146,11 +144,9 @@ func TestAttachScrollbackVimKeysControlViewport(t *testing.T) {
 		t.Fatalf("expected k to scroll up one line, got line %d after %d", afterK, afterJ)
 	}
 
-	for i := 0; i < 5; i++ {
-		attach.SendBytes([]byte("k"))
-	}
+	attach.SendBytes([]byte("K"))
 	waitForAttachVisibleTopLine(t, h, attach, 2*time.Second, func(line int) bool {
-		return line == 1
+		return line == topLine
 	})
 
 	attach.SendBytes([]byte("G"))
