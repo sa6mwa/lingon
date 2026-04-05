@@ -20,6 +20,7 @@ import (
 	"pkt.systems/lingon/internal/authstore"
 	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/clock"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/server"
@@ -52,6 +53,8 @@ type Harness struct {
 	recorder     *WSRecorder
 	onRequest    func(*http.Request)
 	connectLimit *relay.ConnectLimitConfig
+	wallTimeout  time.Duration
+	wallLevels   []time.Duration
 	clock        clock.Clock
 	tracePath    string
 	trace        *trace.Writer
@@ -98,6 +101,18 @@ func WithRequestHook(fn func(*http.Request)) HarnessOption {
 func WithConnectLimiter(cfg relay.ConnectLimitConfig) HarnessOption {
 	return func(h *Harness) {
 		h.connectLimit = &cfg
+	}
+}
+
+// WithWallConfig sets relay wall timeout and inactivity levels for the harness server.
+func WithWallConfig(timeout time.Duration, inactiveAfterLevels []time.Duration) HarnessOption {
+	return func(h *Harness) {
+		h.wallTimeout = timeout
+		if len(inactiveAfterLevels) == 0 {
+			h.wallLevels = nil
+			return
+		}
+		h.wallLevels = append([]time.Duration(nil), inactiveAfterLevels...)
 	}
 }
 
@@ -382,6 +397,9 @@ func (h *Harness) startServer(listener net.Listener) {
 	relayServer := relay.NewHTTPServer(h.store, h.users, h.auth, nil, hub)
 	relayServer.UsersFile = h.usersPath
 	relayServer.DataDir = h.dataDir
+	if h.wallTimeout > 0 || len(h.wallLevels) > 0 {
+		relayServer.ConfigureWall(h.wallTimeout, h.wallLevels)
+	}
 	if h.connectLimit != nil {
 		relayServer.ConnectLimiter = relay.NewConnectLimiter(*h.connectLimit)
 	}
@@ -420,13 +438,16 @@ func (h *Harness) startProxy() {
 
 // HostOptions configures a PTY-backed host session.
 type HostOptions struct {
-	SessionID   string
-	SessionName string
-	Shell       string
-	Cols        int
-	Rows        int
-	Clock       clock.Clock
-	DisableRaw  bool
+	SessionID                   string
+	SessionName                 string
+	Shell                       string
+	Cols                        int
+	Rows                        int
+	Clock                       clock.Clock
+	DisableRaw                  bool
+	DisablePublish              bool
+	DisableDesktopNotifications bool
+	DesktopNotifier             desktopnotify.Notifier
 	// AccessToken overrides the harness default access token.
 	AccessToken string
 	// AuthFile is the path to the auth state file used for refresh.
@@ -475,20 +496,22 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		authFile = h.authPath
 	}
 	runner := session.New(session.Options{
-		Endpoint:    h.endpoint,
-		Token:       token,
-		AuthFile:    authFile,
-		SessionID:   opts.SessionID,
-		SessionName: opts.SessionName,
-		Cols:        opts.Cols,
-		Rows:        opts.Rows,
-		Shell:       opts.Shell,
-		Publish:     true,
-		Stdin:       slave,
-		Stdout:      slave,
-		DisableRaw:  opts.DisableRaw,
-		Clock:       clk,
-		Trace:       h.trace,
+		Endpoint:                    h.endpoint,
+		Token:                       token,
+		AuthFile:                    authFile,
+		SessionID:                   opts.SessionID,
+		SessionName:                 opts.SessionName,
+		Cols:                        opts.Cols,
+		Rows:                        opts.Rows,
+		Shell:                       opts.Shell,
+		Publish:                     !opts.DisablePublish,
+		Stdin:                       slave,
+		Stdout:                      slave,
+		DisableRaw:                  opts.DisableRaw,
+		Clock:                       clk,
+		DisableDesktopNotifications: opts.DisableDesktopNotifications,
+		DesktopNotifier:             opts.DesktopNotifier,
+		Trace:                       h.trace,
 	})
 
 	go func() {

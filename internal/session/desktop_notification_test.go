@@ -7,6 +7,7 @@ import (
 
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/desktopnotify"
+	"pkt.systems/lingon/internal/protocolpb"
 )
 
 type recordingNotifier struct {
@@ -130,5 +131,33 @@ func TestRunnerDisableLocalWallNotificationCancelsPendingTimer(t *testing.T) {
 
 	if len(notifier.requests) != 0 {
 		t.Fatalf("expected disabled notification timer to stay silent, got %d", len(notifier.requests))
+	}
+}
+
+func TestRunnerShowWallKeepsModalVisibleWhenDesktopNotifierConfigured(t *testing.T) {
+	notifier := &recordingNotifier{}
+	r := &Runner{
+		opts:   Options{DesktopNotifier: notifier},
+		runCtx: context.Background(),
+	}
+
+	r.showWall(&protocolpb.Wall{
+		Sender:         "alice@relay",
+		Message:        "session-a inactive",
+		TimeoutSeconds: 5,
+	}, nil)
+
+	state := r.runtime().State()
+	if !state.WallVisible {
+		t.Fatalf("expected in-app wall modal to remain visible")
+	}
+	if state.WallTitle != "Broadcast from alice@relay:" {
+		t.Fatalf("WallTitle = %q, want %q", state.WallTitle, "Broadcast from alice@relay:")
+	}
+	if state.WallMessage != "session-a inactive" {
+		t.Fatalf("WallMessage = %q, want %q", state.WallMessage, "session-a inactive")
+	}
+	if len(notifier.requests) != 0 {
+		t.Fatalf("expected wall rendering path not to emit desktop notifications directly, got %d", len(notifier.requests))
 	}
 }

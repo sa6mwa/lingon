@@ -2,6 +2,7 @@ package attach
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"pkt.systems/lingon/internal/desktopnotify"
@@ -72,5 +73,35 @@ func TestClientNotifyDesktopSkipsUnixSocketAndNonInactivity(t *testing.T) {
 
 	if len(notifier.requests) != 0 {
 		t.Fatalf("expected no notifications, got %d", len(notifier.requests))
+	}
+}
+
+func TestClientHandleWallKeepsModalVisibleWhileNotifyingDesktop(t *testing.T) {
+	notifier := &recordingNotifier{}
+	client := &Client{
+		Endpoint:        "https://relay.example/v1",
+		DesktopNotifier: notifier,
+		Stdout:          io.Discard,
+		runCtx:          context.Background(),
+	}
+
+	client.handleWall(&protocolpb.Wall{
+		Sender:         "alice@relay",
+		Message:        "session-a inactive",
+		TimeoutSeconds: 5,
+	})
+
+	if len(notifier.requests) != 1 {
+		t.Fatalf("expected one desktop notification, got %d", len(notifier.requests))
+	}
+	state := client.ensureCompositor().State()
+	if !state.WallVisible {
+		t.Fatalf("expected in-app wall modal to remain visible")
+	}
+	if state.WallTitle != "Broadcast from alice@relay:" {
+		t.Fatalf("WallTitle = %q, want %q", state.WallTitle, "Broadcast from alice@relay:")
+	}
+	if state.WallMessage != "session-a inactive" {
+		t.Fatalf("WallMessage = %q, want %q", state.WallMessage, "session-a inactive")
 	}
 }

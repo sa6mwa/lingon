@@ -1802,6 +1802,9 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			if r.opts.OnPublishWall != nil {
 				r.opts.OnPublishWall(wall)
 			}
+			if r.suppressFocusedLocalInactivityWall(wall) {
+				return
+			}
 			r.showWall(wall, stdout)
 		}
 		session.SetPublisher(publisher)
@@ -2251,6 +2254,9 @@ func (r *Runner) showWall(wall *protocolpb.Wall, stdout *os.File) {
 	if wall == nil {
 		return
 	}
+	if r.suppressFocusedLocalInactivityWall(wall) {
+		return
+	}
 	ui := r.runtime()
 	sender := strings.TrimSpace(wall.Sender)
 	title := "Broadcast:"
@@ -2370,15 +2376,6 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 	}
 	r.wallNotifyMu.Unlock()
 
-	if r.opts.DisableDesktopNotifications {
-		return
-	}
-	if r.opts.DesktopNotifier == nil {
-		r.opts.DesktopNotifier = desktopnotify.New()
-	}
-	if r.opts.DesktopNotifier == nil {
-		return
-	}
 	local := r.localSession(sessionID)
 	if local == nil {
 		return
@@ -2387,10 +2384,51 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 	if label == "" {
 		label = sessionID
 	}
-	_ = r.opts.DesktopNotifier.Notify(r.runCtx, desktopnotify.Request{
-		Title: label,
-		Body:  "inactive",
-	})
+	if !r.opts.DisableDesktopNotifications {
+		if r.opts.DesktopNotifier == nil {
+			r.opts.DesktopNotifier = desktopnotify.New()
+		}
+		if r.opts.DesktopNotifier != nil {
+			_ = r.opts.DesktopNotifier.Notify(r.runCtx, desktopnotify.Request{
+				Title: label,
+				Body:  "inactive",
+			})
+		}
+	}
+	activeID, _ := r.activeSession()
+	if activeID == sessionID {
+		return
+	}
+	r.showWall(&protocolpb.Wall{
+		Message:        label + " inactive",
+		TimeoutSeconds: 5,
+	}, r.stdout())
+}
+
+func (r *Runner) suppressFocusedLocalInactivityWall(wall *protocolpb.Wall) bool {
+	if wall == nil {
+		return false
+	}
+	activeID, activeLocal := r.activeSession()
+	if !activeLocal || activeID == "" {
+		return false
+	}
+	message := strings.TrimSpace(wall.GetMessage())
+	if !desktopnotify.IsInactivityWallMessage(message) {
+		return false
+	}
+	label := strings.TrimSpace(strings.TrimSuffix(message, " inactive"))
+	if label == "" {
+		return false
+	}
+	if label == activeID {
+		return true
+	}
+	active := r.localSession(activeID)
+	if active == nil {
+		return false
+	}
+	return label == strings.TrimSpace(active.Name())
 }
 
 func (r *Runner) toggleRespawn(sessionID string, stdout *os.File) {

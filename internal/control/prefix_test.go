@@ -63,6 +63,20 @@ func TestPrefixSessionActions(t *testing.T) {
 	}
 }
 
+func TestPrefixSessionActionsCtrlWRepeat(t *testing.T) {
+	var p Prefix
+	_, _ = p.Feed(CtrlL)
+	if action, out := p.Feed(CtrlW); action != ActionToggleWallInactivity || len(out) != 0 {
+		t.Fatalf("expected ctrl+w to toggle wall inactivity after ctrl+l, got action=%v out=%v", action, out)
+	}
+	if action, out := p.Feed(CtrlW); action != ActionToggleWallInactivity || len(out) != 0 {
+		t.Fatalf("expected repeated ctrl+w to keep toggling wall inactivity, got action=%v out=%v", action, out)
+	}
+	if action, out := p.Feed('x'); action != ActionNone || len(out) != 1 || out[0] != 'x' {
+		t.Fatalf("expected repeat mode to clear on non-ctrl+w input, got action=%v out=%v", action, out)
+	}
+}
+
 func TestPrefixPassthroughUnknown(t *testing.T) {
 	var p Prefix
 	_, _ = p.Feed(CtrlL)
