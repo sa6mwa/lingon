@@ -84,6 +84,9 @@ func TestDefaultConfigUsesConstants(t *testing.T) {
 	if cfg.Terminal.HostnameOnly != DefaultTerminalHostnameOnly {
 		t.Fatalf("Terminal.HostnameOnly = %v, want %v", cfg.Terminal.HostnameOnly, DefaultTerminalHostnameOnly)
 	}
+	if cfg.Terminal.DisableDesktopNotifications != DefaultTerminalDisableDesktopNotifications {
+		t.Fatalf("Terminal.DisableDesktopNotifications = %v, want %v", cfg.Terminal.DisableDesktopNotifications, DefaultTerminalDisableDesktopNotifications)
+	}
 	if cfg.Terminal.WallInactiveAfter != DefaultWallInactiveAfterCSV {
 		t.Fatalf("Terminal.WallInactiveAfter = %q, want %q", cfg.Terminal.WallInactiveAfter, DefaultWallInactiveAfterCSV)
 	}

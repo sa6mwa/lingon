@@ -23,6 +23,7 @@ import (
 
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
@@ -37,18 +38,20 @@ import (
 
 // Options configures a headless daemon session.
 type Options struct {
-	ConfigDir               string
-	Endpoint                string
-	Token                   string
-	AuthFile                string
-	SessionID               string
-	Cols                    int
-	Rows                    int
-	Shell                   string
-	Term                    string
-	Respawn                 bool
-	Offline                 bool
-	WallInactiveAfterLevels []time.Duration
+	ConfigDir                   string
+	Endpoint                    string
+	Token                       string
+	AuthFile                    string
+	SessionID                   string
+	Cols                        int
+	Rows                        int
+	Shell                       string
+	Term                        string
+	Respawn                     bool
+	Offline                     bool
+	WallInactiveAfterLevels     []time.Duration
+	DisableDesktopNotifications bool
+	DesktopNotifier             desktopnotify.Notifier
 
 	Publish         bool
 	PublishControl  bool
@@ -94,6 +97,7 @@ type Daemon struct {
 	wallAfter        time.Duration
 	wallLastActivity time.Time
 	wallArmed        bool
+	desktopNotifier  desktopnotify.Notifier
 
 	seq uint64
 }
@@ -129,6 +133,7 @@ func New(opts Options) *Daemon {
 		opts:             opts,
 		logger:           logger,
 		clock:            clk,
+		desktopNotifier:  opts.DesktopNotifier,
 		store:            headless.NewStore(cfgDir),
 		clients:          map[string]*wsClient{},
 		offline:          opts.Offline,
@@ -237,32 +242,33 @@ func (d *Daemon) Run(ctx context.Context) error {
 	runnerCtx, cancelRunner := context.WithCancel(ctx)
 	defer cancelRunner()
 	runner := session.New(session.Options{
-		Endpoint:        d.opts.Endpoint,
-		Token:           d.opts.Token,
-		AuthFile:        d.opts.AuthFile,
-		SessionID:       d.sessionID,
-		Cols:            d.opts.Cols,
-		Rows:            d.opts.Rows,
-		Shell:           d.opts.Shell,
-		Term:            d.opts.Term,
-		Respawn:         d.opts.Respawn,
-		Offline:         d.opts.Offline,
-		Publish:         d.opts.Publish,
-		PublishControl:  d.opts.PublishControl,
-		HostnameOnly:    d.opts.HostnameOnly,
-		ScrollbackLines: d.opts.ScrollbackLines,
-		TLSDir:          d.opts.TLSDir,
-		Insecure:        d.opts.Insecure,
-		Stdin:           stdinR,
-		Stdout:          stdoutFile,
-		DisableRaw:      true,
-		Logger:          d.logger,
-		Trace:           d.opts.Trace,
-		Clock:           d.clock,
-		OnPublishFrame:  d.handlePublishedFrame,
-		OnPublishStatus: d.handlePublishStatus,
-		OnPublishWall:   d.handlePublishWall,
-		OnStatus:        d.handleSessionStatus,
+		Endpoint:                    d.opts.Endpoint,
+		Token:                       d.opts.Token,
+		AuthFile:                    d.opts.AuthFile,
+		SessionID:                   d.sessionID,
+		Cols:                        d.opts.Cols,
+		Rows:                        d.opts.Rows,
+		Shell:                       d.opts.Shell,
+		Term:                        d.opts.Term,
+		Respawn:                     d.opts.Respawn,
+		Offline:                     d.opts.Offline,
+		Publish:                     d.opts.Publish,
+		PublishControl:              d.opts.PublishControl,
+		HostnameOnly:                d.opts.HostnameOnly,
+		ScrollbackLines:             d.opts.ScrollbackLines,
+		TLSDir:                      d.opts.TLSDir,
+		Insecure:                    d.opts.Insecure,
+		Stdin:                       stdinR,
+		Stdout:                      stdoutFile,
+		DisableRaw:                  true,
+		Logger:                      d.logger,
+		Trace:                       d.opts.Trace,
+		Clock:                       d.clock,
+		DisableDesktopNotifications: d.opts.DisableDesktopNotifications,
+		OnPublishFrame:              d.handlePublishedFrame,
+		OnPublishStatus:             d.handlePublishStatus,
+		OnPublishWall:               d.handlePublishWall,
+		OnStatus:                    d.handleSessionStatus,
 		ToggleWallInactivityFallback: func(ctx context.Context, sessionID string) (session.WallInactivityToggleResult, error) {
 			return d.toggleWallInactivityFallback(sessionID), nil
 		},
@@ -1177,9 +1183,34 @@ func (d *Daemon) monitorLocalWallInactivity(ctx context.Context) {
 			Message:        fmt.Sprintf("%s inactive", d.sessionID),
 			TimeoutSeconds: 5,
 		}
+		d.notifyDesktop(wall.GetMessage())
 		d.routeWallEvent(wall, true)
 		d.forwardWallToRelayAsync(wall)
 	}
+}
+
+func (d *Daemon) notifyDesktop(message string) {
+	if d == nil || d.opts.DisableDesktopNotifications {
+		return
+	}
+	message = strings.TrimSpace(message)
+	if !desktopnotify.IsInactivityWallMessage(message) {
+		return
+	}
+	if d.desktopNotifier == nil {
+		d.desktopNotifier = desktopnotify.New()
+	}
+	if d.desktopNotifier == nil {
+		return
+	}
+	label := strings.TrimSpace(d.sessionID)
+	if label == "" {
+		label = "Lingon"
+	}
+	_ = d.desktopNotifier.Notify(context.Background(), desktopnotify.Request{
+		Title: label,
+		Body:  "inactive",
+	})
 }
 
 func formatDurationCompact(d time.Duration) string {

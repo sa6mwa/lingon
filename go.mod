@@ -8,6 +8,7 @@ require (
 	github.com/chromedp/chromedp v0.14.2
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty v1.1.24
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/pmezard/go-difflib v1.0.0

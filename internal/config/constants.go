@@ -44,6 +44,8 @@ const (
 	DefaultTerminalTheme = "default"
 	// DefaultTerminalHostnameOnly controls endpoint banner display mode.
 	DefaultTerminalHostnameOnly = false
+	// DefaultTerminalDisableDesktopNotifications controls desktop notification delivery.
+	DefaultTerminalDisableDesktopNotifications = false
 
 	// DefaultConnectLimitDisable disables global connection limiting by default.
 	DefaultConnectLimitDisable = true

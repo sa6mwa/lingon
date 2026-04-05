@@ -57,12 +57,13 @@ func ForDir(dir string) Config {
 			LoginNonInteractive: false,
 		},
 		Terminal: TerminalConfig{
-			Term:              DefaultTerminalTermValue(),
-			Respawn:           DefaultTerminalRespawn,
-			ScrollbackLines:   DefaultScrollbackLines,
-			Theme:             DefaultTerminalTheme,
-			HostnameOnly:      DefaultTerminalHostnameOnly,
-			WallInactiveAfter: DefaultWallInactiveAfterCSV,
+			Term:                        DefaultTerminalTermValue(),
+			Respawn:                     DefaultTerminalRespawn,
+			ScrollbackLines:             DefaultScrollbackLines,
+			Theme:                       DefaultTerminalTheme,
+			HostnameOnly:                DefaultTerminalHostnameOnly,
+			DisableDesktopNotifications: DefaultTerminalDisableDesktopNotifications,
+			WallInactiveAfter:           DefaultWallInactiveAfterCSV,
 		},
 	}
 }

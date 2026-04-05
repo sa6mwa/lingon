@@ -28,6 +28,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
@@ -64,10 +65,12 @@ type Client struct {
 	ClientID       string
 	// AllowOfflineToggle permits Ctrl+L o to be forwarded to a local host transport.
 	AllowOfflineToggle bool
-	Stdin              io.Reader
-	Stdout             io.Writer
-	Stderr             io.Writer
-	TermSize           func() (int, int)
+	// DisableDesktopNotifications suppresses best-effort desktop notifications for inactivity walls.
+	DisableDesktopNotifications bool
+	Stdin                       io.Reader
+	Stdout                      io.Writer
+	Stderr                      io.Writer
+	TermSize                    func() (int, int)
 	// Clock controls time for timers and ping loops.
 	Clock clock.Clock
 	// NoHostTimeout controls how long to wait for the first snapshot before failing.
@@ -75,8 +78,9 @@ type Client struct {
 	// TokenRefresher returns a fresh access token when the current one is invalid.
 	TokenRefresher func(context.Context) (string, error)
 
-	Logger pslog.Logger
-	Trace  *trace.Writer
+	Logger          pslog.Logger
+	Trace           *trace.Writer
+	DesktopNotifier desktopnotify.Notifier
 
 	holderID string
 
@@ -177,6 +181,9 @@ func (c *Client) RunDetached(ctx context.Context) error {
 func (c *Client) run(ctx context.Context, opts runOptions) error {
 	if c.Logger == nil {
 		c.Logger = logging.Default()
+	}
+	if c.DesktopNotifier == nil && !c.DisableDesktopNotifications && c.desktopNotificationsEnabled() {
+		c.DesktopNotifier = desktopnotify.New()
 	}
 	c.clock()
 	if c.Endpoint == "" && c.UnixSocket == "" {
@@ -1440,6 +1447,7 @@ func (c *Client) handleWall(wall *protocolpb.Wall) {
 	if wall == nil {
 		return
 	}
+	c.notifyDesktop(wall)
 	compositor := c.ensureCompositor()
 	sender := strings.TrimSpace(wall.Sender)
 	title := "Broadcast:"
@@ -1465,6 +1473,31 @@ func (c *Client) handleWall(wall *protocolpb.Wall) {
 			}
 			c.RenderCurrent()
 		},
+	})
+}
+
+func (c *Client) desktopNotificationsEnabled() bool {
+	if c.UnixSocket != "" {
+		return false
+	}
+	return !strings.HasPrefix(strings.TrimSpace(c.Endpoint), "local://")
+}
+
+func (c *Client) notifyDesktop(wall *protocolpb.Wall) {
+	if wall == nil || c.DisableDesktopNotifications || c.DesktopNotifier == nil || !c.desktopNotificationsEnabled() {
+		return
+	}
+	message := strings.TrimSpace(wall.GetMessage())
+	if !desktopnotify.IsInactivityWallMessage(message) {
+		return
+	}
+	label := strings.TrimSpace(strings.TrimSuffix(message, " inactive"))
+	if label == "" {
+		label = "Lingon"
+	}
+	_ = c.DesktopNotifier.Notify(c.runCtx, desktopnotify.Request{
+		Title: label,
+		Body:  "inactive",
 	})
 }
 

@@ -171,6 +171,13 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	if !cmd.Flags().Changed("hostname-only") {
 		hostnameOnlyValue = cfg.Terminal.HostnameOnly
 	}
+	disableDesktopNotificationsValue, err := cmd.Flags().GetBool("disable-desktop-notifications")
+	if err != nil {
+		return err
+	}
+	if !cmd.Flags().Changed("disable-desktop-notifications") {
+		disableDesktopNotificationsValue = cfg.Terminal.DisableDesktopNotifications
+	}
 	scrollbackValue := cfg.Terminal.ScrollbackLines
 	if cmd.Flags().Changed("scrollback-lines") {
 		value, getErr := cmd.Flags().GetInt("scrollback-lines")
@@ -216,26 +223,27 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 		}()
 	}
 	daemon := headlessd.New(headlessd.Options{
-		ConfigDir:               configDir,
-		Endpoint:                endpointValue,
-		Token:                   tokenValue,
-		AuthFile:                authPath,
-		SessionID:               sessionID,
-		Cols:                    colsValue,
-		Rows:                    rowsValue,
-		Shell:                   shellPath,
-		Term:                    termValue,
-		Respawn:                 respawnValue,
-		Offline:                 offlineValue,
-		WallInactiveAfterLevels: wallInactiveAfterLevels,
-		Publish:                 endpointValue != "",
-		PublishControl:          true,
-		HostnameOnly:            hostnameOnlyValue,
-		ScrollbackLines:         scrollbackValue,
-		TLSDir:                  cfg.Server.TLS.Dir,
-		Insecure:                insecure,
-		Logger:                  logger,
-		Trace:                   traceWriter,
+		ConfigDir:                   configDir,
+		Endpoint:                    endpointValue,
+		Token:                       tokenValue,
+		AuthFile:                    authPath,
+		SessionID:                   sessionID,
+		Cols:                        colsValue,
+		Rows:                        rowsValue,
+		Shell:                       shellPath,
+		Term:                        termValue,
+		Respawn:                     respawnValue,
+		Offline:                     offlineValue,
+		WallInactiveAfterLevels:     wallInactiveAfterLevels,
+		DisableDesktopNotifications: disableDesktopNotificationsValue,
+		Publish:                     endpointValue != "",
+		PublishControl:              true,
+		HostnameOnly:                hostnameOnlyValue,
+		ScrollbackLines:             scrollbackValue,
+		TLSDir:                      cfg.Server.TLS.Dir,
+		Insecure:                    insecure,
+		Logger:                      logger,
+		Trace:                       traceWriter,
 	})
 	return daemon.Run(ctx)
 }

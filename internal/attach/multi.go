@@ -21,6 +21,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
@@ -36,13 +37,14 @@ import (
 
 // MultiClient manages multiple attach sessions with tab switching.
 type MultiClient struct {
-	Endpoint       string
-	AccessToken    string
-	RequestControl bool
-	HostnameOnly   bool
-	SessionID      string
-	TLSDir         string
-	Insecure       bool
+	Endpoint                    string
+	AccessToken                 string
+	RequestControl              bool
+	HostnameOnly                bool
+	SessionID                   string
+	DisableDesktopNotifications bool
+	TLSDir                      string
+	Insecure                    bool
 	// SessionSource lists sessions for tab discovery/refresh.
 	// When nil, sessions are fetched from relay /sessions.
 	SessionSource func(context.Context) ([]SessionInfo, error)
@@ -53,13 +55,14 @@ type MultiClient struct {
 	AllowOfflineToggle bool
 	// SessionEvents triggers immediate session-list refreshes.
 	// Intended for local transports to avoid long polling intervals.
-	SessionEvents <-chan struct{}
-	Stdin         io.Reader
-	Stdout        io.Writer
-	Stderr        io.Writer
-	TermSize      func() (int, int)
-	Logger        pslog.Logger
-	Theme         string
+	SessionEvents   <-chan struct{}
+	Stdin           io.Reader
+	Stdout          io.Writer
+	Stderr          io.Writer
+	TermSize        func() (int, int)
+	Logger          pslog.Logger
+	Theme           string
+	DesktopNotifier desktopnotify.Notifier
 	// AuthFile is the path to the auth state file used for refresh.
 	AuthFile string
 	// TokenRefresher returns a fresh access token when the current one is invalid.
@@ -728,22 +731,24 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			tokenRefresher = m.refreshToken
 		}
 		client := &Client{
-			Endpoint:           m.Endpoint,
-			SessionID:          session.ID,
-			UnixSocket:         unixSocket,
-			AccessToken:        m.AccessToken,
-			RequestControl:     visible && m.RequestControl,
-			AllowOfflineToggle: m.AllowOfflineToggle,
-			HostnameOnly:       m.HostnameOnly,
-			TLSDir:             m.TLSDir,
-			Insecure:           m.Insecure,
-			Theme:              themeName,
-			Stdin:              io.NopCloser(strings.NewReader("")),
-			TermSize:           termSize,
-			Logger:             m.Logger,
-			TokenRefresher:     tokenRefresher,
-			Clock:              m.Clock,
-			Trace:              m.Trace,
+			Endpoint:                    m.Endpoint,
+			SessionID:                   session.ID,
+			UnixSocket:                  unixSocket,
+			AccessToken:                 m.AccessToken,
+			RequestControl:              visible && m.RequestControl,
+			AllowOfflineToggle:          m.AllowOfflineToggle,
+			HostnameOnly:                m.HostnameOnly,
+			DisableDesktopNotifications: m.DisableDesktopNotifications,
+			TLSDir:                      m.TLSDir,
+			Insecure:                    m.Insecure,
+			Theme:                       themeName,
+			Stdin:                       io.NopCloser(strings.NewReader("")),
+			TermSize:                    termSize,
+			Logger:                      m.Logger,
+			TokenRefresher:              tokenRefresher,
+			Clock:                       m.Clock,
+			Trace:                       m.Trace,
+			DesktopNotifier:             m.DesktopNotifier,
 		}
 		if localSessionMode {
 			client.OnRoutedHeadlessStatus = func(wall *protocolpb.Wall) {

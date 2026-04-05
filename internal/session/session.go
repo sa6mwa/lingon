@@ -21,6 +21,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
@@ -66,6 +67,9 @@ type Options struct {
 	OnPublishStatus func(PublishStatus)
 	OnPublishWall   func(*protocolpb.Wall)
 	OnStatus        func(StatusUpdate)
+	// DisableDesktopNotifications suppresses best-effort desktop notifications for inactivity walls.
+	DisableDesktopNotifications bool
+	DesktopNotifier             desktopnotify.Notifier
 	// ToggleWallInactivityFallback handles local-only wall inactivity cycling
 	// when relay-backed toggle is unavailable.
 	ToggleWallInactivityFallback func(context.Context, string) (WallInactivityToggleResult, error)
@@ -174,6 +178,11 @@ type Runner struct {
 	scrollbackView    mvu.ScrollbackViewport
 	scrollbackSession string
 
+	wallNotifyMu    sync.Mutex
+	wallNotifyAfter map[string]time.Duration
+	wallNotifyTimer map[string]*clock.Timer
+	wallNotifyArmed map[string]bool
+
 	tokenRefresher func(context.Context) (string, error)
 
 	themeName string
@@ -270,12 +279,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.opts.Clock = clock.New()
 	}
 	r.clock = r.opts.Clock
-
 	r.initializeSessionIdentity()
 	ui := r.runtime()
 	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{Clock: r.clock, Endpoint: r.opts.Endpoint}})
 	r.effects = mvu.NewEffectScheduler(r.clock)
 	defer r.effects.StopAll()
+	defer r.stopLocalWallNotifications()
 	r.applyTheme(resolveThemeName(r.opts.Theme))
 	if r.opts.Cols <= 0 || r.opts.Rows <= 0 {
 		cols, rows := termSizeAny(r.stdout(), r.stdin())
@@ -522,6 +531,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					} else {
 						r.setTabSuppressed(activeID, false)
 					}
+					r.noteLocalActivity(activeID)
 					r.noteLocalEnterInput(activeID, pending)
 				} else if r.remoteSessions != nil {
 					if bytes.IndexByte(pending, control.CtrlL) >= 0 {
@@ -1818,7 +1828,7 @@ func (r *Runner) handleLocalOutput(stdout, stdin *os.File) func(id string, data 
 		if local == nil {
 			return
 		}
-		local.SetLastActive(r.clock.Now())
+		r.noteLocalActivity(id)
 		r.noteLocalOutput(id, data)
 		if snap == nil {
 			r.forceRedraw(stdout)
@@ -2062,6 +2072,7 @@ func (r *Runner) removeLocalSession(id string, stdout, stdin *os.File) {
 	}
 	r.inputTraceMu.Unlock()
 	r.setTabSuppressed(id, false)
+	r.disableLocalWallNotification(id)
 
 	activeID, activeLocal := r.activeSession()
 	if activeLocal && activeID == id {
@@ -2137,11 +2148,16 @@ func (r *Runner) handleRemoteInput(session *localSession, data []byte, debug boo
 		}
 		return
 	}
-	if _, err := session.writePTY(data); err != nil && r.logger != nil {
-		r.logger.Debug("session.remote.input.write.failed", "err", err, "session", session.ID())
-	} else if debug && r.logger != nil {
+	if _, err := session.writePTY(data); err != nil {
+		if r.logger != nil {
+			r.logger.Debug("session.remote.input.write.failed", "err", err, "session", session.ID())
+		}
+		return
+	}
+	if debug && r.logger != nil {
 		r.logger.Debug("session.remote.input.write.ok", "len", len(data), "session", session.ID())
 	}
+	r.noteLocalActivity(session.ID())
 }
 
 func (r *Runner) showStatus(message string, stdout *os.File, d time.Duration) {
@@ -2222,6 +2238,7 @@ func (r *Runner) handlePublisherSessionRejected(session *localSession, message s
 	} else {
 		r.updateTabs(nil)
 	}
+	r.disableLocalWallNotification(session.ID())
 	r.refreshTabBar(stdout)
 	activeID, _ := r.activeSession()
 	if activeID != "" && !r.isActiveLocalSession(session.ID()) {
@@ -2260,6 +2277,119 @@ func (r *Runner) showWall(wall *protocolpb.Wall, stdout *os.File) {
 		Callback: func(full bool) {
 			r.forceRedrawWithMode(stdout, full)
 		},
+	})
+}
+
+func (r *Runner) stopLocalWallNotifications() {
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	for _, timer := range r.wallNotifyTimer {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+	r.wallNotifyAfter = nil
+	r.wallNotifyTimer = nil
+	r.wallNotifyArmed = nil
+}
+
+func (r *Runner) configureLocalWallNotification(sessionID string, after time.Duration) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	if r.wallNotifyAfter == nil {
+		r.wallNotifyAfter = make(map[string]time.Duration)
+	}
+	if r.wallNotifyTimer == nil {
+		r.wallNotifyTimer = make(map[string]*clock.Timer)
+	}
+	if r.wallNotifyArmed == nil {
+		r.wallNotifyArmed = make(map[string]bool)
+	}
+	if timer := r.wallNotifyTimer[sessionID]; timer != nil {
+		timer.Stop()
+		delete(r.wallNotifyTimer, sessionID)
+	}
+	if after <= 0 {
+		delete(r.wallNotifyAfter, sessionID)
+		delete(r.wallNotifyArmed, sessionID)
+		return
+	}
+	r.wallNotifyAfter[sessionID] = after
+	r.wallNotifyArmed[sessionID] = true
+	r.wallNotifyTimer[sessionID] = r.clock.AfterFunc(after, func() {
+		r.fireLocalWallNotification(sessionID)
+	})
+}
+
+func (r *Runner) disableLocalWallNotification(sessionID string) {
+	r.configureLocalWallNotification(sessionID, 0)
+}
+
+func (r *Runner) noteLocalActivity(sessionID string) {
+	local := r.localSession(sessionID)
+	if local == nil {
+		return
+	}
+	local.SetLastActive(r.clock.Now())
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	after := r.wallNotifyAfter[sessionID]
+	if after <= 0 {
+		return
+	}
+	if r.wallNotifyTimer == nil {
+		r.wallNotifyTimer = make(map[string]*clock.Timer)
+	}
+	if timer := r.wallNotifyTimer[sessionID]; timer != nil {
+		timer.Stop()
+	}
+	if r.wallNotifyArmed == nil {
+		r.wallNotifyArmed = make(map[string]bool)
+	}
+	r.wallNotifyArmed[sessionID] = true
+	r.wallNotifyTimer[sessionID] = r.clock.AfterFunc(after, func() {
+		r.fireLocalWallNotification(sessionID)
+	})
+}
+
+func (r *Runner) fireLocalWallNotification(sessionID string) {
+	r.wallNotifyMu.Lock()
+	after := r.wallNotifyAfter[sessionID]
+	armed := r.wallNotifyArmed[sessionID]
+	if after <= 0 || !armed {
+		r.wallNotifyMu.Unlock()
+		return
+	}
+	r.wallNotifyArmed[sessionID] = false
+	if r.wallNotifyTimer != nil {
+		delete(r.wallNotifyTimer, sessionID)
+	}
+	r.wallNotifyMu.Unlock()
+
+	if r.opts.DisableDesktopNotifications {
+		return
+	}
+	if r.opts.DesktopNotifier == nil {
+		r.opts.DesktopNotifier = desktopnotify.New()
+	}
+	if r.opts.DesktopNotifier == nil {
+		return
+	}
+	local := r.localSession(sessionID)
+	if local == nil {
+		return
+	}
+	label := strings.TrimSpace(local.Name())
+	if label == "" {
+		label = sessionID
+	}
+	_ = r.opts.DesktopNotifier.Notify(r.runCtx, desktopnotify.Request{
+		Title: label,
+		Body:  "inactive",
 	})
 }
 
@@ -2321,6 +2451,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return true
 		}
 		if result.Enabled {
+			r.disableLocalWallNotification(sessionID)
 			status := "wall inactivity on"
 			if label := strings.TrimSpace(result.InactiveAfter); label != "" {
 				status = "wall inactivity " + label
@@ -2328,6 +2459,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			r.showStatus(status, stdout, 2*time.Second)
 			return true
 		}
+		r.disableLocalWallNotification(sessionID)
 		r.showStatus("wall inactivity off", stdout, 2*time.Second)
 		return true
 	}
@@ -2383,6 +2515,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		return
 	}
 	if resp.Enabled {
+		r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(resp.InactiveAfter))
 		status := "wall inactivity on"
 		if label := strings.TrimSpace(resp.InactiveAfter); label != "" {
 			status = "wall inactivity " + label
@@ -2390,7 +2523,20 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		r.showStatus(status, stdout, 2*time.Second)
 		return
 	}
+	r.disableLocalWallNotification(sessionID)
 	r.showStatus("wall inactivity off", stdout, 2*time.Second)
+}
+
+func parseWallInactiveAfter(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	after, err := time.ParseDuration(raw)
+	if err != nil || after <= 0 {
+		return 0
+	}
+	return after
 }
 
 func (r *Runner) applyTheme(name string) {

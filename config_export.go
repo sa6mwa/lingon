@@ -70,6 +70,8 @@ const (
 	DefaultTerminalTheme = config.DefaultTerminalTheme
 	// DefaultTerminalHostnameOnly controls endpoint banner display mode.
 	DefaultTerminalHostnameOnly = config.DefaultTerminalHostnameOnly
+	// DefaultTerminalDisableDesktopNotifications controls desktop notification delivery.
+	DefaultTerminalDisableDesktopNotifications = config.DefaultTerminalDisableDesktopNotifications
 	// DefaultConnectLimitDisable disables global connection limiting by default.
 	DefaultConnectLimitDisable = config.DefaultConnectLimitDisable
 	// DefaultConnectLimitBurst is the default burst size for connection limiting.
