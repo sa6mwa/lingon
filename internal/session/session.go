@@ -2489,7 +2489,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return true
 		}
 		if result.Enabled {
-			r.disableLocalWallNotification(sessionID)
+			r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(result.InactiveAfter))
 			status := "wall inactivity on"
 			if label := strings.TrimSpace(result.InactiveAfter); label != "" {
 				status = "wall inactivity " + label

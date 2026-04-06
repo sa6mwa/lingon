@@ -122,9 +122,10 @@ class TerminalInputDispatchTest {
     }
 
     @Test
-    fun imeDeleteSurroundingTextIsNotForwardedAsTerminalBackspace() {
-        assertEquals(false, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 1, rightLength = 0))
-        assertEquals(false, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 3, rightLength = 0))
+    fun imeDeleteSurroundingTextForwardsPlainBackspaceOnly() {
+        assertEquals(true, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 1, rightLength = 0))
+        assertEquals(true, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 3, rightLength = 0))
         assertEquals(false, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 1, rightLength = 1))
+        assertEquals(false, shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength = 0, rightLength = 1))
     }
 }

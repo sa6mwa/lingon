@@ -123,5 +123,5 @@ internal fun shouldForwardImeDeleteSurroundingTextAsBackspace(
     if (leftLength < 0 || rightLength < 0) {
         return false
     }
-    return false
+    return leftLength > 0 && rightLength == 0
 }

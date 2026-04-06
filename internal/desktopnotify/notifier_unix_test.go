@@ -5,6 +5,8 @@ package desktopnotify
 import (
 	"context"
 	"testing"
+
+	"github.com/godbus/dbus/v5"
 )
 
 type stubSender struct {
@@ -91,5 +93,55 @@ func TestNotifierUsesSenderWhenDesktopEnvLooksValid(t *testing.T) {
 	}
 	if sender.calls[0] != req {
 		t.Fatalf("unexpected request: %#v", sender.calls[0])
+	}
+}
+
+type fakeDBusObject struct {
+	calls int
+}
+
+func (o *fakeDBusObject) CallWithContext(_ context.Context, _ string, _ dbus.Flags, _ ...interface{}) *dbus.Call {
+	o.calls++
+	return &dbus.Call{}
+}
+
+type fakeDBusConnection struct {
+	object *fakeDBusObject
+}
+
+func (c *fakeDBusConnection) Object(string, dbus.ObjectPath) dbusObject {
+	return c.object
+}
+
+func TestDBusSenderCachesConnectionAcrossNotifications(t *testing.T) {
+	fakeObject := &fakeDBusObject{}
+	connectCalls := 0
+	sender := &dbusSender{
+		connect: func() (dbusConnection, error) {
+			connectCalls++
+			return &fakeDBusConnection{object: fakeObject}, nil
+		},
+	}
+	env := map[string]string{
+		"DISPLAY":                  ":0",
+		"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/dbus",
+	}
+	n := &notifier{
+		getenv: func(key string) string { return env[key] },
+		sender: sender,
+	}
+
+	req := Request{Title: "title", Body: "body"}
+	if err := n.Notify(context.Background(), req); err != nil {
+		t.Fatalf("first Notify: %v", err)
+	}
+	if err := n.Notify(context.Background(), req); err != nil {
+		t.Fatalf("second Notify: %v", err)
+	}
+	if connectCalls != 1 {
+		t.Fatalf("connectCalls = %d, want 1", connectCalls)
+	}
+	if fakeObject.calls != 2 {
+		t.Fatalf("calls = %d, want 2", fakeObject.calls)
 	}
 }

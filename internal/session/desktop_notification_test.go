@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -131,6 +132,54 @@ func TestRunnerDisableLocalWallNotificationCancelsPendingTimer(t *testing.T) {
 
 	if len(notifier.requests) != 0 {
 		t.Fatalf("expected disabled notification timer to stay silent, got %d", len(notifier.requests))
+	}
+}
+
+func TestRunnerToggleWallInactivityFallbackArmsLocalWallNotification(t *testing.T) {
+	notifier := &recordingNotifier{}
+	clk := clock.NewMock()
+	stdout, err := os.CreateTemp(t.TempDir(), "stdout-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer stdout.Close()
+
+	r := &Runner{
+		opts: Options{
+			DesktopNotifier: notifier,
+			ToggleWallInactivityFallback: func(context.Context, string) (WallInactivityToggleResult, error) {
+				return WallInactivityToggleResult{
+					Enabled:       true,
+					InactiveAfter: "2m",
+				}, nil
+			},
+		},
+		runCtx: context.Background(),
+		clock:  clk,
+		localSessions: map[string]*localSession{
+			"s1": {id: "s1", name: "session-a", clock: clk, offline: true},
+		},
+	}
+
+	r.toggleWallInactivity(context.Background(), "s1", nil, stdout)
+
+	r.wallNotifyMu.Lock()
+	after := r.wallNotifyAfter["s1"]
+	armed := r.wallNotifyArmed["s1"]
+	r.wallNotifyMu.Unlock()
+	if after != 2*time.Minute {
+		t.Fatalf("wallNotifyAfter = %v, want 2m", after)
+	}
+	if !armed {
+		t.Fatalf("expected local inactivity timer to be armed")
+	}
+
+	clk.Add(2 * time.Minute)
+	if len(notifier.requests) != 1 {
+		t.Fatalf("expected one notification after fallback arm, got %d", len(notifier.requests))
+	}
+	if notifier.requests[0].Title != "session-a" {
+		t.Fatalf("Title = %q, want session-a", notifier.requests[0].Title)
 	}
 }
 
