@@ -819,11 +819,31 @@ private class TerminalInputView(
             }
 
             override fun deleteSurroundingText(leftLength: Int, rightLength: Int): Boolean {
-                if (shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength, rightLength) && leftLength > 0) {
-                    onBackspaceCallback(leftLength)
+                if (leftLength > 0 && this@TerminalInputView.inputBuffer.isNotEmpty()) {
+                    deleteFromComposingBuffer(leftLength, codePoints = false)
                     return true
                 }
+                if (
+                    shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength, rightLength) &&
+                    this@TerminalInputView.inputBuffer.isEmpty()
+                ) {
+                    onBackspaceCallback(leftLength)
+                }
                 return super.deleteSurroundingText(leftLength, rightLength)
+            }
+
+            override fun deleteSurroundingTextInCodePoints(leftLength: Int, rightLength: Int): Boolean {
+                if (leftLength > 0 && this@TerminalInputView.inputBuffer.isNotEmpty()) {
+                    deleteFromComposingBuffer(leftLength, codePoints = true)
+                    return true
+                }
+                if (
+                    shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength, rightLength) &&
+                    this@TerminalInputView.inputBuffer.isEmpty()
+                ) {
+                    onBackspaceCallback(leftLength)
+                }
+                return super.deleteSurroundingTextInCodePoints(leftLength, rightLength)
             }
 
             override fun sendKeyEvent(event: AndroidKeyEvent): Boolean {
@@ -914,6 +934,29 @@ private class TerminalInputView(
         if (builder.isNotEmpty()) {
             onCommitTextCallback(builder.toString())
         }
+    }
+
+    private fun deleteFromComposingBuffer(leftLength: Int, codePoints: Boolean) {
+        val buffer = this@TerminalInputView.inputBuffer
+        if (buffer.isEmpty() || leftLength <= 0) {
+            return
+        }
+
+        val deleteCount = if (codePoints) {
+            minOf(leftLength, Character.codePointCount(buffer, 0, buffer.length))
+        } else {
+            minOf(leftLength, buffer.length)
+        }
+        if (deleteCount <= 0) {
+            return
+        }
+
+        val start = if (codePoints) {
+            Character.offsetByCodePoints(buffer, buffer.length, -deleteCount)
+        } else {
+            buffer.length - deleteCount
+        }
+        buffer.delete(start, buffer.length)
     }
 }
 
