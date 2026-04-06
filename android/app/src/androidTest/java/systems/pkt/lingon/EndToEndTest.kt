@@ -23,8 +23,12 @@ import androidx.test.platform.app.InstrumentationRegistry
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Base64
@@ -177,6 +181,70 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
+    }
+
+    @Test
+    fun ime_composing_delete_replaces_remote_command() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+
+        val sessionId = activeSessionId()
+        val echoInserted = "ECHO_${sessionId} 61"
+        val echoBackspace = "ECHO_${sessionId} 7f"
+        val connection = terminalInputConnection()
+
+        composeRule.runOnIdle {
+            assertTrue(connection.setComposingText("ab", 1))
+            assertTrue(connection.deleteSurroundingText(1, 0))
+            assertTrue(connection.commitText("a", 1))
+        }
+
+        waitUntilNoError(5_000L) { snapshotContainsToken(echoInserted) }
+        waitUntilNoError(2_000L) { !snapshotContainsToken(echoBackspace) }
+    }
+
+    @Test
+    fun ime_replacement_commit_replaces_remote_command() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+
+        val sessionId = activeSessionId()
+        val echoInitial = listOf(
+            "ECHO_${sessionId} 66",
+            "ECHO_${sessionId} 6f",
+            "ECHO_${sessionId} 6f",
+        )
+        val echoDelete = listOf(
+            "ECHO_${sessionId} 7f",
+            "ECHO_${sessionId} 7f",
+            "ECHO_${sessionId} 7f",
+        )
+        val echoReplacement = listOf(
+            "ECHO_${sessionId} 62",
+            "ECHO_${sessionId} 61",
+            "ECHO_${sessionId} 72",
+        )
+        val initialSequence = echoInitial.toTypedArray()
+        val expectedSequence = (echoInitial + echoDelete + echoReplacement).toTypedArray()
+        val connection = terminalInputConnection()
+
+        composeRule.runOnIdle {
+            assertTrue(connection.commitText("foo", 1))
+            assertTrue(connection.setSelection(0, 3))
+            assertTrue(connection.commitText("bar", 1))
+        }
+
+        waitUntilNoError(10_000L) { hostEchoLogContainsSequence(*initialSequence) }
+        waitUntilNoError(10_000L) { hostEchoLogContainsSequence(*expectedSequence) }
+        waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sessionId} 62") }
     }
 
     @Test
@@ -853,6 +921,23 @@ class EndToEndTest {
         return found
     }
 
+    private fun snapshotTokenCount(token: String): Int {
+        var count = 0
+        composeRule.runOnIdle {
+            val snap = appViewModel().state.value.activeSnapshot ?: return@runOnIdle
+            if (snap.rows <= 0 || snap.cols <= 0) return@runOnIdle
+            for (row in 0 until snap.rows) {
+                val text = snapshotRow(snap, row)
+                var index = text.indexOf(token)
+                while (index >= 0) {
+                    count++
+                    index = text.indexOf(token, index + token.length)
+                }
+            }
+        }
+        return count
+    }
+
     private fun snapshotRow(snapshot: systems.pkt.lingon.terminal.TerminalSnapshot, row: Int): String {
         if (row < 0 || row >= snapshot.rows) return ""
         val sb = StringBuilder()
@@ -1051,12 +1136,35 @@ class EndToEndTest {
         return findViewWithTag(root, "terminal_view")
     }
 
+    private fun terminalInputConnection(): InputConnection {
+        val inputView = findTerminalInputView()
+            ?: throw AssertionError("missing terminal input view")
+        return inputView.onCreateInputConnection(EditorInfo())
+            ?: throw AssertionError("missing terminal input connection")
+    }
+
+    private fun findTerminalInputView(): View? {
+        val root = composeRule.activity.window.decorView
+        return findViewWithClassName(root, "systems.pkt.lingon.ui.TerminalInputView")
+    }
+
     private fun findViewWithTag(view: View, tag: String): View? {
         if (tag == view.tag) return view
         if (view is android.view.ViewGroup) {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i)
                 val found = findViewWithTag(child, tag)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    private fun findViewWithClassName(view: View, className: String): View? {
+        if (view.javaClass.name == className) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                val found = findViewWithClassName(view.getChildAt(i), className)
                 if (found != null) return found
             }
         }
@@ -1255,6 +1363,40 @@ class EndToEndTest {
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun fetchHostEchoLog(): String {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/echo-log")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness echo-log failed with HTTP ${connection.responseCode}")
+            }
+            return connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun hostEchoLogContainsSequence(vararg tokens: String): Boolean {
+        val log = fetchHostEchoLog()
+        var cursor = 0
+        for (token in tokens) {
+            val index = log.indexOf(token, cursor)
+            if (index < 0) {
+                return false
+            }
+            cursor = index + token.length
+        }
+        return true
     }
 
     private fun trustContextFor(caPem: String): javax.net.ssl.SSLContext {

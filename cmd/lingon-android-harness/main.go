@@ -188,12 +188,15 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 		return nil, err
 	}
 
-	listener, err := net.Listen("tcp", listenAddr(opts.port))
+	listener, err := net.Listen(listenNetwork(), listenAddr(opts.port))
 	if err != nil {
 		return nil, err
 	}
-	addr := listener.Addr().String()
-	endpoint := "https://" + addr + ensureBasePath(opts.basePath)
+	_, portStr, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		return nil, err
+	}
+	endpoint := "https://127.0.0.1:" + portStr + ensureBasePath(opts.basePath)
 
 	hub := relay.NewHub(nil)
 	auth := relay.NewAuthenticator(users)
@@ -220,34 +223,56 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	}
 
 	controlPath := ensureBasePath(opts.basePath) + "/__harness/start-host"
+	echoLogPath := ensureBasePath(opts.basePath) + "/__harness/echo-log"
 	relayHandler := server.WrapBasePath(opts.basePath, relayServer.Handler())
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != controlPath {
+		switch r.URL.Path {
+		case controlPath:
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			count := 1
+			if raw := r.URL.Query().Get("count"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					count = value
+				}
+			}
+			ids := make([]string, 0, count)
+			for i := 0; i < count; i++ {
+				id, err := h.startHost(h.access)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				ids = append(ids, id)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ids": ids})
+			return
+		case echoLogPath:
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if path := os.Getenv("LINGON_HOST_ECHO_LOG"); path != "" {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				_, _ = w.Write(data)
+				return
+			}
+			http.Error(w, "echo log unavailable", http.StatusNotFound)
+			return
+		default:
 			relayHandler.ServeHTTP(w, r)
 			return
 		}
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		count := 1
-		if raw := r.URL.Query().Get("count"); raw != "" {
-			if value, err := strconv.Atoi(raw); err == nil && value > 0 {
-				count = value
-			}
-		}
-		ids := make([]string, 0, count)
-		for i := 0; i < count; i++ {
-			id, err := h.startHost(h.access)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			ids = append(ids, id)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ids": ids})
 	})
 
 	srv := httptest.NewUnstartedServer(handler)
@@ -503,10 +528,23 @@ func runHostEcho(id string) {
 }
 
 func listenAddr(port int) string {
+	if os.Getenv("LINGON_ANDROID_HARNESS_BIND_ALL") != "" {
+		if port <= 0 {
+			return "0.0.0.0:0"
+		}
+		return fmt.Sprintf("0.0.0.0:%d", port)
+	}
 	if port <= 0 {
 		return "127.0.0.1:0"
 	}
 	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
+func listenNetwork() string {
+	if os.Getenv("LINGON_ANDROID_HARNESS_BIND_ALL") != "" {
+		return "tcp4"
+	}
+	return "tcp"
 }
 
 func ensureBasePath(path string) string {
