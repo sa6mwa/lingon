@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
 	"pkt.systems/lingon/internal/protocolpb"
 )
 
@@ -202,5 +203,120 @@ func TestHubHandleHostFrameRejectsStaleHost(t *testing.T) {
 	}
 	if len(client.sent) != 0 {
 		t.Fatalf("stale host should not broadcast frames; got %d", len(client.sent))
+	}
+}
+
+func TestHubReplaysMissingFramesToReconnectingClient(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), host, hostSnapshotFrame("alpha-1")); err != nil {
+		t.Fatalf("HandleHostFrame(snapshot): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("alpha-2")); err != nil {
+		t.Fatalf("HandleHostFrame(diff1): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("alpha-3")); err != nil {
+		t.Fatalf("HandleHostFrame(diff2): %v", err)
+	}
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	hello := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "client",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			LastSeq:      2,
+			ClientType:   "android",
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, hello); err != nil {
+		t.Fatalf("HandleClientFrame(hello): %v", err)
+	}
+
+	if len(host.sent) != 0 {
+		t.Fatalf("expected hello replay path to skip forwarding to host; sent=%d", len(host.sent))
+	}
+	if len(client.sent) != 1 {
+		t.Fatalf("expected 1 replay frame, got %d", len(client.sent))
+	}
+	if got := client.sent[0].Seq; got != 3 {
+		t.Fatalf("replay seq = %d, want 3", got)
+	}
+	if got := client.sent[0].GetDiff(); got == nil || got.Title != "alpha-3" {
+		t.Fatalf("replay diff = %+v, want title alpha-3", got)
+	}
+}
+
+func TestHubFallsBackToHelloWhenReplayHistoryIsTooOld(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	state := hub.session("s1")
+	state.seq = 10
+	state.history = []*protocolpb.Frame{
+		hostSnapshotFrame("alpha-9"),
+		hostDiffFrame("alpha-10"),
+	}
+	state.history[0].Seq = 9
+	state.history[1].Seq = 10
+	state.historyBytes = proto.Size(state.history[0]) + proto.Size(state.history[1])
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	hello := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "client",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			LastSeq:      7,
+			ClientType:   "android",
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, hello); err != nil {
+		t.Fatalf("HandleClientFrame(hello): %v", err)
+	}
+
+	if len(client.sent) != 0 {
+		t.Fatalf("expected no replay frames when history is too old, got %d", len(client.sent))
+	}
+	if len(host.sent) != 1 {
+		t.Fatalf("expected hello to be forwarded to host, got %d", len(host.sent))
+	}
+	if got := host.sent[0].GetHello(); got == nil || got.LastSeq != 7 {
+		t.Fatalf("hello forwarded with last_seq=%+v, want 7", got)
+	}
+}
+
+func hostSnapshotFrame(title string) *protocolpb.Frame {
+	return &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Snapshot{Snapshot: &protocolpb.Snapshot{
+			Cols:  80,
+			Rows:  24,
+			Title: title,
+		}},
+	}
+}
+
+func hostDiffFrame(title string) *protocolpb.Frame {
+	return &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Diff{Diff: &protocolpb.Diff{
+			Title: title,
+		}},
 	}
 }

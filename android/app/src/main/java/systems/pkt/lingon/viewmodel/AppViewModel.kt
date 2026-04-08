@@ -36,6 +36,7 @@ import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
 import systems.pkt.lingon.ui.translateAppCursorKeys
 import systems.pkt.lingon.work.NoopWallWorkScheduler
 import systems.pkt.lingon.work.WallWorkScheduler
+import java.util.LinkedHashMap
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.max
@@ -65,6 +66,7 @@ class AppViewModel(
     private var scrollbackCols = 0
     private var scrollbackOffset = 0
     private val scrollbackLimit = DefaultScrollbackLines
+    private val sessionCaches = LinkedHashMap<String, SessionCache>()
     @VisibleForTesting
     internal var resizeHostOverride: Boolean? = null
     private var lastBackgroundAtMs: Long? = null
@@ -279,6 +281,8 @@ class AppViewModel(
             return
         }
         repository.setEndpoint(normalized)
+        clearSessionCaches()
+        resetCurrentSessionState()
         lastBackgroundAtMs = null
         stopReconnect()
         stopWallPoll(resetCursor = true)
@@ -397,6 +401,8 @@ class AppViewModel(
                 } catch (_: Exception) {
                 }
                 repository.clearLastActiveSession()
+                clearSessionCaches()
+                resetCurrentSessionState()
                 suppressReconnect = false
                 _state.update {
                     it.copy(
@@ -432,6 +438,8 @@ class AppViewModel(
         stopReconnect()
         stopWallPoll(resetCursor = true)
         closeWebSocket("share token")
+        clearSessionCaches()
+        resetCurrentSessionState()
         lastBackgroundAtMs = null
         _state.update {
             it.copy(
@@ -478,7 +486,8 @@ class AppViewModel(
             }
             return
         }
-        _state.update { it.copy(activeSessionId = sessionId, activeSnapshot = null, scrollbackOffsetRows = 0) }
+        syncCurrentSessionCache()
+        _state.update { it.copy(activeSessionId = sessionId) }
         if (current.shareToken.isNullOrBlank()) {
             persistActiveSession(current.endpoint, sessionId)
         }
@@ -507,12 +516,14 @@ class AppViewModel(
             live
         }
         _state.update { it.copy(activeSnapshot = display, scrollbackOffsetRows = scrollbackOffset) }
+        syncCurrentSessionCache()
     }
 
     private fun resetScrollbackView() {
         if (scrollbackOffset == 0) return
         scrollbackOffset = 0
         _state.update { it.copy(activeSnapshot = liveSnapshot, scrollbackOffsetRows = 0) }
+        syncCurrentSessionCache()
     }
 
     private fun resetScrollbackBuffer() {
@@ -521,10 +532,91 @@ class AppViewModel(
         scrollbackOffset = 0
     }
 
+    private fun resetCurrentSessionState() {
+        liveSnapshot = null
+        resetScrollbackBuffer()
+        lastSeq = 0
+    }
+
+    private fun clearSessionCaches() {
+        sessionCaches.clear()
+    }
+
+    private fun currentSessionCacheKey(): String? {
+        return _state.value.activeSessionId?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun syncCurrentSessionCache() {
+        val key = currentSessionCacheKey() ?: return
+        val cache = sessionCaches.getOrPut(key) { SessionCache() }
+        cache.lastSeq = lastSeq
+        cache.liveSnapshot = liveSnapshot
+        cache.scrollbackCols = scrollbackCols
+        cache.scrollbackOffset = scrollbackOffset
+        cache.scrollbackRows.clear()
+        cache.scrollbackRows.addAll(scrollbackRows)
+    }
+
+    private fun applySessionCache(sessionId: String?) {
+        val key = (sessionId ?: _state.value.activeSessionId)?.trim()?.takeIf { it.isNotEmpty() }
+        val cache = key?.let { sessionCaches[it] }
+        if (cache == null) {
+            lastSeq = 0
+            liveSnapshot = null
+            scrollbackRows.clear()
+            scrollbackCols = 0
+            scrollbackOffset = 0
+            _state.update {
+                it.copy(
+                    activeSnapshot = null,
+                    scrollbackOffsetRows = 0,
+                    lastFrameSeq = 0,
+                    lastFrameType = null,
+                    lastFrameAtMs = 0,
+                    lastFrameError = null,
+                )
+            }
+            return
+        }
+        lastSeq = cache.lastSeq
+        liveSnapshot = cache.liveSnapshot
+        scrollbackRows.clear()
+        scrollbackRows.addAll(cache.scrollbackRows)
+        scrollbackCols = cache.scrollbackCols
+        scrollbackOffset = cache.scrollbackOffset.coerceAtLeast(0)
+        val display = if (scrollbackOffset > 0 && liveSnapshot != null) {
+            buildScrollbackSnapshot(liveSnapshot!!, scrollbackRows, scrollbackOffset)
+        } else {
+            liveSnapshot
+        }
+        _state.update {
+            it.copy(
+                activeSnapshot = display,
+                scrollbackOffsetRows = scrollbackOffset,
+                lastFrameSeq = cache.lastSeq,
+                lastFrameType = null,
+                lastFrameAtMs = 0,
+                lastFrameError = null,
+            )
+        }
+    }
+
+    private data class SessionCache(
+        var lastSeq: Long = 0L,
+        var liveSnapshot: TerminalSnapshot? = null,
+        val scrollbackRows: ArrayList<ScrollbackRow> = ArrayList(),
+        var scrollbackCols: Int = 0,
+        var scrollbackOffset: Int = 0,
+    )
+
     private fun maxScrollbackOffset(snapshot: TerminalSnapshot?): Int {
         val live = snapshot ?: return 0
         val totalRows = scrollbackRows.size + live.rows
         return (totalRows - live.rows).coerceAtLeast(0)
+    }
+
+    private fun isLoggable(tag: String, level: Int): Boolean {
+        return runCatching { Log.isLoggable(tag, level) }.getOrDefault(false)
     }
 
     fun sendRawInput(data: String) {
@@ -684,8 +776,7 @@ class AppViewModel(
         if (activeConnection == key && ws != null) {
             return
         }
-        resetScrollbackBuffer()
-        liveSnapshot = null
+        applySessionCache(sessionId)
         val baseUrl = state.endpoint.trim().toHttpUrlOrNull()
         if (baseUrl == null) {
             setStatus("invalid endpoint", StatusLevel.Error)
@@ -710,15 +801,11 @@ class AppViewModel(
         }
         stopReconnect()
         closeWebSocket("switch")
-        if (activeConnection == null || activeConnection != key) {
-            lastSeq = 0
-        }
         _state.update {
             it.copy(
                 connectionState = ConnectionState.Connecting,
-                activeSnapshot = null,
-                scrollbackOffsetRows = 0,
                 hasControl = false,
+                lastFrameError = null,
             )
         }
         syncWallPollingSchedule()
@@ -774,7 +861,7 @@ class AppViewModel(
                     frame.hasWelcome() -> {
                         val holder = frame.welcome.holderClientId
                         val hasControl = holder.isNotBlank() && holder == clientId
-                        if (Log.isLoggable("lingon-term", Log.DEBUG)) {
+                        if (isLoggable("lingon-term", Log.DEBUG)) {
                             Log.d(
                                 "lingon-term",
                                 "apply welcome seq=${frame.seq} control=${hasControl} cols=${frame.welcome.serverCols} rows=${frame.welcome.serverRows}",
@@ -802,7 +889,7 @@ class AppViewModel(
                         } else {
                             snapshot
                         }
-                        if (Log.isLoggable("lingon-term", Log.DEBUG)) {
+                        if (isLoggable("lingon-term", Log.DEBUG)) {
                             Log.d(
                                 "lingon-term",
                                 "apply snapshot seq=${frame.seq} cols=${snapshot.cols} rows=${snapshot.rows}",
@@ -829,7 +916,7 @@ class AppViewModel(
                         } else {
                             nextLive
                         }
-                        if (Log.isLoggable("lingon-term", Log.DEBUG)) {
+                        if (isLoggable("lingon-term", Log.DEBUG)) {
                             Log.d(
                                 "lingon-term",
                                 "apply diff seq=${frame.seq} rows=${frame.diff.diffRowsCount} cols=${frame.diff.cols} rowsTotal=${frame.diff.rows}",
@@ -851,7 +938,7 @@ class AppViewModel(
                     frame.hasControl() -> {
                         val holder = frame.control.holderClientId
                         val hasControl = holder.isNotBlank() && holder == clientId
-                        if (Log.isLoggable("lingon-term", Log.DEBUG)) {
+                        if (isLoggable("lingon-term", Log.DEBUG)) {
                             Log.d(
                                 "lingon-term",
                                 "apply control seq=${frame.seq} holder=${holder} control=${hasControl}",
@@ -869,7 +956,7 @@ class AppViewModel(
                         maybeSendResize(_state.value)
                     }
                     frame.hasOut() -> {
-                        if (Log.isLoggable("lingon-term", Log.DEBUG)) {
+                        if (isLoggable("lingon-term", Log.DEBUG)) {
                             Log.w(
                                 "lingon-term",
                                 "received out frame seq=${frame.seq} len=${frame.out.data.size()} (no emulator)",
@@ -967,20 +1054,26 @@ class AppViewModel(
                             _state.update { it.copy(connectionState = ConnectionState.Waiting) }
                             setStatus("waiting for host", StatusLevel.Warn)
                             scheduleReconnect("waiting for host", statusPrefix = "waiting for host, retrying in")
+                            syncCurrentSessionCache()
                             return
                         }
                         if (msg.contains("control not permitted", ignoreCase = true)) {
                             setStatus("view-only session", StatusLevel.Warn)
+                            syncCurrentSessionCache()
                             return
                         }
                         if (msg.contains("authorization", ignoreCase = true)) {
                             setStatus("session expired", StatusLevel.Error)
                             handleAuthFailureWithoutLogout()
+                            syncCurrentSessionCache()
                             return
                         }
                         val retryAfter = frame.error.retryAfterSeconds.takeIf { it > 0 }
                         scheduleReconnect(msg, retryAfter)
                     }
+                }
+                if (frame.seq != 0L) {
+                    syncCurrentSessionCache()
                 }
             }
 
@@ -1026,8 +1119,8 @@ class AppViewModel(
         closeWebSocket("session expired")
         repository.clearLastActiveSession()
         lastBackgroundAtMs = null
-        resetScrollbackBuffer()
-        liveSnapshot = null
+        clearSessionCaches()
+        resetCurrentSessionState()
         _state.update {
             it.copy(
                 loggedIn = false,
@@ -1247,8 +1340,7 @@ class AppViewModel(
         stopWallPoll(resetCursor = true)
         closeWebSocket("session expired")
         repository.clearLastActiveSession()
-        resetScrollbackBuffer()
-        liveSnapshot = null
+        resetCurrentSessionState()
         _state.update {
             it.copy(
                 sessions = emptyList(),

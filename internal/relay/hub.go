@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"pkt.systems/pslog"
 
 	"github.com/coder/websocket"
+	"google.golang.org/protobuf/proto"
 )
 
 // Role identifies a connection role.
@@ -55,7 +57,12 @@ type sessionState struct {
 	cols          int
 	rows          int
 	seq           uint64
+	history       []*protocolpb.Frame
+	historyBytes  int
+	replayMu      sync.RWMutex
 }
+
+const maxReplayHistoryBytes = 4 * 1024 * 1024
 
 // NewHub constructs a Hub.
 func NewHub(logger pslog.Logger) *Hub {
@@ -244,11 +251,15 @@ func (h *Hub) HandleHostFrame(ctx context.Context, conn connection, frame *proto
 	}
 	state.seq++
 	frame.Seq = state.seq
+	h.recordFrameLocked(state, frame)
 	clients := make([]connection, 0, len(state.clients))
 	for _, client := range state.clients {
 		clients = append(clients, client)
 	}
 	h.mu.Unlock()
+
+	state.replayMu.RLock()
+	defer state.replayMu.RUnlock()
 	h.logger.Trace("relay.hub.host.frame", "session", conn.SessionID(), "seq", frame.Seq, "clients", len(clients))
 
 	for _, client := range clients {
@@ -277,6 +288,7 @@ func (h *Hub) BroadcastSessionFrame(ctx context.Context, sessionID string, frame
 	state.seq++
 	frame.SessionId = sessionID
 	frame.Seq = state.seq
+	h.recordFrameLocked(state, frame)
 	host := state.host
 	clients := make([]connection, 0, len(state.clients))
 	for _, client := range state.clients {
@@ -284,6 +296,8 @@ func (h *Hub) BroadcastSessionFrame(ctx context.Context, sessionID string, frame
 	}
 	h.mu.Unlock()
 
+	state.replayMu.RLock()
+	defer state.replayMu.RUnlock()
 	sent := false
 	for _, client := range clients {
 		if err := client.Send(ctx, frame); err != nil {
@@ -331,6 +345,21 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 		return fmt.Errorf("no host connected")
 	}
 	if frame.GetHello() != nil {
+		lastSeq := frame.GetHello().GetLastSeq()
+		if ok, replay := h.replaySinceLocked(state, lastSeq); ok {
+			state.replayMu.Lock()
+			h.mu.Unlock()
+			defer state.replayMu.Unlock()
+			for _, replayFrame := range replay {
+				if err := conn.Send(ctx, replayFrame); err != nil {
+					if !isExpectedSendError(err) {
+						h.logger.Debug("relay.client.replay.failed", "err", err)
+					}
+					return nil
+				}
+			}
+			return nil
+		}
 		host := state.host
 		h.mu.Unlock()
 		h.logger.Trace("relay.hub.client.hello", "session", conn.SessionID(), "conn", conn.ID())
@@ -390,6 +419,56 @@ func (h *Hub) session(sessionID string) *sessionState {
 	}
 	h.sessions[sessionID] = state
 	return state
+}
+
+func (h *Hub) recordFrameLocked(state *sessionState, frame *protocolpb.Frame) {
+	if state == nil || frame == nil || frame.Seq == 0 {
+		return
+	}
+	clone := proto.Clone(frame)
+	next, ok := clone.(*protocolpb.Frame)
+	if !ok || next == nil {
+		return
+	}
+	state.history = append(state.history, next)
+	state.historyBytes += proto.Size(next)
+	for state.historyBytes > maxReplayHistoryBytes && len(state.history) > 1 {
+		removed := state.history[0]
+		state.history = state.history[1:]
+		state.historyBytes -= proto.Size(removed)
+	}
+	if state.historyBytes < 0 {
+		state.historyBytes = 0
+	}
+}
+
+func (h *Hub) replaySinceLocked(state *sessionState, lastSeq uint64) (bool, []*protocolpb.Frame) {
+	if state == nil || lastSeq == 0 || len(state.history) == 0 {
+		return false, nil
+	}
+	if lastSeq > state.seq {
+		return false, nil
+	}
+	firstSeq := state.history[0].Seq
+	if lastSeq+1 < firstSeq {
+		return false, nil
+	}
+	idx := sort.Search(len(state.history), func(i int) bool {
+		return state.history[i].Seq > lastSeq
+	})
+	if idx >= len(state.history) {
+		return true, nil
+	}
+	replay := make([]*protocolpb.Frame, 0, len(state.history)-idx)
+	for _, frame := range state.history[idx:] {
+		clone := proto.Clone(frame)
+		next, ok := clone.(*protocolpb.Frame)
+		if !ok || next == nil {
+			continue
+		}
+		replay = append(replay, next)
+	}
+	return true, replay
 }
 
 func isExpectedSendError(err error) bool {

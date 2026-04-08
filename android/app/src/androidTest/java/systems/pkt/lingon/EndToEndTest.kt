@@ -217,23 +217,17 @@ class EndToEndTest {
         assertTerminalResponsive()
 
         val sessionId = activeSessionId()
-        val echoInitial = listOf(
+        val expectedSequence = arrayOf(
             "ECHO_${sessionId} 66",
             "ECHO_${sessionId} 6f",
             "ECHO_${sessionId} 6f",
-        )
-        val echoDelete = listOf(
             "ECHO_${sessionId} 7f",
             "ECHO_${sessionId} 7f",
             "ECHO_${sessionId} 7f",
-        )
-        val echoReplacement = listOf(
             "ECHO_${sessionId} 62",
             "ECHO_${sessionId} 61",
             "ECHO_${sessionId} 72",
         )
-        val initialSequence = echoInitial.toTypedArray()
-        val expectedSequence = (echoInitial + echoDelete + echoReplacement).toTypedArray()
         val connection = terminalInputConnection()
 
         composeRule.runOnIdle {
@@ -242,9 +236,13 @@ class EndToEndTest {
             assertTrue(connection.commitText("bar", 1))
         }
 
-        waitUntilNoError(10_000L) { hostEchoLogContainsSequence(*initialSequence) }
-        waitUntilNoError(10_000L) { hostEchoLogContainsSequence(*expectedSequence) }
-        waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sessionId} 62") }
+        sendTerminalEnterWithFallback()
+        waitUntilNoError(20_000L) { snapshotContainsSequence(*expectedSequence) }
+        waitUntilNoError(5_000L) {
+            val cr = "ECHO_${sessionId} 0d"
+            val lf = "ECHO_${sessionId} 0a"
+            snapshotContainsToken(cr) || snapshotContainsToken(lf)
+        }
     }
 
     @Test
@@ -938,6 +936,34 @@ class EndToEndTest {
         return count
     }
 
+    private fun snapshotContainsSequence(vararg tokens: String): Boolean {
+        var found = false
+        composeRule.runOnIdle {
+            val snap = appViewModel().state.value.activeSnapshot
+            if (snap == null || snap.rows <= 0 || snap.cols <= 0) {
+                found = false
+                return@runOnIdle
+            }
+            val text = buildString {
+                for (row in 0 until snap.rows) {
+                    if (row > 0) append('\n')
+                    append(snapshotRow(snap, row))
+                }
+            }
+            var cursor = 0
+            for (token in tokens) {
+                val index = text.indexOf(token, cursor)
+                if (index < 0) {
+                    found = false
+                    return@runOnIdle
+                }
+                cursor = index + token.length
+            }
+            found = true
+        }
+        return found
+    }
+
     private fun snapshotRow(snapshot: systems.pkt.lingon.terminal.TerminalSnapshot, row: Int): String {
         if (row < 0 || row >= snapshot.rows) return ""
         val sb = StringBuilder()
@@ -1363,40 +1389,6 @@ class EndToEndTest {
         } finally {
             connection.disconnect()
         }
-    }
-
-    private fun fetchHostEchoLog(): String {
-        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/echo-log")
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 5_000
-            readTimeout = 5_000
-        }
-        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
-            val sslContext = trustContextFor(testConfig.caPem)
-            connection.sslSocketFactory = sslContext.socketFactory
-        }
-        try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                throw AssertionError("harness echo-log failed with HTTP ${connection.responseCode}")
-            }
-            return connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun hostEchoLogContainsSequence(vararg tokens: String): Boolean {
-        val log = fetchHostEchoLog()
-        var cursor = 0
-        for (token in tokens) {
-            val index = log.indexOf(token, cursor)
-            if (index < 0) {
-                return false
-            }
-            cursor = index + token.length
-        }
-        return true
     }
 
     private fun trustContextFor(caPem: String): javax.net.ssl.SSLContext {

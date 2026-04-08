@@ -36,6 +36,10 @@ import systems.pkt.lingon.data.relay.RelayWallEventsPage
 import systems.pkt.lingon.data.certs.TrustedCert
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.data.certs.CertificateStore
+import systems.pkt.lingon.protocol.Diff
+import systems.pkt.lingon.protocol.Frame
+import systems.pkt.lingon.protocol.Snapshot
+import systems.pkt.lingon.protocol.Welcome
 import systems.pkt.lingon.protocol.ScrollbackRow
 import systems.pkt.lingon.terminal.TerminalSnapshot
 import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
@@ -91,6 +95,122 @@ class AppViewModelTest {
 
         val after = viewModel.state.value.activeSnapshot
         assertSame(before, after)
+    }
+
+    @Test
+    fun selectSessionRestoresPerSessionCacheAndLastSeq() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient { options, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            when (options.sessionId) {
+                "alpha" -> {
+                    if (options.lastSeq == 0L) {
+                        listener.onFrame(socket, snapshotFrame(1, "alpha-1"))
+                        listener.onFrame(socket, diffFrame(2, "alpha-2"))
+                    }
+                }
+                "beta" -> {
+                    listener.onFrame(socket, snapshotFrame(1, "beta-1"))
+                }
+            }
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "alpha", name = "Alpha", status = "active"),
+                    RelaySession(id = "beta", name = "Beta", status = "active"),
+                ),
+                activeSessionId = "alpha",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("alpha")
+        advanceUntilIdle()
+        assertEquals(1, wsClient.connectCount)
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
+        assertEquals(2L, viewModel.state.value.lastFrameSeq)
+
+        viewModel.selectSession("beta")
+        advanceUntilIdle()
+        assertEquals(2, wsClient.connectCount)
+        assertNull(viewModel.state.value.activeSnapshot)
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("beta-1", viewModel.state.value.activeSnapshot?.title)
+        assertEquals(1L, viewModel.state.value.lastFrameSeq)
+
+        viewModel.selectSession("alpha")
+        advanceUntilIdle()
+        assertEquals(3, wsClient.connectCount)
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("alpha", wsClient.lastConnectOptions?.sessionId)
+        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
+    }
+
+    @Test
+    fun selectSessionWithCacheRestoresImmediatelyBeforeReconnect() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient { options, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            when (options.sessionId) {
+                "alpha" -> {
+                    if (options.lastSeq == 0L) {
+                        listener.onFrame(socket, snapshotFrame(1, "alpha-1"))
+                        listener.onFrame(socket, diffFrame(2, "alpha-2"))
+                    }
+                }
+            }
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "alpha", name = "Alpha", status = "active"),
+                    RelaySession(id = "beta", name = "Beta", status = "active"),
+                ),
+                activeSessionId = "alpha",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("alpha")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
+
+        viewModel.selectSession("beta")
+        advanceUntilIdle()
+        assertNull(viewModel.state.value.activeSnapshot)
+
+        viewModel.selectSession("alpha")
+        advanceUntilIdle()
+        assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
+        assertEquals(2L, viewModel.state.value.lastFrameSeq)
     }
 
     @Test
@@ -644,13 +764,16 @@ private class FakeRepository(
     }
 }
 
-private class FakeWsClient : RelayWebSocketClient(
+private class FakeWsClient(
+    private val onConnect: (ConnectOptions, Listener, WebSocket) -> Unit = { _, _, _ -> },
+) : RelayWebSocketClient(
     testHttpClientProvider(),
 ) {
     var connectCount: Int = 0
     var lastConnectOptions: ConnectOptions? = null
     var lastSentBytes: ByteArray? = null
     var closeCount: Int = 0
+    private var pendingConnect: ((WebSocket) -> Unit)? = null
     val fakeSocket: WebSocket = object : WebSocket {
         override fun request(): okhttp3.Request = okhttp3.Request.Builder().url("https://localhost/").build()
         override fun queueSize(): Long = 0
@@ -666,7 +789,14 @@ private class FakeWsClient : RelayWebSocketClient(
     override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
         connectCount += 1
         lastConnectOptions = options
+        pendingConnect = { socket -> onConnect(options, listener, socket) }
         return fakeSocket
+    }
+
+    fun fireConnect() {
+        val callback = pendingConnect ?: return
+        pendingConnect = null
+        callback(fakeSocket)
     }
 
     override fun sendInput(webSocket: WebSocket, data: ByteArray) {
@@ -727,6 +857,44 @@ private fun setActiveConnectionForTest(viewModel: AppViewModel, sessionId: Strin
     val field = AppViewModel::class.java.getDeclaredField("activeConnection")
     field.isAccessible = true
     field.set(viewModel, key)
+}
+
+private fun welcomeFrame(): Frame {
+    return Frame.newBuilder()
+        .setWelcome(
+            Welcome.newBuilder()
+                .setGrantedControl(false)
+                .setServerCols(80)
+                .setServerRows(24)
+                .setHolderClientId("")
+                .build(),
+        )
+        .build()
+}
+
+private fun snapshotFrame(seq: Long, title: String): Frame {
+    return Frame.newBuilder()
+        .setSeq(seq)
+        .setSnapshot(
+            Snapshot.newBuilder()
+                .setCols(80)
+                .setRows(24)
+                .setCursorVisible(true)
+                .setTitle(title)
+                .build(),
+        )
+        .build()
+}
+
+private fun diffFrame(seq: Long, title: String): Frame {
+    return Frame.newBuilder()
+        .setSeq(seq)
+        .setDiff(
+            Diff.newBuilder()
+                .setTitle(title)
+                .build(),
+        )
+        .build()
 }
 
 private fun testHttpClientProvider(): HttpClientProvider {

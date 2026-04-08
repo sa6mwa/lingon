@@ -223,7 +223,6 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	}
 
 	controlPath := ensureBasePath(opts.basePath) + "/__harness/start-host"
-	echoLogPath := ensureBasePath(opts.basePath) + "/__harness/echo-log"
 	relayHandler := server.WrapBasePath(opts.basePath, relayServer.Handler())
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -250,24 +249,6 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"ids": ids})
-			return
-		case echoLogPath:
-			if r.Method != http.MethodGet {
-				w.Header().Set("Allow", http.MethodGet)
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			if path := os.Getenv("LINGON_HOST_ECHO_LOG"); path != "" {
-				data, err := os.ReadFile(path)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-				_, _ = w.Write(data)
-				return
-			}
-			http.Error(w, "echo log unavailable", http.StatusNotFound)
 			return
 		default:
 			relayHandler.ServeHTTP(w, r)
