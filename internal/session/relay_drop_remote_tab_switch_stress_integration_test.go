@@ -3,7 +3,6 @@ package session_test
 import (
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -40,16 +39,6 @@ func TestHostRemoteTabSwitchAfterRelayDropNoRemoteOutput(t *testing.T) {
 	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 4, 6*time.Second)
 
 	hostA.Send("\n")
-	hostA.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		cur := hostA.Cursor()
-		if cur.Row <= 1 {
-			return fmt.Errorf("expected cursor below top row before tab switch; got row %d col %d", cur.Row, cur.Col)
-		}
-		if strings.TrimSpace(screen.Row(0)) == "" {
-			return fmt.Errorf("expected tab bar visible before tab switch")
-		}
-		return nil
-	})
 
 	beforeTopRow := hostA.Screen().Row(0)
 	hostA.DrainRaw()

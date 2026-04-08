@@ -147,12 +147,13 @@ type Runner struct {
 	effects     *mvu.EffectScheduler
 	tabSuppress mvu.SessionTabSuppression
 
-	viewMu          sync.RWMutex
-	activeSessionID string
-	activeIsLocal   bool
-	remoteSessions  *remoteManager
-	clock           clock.Clock
-	trace           *trace.Writer
+	viewMu            sync.RWMutex
+	activeSessionID   string
+	activeIsLocal     bool
+	preferredRemoteID string
+	remoteSessions    *remoteManager
+	clock             clock.Clock
+	trace             *trace.Writer
 
 	renderCursorMu      sync.Mutex
 	renderCursorRow     int
@@ -409,7 +410,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			OnViewClosed: func(id string, err error) {
 				activeID, _ := r.activeSession()
 				if id != "" && id == activeID {
-					if r.remoteSessions != nil && r.remoteSessions.IsDisabled(id) {
+					if r.remoteSessions != nil && !r.isLocalSession(id) {
+						return
+					}
+					if r.remoteSessions != nil && (r.remoteSessions.IsDisabled(id) || r.remoteSessions.HasSession(id)) {
 						return
 					}
 					r.activateAnyLocal(stdout, stdin)
@@ -1255,7 +1259,9 @@ func (r *Runner) updateTabs(sessions []remoteSessionInfo) {
 	}
 	sources := mvu.SessionTabSourcesFrom(sessions)
 	if !mvu.SessionIDExists(sources, activeID) {
-		if localID := r.firstLocalID(); localID != "" {
+		if r.remoteSessions != nil && !r.isLocalSession(activeID) && r.remoteSessions.HasSession(activeID) {
+			// Keep the active remote tab selected while it is transiently missing.
+		} else if localID := r.firstLocalID(); localID != "" {
 			activeID = localID
 			r.setActiveSession(activeID, true)
 		}
@@ -2120,12 +2126,20 @@ func (r *Runner) handleSessionListUpdate(sessions []remoteSessionInfo, stdout, s
 	activeID, _ := r.activeSession()
 	merged := r.mergeSessions(sessions)
 	mergedSources := mvu.SessionTabSourcesFrom(merged)
-	if activeID != "" && mvu.SessionIDExists(mergedSources, activeID) {
+	r.viewMu.RLock()
+	preferredRemoteID := r.preferredRemoteID
+	r.viewMu.RUnlock()
+	if preferredRemoteID != "" && r.remoteSessions != nil {
+		if activeID != preferredRemoteID {
+			if err := r.activateRemote(r.runCtx, preferredRemoteID, stdout, stdin); err == nil {
+				return
+			}
+		}
 		r.refreshTabBar(stdout)
 		return
 	}
-	if localID := r.firstLocalID(); localID != "" {
-		r.activateLocalSession(localID, stdout, stdin)
+	if activeID != "" && mvu.SessionIDExists(mergedSources, activeID) {
+		r.refreshTabBar(stdout)
 		return
 	}
 	r.refreshTabBar(stdout)
@@ -2658,6 +2672,9 @@ func (r *Runner) switchTab(ctx context.Context, dir int, stdout, stdin *os.File)
 		return
 	}
 	if r.isLocalSession(nextID) {
+		r.viewMu.Lock()
+		r.preferredRemoteID = ""
+		r.viewMu.Unlock()
 		r.activateLocalSession(nextID, stdout, stdin)
 		return
 	}
@@ -2752,6 +2769,9 @@ func (r *Runner) activateRemote(ctx context.Context, sessionID string, stdout, s
 		return err
 	}
 	r.setActiveSession(sessionID, false)
+	r.viewMu.Lock()
+	r.preferredRemoteID = sessionID
+	r.viewMu.Unlock()
 	r.updateTabs(r.remoteSessions.Sessions())
 	r.remoteSessions.RenderClear(sessionID)
 	cols, rows := termSizeAny(stdout, stdin)

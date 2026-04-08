@@ -340,8 +340,18 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 			Cols:         uint32(cols),
 			Rows:         uint32(rows),
 			WantsControl: c.RequestControl,
+			LastSeq:      c.lastSeq,
 			ClientType:   "attach",
 		}},
+	}
+	if c.Trace != nil {
+		c.Trace.Event("hello", map[string]any{
+			"client_id": c.ClientID,
+			"last_seq":  c.lastSeq,
+		})
+	}
+	if c.Logger != nil {
+		c.Logger.Debug("attach.client.hello", "session", c.SessionID, "client", c.ClientID, "last_seq", c.lastSeq)
 	}
 	if err := c.writeFrame(ctx, ws, hello); err != nil {
 		return err
@@ -652,10 +662,11 @@ func (c *Client) SeedFrom(prev *Client) {
 	prev.renderMu.Unlock()
 	c.mu.Lock()
 	c.lastSnapshot = snap
-	c.lastSeq = 0
+	c.lastSeq = prev.lastSeq
 	c.needsResync = false
 	c.resyncRequested = false
 	c.mu.Unlock()
+	c.ClientID = prev.ClientID
 	c.renderMu.Lock()
 	c.renderCache = renderCache
 	c.renderMu.Unlock()
@@ -794,6 +805,15 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 			c.OnFrame(frame)
 		}
 		if snapshot := frame.GetSnapshot(); snapshot != nil {
+			if c.Trace != nil {
+				c.Trace.Event("frame_snapshot", map[string]any{
+					"client_id": c.ClientID,
+					"seq":       frame.Seq,
+				})
+			}
+			if c.Logger != nil {
+				c.Logger.Debug("attach.client.frame.snapshot", "session", c.SessionID, "client", c.ClientID, "seq", frame.Seq)
+			}
 			c.handleSnapshot(frame.Seq, snapshot)
 			continue
 		}
@@ -804,6 +824,15 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 			}
 			if !accept {
 				continue
+			}
+			if c.Trace != nil {
+				c.Trace.Event("frame_diff", map[string]any{
+					"client_id": c.ClientID,
+					"seq":       frame.Seq,
+				})
+			}
+			if c.Logger != nil {
+				c.Logger.Debug("attach.client.frame.diff", "session", c.SessionID, "client", c.ClientID, "seq", frame.Seq)
 			}
 			if snap := c.applyDiff(diff); snap != nil {
 				c.renderSnapshot(snap)

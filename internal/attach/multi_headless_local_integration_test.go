@@ -1253,7 +1253,7 @@ func TestMultiAttachHeadlessCtrlLLClearsAndTabBarRecovers(t *testing.T) {
 	})
 }
 
-func TestMultiAttachHeadlessSessionExitExitsWithoutWaitingOverlay(t *testing.T) {
+func TestMultiAttachHeadlessGraceExit(t *testing.T) {
 	cfgDir := t.TempDir()
 	const sessionID = "exit-local-a"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
@@ -1288,32 +1288,27 @@ func TestMultiAttachHeadlessSessionExitExitsWithoutWaitingOverlay(t *testing.T) 
 		return nil
 	})
 
-	startExit := time.Now()
 	attachSess.Send("exit\n")
-	deadline := time.Now().Add(6 * time.Second)
-	sawWaiting := false
-	done := false
+	attachSess.Eventually(2*time.Second, 120*time.Millisecond, func(screen ptytest.Screen) error {
+		if !strings.Contains(screen.Row(0), sessionID) {
+			return fmt.Errorf("expected retained session tab during grace, got %q", screen.Row(0))
+		}
+		return nil
+	})
+	if exited, err := attachSess.WaitErr(0); exited {
+		t.Fatalf("attach exited too early during grace: %v", err)
+	}
+
+	h.Advance(6 * time.Second)
+
 	var runErr error
-	for time.Now().Before(deadline) {
-		if attachSess.Screen().Contains("Waiting for sessions") {
-			sawWaiting = true
-		}
-		if ok, err := attachSess.WaitErr(25 * time.Millisecond); ok {
-			done = true
+	waitUntil(t, h.Clock(), 2*time.Second, func() bool {
+		if ok, err := attachSess.WaitErr(0); ok {
 			runErr = err
-			break
+			return true
 		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	if !done {
-		t.Fatalf("attach did not exit after headless session terminated")
-	}
-	if elapsed := time.Since(startExit); elapsed > 1500*time.Millisecond {
-		t.Fatalf("attach exit was too slow after headless shell exit: %v", elapsed)
-	}
-	if sawWaiting {
-		t.Fatalf("unexpected waiting overlay while session was gone")
-	}
+		return false
+	})
 	if runErr != nil && runErr != context.Canceled && !strings.Contains(runErr.Error(), "no sessions available") {
 		t.Fatalf("unexpected attach exit error: %v", runErr)
 	}

@@ -214,6 +214,51 @@ class AppViewModelTest {
     }
 
     @Test
+    fun transientlyMissingActiveSessionStaysVisibleDuringGracePeriod() = runTest {
+        var nowMs = 1_000L
+        var currentSessions = listOf(
+            RelaySession(id = "alpha", name = "Alpha", status = "active"),
+            RelaySession(id = "beta", name = "Beta", status = "active"),
+        )
+        val repository = FakeRepository(
+            failListSessions = false,
+            sessionProvider = { currentSessions },
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        viewModel.nowProvider = { nowMs }
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = currentSessions,
+                activeSessionId = "beta",
+                connectionState = ConnectionState.Connected,
+                shareToken = null,
+            ),
+        )
+
+        currentSessions = listOf(
+            RelaySession(id = "alpha", name = "Alpha", status = "active"),
+        )
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+
+        assertEquals("beta", viewModel.state.value.activeSessionId)
+        assertEquals(listOf("alpha", "beta"), viewModel.state.value.sessions.map { it.id })
+
+        nowMs += 6_000L
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+
+        assertEquals("alpha", viewModel.state.value.activeSessionId)
+        assertEquals(listOf("alpha"), viewModel.state.value.sessions.map { it.id })
+    }
+
+    @Test
     fun bootstrapRestoresLastActiveSessionForEndpoint() = runTest {
         val repository = FakeRepository(
             sessions = listOf(
@@ -669,6 +714,7 @@ class MainDispatcherRule : TestWatcher() {
 private class FakeRepository(
     appLockMinutes: Int = 30,
     private val sessions: List<RelaySession> = emptyList(),
+    private val sessionProvider: (() -> List<RelaySession>)? = null,
     private val failListSessions: Boolean = true,
     private val refreshAuthResult: Boolean = true,
     private val refreshAuthError: Throwable? = null,
@@ -746,7 +792,7 @@ private class FakeRepository(
         if (failListSessions) {
             throw ApiException("invalid session", 401)
         }
-        return sessions
+        return sessionProvider?.invoke() ?: sessions
     }
 
     override suspend fun listWallEvents(sinceId: Long, limit: Int): RelayWallEventsPage {

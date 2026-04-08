@@ -97,6 +97,8 @@ type MultiClient struct {
 
 var errNoSessions = errors.New("no sessions available")
 
+const missingSessionGrace = 5 * time.Second
+
 func isTerminalHostError(err error) bool {
 	if err == nil {
 		return false
@@ -132,6 +134,7 @@ type sessionView struct {
 	connectedOnce bool
 	reconnectAt   time.Time
 	reconnectGen  uint64
+	missingSince  time.Time
 	pendingOps    []pendingOp
 }
 
@@ -1330,18 +1333,45 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			waitMu.Unlock()
 		}
 		allIDs := make(map[string]struct{}, len(updated))
+		prevSessions := make(map[string]SessionInfo, len(sessions))
 		for _, s := range updated {
 			allIDs[s.ID] = struct{}{}
 		}
+		for _, s := range sessions {
+			prevSessions[s.ID] = s
+		}
+		retainedSessions := make([]SessionInfo, 0)
 		var nextActive string
 		var needsConnect bool
 		var needsActivate bool
 		var shouldExit bool
 		mu.Lock()
+		now := m.Clock.Now()
 		removed := 0
 		for id, view := range views {
 			if _, ok := allIDs[id]; ok {
+				view.missingSince = time.Time{}
 				continue
+			}
+			retainMissing := view.visible || view.connecting || view.connectedOnce
+			if retainMissing {
+				if view.missingSince.IsZero() {
+					view.missingSince = now
+				}
+				if now.Sub(view.missingSince) < missingSessionGrace {
+					if prev, ok := prevSessions[id]; ok {
+						retainedSessions = append(retainedSessions, prev)
+					} else {
+						retainedSessions = append(retainedSessions, SessionInfo{
+							ID:           id,
+							Name:         view.name,
+							Status:       "reconnecting",
+							Offline:      true,
+							LastActiveAt: now,
+						})
+					}
+					continue
+				}
 			}
 			if localSessionMode {
 				routedStatusMu.Lock()
@@ -1356,7 +1386,10 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			removed++
 			delete(views, id)
 		}
-		sessions = updated
+		sessions = append(updated, retainedSessions...)
+		if len(sessions) > 0 {
+			mvu.SortSessionsByLastActive(sessions)
+		}
 		if activeID != "" && !mvu.SessionIDExists(mvu.SessionTabSourcesFrom(sessions), activeID) {
 			activeID = m.pickActiveSession(sessions)
 		}

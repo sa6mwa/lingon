@@ -52,6 +52,7 @@ type remoteView struct {
 	cancel          context.CancelFunc
 	visible         bool
 	hiddenAt        time.Time
+	missingSince    time.Time
 	disabled        bool
 	awaiting        bool
 	running         bool
@@ -111,12 +112,15 @@ type remoteManager struct {
 	sessions     []remoteSessionInfo
 	lastNonEmpty time.Time
 	views        map[string]*remoteView
+	retained     map[string]time.Time
 	disabled     map[string]bool
 	httpClient   *http.Client
 	httpTr       *http.Transport
 }
 
 var remoteSessionsRequestTimeout = 12 * time.Second
+
+const missingSessionGrace = 5 * time.Second
 
 func newRemoteManager(opts remoteOptions) *remoteManager {
 	logger := opts.Logger
@@ -166,6 +170,7 @@ func newRemoteManager(opts remoteOptions) *remoteManager {
 		onViewClosed:    opts.OnViewClosed,
 		onOverlayChange: opts.OnOverlayChange,
 		views:           make(map[string]*remoteView),
+		retained:        make(map[string]time.Time),
 		disabled:        make(map[string]bool),
 	}
 }
@@ -317,6 +322,23 @@ func (m *remoteManager) DisabledSessions() map[string]bool {
 		return nil
 	}
 	return out
+}
+
+func (m *remoteManager) HasSession(sessionID string) bool {
+	if m == nil || sessionID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.ID == sessionID {
+			return true
+		}
+	}
+	if view := m.views[sessionID]; view != nil {
+		return true
+	}
+	return m.disabled[sessionID]
 }
 
 func (m *remoteManager) IsDisabled(sessionID string) bool {
@@ -656,9 +678,18 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 	m.mu.Lock()
 	view.ctx = ctx
 	viewRunning := view.running
+	var seedFrom *attach.Client
+	if view.client != nil && !viewRunning {
+		seedFrom = view.client
+		if view.missingSince.IsZero() {
+			view.missingSince = m.clock.Now()
+		}
+		m.retained[view.id] = view.missingSince
+		view.client = nil
+	}
 	if viewRunning {
 		view.restart = true
-		if view.client != nil && !view.client.Connected() {
+		if seedFrom != nil {
 			if view.cancel != nil {
 				view.cancel()
 			}
@@ -694,6 +725,9 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 			TokenRefresher: tokenRefresher,
 			Clock:          m.clock,
 		}
+		if seedFrom != nil {
+			client.SeedFrom(seedFrom)
+		}
 		client.OnOverlayStateChange = func() {
 			m.notifyOverlayChange(session.ID)
 		}
@@ -724,6 +758,19 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		}(view, runID)
 	}
 	m.mu.Unlock()
+	if seedFrom != nil && view.client != nil && view.visible {
+		m.clock.AfterFunc(250*time.Millisecond, func() {
+			m.mu.Lock()
+			current := m.views[view.id]
+			client := view.client
+			visible := view.visible
+			m.mu.Unlock()
+			if current != view || client == nil || !visible || !client.Connected() {
+				return
+			}
+			client.RenderCurrentFull()
+		})
+	}
 	return nil
 }
 
@@ -1039,10 +1086,15 @@ func (m *remoteManager) handleViewClosed(view *remoteView, runID uint64, err err
 			restart = true
 			view.restart = false
 			ctx = view.ctx
-		} else if view.disabled || view.awaiting {
-			view.visible = false
-			view.hiddenAt = m.clock.Now()
+		} else if view.client != nil || view.visible || view.awaiting || view.disabled || shouldRetainRemoteView(view) {
+			if view.missingSince.IsZero() {
+				view.missingSince = m.clock.Now()
+			}
+			m.retained[view.id] = view.missingSince
+			view.visible = true
+			view.hiddenAt = time.Time{}
 		} else {
+			delete(m.retained, view.id)
 			delete(m.views, view.id)
 		}
 	}
@@ -1092,39 +1144,118 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 	mvu.SortSessionsByLastActive(sessions)
 
 	m.mu.Lock()
+	now := m.clock.Now()
 	if rawCount > 0 {
-		m.lastNonEmpty = m.clock.Now()
+		m.lastNonEmpty = now
 	}
 	changed := sessionsKey(m.sessions) != sessionsKey(sessions)
-	m.sessions = sessions
-	m.dropMissingViewsLocked(sessions)
+	allIDs := make(map[string]struct{}, len(sessions))
+	prevSessions := make(map[string]remoteSessionInfo, len(m.sessions))
+	for _, session := range sessions {
+		allIDs[session.ID] = struct{}{}
+	}
+	for _, session := range m.sessions {
+		prevSessions[session.ID] = session
+	}
+	retainedSessions := make([]remoteSessionInfo, 0)
+	reconnectViews := make([]*remoteView, 0)
+	for id, view := range m.views {
+		if _, ok := allIDs[id]; ok {
+			delete(m.retained, id)
+			view.missingSince = time.Time{}
+			if view.visible && view.cancel == nil && !view.awaiting && !view.disabled && !view.running {
+				view.awaiting = true
+				reconnectViews = append(reconnectViews, view)
+			}
+			continue
+		}
+		if !shouldRetainRemoteView(view) {
+			if view.cancel != nil {
+				view.cancel()
+			}
+			delete(m.views, id)
+			delete(m.disabled, id)
+			delete(m.retained, id)
+			continue
+		}
+		if view.missingSince.IsZero() {
+			view.missingSince = now
+		}
+		m.retained[id] = now
+		if now.Sub(view.missingSince) >= missingSessionGrace {
+			if view.cancel != nil {
+				view.cancel()
+			}
+			delete(m.views, id)
+			delete(m.disabled, id)
+			delete(m.retained, id)
+			continue
+		}
+		if prev, ok := prevSessions[id]; ok {
+			retainedSessions = append(retainedSessions, prev)
+		} else {
+			retainedSessions = append(retainedSessions, remoteSessionInfo{
+				ID:           id,
+				Name:         view.name,
+				Status:       "reconnecting",
+				LastActiveAt: now,
+			})
+		}
+	}
+	m.sessions = append(sessions, retainedSessions...)
+	if len(m.sessions) > 0 {
+		mvu.SortSessionsByLastActive(m.sessions)
+	}
 	callback := m.onSessions
+	nextSessions := copySessions(m.sessions)
 	m.mu.Unlock()
 
+	for _, view := range reconnectViews {
+		if view == nil || view.ctx == nil {
+			continue
+		}
+		if err := m.connectView(view.ctx, view, view.stdout, func() {
+			m.markReady(view.id)
+		}); err != nil {
+			m.logger.Debug("session.remote.reconnect.failed", "session", view.id, "err", err)
+		}
+	}
+
 	if changed && callback != nil {
-		callback(copySessions(sessions))
+		callback(nextSessions)
 	}
 }
 
-func (m *remoteManager) dropMissingViewsLocked(sessions []remoteSessionInfo) {
-	alive := make(map[string]struct{}, len(sessions))
-	for _, session := range sessions {
-		alive[session.ID] = struct{}{}
+func shouldRetainRemoteView(view *remoteView) bool {
+	if view == nil {
+		return false
 	}
-	for id, view := range m.views {
-		if _, ok := alive[id]; ok {
-			continue
-		}
-		if view.cancel != nil {
-			view.cancel()
-		}
-		delete(m.views, id)
+	return view.visible || view.awaiting || view.running || view.client != nil || view.disabled
+}
+
+func (m *remoteManager) IsRetained(sessionID string) bool {
+	if m == nil || sessionID == "" {
+		return false
 	}
-	for id := range m.disabled {
-		if _, ok := alive[id]; !ok {
-			delete(m.disabled, id)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if retainedAt, ok := m.retained[sessionID]; ok {
+		if m.clock.Now().Sub(retainedAt) < missingSessionGrace {
+			return true
 		}
+		delete(m.retained, sessionID)
 	}
+	view := m.views[sessionID]
+	if view == nil {
+		return false
+	}
+	if shouldRetainRemoteView(view) {
+		return true
+	}
+	if view.missingSince.IsZero() {
+		return false
+	}
+	return m.clock.Now().Sub(view.missingSince) < missingSessionGrace
 }
 
 func (m *remoteManager) fetchSessions(ctx context.Context, httpURL string) ([]remoteSessionInfo, error) {

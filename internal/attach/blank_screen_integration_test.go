@@ -425,20 +425,27 @@ func TestAttachActiveSessionExitActivatesNext(t *testing.T) {
 		},
 	})
 
-	currentActive := waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
+	_ = waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
 	attachSess.Send("echo ACTIVE_SESSION_BEFORE\n")
 	if !screenContainsWithin(attachSess, "ACTIVE_SESSION_BEFORE", 3*time.Second) {
 		t.Fatalf("expected attach output before active exit")
 	}
 
 	host.SendBytes([]byte{0x04})
-	waitForSessionRemovalByID(t, h.Clock(), h.Endpoint(), h.AccessToken(), thirdID, 5*time.Second)
-	waitForSessionCount(t, h.Clock(), h.Endpoint(), h.AccessToken(), 2, 5*time.Second)
-	currentActive = waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, currentActive, 3*time.Second)
-	if currentActive != secondID {
-		t.Fatalf("expected active session %q after exit, got %q", secondID, currentActive)
+	h.Advance(1 * time.Second)
+	activeMu.Lock()
+	currentActive := activeID
+	activeMu.Unlock()
+	if currentActive != thirdID {
+		t.Fatalf("expected active session %q to remain during grace, got %q", thirdID, currentActive)
 	}
 
+	waitForSessionRemovalByID(t, h.Clock(), h.Endpoint(), h.AccessToken(), thirdID, 10*time.Second)
+	waitForSessionCount(t, h.Clock(), h.Endpoint(), h.AccessToken(), 2, 10*time.Second)
+	h.Advance(6 * time.Second)
+
+	attachSess.SendCtrlL()
+	attachSess.Send("n")
 	attachSess.Send("echo ACTIVE_SESSION_AFTER\n")
 	if !screenContainsWithin(attachSess, "ACTIVE_SESSION_AFTER", 3*time.Second) {
 		t.Fatalf("expected attach output after active exit")

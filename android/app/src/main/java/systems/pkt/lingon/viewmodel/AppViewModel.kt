@@ -67,8 +67,12 @@ class AppViewModel(
     private var scrollbackOffset = 0
     private val scrollbackLimit = DefaultScrollbackLines
     private val sessionCaches = LinkedHashMap<String, SessionCache>()
+    private val sessionListCache = LinkedHashMap<String, RelaySession>()
+    private val missingSessionSinceMs = LinkedHashMap<String, Long>()
     @VisibleForTesting
     internal var resizeHostOverride: Boolean? = null
+    @VisibleForTesting
+    internal var nowProvider: () -> Long = System::currentTimeMillis
     private var lastBackgroundAtMs: Long? = null
     private var appInForeground = true
     private val recentWallNotifications = LinkedHashMap<String, Long>()
@@ -540,6 +544,8 @@ class AppViewModel(
 
     private fun clearSessionCaches() {
         sessionCaches.clear()
+        sessionListCache.clear()
+        missingSessionSinceMs.clear()
     }
 
     private fun currentSessionCacheKey(): String? {
@@ -694,10 +700,32 @@ class AppViewModel(
 
     private suspend fun updateSessions(sessions: List<RelaySession>) {
         if (_state.value.shareToken != null) return
-        _state.update { it.copy(sessions = sessions) }
+        val now = nowProvider()
+        val currentActive = _state.value.activeSessionId?.trim().orEmpty()
+        val merged = LinkedHashMap<String, RelaySession>(sessions.size + 1)
+        for (session in sessions) {
+            merged[session.id] = session
+            sessionListCache[session.id] = session
+            missingSessionSinceMs.remove(session.id)
+        }
+        if (currentActive.isNotBlank() && !merged.containsKey(currentActive)) {
+            val missingSince = missingSessionSinceMs.getOrPut(currentActive) { now }
+            if (now - missingSince <= 5_000L) {
+                val cached = sessionListCache[currentActive]
+                merged[currentActive] = cached ?: RelaySession(
+                    id = currentActive,
+                    name = currentActive,
+                    status = "reconnecting",
+                )
+            } else {
+                missingSessionSinceMs.remove(currentActive)
+                sessionListCache.remove(currentActive)
+            }
+        }
+        _state.update { it.copy(sessions = merged.values.toList()) }
         syncWallPollingSchedule()
-        ensureActiveSession(sessions)
-        if (sessions.isNotEmpty()) {
+        ensureActiveSession(merged.values.toList())
+        if (merged.isNotEmpty()) {
             stopSessionPoll()
         }
     }
