@@ -59,6 +59,9 @@ func TestDefaultConfigUsesConstants(t *testing.T) {
 	if cfg.Server.Wall.InactiveAfter != DefaultWallInactiveAfterCSV {
 		t.Fatalf("Wall.InactiveAfter = %q, want %q", cfg.Server.Wall.InactiveAfter, DefaultWallInactiveAfterCSV)
 	}
+	if cfg.Server.ReplayHistoryBytes != DefaultReplayHistoryBytes {
+		t.Fatalf("Server.ReplayHistoryBytes = %d, want %d", cfg.Server.ReplayHistoryBytes, DefaultReplayHistoryBytes)
+	}
 
 	if cfg.Client.Endpoint != DefaultClientEndpoint {
 		t.Fatalf("Client.Endpoint = %q, want %q", cfg.Client.Endpoint, DefaultClientEndpoint)

@@ -27,10 +27,11 @@ func ForDir(dir string) Config {
 
 	return Config{
 		Server: ServerConfig{
-			Listen:    DefaultListenAddr,
-			DataDir:   cfgDir,
-			UsersFile: filepath.Join(cfgDir, DefaultUsersFileName),
-			BasePath:  DefaultBasePath,
+			Listen:             DefaultListenAddr,
+			DataDir:            cfgDir,
+			UsersFile:          filepath.Join(cfgDir, DefaultUsersFileName),
+			BasePath:           DefaultBasePath,
+			ReplayHistoryBytes: DefaultReplayHistoryBytes,
 			TLS: TLSConfig{
 				Mode:     DefaultTLSMode,
 				Dir:      tlsDir,

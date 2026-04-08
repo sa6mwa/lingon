@@ -62,6 +62,8 @@ const (
 	DefaultTerminalRows = config.DefaultTerminalRows
 	// DefaultScrollbackLines is the default buffered scrollback line count.
 	DefaultScrollbackLines = config.DefaultScrollbackLines
+	// DefaultReplayHistoryBytes is the default byte cap for relay replay history.
+	DefaultReplayHistoryBytes = config.DefaultReplayHistoryBytes
 	// DefaultTerminalTerm is the default TERM for the PTY session.
 	DefaultTerminalTerm = config.DefaultTerminalTerm
 	// DefaultTerminalRespawn controls default respawn behavior for local PTYs.

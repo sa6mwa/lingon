@@ -13,10 +13,11 @@ func BootstrapConfig() Config {
 
 	return Config{
 		Server: ServerConfig{
-			Listen:    DefaultListenAddr,
-			DataDir:   ".",
-			UsersFile: DefaultUsersFileName,
-			BasePath:  DefaultBasePath,
+			Listen:             DefaultListenAddr,
+			DataDir:            ".",
+			UsersFile:          DefaultUsersFileName,
+			BasePath:           DefaultBasePath,
+			ReplayHistoryBytes: DefaultReplayHistoryBytes,
 			TLS: TLSConfig{
 				Mode:     DefaultTLSMode,
 				Dir:      tlsDir,

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/pslog"
@@ -39,9 +40,10 @@ type connection interface {
 
 // Hub routes messages between host and clients.
 type Hub struct {
-	mu       sync.Mutex
-	sessions map[string]*sessionState
-	logger   pslog.Logger
+	mu                 sync.Mutex
+	sessions           map[string]*sessionState
+	logger             pslog.Logger
+	replayHistoryBytes int
 }
 
 var errHostSessionClosed = errors.New("host session closed")
@@ -62,17 +64,29 @@ type sessionState struct {
 	replayMu      sync.RWMutex
 }
 
-const maxReplayHistoryBytes = 4 * 1024 * 1024
-
 // NewHub constructs a Hub.
 func NewHub(logger pslog.Logger) *Hub {
 	if logger == nil {
 		logger = logging.Default()
 	}
 	return &Hub{
-		sessions: make(map[string]*sessionState),
-		logger:   logger,
+		sessions:           make(map[string]*sessionState),
+		logger:             logger,
+		replayHistoryBytes: config.DefaultReplayHistoryBytes,
 	}
+}
+
+// SetReplayHistoryBytes updates the maximum replay history size in bytes.
+func (h *Hub) SetReplayHistoryBytes(limit int) {
+	if h == nil {
+		return
+	}
+	if limit <= 0 {
+		limit = config.DefaultReplayHistoryBytes
+	}
+	h.mu.Lock()
+	h.replayHistoryBytes = limit
+	h.mu.Unlock()
 }
 
 // RegisterHost registers a host connection for a session.
@@ -432,7 +446,7 @@ func (h *Hub) recordFrameLocked(state *sessionState, frame *protocolpb.Frame) {
 	}
 	state.history = append(state.history, next)
 	state.historyBytes += proto.Size(next)
-	for state.historyBytes > maxReplayHistoryBytes && len(state.history) > 1 {
+	for state.historyBytes > h.replayHistoryBytes && len(state.history) > 1 {
 		removed := state.history[0]
 		state.history = state.history[1:]
 		state.historyBytes -= proto.Size(removed)

@@ -62,6 +62,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 
 	auth := relay.NewAuthenticator(users)
 	hub := relay.NewHub(logger)
+	hub.SetReplayHistoryBytes(cfg.Server.ReplayHistoryBytes)
 	relayServer := relay.NewHTTPServer(store, users, auth, logger, hub)
 	relayServer.DataDir = cfg.Server.DataDir
 	relayServer.UsersFile = cfg.Server.UsersFile

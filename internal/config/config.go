@@ -17,14 +17,15 @@ type Config struct {
 
 // ServerConfig configures the relay/server mode.
 type ServerConfig struct {
-	Listen       string          `mapstructure:"listen" yaml:"listen"`
-	DataDir      string          `mapstructure:"data_dir" yaml:"data_dir"`
-	UsersFile    string          `mapstructure:"users_file" yaml:"users_file"`
-	BasePath     string          `mapstructure:"base" yaml:"base"`
-	TLS          TLSConfig       `mapstructure:"tls" yaml:"tls"`
-	WebUI        WebUIConfig     `mapstructure:"webui" yaml:"webui"`
-	Wall         WallConfig      `mapstructure:"wall" yaml:"wall"`
-	ConnectLimit ConnectLimitCfg `mapstructure:"connect_limit" yaml:"connect_limit"`
+	Listen             string          `mapstructure:"listen" yaml:"listen"`
+	DataDir            string          `mapstructure:"data_dir" yaml:"data_dir"`
+	UsersFile          string          `mapstructure:"users_file" yaml:"users_file"`
+	BasePath           string          `mapstructure:"base" yaml:"base"`
+	ReplayHistoryBytes int             `mapstructure:"replay_history_bytes" yaml:"replay_history_bytes"`
+	TLS                TLSConfig       `mapstructure:"tls" yaml:"tls"`
+	WebUI              WebUIConfig     `mapstructure:"webui" yaml:"webui"`
+	Wall               WallConfig      `mapstructure:"wall" yaml:"wall"`
+	ConnectLimit       ConnectLimitCfg `mapstructure:"connect_limit" yaml:"connect_limit"`
 }
 
 // WebUIConfig configures web UI behavior.

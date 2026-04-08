@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/proto"
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/protocolpb"
 )
 
@@ -141,6 +142,9 @@ func TestHubBroadcastFromHost(t *testing.T) {
 
 func TestHubBroadcastSessionFrame(t *testing.T) {
 	hub := NewHub(nil)
+	if got := hub.replayHistoryBytes; got != config.DefaultReplayHistoryBytes {
+		t.Fatalf("default replayHistoryBytes = %d, want %d", got, config.DefaultReplayHistoryBytes)
+	}
 	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
 	hub.RegisterHost(host, "s1", 80, 24)
 	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
@@ -158,6 +162,34 @@ func TestHubBroadcastSessionFrame(t *testing.T) {
 	}
 	if client.sent[0].Seq == 0 || host.sent[0].Seq == 0 {
 		t.Fatalf("expected assigned frame sequence")
+	}
+}
+
+func TestHubReplayHistoryBytesSetterTrimsHistory(t *testing.T) {
+	hub := NewHub(nil)
+	hub.SetReplayHistoryBytes(1)
+
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), host, hostSnapshotFrame("alpha")); err != nil {
+		t.Fatalf("HandleHostFrame(snapshot): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("beta")); err != nil {
+		t.Fatalf("HandleHostFrame(diff): %v", err)
+	}
+
+	state := hub.session("s1")
+	if state == nil {
+		t.Fatal("expected session state")
+	}
+	if got := hub.replayHistoryBytes; got != 1 {
+		t.Fatalf("replayHistoryBytes = %d, want 1", got)
+	}
+	if len(state.history) != 1 {
+		t.Fatalf("history length = %d, want 1 after trim", len(state.history))
 	}
 }
 

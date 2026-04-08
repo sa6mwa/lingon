@@ -34,6 +34,8 @@ const (
 	DefaultTerminalRows = 24
 	// DefaultScrollbackLines is the default buffered scrollback line count.
 	DefaultScrollbackLines = 5000
+	// DefaultReplayHistoryBytes is the default byte cap for relay replay history.
+	DefaultReplayHistoryBytes = 512 * 1024
 	// DefaultWSReadLimit is the maximum websocket frame size to accept.
 	DefaultWSReadLimit = 1 << 20
 	// DefaultTerminalTerm is the fallback TERM for the PTY session.
