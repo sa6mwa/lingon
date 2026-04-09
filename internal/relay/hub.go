@@ -116,18 +116,44 @@ func (h *Hub) registerHost(conn connection, sessionID string, cols, rows int) co
 
 // RegisterClient registers a client for a session.
 func (h *Hub) RegisterClient(conn connection, sessionID, clientID string, wantsControl bool) (bool, string, int, int) {
+	_, granted, holder, cols, rows := h.registerClient(conn, sessionID, clientID, wantsControl)
+	return granted, holder, cols, rows
+}
+
+// registerClient registers a client for a session.
+// If another client with the same clientID is already present, it is replaced and returned.
+func (h *Hub) registerClient(conn connection, sessionID, clientID string, wantsControl bool) (connection, bool, string, int, int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	state := h.session(sessionID)
-	state.clients[conn.ID()] = conn
+	var replaced connection
+	var replacedConnID string
 	if clientID == "" {
 		clientID = conn.ID()
 	}
+	for existingConnID, existingClientID := range state.clientIDs {
+		if existingClientID != clientID || existingConnID == conn.ID() {
+			continue
+		}
+		if existing, ok := state.clients[existingConnID]; ok {
+			replaced = existing
+			replacedConnID = existingConnID
+			delete(state.clients, existingConnID)
+			delete(state.clientIDs, existingConnID)
+			break
+		}
+	}
+	var replacedWasController bool
+	if replacedConnID != "" && state.controller == replacedConnID {
+		replacedWasController = true
+		state.controller = ""
+	}
+	state.clients[conn.ID()] = conn
 	state.clientIDs[conn.ID()] = clientID
 	state.seenClientIDs[clientID] = struct{}{}
 	granted := false
-	if wantsControl && conn.Scope() == ShareScopeControl {
+	if conn.Scope() == ShareScopeControl && (wantsControl || replacedWasController) {
 		state.controller = conn.ID()
 		granted = true
 	}
@@ -143,7 +169,7 @@ func (h *Hub) RegisterClient(conn connection, sessionID, clientID string, wantsC
 		"wants_control", wantsControl,
 		"granted", granted,
 	)
-	return granted, holderID, state.cols, state.rows
+	return replaced, granted, holderID, state.cols, state.rows
 }
 
 // HasClientID reports whether a client ID is already registered for a session.

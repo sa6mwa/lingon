@@ -1176,7 +1176,7 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	ws.sessionID = sessionID
 	clientID := frame.GetHello().ClientId
 	reconnected := s.Hub.HasClientID(sessionID, clientID)
-	granted, holder, cols, rows := s.Hub.RegisterClient(ws, sessionID, clientID, frame.GetHello().WantsControl)
+	replacedClient, granted, holder, cols, rows := s.Hub.registerClient(ws, sessionID, clientID, frame.GetHello().WantsControl)
 	if !s.Hub.HasHost(sessionID) {
 		_ = ws.SendImmediate(ctx, frameError("no host connected"))
 		return
@@ -1186,6 +1186,15 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		s.Hub.BroadcastControl(ctx, sessionID)
 	}
 	_ = s.Hub.HandleClientFrame(ctx, ws, frame)
+	if replacedClient != nil {
+		rejected := frameErrorSessionRejected("superseded by reconnect")
+		if replacedWS, ok := replacedClient.(*wsConn); ok {
+			_ = replacedWS.SendImmediate(context.Background(), rejected)
+		} else {
+			_ = replacedClient.Send(context.Background(), rejected)
+		}
+		_ = replacedClient.Close(context.Background(), "superseded by reconnect")
+	}
 	logger.Info("relay.client.connect.done", "session", sessionID, "client", clientID, "reconnected", reconnected, "ip", remoteIP)
 
 	streamCtx, cancelStream := context.WithCancel(ctx)

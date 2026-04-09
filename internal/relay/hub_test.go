@@ -120,6 +120,50 @@ func TestHubViewOnlyDeniedCommand(t *testing.T) {
 	}
 }
 
+func TestHubRegisterClientReplacesSameClientID(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	oldConn := &fakeConn{id: "conn-old", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	granted, holder, _, _ := hub.RegisterClient(oldConn, "s1", "android-1", true)
+	if !granted {
+		t.Fatalf("expected initial client to be granted control")
+	}
+	if holder != "android-1" {
+		t.Fatalf("holder = %q, want android-1", holder)
+	}
+	if got := hub.ClientCount("s1"); got != 1 {
+		t.Fatalf("client count = %d, want 1", got)
+	}
+	if oldConn.closed != 0 {
+		t.Fatalf("old connection should remain open before reconnect, closed=%d", oldConn.closed)
+	}
+
+	newConn := &fakeConn{id: "conn-new", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	granted, holder, _, _ = hub.RegisterClient(newConn, "s1", "android-1", true)
+	if !granted {
+		t.Fatalf("expected reconnecting client to be granted control")
+	}
+	if holder != "android-1" {
+		t.Fatalf("holder = %q, want android-1", holder)
+	}
+	if got := hub.ClientCount("s1"); got != 1 {
+		t.Fatalf("client count = %d, want 1 after reconnect replace", got)
+	}
+	if !hub.HasClientID("s1", "android-1") {
+		t.Fatalf("expected client ID to remain registered")
+	}
+	if oldConn.closed != 0 {
+		t.Fatalf("RegisterClient should not close the replaced client directly; closed=%d", oldConn.closed)
+	}
+	if got := hub.ControllerID("s1"); got != "android-1" {
+		t.Fatalf("controller = %q, want android-1", got)
+	}
+}
+
 func TestHubBroadcastFromHost(t *testing.T) {
 	hub := NewHub(nil)
 	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
