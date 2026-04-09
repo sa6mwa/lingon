@@ -1,6 +1,7 @@
 package systems.pkt.lingon
 
 import android.Manifest
+import android.view.KeyEvent
 import androidx.test.rule.GrantPermissionRule
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -9,8 +10,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performImeAction
-import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
@@ -24,8 +23,6 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputConnection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -184,31 +181,7 @@ class EndToEndTest {
     }
 
     @Test
-    fun ime_composing_delete_replaces_remote_command() {
-        setEndpoint(testConfig.endpoint)
-        ensureLoggedOut()
-
-        loginWithConfiguredUser()
-        waitForTagNoError(TestTags.TerminalInput)
-        assertTerminalResponsive()
-
-        val sessionId = activeSessionId()
-        val echoInserted = "ECHO_${sessionId} 61"
-        val echoBackspace = "ECHO_${sessionId} 7f"
-        val connection = terminalInputConnection()
-
-        composeRule.runOnIdle {
-            assertTrue(connection.setComposingText("ab", 1))
-            assertTrue(connection.deleteSurroundingText(1, 0))
-            assertTrue(connection.commitText("a", 1))
-        }
-
-        waitUntilNoError(5_000L) { snapshotContainsToken(echoInserted) }
-        waitUntilNoError(2_000L) { !snapshotContainsToken(echoBackspace) }
-    }
-
-    @Test
-    fun ime_replacement_commit_replaces_remote_command() {
+    fun keyboard_input_backspace_updates_remote_session() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
 
@@ -222,21 +195,16 @@ class EndToEndTest {
             "ECHO_${sessionId} 6f",
             "ECHO_${sessionId} 6f",
             "ECHO_${sessionId} 7f",
-            "ECHO_${sessionId} 7f",
-            "ECHO_${sessionId} 7f",
             "ECHO_${sessionId} 62",
             "ECHO_${sessionId} 61",
             "ECHO_${sessionId} 72",
         )
-        val connection = terminalInputConnection()
 
-        composeRule.runOnIdle {
-            assertTrue(connection.commitText("foo", 1))
-            assertTrue(connection.setSelection(0, 3))
-            assertTrue(connection.commitText("bar", 1))
-        }
+        sendTerminalInput("foo")
+        sendTerminalBackspace()
+        sendTerminalInput("bar")
+        sendTerminalEnter()
 
-        sendTerminalEnterWithFallback()
         waitUntilNoError(20_000L) { snapshotContainsSequence(*expectedSequence) }
         waitUntilNoError(5_000L) {
             val cr = "ECHO_${sessionId} 0d"
@@ -631,7 +599,7 @@ class EndToEndTest {
 
     private fun assertTerminalResponsive(sessionId: String? = null, requireControl: Boolean = true) {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
-        val echoChar = "Z"
+        val echoChar = "z"
         val echoHex = echoChar[0].code.toString(16).padStart(2, '0')
         val effectiveSessionId = sessionId ?: activeSessionId()
         if (requireControl) {
@@ -645,7 +613,7 @@ class EndToEndTest {
         val expected = "ECHO_${effectiveSessionId} $echoHex"
         var echoed = false
         repeat(3) {
-            sendTerminalInputWithFallback(echoChar)
+            sendTerminalInput(echoChar)
             val success = runCatching {
                 waitUntilNoError(5_000L) { snapshotContainsToken(expected) }
             }.isSuccess
@@ -663,7 +631,7 @@ class EndToEndTest {
         val newlineEchoLf = "ECHO_${effectiveSessionId} 0a"
         var newlineEchoed = false
         repeat(2) {
-            sendTerminalEnterWithFallback()
+            sendTerminalEnter()
             val success = runCatching {
                 waitUntilNoError(5_000L) {
                     snapshotContainsToken(newlineEchoCr) || snapshotContainsToken(newlineEchoLf)
@@ -687,8 +655,8 @@ class EndToEndTest {
         val echoChar = "Z"
         val echoHex = echoChar[0].code.toString(16).padStart(2, '0')
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
-        sendTerminalInputWithFallback(echoChar)
-        sendTerminalEnterWithFallback()
+        sendTerminalInput(echoChar)
+        sendTerminalEnter()
         val deadline = System.currentTimeMillis() + 1_000
         while (System.currentTimeMillis() < deadline) {
             val info = readTerminalDebugInfo()
@@ -710,30 +678,56 @@ class EndToEndTest {
         composeRule.waitForIdle()
     }
 
-    private fun sendTerminalInputWithFallback(text: String) {
-        val sentByIme = runCatching {
-            val inputNode = composeRule.onNodeWithTag(TestTags.TerminalInput, useUnmergedTree = true)
-            inputNode.performClick()
-            inputNode.performTextInput(text)
-        }.isSuccess
-        if (sentByIme) return
-
-        composeRule.runOnIdle {
-            appViewModel().sendRawInput(text)
+    private fun sendTerminalInput(text: String) {
+        focusTerminalInput()
+        text.forEach { ch ->
+            val keyCode = when (ch.lowercaseChar()) {
+                'a' -> KeyEvent.KEYCODE_A
+                'b' -> KeyEvent.KEYCODE_B
+                'c' -> KeyEvent.KEYCODE_C
+                'd' -> KeyEvent.KEYCODE_D
+                'e' -> KeyEvent.KEYCODE_E
+                'f' -> KeyEvent.KEYCODE_F
+                'g' -> KeyEvent.KEYCODE_G
+                'h' -> KeyEvent.KEYCODE_H
+                'i' -> KeyEvent.KEYCODE_I
+                'j' -> KeyEvent.KEYCODE_J
+                'k' -> KeyEvent.KEYCODE_K
+                'l' -> KeyEvent.KEYCODE_L
+                'm' -> KeyEvent.KEYCODE_M
+                'n' -> KeyEvent.KEYCODE_N
+                'o' -> KeyEvent.KEYCODE_O
+                'p' -> KeyEvent.KEYCODE_P
+                'q' -> KeyEvent.KEYCODE_Q
+                'r' -> KeyEvent.KEYCODE_R
+                's' -> KeyEvent.KEYCODE_S
+                't' -> KeyEvent.KEYCODE_T
+                'u' -> KeyEvent.KEYCODE_U
+                'v' -> KeyEvent.KEYCODE_V
+                'w' -> KeyEvent.KEYCODE_W
+                'x' -> KeyEvent.KEYCODE_X
+                'y' -> KeyEvent.KEYCODE_Y
+                'z' -> KeyEvent.KEYCODE_Z
+                ' ' -> KeyEvent.KEYCODE_SPACE
+                else -> throw IllegalArgumentException("unsupported terminal test character: $ch")
+            }
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(keyCode)
         }
     }
 
-    private fun sendTerminalEnterWithFallback() {
-        val sentByIme = runCatching {
-            composeRule
-                .onNodeWithTag(TestTags.TerminalInput, useUnmergedTree = true)
-                .performImeAction()
-        }.isSuccess
-        if (sentByIme) return
+    private fun sendTerminalEnter() {
+        focusTerminalInput()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER)
+    }
 
-        composeRule.runOnIdle {
-            appViewModel().sendRawBytes(byteArrayOf('\r'.code.toByte()))
-        }
+    private fun sendTerminalBackspace() {
+        focusTerminalInput()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DEL)
+    }
+
+    private fun focusTerminalInput() {
+        composeRule.onNodeWithTag(TestTags.TerminalInput, useUnmergedTree = true).performClick()
+        composeRule.waitForIdle()
     }
 
     private fun setEndpointViaUi(endpoint: String) {
@@ -1162,35 +1156,12 @@ class EndToEndTest {
         return findViewWithTag(root, "terminal_view")
     }
 
-    private fun terminalInputConnection(): InputConnection {
-        val inputView = findTerminalInputView()
-            ?: throw AssertionError("missing terminal input view")
-        return inputView.onCreateInputConnection(EditorInfo())
-            ?: throw AssertionError("missing terminal input connection")
-    }
-
-    private fun findTerminalInputView(): View? {
-        val root = composeRule.activity.window.decorView
-        return findViewWithClassName(root, "systems.pkt.lingon.ui.TerminalInputView")
-    }
-
     private fun findViewWithTag(view: View, tag: String): View? {
         if (tag == view.tag) return view
         if (view is android.view.ViewGroup) {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i)
                 val found = findViewWithTag(child, tag)
-                if (found != null) return found
-            }
-        }
-        return null
-    }
-
-    private fun findViewWithClassName(view: View, className: String): View? {
-        if (view.javaClass.name == className) return view
-        if (view is ViewGroup) {
-            for (i in 0 until view.childCount) {
-                val found = findViewWithClassName(view.getChildAt(i), className)
                 if (found != null) return found
             }
         }

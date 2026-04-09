@@ -123,6 +123,68 @@ func TestPublisherConnectAndServePingTimeout(t *testing.T) {
 	}
 }
 
+func TestPublisherPingLoopSkipsWhileWriteBusy(t *testing.T) {
+	oldPingInterval := publisherPingInterval
+	oldPingTimeout := publisherPingTimeout
+	publisherPingInterval = 25 * time.Millisecond
+	publisherPingTimeout = 25 * time.Millisecond
+	t.Cleanup(func() {
+		publisherPingInterval = oldPingInterval
+		publisherPingTimeout = oldPingTimeout
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	ctxDial, cancelDial := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelDial()
+	ws, _, err := websocket.Dial(ctxDial, server.URL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer func() {
+		_ = ws.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	p := NewPublisher(PublishOptions{
+		SessionID: "session",
+	})
+	p.lastActivity.Store(time.Now().Add(-time.Minute).UnixNano())
+	p.writeMu.Lock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- p.pingLoop(ctx, ws, nil)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("pingLoop returned while write busy: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	cancel()
+	p.writeMu.Unlock()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("pingLoop err = %v, want nil after cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("pingLoop did not stop after cancel")
+	}
+}
+
 func TestPublisherSessionRejectedGoesOfflineAndStopsReconnect(t *testing.T) {
 	var connects int64
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

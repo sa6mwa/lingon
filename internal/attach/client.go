@@ -42,7 +42,7 @@ import (
 	"pkt.systems/pslog"
 )
 
-const (
+var (
 	clientPingInterval = 2 * time.Second
 	clientPingTimeout  = 2 * time.Second
 )
@@ -95,6 +95,7 @@ type Client struct {
 	scrollbackView   mvu.ScrollbackViewport
 	renderMu         sync.Mutex
 	writeMu          sync.Mutex
+	lastActivity     atomic.Int64
 	stdin            io.Reader
 	stdout           io.Writer
 	stderr           io.Writer
@@ -321,6 +322,7 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		return err
 	}
 	c.ws = ws
+	c.touchActivity()
 	defer func() {
 		c.mu.Lock()
 		c.ws = nil
@@ -573,14 +575,22 @@ func (c *Client) pingLoop(ctx context.Context, ws *websocket.Conn, cancel func()
 			return
 		case <-ticker.C:
 		}
+		if c.idleFor() < clientPingInterval {
+			continue
+		}
+		if !c.writeMu.TryLock() {
+			continue
+		}
 		pingCtx, pingCancel := context.WithTimeout(ctx, clientPingTimeout)
 		err := ws.Ping(pingCtx)
 		pingCancel()
+		c.writeMu.Unlock()
 		if err != nil {
 			c.setError(err)
 			cancel()
 			return
 		}
+		c.touchActivity()
 	}
 }
 
@@ -801,6 +811,7 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 			}
 			return
 		}
+		c.touchActivity()
 		if c.OnFrame != nil {
 			c.OnFrame(frame)
 		}
@@ -1727,7 +1738,35 @@ func (c *Client) newClientID() string {
 func (c *Client) writeFrame(ctx context.Context, ws *websocket.Conn, frame *protocolpb.Frame) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return writeFrame(ctx, ws, frame)
+	if err := writeFrame(ctx, ws, frame); err != nil {
+		return err
+	}
+	c.touchActivity()
+	return nil
+}
+
+func (c *Client) touchActivity() {
+	if c == nil {
+		return
+	}
+	now := c.clock().Now()
+	c.lastActivity.Store(now.UnixNano())
+}
+
+func (c *Client) idleFor() time.Duration {
+	if c == nil {
+		return 0
+	}
+	nanos := c.lastActivity.Load()
+	if nanos <= 0 {
+		return 0
+	}
+	last := time.Unix(0, nanos)
+	now := c.clock().Now()
+	if now.After(last) {
+		return now.Sub(last)
+	}
+	return 0
 }
 
 func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {

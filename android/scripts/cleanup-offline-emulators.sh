@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ADB_BIN="${ADB:-adb}"
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
 
 if ! command -v "${ADB_BIN}" >/dev/null 2>&1; then
   echo "adb not found (set ADB=... or install platform-tools)." >&2

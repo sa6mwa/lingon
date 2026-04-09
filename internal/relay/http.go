@@ -1222,6 +1222,7 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 			}
 			return
 		}
+		ws.touchActivity()
 		frame.SessionId = ws.sessionID
 
 		switch ws.role {
@@ -1266,7 +1267,7 @@ func (s *HTTPServer) pingLoop(ctx context.Context, conn *wsConn) {
 			return
 		case <-ticker.C:
 			pingCtx, cancel := context.WithTimeout(ctx, wsPongTimeout)
-			if err := conn.Ping(pingCtx); err != nil && conn.logger != nil {
+			if err := conn.PingIfIdle(pingCtx, wsPingInterval); err != nil && conn.logger != nil {
 				conn.logger.Debug("relay.ws.ping.failed", "err", err)
 			}
 			cancel()

@@ -110,31 +110,12 @@ if [[ -n "${HOST_ROWS_OVERRIDE}" ]] && [[ "${HOST_ROWS_OVERRIDE}" =~ ^[0-9]+$ ]]
   HARNESS_ARGS+=("-rows" "${HOST_ROWS_OVERRIDE}")
 fi
 
+run_android_tools() {
+  (cd "${ANDROID_DIR}" && go run -buildvcs=true ./cmd/lingon-android-tools "$@")
+}
+
 read_config() {
-  python - "$CONFIG_PATH" <<'PY'
-import json,sys,urllib.parse
-cfg=json.load(open(sys.argv[1]))
-url=urllib.parse.urlparse(cfg["endpoint"])
-port=url.port
-users=cfg.get("users", [])
-user1=users[0] if len(users) > 0 else {}
-user2=users[1] if len(users) > 1 else {}
-print("ENDPOINT=%s" % cfg["endpoint"])
-print("PORT=%s" % port)
-print("USERNAME=%s" % user1.get("username", ""))
-print("PASSWORD=%s" % user1.get("password", ""))
-print("TOTP_SECRET=%s" % user1.get("totp_secret", ""))
-print("CA_PATH=%s" % cfg["ca_cert_path"])
-print("SESSIONS=%s" % ",".join(user1.get("sessions", []) or []))
-print("VIEW_TOKEN=%s" % user1.get("view_token", ""))
-print("USERNAME2=%s" % user2.get("username", ""))
-print("PASSWORD2=%s" % user2.get("password", ""))
-print("TOTP_SECRET2=%s" % user2.get("totp_secret", ""))
-print("SESSIONS2=%s" % ",".join(user2.get("sessions", []) or []))
-print("VIEW_TOKEN2=%s" % user2.get("view_token", ""))
-print("HOST_COLS=%s" % cfg.get("host_cols", ""))
-print("HOST_ROWS=%s" % cfg.get("host_rows", ""))
-PY
+  run_android_tools config-env --config "${CONFIG_PATH}"
 }
 
 start_harness() {
@@ -165,12 +146,6 @@ start_harness() {
   if [[ -n "${SESSIONS2}" ]]; then
     echo "Sessions (user2): ${SESSIONS2}"
   fi
-  CA_PEM_B64="$(python - "$CA_PATH" <<'PY'
-import base64,sys
-data=open(sys.argv[1],"rb").read()
-print(base64.b64encode(data).decode("ascii"))
-PY
-)"
 }
 
 stop_harness() {
@@ -229,25 +204,7 @@ set +e
   TEST_SRC="${ANDROID_DIR}/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt"
   TESTS=()
   if [[ -f "${TEST_SRC}" ]]; then
-    mapfile -t TESTS < <(python - "${TEST_SRC}" <<'PY'
-import sys
-tests=[]
-pending=False
-for line in open(sys.argv[1],"r",encoding="utf-8"):
-    stripped=line.strip()
-    if stripped.startswith("@Test"):
-        pending=True
-        continue
-    if pending:
-        if stripped.startswith("fun "):
-            name=stripped.split()[1].split("(")[0]
-            if name:
-                tests.append(name)
-        pending=False
-for name in tests:
-    print(name)
-PY
-    )
+    mapfile -t TESTS < <(run_android_tools test-names --file "${TEST_SRC}")
   fi
   if [[ "${#TESTS[@]}" -eq 0 ]]; then
     echo "No tests found in ${TEST_SRC}"

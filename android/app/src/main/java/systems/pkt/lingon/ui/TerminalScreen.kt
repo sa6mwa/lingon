@@ -768,8 +768,6 @@ private class TerminalInputView(
     context: Context,
 ) : View(context) {
     private val inputBuffer = Editable.Factory.getInstance().newEditable("")
-    private val sentBuffer = StringBuilder()
-    private var imeComposingActive = false
     private var onCommitTextCallback: (String) -> Unit = {}
     private var onBackspaceCallback: (Int) -> Unit = {}
     private var onEnterCallback: () -> Unit = {}
@@ -792,16 +790,9 @@ private class TerminalInputView(
             InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
             InputType.TYPE_TEXT_FLAG_MULTI_LINE
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_ACTION_NONE
-        outAttrs.initialSelStart = this@TerminalInputView.inputBuffer.length
-        outAttrs.initialSelEnd = this@TerminalInputView.inputBuffer.length
         return object : BaseInputConnection(this, true) {
             override fun getEditable(): Editable {
                 return this@TerminalInputView.inputBuffer
-            }
-
-            override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                imeComposingActive = !text.isNullOrEmpty()
-                return super.setComposingText(text, newCursorPosition)
             }
 
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
@@ -809,37 +800,28 @@ private class TerminalInputView(
                     if (BuildConfig.DEBUG) {
                         Log.d(TerminalInputLogTag, "commitText len=${text.length}")
                     }
+                    emitCommittedText(text)
                 }
-                val result = super.commitText(text, newCursorPosition)
-                imeComposingActive = false
-                syncTerminalBuffer()
-                if (text?.contains('\n') == true) {
-                    clearImeState()
-                }
-                return result
+                this@TerminalInputView.inputBuffer.clear()
+                return true
             }
 
             override fun finishComposingText(): Boolean {
-                val result = super.finishComposingText()
-                if (imeComposingActive && this@TerminalInputView.inputBuffer.isNotEmpty()) {
+                val buffer = this@TerminalInputView.inputBuffer
+                if (buffer.isNotEmpty()) {
                     if (BuildConfig.DEBUG) {
-                        Log.d(TerminalInputLogTag, "finishComposingText len=${this@TerminalInputView.inputBuffer.length}")
+                        Log.d(TerminalInputLogTag, "finishComposingText len=${buffer.length}")
                     }
-                    syncTerminalBuffer()
+                    emitCommittedText(buffer)
+                    buffer.clear()
                 }
-                imeComposingActive = false
-                return result
+                return true
             }
 
             override fun deleteSurroundingText(leftLength: Int, rightLength: Int): Boolean {
                 if (leftLength > 0 && this@TerminalInputView.inputBuffer.isNotEmpty()) {
-                    if (imeComposingActive) {
-                        return super.deleteSurroundingText(leftLength, rightLength)
-                    } else {
-                        val result = super.deleteSurroundingText(leftLength, rightLength)
-                        syncTerminalBuffer()
-                        return result
-                    }
+                    deleteFromComposingBuffer(leftLength, codePoints = false)
+                    return true
                 }
                 if (
                     shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength, rightLength) &&
@@ -853,13 +835,8 @@ private class TerminalInputView(
 
             override fun deleteSurroundingTextInCodePoints(leftLength: Int, rightLength: Int): Boolean {
                 if (leftLength > 0 && this@TerminalInputView.inputBuffer.isNotEmpty()) {
-                    if (imeComposingActive) {
-                        return super.deleteSurroundingTextInCodePoints(leftLength, rightLength)
-                    } else {
-                        val result = super.deleteSurroundingTextInCodePoints(leftLength, rightLength)
-                        syncTerminalBuffer()
-                        return result
-                    }
+                    deleteFromComposingBuffer(leftLength, codePoints = true)
+                    return true
                 }
                 if (
                     shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength, rightLength) &&
@@ -878,7 +855,7 @@ private class TerminalInputView(
                 return when (event.keyCode) {
                     AndroidKeyEvent.KEYCODE_ENTER -> {
                         onEnterCallback()
-                        clearImeState()
+                        inputBuffer.clear()
                         true
                     }
                     AndroidKeyEvent.KEYCODE_DEL -> {
@@ -962,38 +939,27 @@ private class TerminalInputView(
         }
     }
 
-    private fun syncTerminalBuffer() {
-        val visible = this@TerminalInputView.inputBuffer.toString()
-        val sent = sentBuffer.toString()
-        if (visible == sent) {
+    private fun deleteFromComposingBuffer(leftLength: Int, codePoints: Boolean) {
+        val buffer = this@TerminalInputView.inputBuffer
+        if (buffer.isEmpty() || leftLength <= 0) {
             return
         }
-        val prefixLength = commonPrefixLength(sent, visible)
-        val deleteCount = sent.length - prefixLength
-        if (deleteCount > 0) {
-            onBackspaceCallback(deleteCount)
-        }
-        val inserted = visible.substring(prefixLength)
-        if (inserted.isNotEmpty()) {
-            emitCommittedText(inserted)
-        }
-        sentBuffer.setLength(0)
-        sentBuffer.append(visible)
-    }
 
-    private fun clearImeState() {
-        this@TerminalInputView.inputBuffer.clear()
-        sentBuffer.setLength(0)
-        imeComposingActive = false
-    }
-
-    private fun commonPrefixLength(left: String, right: String): Int {
-        val limit = minOf(left.length, right.length)
-        var index = 0
-        while (index < limit && left[index] == right[index]) {
-            index++
+        val deleteCount = if (codePoints) {
+            minOf(leftLength, Character.codePointCount(buffer, 0, buffer.length))
+        } else {
+            minOf(leftLength, buffer.length)
         }
-        return index
+        if (deleteCount <= 0) {
+            return
+        }
+
+        val start = if (codePoints) {
+            Character.offsetByCodePoints(buffer, buffer.length, -deleteCount)
+        } else {
+            buffer.length - deleteCount
+        }
+        buffer.delete(start, buffer.length)
     }
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -58,9 +59,10 @@ type Publisher struct {
 	OnBackoff         func(remaining time.Duration)
 	OnSessionRejected func(message string)
 
-	mu       sync.Mutex
-	lastSnap *protocolpb.Snapshot
-	lastSent *protocolpb.Snapshot
+	mu           sync.Mutex
+	lastSnap     *protocolpb.Snapshot
+	lastSent     *protocolpb.Snapshot
+	lastActivity atomic.Int64
 
 	conn        *websocket.Conn
 	connected   bool
@@ -547,6 +549,7 @@ func (p *Publisher) setConn(ws *websocket.Conn) {
 	p.conn = ws
 	p.connected = true
 	p.mu.Unlock()
+	p.touchActivity()
 	if p.OnStatus != nil {
 		p.OnStatus(true, nil)
 	}
@@ -565,6 +568,7 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 		if err != nil {
 			return err
 		}
+		p.touchActivity()
 		if hello := frame.GetHello(); hello != nil {
 			p.sendScrollbackSnapshot()
 			p.sendSnapshot()
@@ -676,6 +680,7 @@ func (p *Publisher) sendFrame(frame *protocolpb.Frame) bool {
 		p.clearConn()
 		return false
 	}
+	p.touchActivity()
 	return true
 }
 
@@ -721,7 +726,9 @@ func (p *Publisher) SendSessionClosed(reason string) {
 	p.writeMu.Unlock()
 	if err != nil && p.Logger != nil {
 		p.Logger.Debug("host.publisher.session_closed.send.failed", "session", p.opts.SessionID, "err", err)
+		return
 	}
+	p.touchActivity()
 }
 
 // TakeControl announces that the host wants controller lease.
@@ -828,10 +835,18 @@ func (p *Publisher) pingLoop(ctx context.Context, ws *websocket.Conn, cancel con
 			return nil
 		case <-ticker.C:
 		}
+		if p.idleFor() < interval {
+			continue
+		}
+		if !p.writeMu.TryLock() {
+			continue
+		}
 		pingCtx, pingCancel := context.WithTimeout(ctx, timeout)
 		err := ws.Ping(pingCtx)
 		pingCancel()
+		p.writeMu.Unlock()
 		if err == nil {
+			p.touchActivity()
 			continue
 		}
 		_ = ws.Close(websocket.StatusInternalError, "ping timeout")
@@ -841,4 +856,29 @@ func (p *Publisher) pingLoop(ctx context.Context, ws *websocket.Conn, cancel con
 		}
 		return err
 	}
+}
+
+func (p *Publisher) touchActivity() {
+	if p == nil {
+		return
+	}
+	if p.clock == nil {
+		return
+	}
+	p.lastActivity.Store(p.clock.Now().UnixNano())
+}
+
+func (p *Publisher) idleFor() time.Duration {
+	if p == nil || p.clock == nil {
+		return 0
+	}
+	nanos := p.lastActivity.Load()
+	if nanos <= 0 {
+		return 0
+	}
+	last := time.Unix(0, nanos)
+	if now := p.clock.Now(); now.After(last) {
+		return now.Sub(last)
+	}
+	return 0
 }
