@@ -201,7 +201,13 @@ class AppViewModel(
         refreshJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
             _state.update { it.copy(isRefreshing = true, lastManualRefreshAtMs = startedAt) }
-            forceRecoverActiveConnection(refreshSessionsFirst = true)
+            val previousSuppressReconnect = suppressReconnect
+            suppressReconnect = true
+            try {
+                forceRecoverActiveConnection(refreshSessionsFirst = true)
+            } finally {
+                suppressReconnect = previousSuppressReconnect
+            }
             val elapsed = System.currentTimeMillis() - startedAt
             val minRefreshMs = 750L
             if (elapsed < minRefreshMs) {
@@ -1174,10 +1180,11 @@ class AppViewModel(
     }
 
     private fun closeWebSocket(reason: String) {
-        ws?.close(1000, reason)
+        val current = ws
         ws = null
         activeConnection = null
         syncWallPollingSchedule()
+        current?.close(1000, reason)
     }
 
     private suspend fun forceRecoverActiveConnection(refreshSessionsFirst: Boolean) {

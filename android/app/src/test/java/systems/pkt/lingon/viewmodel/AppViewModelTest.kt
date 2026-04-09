@@ -550,7 +550,10 @@ class AppViewModelTest {
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
             failListSessions = false,
         )
-        val wsClient = FakeWsClient()
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
         val viewModel = AppViewModel(repository, wsClient)
         advanceUntilIdle()
 
@@ -564,9 +567,16 @@ class AppViewModelTest {
                 connectionState = ConnectionState.Connected,
             ),
         )
-        setWebSocketForTest(viewModel, wsClient.fakeSocket)
         setActiveConnectionForTest(viewModel, "host-1", null)
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("host-1", wsClient.lastConnectOptions?.sessionId)
         wsClient.connectCount = 0
+        wsClient.closeCount = 0
 
         viewModel.manualRefresh()
         advanceUntilIdle()
@@ -827,14 +837,17 @@ private class FakeWsClient(
         override fun send(bytes: okio.ByteString): Boolean = true
         override fun close(code: Int, reason: String?): Boolean {
             closeCount += 1
+            lastListener?.onClosed(this, code, reason)
             return true
         }
         override fun cancel() {}
     }
+    private var lastListener: RelayWebSocketClient.Listener? = null
 
     override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
         connectCount += 1
         lastConnectOptions = options
+        lastListener = listener
         pendingConnect = { socket -> onConnect(options, listener, socket) }
         return fakeSocket
     }
