@@ -1699,10 +1699,7 @@ function handleFrame(view, frame) {
   }
   if (type === "wall") {
     // A single wall event is fanned out to all attached sessions.
-    // Only surface browser notification from the active view to avoid one-per-session duplicates.
-    if (view !== getActiveView()) {
-      return;
-    }
+    // Surface browser notifications for every tab that receives the wall.
     showWallNotification(data);
     return;
   }

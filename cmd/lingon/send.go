@@ -131,9 +131,13 @@ func NewSendCommand(loader *lingon.Loader) *cobra.Command {
 				}
 			}
 			if endpointValue == "" {
-				endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint, authPath)
-				if err != nil {
-					return err
+				if shareToken != "" || cmd.Flags().Changed("access-token") {
+					endpointValue = resolveConfiguredEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint)
+				} else {
+					endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint, authPath)
+					if err != nil {
+						return err
+					}
 				}
 			}
 			if endpointValue == "" {

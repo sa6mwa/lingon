@@ -84,3 +84,24 @@ func TestHandlerServesVendoredXTermAssets(t *testing.T) {
 		}
 	}
 }
+
+func TestHandlerAppJSSurfacesWallNotificationsForEveryView(t *testing.T) {
+	handler := HandlerWithOptions(Options{})
+	req := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	resp := httptest.NewRecorder()
+
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	body := resp.Body.String()
+	if strings.Contains(body, "view !== getActiveView()") {
+		t.Fatalf("expected background view wall notifications to be enabled")
+	}
+	if !strings.Contains(body, "showWallNotification(data);") {
+		t.Fatalf("expected websocket wall notifications to call showWallNotification")
+	}
+	if !strings.Contains(body, "showWallNotification({") {
+		t.Fatalf("expected wall poll notifications to still call showWallNotification")
+	}
+}

@@ -13,29 +13,38 @@ import (
 )
 
 func resolveEndpointValue(cmd *cobra.Command, loader *lingon.Loader, configuredEndpoint, flagEndpoint, authPath string) (string, error) {
+	endpointValue := resolveConfiguredEndpointValue(cmd, loader, configuredEndpoint, flagEndpoint)
+	if endpointExplicitlyConfigured(loader) && strings.TrimSpace(configuredEndpoint) != "" {
+		return endpointValue, nil
+	}
+	if !authEndpointInferenceEnabled(cmd) {
+		return endpointValue, nil
+	}
+
+	inferredEndpoint, err := inferEndpointFromAuth(authPath)
+	if err != nil {
+		return "", err
+	}
+	if inferredEndpoint != "" {
+		return inferredEndpoint, nil
+	}
+	return endpointValue, nil
+}
+
+func resolveConfiguredEndpointValue(cmd *cobra.Command, loader *lingon.Loader, configuredEndpoint, flagEndpoint string) string {
 	if cmd != nil && cmd.Flags().Changed("endpoint") {
-		return strings.TrimSpace(flagEndpoint), nil
+		return strings.TrimSpace(flagEndpoint)
 	}
 
 	configuredEndpoint = strings.TrimSpace(configuredEndpoint)
 	if endpointExplicitlyConfigured(loader) && configuredEndpoint != "" {
-		return configuredEndpoint, nil
-	}
-
-	if authEndpointInferenceEnabled(cmd) {
-		inferredEndpoint, err := inferEndpointFromAuth(authPath)
-		if err != nil {
-			return "", err
-		}
-		if inferredEndpoint != "" {
-			return inferredEndpoint, nil
-		}
+		return configuredEndpoint
 	}
 
 	if configuredEndpoint != "" {
-		return configuredEndpoint, nil
+		return configuredEndpoint
 	}
-	return lingon.DefaultClientEndpoint, nil
+	return lingon.DefaultClientEndpoint
 }
 
 func inferEndpointFromAuth(authPath string) (string, error) {

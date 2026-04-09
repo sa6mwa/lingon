@@ -173,15 +173,27 @@ func TestResolveEndpointValueIgnoresStoredAuthForExplicitTokenFlag(t *testing.T)
 	t.Setenv("HOME", home)
 
 	authPath := filepath.Join(home, ".lingon", "auth.json")
-	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
-		t.Fatalf("MkdirAll(auth dir): %v", err)
+	now := time.Now().UTC()
+	if err := lingon.SaveAuth(authPath, lingon.AuthState{
+		Endpoint:         "https://stored.example.com/v1",
+		AccessToken:      "stored-token",
+		AccessExpiresAt:  now.Add(5 * time.Minute),
+		RefreshToken:     "stored-refresh",
+		RefreshExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
 	}
-	if err := os.WriteFile(authPath, []byte("{not-json"), 0o600); err != nil {
-		t.Fatalf("WriteFile(auth): %v", err)
+
+	configPath := filepath.Join(home, ".lingon", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example.com/v1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
 	}
 
 	loader := lingon.NewLoader()
-	loader.Viper().SetDefault("client.endpoint", lingon.DefaultClientEndpoint)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().String("endpoint", lingon.DefaultClientEndpoint, "")
@@ -190,12 +202,47 @@ func TestResolveEndpointValueIgnoresStoredAuthForExplicitTokenFlag(t *testing.T)
 		t.Fatalf("Set(token): %v", err)
 	}
 
-	endpointValue, err := resolveEndpointValue(cmd, loader, lingon.DefaultClientEndpoint, lingon.DefaultClientEndpoint, authPath)
+	endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, lingon.DefaultClientEndpoint, authPath)
 	if err != nil {
 		t.Fatalf("resolveEndpointValue: %v", err)
 	}
-	if endpointValue != lingon.DefaultClientEndpoint {
-		t.Fatalf("endpointValue = %q, want %q", endpointValue, lingon.DefaultClientEndpoint)
+	if endpointValue != "https://configured.example.com/v1" {
+		t.Fatalf("endpointValue = %q, want %q", endpointValue, "https://configured.example.com/v1")
+	}
+}
+
+func TestResolveConfiguredEndpointValueIgnoresStoredAuthInference(t *testing.T) {
+	home := testutil.TempDir(t)
+	t.Setenv("HOME", home)
+
+	now := time.Now().UTC()
+	if err := lingon.SaveAuth(filepath.Join(home, ".lingon", "auth.json"), lingon.AuthState{
+		Endpoint:         "https://stored.example.com/v1",
+		AccessToken:      "stored-token",
+		AccessExpiresAt:  now.Add(5 * time.Minute),
+		RefreshToken:     "stored-refresh",
+		RefreshExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	configPath := filepath.Join(home, ".lingon", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example.com/v1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+
+	loader := lingon.NewLoader()
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("endpoint", lingon.DefaultClientEndpoint, "")
+
+	endpointValue := resolveConfiguredEndpointValue(cmd, loader, cfg.Client.Endpoint, lingon.DefaultClientEndpoint)
+	if endpointValue != "https://configured.example.com/v1" {
+		t.Fatalf("endpointValue = %q, want %q", endpointValue, "https://configured.example.com/v1")
 	}
 }
 
