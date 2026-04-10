@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -68,6 +69,7 @@ import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.terminal.TerminalGridView
 import systems.pkt.lingon.terminal.TerminalPalette
 import systems.pkt.lingon.ui.theme.LocalLingonExtraColors
+import systems.pkt.lingon.viewmodel.ConnectionState
 import systems.pkt.lingon.viewmodel.AppViewModel
 import systems.pkt.lingon.viewmodel.UiState
 import kotlin.math.abs
@@ -467,6 +469,7 @@ private fun TerminalPanel(
                 .fillMaxWidth()
                 .weight(1f),
         ) {
+            val snapshotForRender = if (state.sessionSyncing) null else state.activeSnapshot
             val hostCols = state.activeSnapshot?.cols ?: 0
             val hostRows = state.activeSnapshot?.rows ?: 0
             AndroidView(
@@ -484,7 +487,7 @@ private fun TerminalPanel(
                 },
                 update = { view ->
                     view.update(
-                        snapshot = state.activeSnapshot,
+                        snapshot = snapshotForRender,
                         fontSizeSp = state.fontSizeSp,
                         minFontSizeSp = MinTerminalFontSizeSp,
                         palette = palette,
@@ -516,6 +519,38 @@ private fun TerminalPanel(
                         .statusBarsPadding()
                         .padding(horizontal = screenPadding, vertical = screenPadding),
                 )
+            }
+            if (
+                state.sessionSyncing ||
+                state.connectionState == ConnectionState.Connecting ||
+                (state.connectionState == ConnectionState.Connected && state.lastFrameType == "welcome")
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .statusBarsPadding()
+                        .padding(horizontal = screenPadding, vertical = screenPadding),
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                    tonalElevation = 2.dp,
+                    shadowElevation = 4.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Text(
+                            text = "syncing",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
             }
             AndroidView(
                 factory = { context ->

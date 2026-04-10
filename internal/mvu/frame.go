@@ -22,6 +22,7 @@ type Resolved struct {
 	State              State
 	TabBarVisible      bool
 	ConnectionVisible  bool
+	LoadingVisible     bool
 	ScrollbackVisible  bool
 	DisconnectVisible  bool
 	HelpVisible        bool
@@ -38,6 +39,7 @@ func Resolve(state State, cursor Cursor, now time.Time, opts ResolveOptions) Res
 		resolved.ConnectionShownAt = time.Time{}
 		resolved.ConnectionExpiresAt = time.Time{}
 	}
+	loadingVisible := resolved.LoadingMessage != ""
 	if resolved.WallVisible && !resolved.WallExpiresAt.IsZero() && !now.Before(resolved.WallExpiresAt) {
 		resolved.WallVisible = false
 		resolved.WallTitle = ""
@@ -51,10 +53,18 @@ func Resolve(state State, cursor Cursor, now time.Time, opts ResolveOptions) Res
 	}
 	connectionVisible := resolved.ConnectionMessage != ""
 	scrollbackVisible := resolved.ScrollbackMessage != ""
+	disconnectVisible := resolved.DisconnectVisible && resolved.DisconnectTitle != ""
+	if disconnectVisible {
+		loadingVisible = false
+	}
+	if connectionVisible {
+		loadingVisible = false
+	}
 	tabBarVisible := resolved.TabBarVisible && len(resolved.Tabs) > 0
 	switch {
 	case scrollbackVisible:
 		tabBarVisible = false
+		loadingVisible = false
 	case opts.SuppressTabs:
 		tabBarVisible = false
 	case opts.ForceTabsVisible:
@@ -70,7 +80,6 @@ func Resolve(state State, cursor Cursor, now time.Time, opts ResolveOptions) Res
 	if scrollbackVisible {
 		connectionVisible = false
 	}
-	disconnectVisible := resolved.DisconnectVisible && resolved.DisconnectTitle != ""
 	helpVisible := resolved.HelpVisible
 	wallVisible := resolved.WallVisible && resolved.WallTitle != ""
 	resolved.TabBarVisible = tabBarVisible
@@ -79,15 +88,19 @@ func Resolve(state State, cursor Cursor, now time.Time, opts ResolveOptions) Res
 		resolved.ConnectionShownAt = time.Time{}
 		resolved.ConnectionExpiresAt = time.Time{}
 	}
+	if !loadingVisible {
+		resolved.LoadingMessage = ""
+	}
 	if !scrollbackVisible {
 		resolved.ScrollbackMessage = ""
 	}
-	topOverlayVisible := tabBarVisible || connectionVisible || scrollbackVisible
+	topOverlayVisible := tabBarVisible || connectionVisible || loadingVisible || scrollbackVisible
 	fullOverlayVisible := disconnectVisible || helpVisible || wallVisible
 	return Resolved{
 		State:              resolved,
 		TabBarVisible:      tabBarVisible,
 		ConnectionVisible:  connectionVisible,
+		LoadingVisible:     loadingVisible,
 		ScrollbackVisible:  scrollbackVisible,
 		DisconnectVisible:  disconnectVisible,
 		HelpVisible:        helpVisible,
@@ -159,6 +172,9 @@ func composeTopOverlay(buf *bytes.Buffer, cols int, cursor Cursor, resolved Reso
 			}
 		}
 		DrawBanner(buf, cols, msg, state.ConnectionStyle, state.Theme)
+	}
+	if resolved.LoadingVisible {
+		DrawBanner(buf, cols, state.LoadingMessage, BannerYellow, state.Theme)
 	}
 	if resolved.ScrollbackVisible {
 		msg := state.ScrollbackMessage

@@ -44,6 +44,8 @@ const (
 	StatusConnected
 	// StatusError shows a temporary error banner.
 	StatusError
+	// StatusLoading shows a persistent loading banner.
+	StatusLoading
 	// StatusConnectionLost shows a persistent connection-lost banner.
 	StatusConnectionLost
 	// StatusConnectionBackoff shows a persistent reconnect countdown banner.
@@ -356,6 +358,12 @@ func applyStatus(r *Runtime, in StatusInput) bool {
 			msg = "temporary error"
 		}
 		r.showError(msg, in.Duration)
+	case StatusLoading:
+		if msg == "" {
+			r.hideLoading()
+			break
+		}
+		r.showLoading(msg)
 	case StatusConnectionLost:
 		if msg == "" {
 			msg = ConnectionLostMessage(in.Endpoint)
@@ -373,7 +381,8 @@ func applyStatus(r *Runtime, in StatusInput) bool {
 	return before.ConnectionMessage != after.ConnectionMessage ||
 		before.ConnectionStyle != after.ConnectionStyle ||
 		!before.ConnectionShownAt.Equal(after.ConnectionShownAt) ||
-		!before.ConnectionExpiresAt.Equal(after.ConnectionExpiresAt)
+		!before.ConnectionExpiresAt.Equal(after.ConnectionExpiresAt) ||
+		before.LoadingMessage != after.LoadingMessage
 }
 
 func actionEffectFrom(r *Runtime, changed bool, now time.Time) ActionResult {

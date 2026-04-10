@@ -65,6 +65,7 @@ class AppViewModel(
     private val scrollbackRows = ArrayList<ScrollbackRow>()
     private var scrollbackCols = 0
     private var scrollbackOffset = 0
+    private var forceFullSnapshotOnNextConnect = false
     private val scrollbackLimit = DefaultScrollbackLines
     private val sessionCaches = LinkedHashMap<String, SessionCache>()
     private val sessionListCache = LinkedHashMap<String, RelaySession>()
@@ -314,6 +315,7 @@ class AppViewModel(
                 lastFrameError = null,
                 requiresAppUnlock = false,
                 unlockPromptPending = false,
+                sessionSyncing = false,
             )
         }
         syncWallPollingSchedule()
@@ -435,6 +437,7 @@ class AppViewModel(
                         showAppLockTimeoutDialog = false,
                         requiresAppUnlock = false,
                         unlockPromptPending = false,
+                        sessionSyncing = false,
                     )
                 }
                 lastBackgroundAtMs = null
@@ -464,6 +467,7 @@ class AppViewModel(
                 hasControl = false,
                 requiresAppUnlock = false,
                 unlockPromptPending = false,
+                sessionSyncing = false,
             )
         }
         syncWallPollingSchedule()
@@ -491,13 +495,24 @@ class AppViewModel(
     fun selectSession(sessionId: String) {
         val current = _state.value
         if (sessionId == current.activeSessionId) {
+            syncCurrentSessionCache()
+            if (sessionCaches[sessionId]?.liveSnapshot != null) {
+                applySessionCache(sessionId)
+            }
             if (ws == null || current.connectionState != ConnectionState.Connected) {
                 connectActiveSession()
             }
             return
         }
         syncCurrentSessionCache()
-        _state.update { it.copy(activeSessionId = sessionId) }
+        _state.update {
+            it.copy(
+                activeSessionId = sessionId,
+                panResetNonce = it.panResetNonce + 1,
+                sessionSyncing = true,
+            )
+        }
+        forceFullSnapshotOnNextConnect = true
         if (current.shareToken.isNullOrBlank()) {
             persistActiveSession(current.endpoint, sessionId)
         }
@@ -595,12 +610,8 @@ class AppViewModel(
         scrollbackRows.clear()
         scrollbackRows.addAll(cache.scrollbackRows)
         scrollbackCols = cache.scrollbackCols
-        scrollbackOffset = cache.scrollbackOffset.coerceAtLeast(0)
-        val display = if (scrollbackOffset > 0 && liveSnapshot != null) {
-            buildScrollbackSnapshot(liveSnapshot!!, scrollbackRows, scrollbackOffset)
-        } else {
-            liveSnapshot
-        }
+        scrollbackOffset = 0
+        val display = liveSnapshot
         _state.update {
             it.copy(
                 activeSnapshot = display,
@@ -716,7 +727,7 @@ class AppViewModel(
         }
         if (currentActive.isNotBlank() && !merged.containsKey(currentActive)) {
             val missingSince = missingSessionSinceMs.getOrPut(currentActive) { now }
-            if (now - missingSince <= 5_000L) {
+            if (now - missingSince <= MissingSessionGraceMs) {
                 val cached = sessionListCache[currentActive]
                 merged[currentActive] = cached ?: RelaySession(
                     id = currentActive,
@@ -795,7 +806,16 @@ class AppViewModel(
             val fallback = state.sessions.firstOrNull()?.id
             if (!fallback.isNullOrBlank()) {
                 sessionId = fallback
-                _state.update { it.copy(activeSessionId = fallback, activeSnapshot = null, scrollbackOffsetRows = 0) }
+                forceFullSnapshotOnNextConnect = true
+                _state.update {
+                    it.copy(
+                        activeSessionId = fallback,
+                        activeSnapshot = null,
+                        scrollbackOffsetRows = 0,
+                        panResetNonce = it.panResetNonce + 1,
+                        sessionSyncing = true,
+                    )
+                }
                 persistActiveSession(state.endpoint, fallback)
             }
         }
@@ -808,6 +828,9 @@ class AppViewModel(
         }
         val key = ConnectionKey(sessionId = sessionId, shareToken = shareToken)
         if (activeConnection == key && ws != null) {
+            if (sessionId != null && sessionCaches[sessionId]?.liveSnapshot != null) {
+                applySessionCache(sessionId)
+            }
             return
         }
         applySessionCache(sessionId)
@@ -840,6 +863,7 @@ class AppViewModel(
                 connectionState = ConnectionState.Connecting,
                 hasControl = false,
                 lastFrameError = null,
+                sessionSyncing = true,
             )
         }
         syncWallPollingSchedule()
@@ -853,7 +877,7 @@ class AppViewModel(
             cols = state.terminalCols,
             rows = state.terminalRows,
             wantsControl = true,
-            lastSeq = lastSeq,
+            lastSeq = if (forceFullSnapshotOnNextConnect) 0L else lastSeq,
         )
         ws = wsClient.connect(options, object : RelayWebSocketClient.Listener {
             private fun isStale(webSocket: WebSocket): Boolean {
@@ -909,6 +933,7 @@ class AppViewModel(
                                 lastFrameType = "welcome",
                                 lastFrameAtMs = System.currentTimeMillis(),
                                 lastFrameError = null,
+                                sessionSyncing = true,
                             )
                         }
                         clearStatus()
@@ -916,6 +941,7 @@ class AppViewModel(
                         maybeSendResize(_state.value)
                     }
                     frame.hasSnapshot() -> {
+                        forceFullSnapshotOnNextConnect = false
                         val snapshot = TerminalSnapshot.fromProto(frame.snapshot)
                         liveSnapshot = snapshot
                         val display = if (scrollbackOffset > 0) {
@@ -938,6 +964,7 @@ class AppViewModel(
                                 lastFrameType = "snapshot",
                                 lastFrameAtMs = System.currentTimeMillis(),
                                 lastFrameError = null,
+                                sessionSyncing = false,
                             )
                         }
                         clearStatus()
@@ -1124,6 +1151,7 @@ class AppViewModel(
                         lastFrameType = "failure",
                         lastFrameAtMs = System.currentTimeMillis(),
                         lastFrameError = t?.message,
+                        sessionSyncing = false,
                     )
                 }
                 scheduleReconnect(t?.message)
@@ -1138,6 +1166,7 @@ class AppViewModel(
                         lastFrameType = "closed",
                         lastFrameAtMs = System.currentTimeMillis(),
                         lastFrameError = reason,
+                        sessionSyncing = false,
                     )
                 }
                 scheduleReconnect(reason)
@@ -1151,6 +1180,7 @@ class AppViewModel(
         stopSessionPoll()
         stopWallPoll(resetCursor = true)
         closeWebSocket("session expired")
+        forceFullSnapshotOnNextConnect = false
         repository.clearLastActiveSession()
         lastBackgroundAtMs = null
         clearSessionCaches()
@@ -1174,6 +1204,7 @@ class AppViewModel(
                 lastFrameError = null,
                 requiresAppUnlock = false,
                 unlockPromptPending = false,
+                sessionSyncing = false,
             )
         }
         syncWallPollingSchedule()
@@ -1202,7 +1233,13 @@ class AppViewModel(
         if (suppressReconnect) return
         if (reconnectJob?.isActive == true) return
         ws = null
-        _state.update { it.copy(connectionState = ConnectionState.Disconnected, hasControl = false) }
+        _state.update {
+            it.copy(
+                connectionState = ConnectionState.Disconnected,
+                hasControl = false,
+                sessionSyncing = true,
+            )
+        }
         syncWallPollingSchedule()
         reconnectAttempt += 1
         val delayMs = nextBackoffMs(reconnectAttempt, retryAfterSeconds)
@@ -1357,7 +1394,14 @@ class AppViewModel(
 
     private fun handleUnauthorizedResponse() {
         if (!_state.value.loggedIn) {
-            _state.update { it.copy(loggedIn = false, sessions = emptyList(), activeSessionId = null) }
+            _state.update {
+                it.copy(
+                    loggedIn = false,
+                    sessions = emptyList(),
+                    activeSessionId = null,
+                    sessionSyncing = false,
+                )
+            }
             syncWallPollingSchedule()
             return
         }
@@ -1393,6 +1437,7 @@ class AppViewModel(
                 lastFrameError = null,
                 requiresAppUnlock = false,
                 unlockPromptPending = false,
+                sessionSyncing = false,
             )
         }
         syncWallPollingSchedule()
@@ -1529,6 +1574,7 @@ class AppViewModel(
 
     companion object {
         private const val sharedSessionId = "shared"
+        private const val MissingSessionGraceMs = 5_000L
         private const val wallDedupeWindowMs = 30_000L
         private const val foregroundRecoveryMinIntervalMs = 30_000L
 

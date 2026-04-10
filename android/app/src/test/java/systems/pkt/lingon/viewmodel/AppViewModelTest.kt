@@ -98,6 +98,94 @@ class AppViewModelTest {
     }
 
     @Test
+    fun selectSessionOnActiveTabRehydratesLiveCacheAfterStaleRender() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        val liveSnapshot = TerminalSnapshot(
+            cols = 4,
+            rows = 2,
+            runes = IntArray(8),
+            modes = IntArray(8),
+            fg = IntArray(8),
+            bg = IntArray(8),
+            graphemes = null,
+            cursorX = 0,
+            cursorY = 0,
+            cursorVisible = true,
+            mode = 0,
+            title = "current",
+        )
+        val staleSnapshot = TerminalSnapshot(
+            cols = 4,
+            rows = 2,
+            runes = IntArray(8),
+            modes = IntArray(8),
+            fg = IntArray(8),
+            bg = IntArray(8),
+            graphemes = null,
+            cursorX = 0,
+            cursorY = 0,
+            cursorVisible = true,
+            mode = 0,
+            title = "stale",
+        )
+        setLiveSnapshotForTest(viewModel, liveSnapshot)
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "shared", name = "Shared", status = "active"),
+                ),
+                activeSessionId = "shared",
+                activeSnapshot = staleSnapshot,
+                scrollbackOffsetRows = 4,
+                connectionState = ConnectionState.Connected,
+                shareToken = null,
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        setActiveConnectionForTest(viewModel, "shared", null)
+
+        viewModel.selectSession("shared")
+
+        assertEquals("current", viewModel.state.value.activeSnapshot?.title)
+        assertEquals(0, viewModel.state.value.scrollbackOffsetRows)
+        assertEquals(0, wsClient.connectCount)
+    }
+
+    @Test
+    fun selectSessionResetsViewportNonceWhenSwitchingTabs() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "alpha", name = "Alpha", status = "active"),
+                    RelaySession(id = "beta", name = "Beta", status = "active"),
+                ),
+                activeSessionId = "alpha",
+                panResetNonce = 7,
+                connectionState = ConnectionState.Connected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("beta")
+
+        assertEquals("beta", viewModel.state.value.activeSessionId)
+        assertEquals(8, viewModel.state.value.panResetNonce)
+    }
+
+    @Test
     fun selectSessionRestoresPerSessionCacheAndLastSeq() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient { options, listener, socket ->
@@ -159,7 +247,7 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals("alpha", wsClient.lastConnectOptions?.sessionId)
-        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
     }
 
@@ -210,6 +298,7 @@ class AppViewModelTest {
         viewModel.selectSession("alpha")
         advanceUntilIdle()
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
         assertEquals(2L, viewModel.state.value.lastFrameSeq)
     }
 

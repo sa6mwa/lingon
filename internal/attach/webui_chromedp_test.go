@@ -1575,6 +1575,7 @@ type uiState struct {
 type statusBannerState struct {
 	Visible bool   `json:"visible"`
 	Text    string `json:"text"`
+	Level   string `json:"level"`
 }
 
 func readUIState(ctx context.Context) (uiState, error) {
@@ -1600,11 +1601,12 @@ func readStatusBanner(ctx context.Context) (statusBannerState, error) {
 	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
   const banner = document.getElementById("status-banner");
   if (!banner) {
-    return { visible: false, text: "" };
+    return { visible: false, text: "", level: "" };
   }
   return {
     visible: !banner.classList.contains("hidden"),
     text: (banner.textContent || "").trim(),
+    level: banner.dataset && banner.dataset.level ? String(banner.dataset.level) : "",
   };
 })()`, &state))
 	return state, err

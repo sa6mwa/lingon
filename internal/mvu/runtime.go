@@ -18,6 +18,8 @@ type FrameState struct {
 	LastConnectionVisible bool
 	LastConnectionLen     int
 	LastConnectionStyle   BannerStyle
+	LastLoadingVisible    bool
+	LastLoadingLen        int
 	LastScrollbackVisible bool
 	LastScrollbackLen     int
 
@@ -85,6 +87,9 @@ type topOverlayRenderOptions struct {
 
 func topStatusStable(prev FrameState, resolved Resolved) bool {
 	if prev.LastConnectionVisible != resolved.ConnectionVisible {
+		return false
+	}
+	if prev.LastLoadingVisible != resolved.LoadingVisible {
 		return false
 	}
 	if prev.LastScrollbackVisible != resolved.ScrollbackVisible {
@@ -158,6 +163,8 @@ func RenderHost(in HostRenderInput) (HostRenderOutput, error) {
 	out.Frame.LastConnectionVisible = resolved.ConnectionVisible
 	out.Frame.LastConnectionLen = len(resolved.State.ConnectionMessage)
 	out.Frame.LastConnectionStyle = resolved.State.ConnectionStyle
+	out.Frame.LastLoadingVisible = resolved.LoadingVisible
+	out.Frame.LastLoadingLen = len(resolved.State.LoadingMessage)
 	out.Frame.LastScrollbackVisible = resolved.ScrollbackVisible
 	out.Frame.LastScrollbackLen = len(resolved.State.ScrollbackMessage)
 	out.Frame.LastRenderCols = in.Cols
@@ -218,6 +225,8 @@ func RenderAttach(in AttachRenderInput) (AttachRenderOutput, error) {
 	out.Frame.LastConnectionVisible = resolved.ConnectionVisible
 	out.Frame.LastConnectionLen = len(resolved.State.ConnectionMessage)
 	out.Frame.LastConnectionStyle = resolved.State.ConnectionStyle
+	out.Frame.LastLoadingVisible = resolved.LoadingVisible
+	out.Frame.LastLoadingLen = len(resolved.State.LoadingMessage)
 	out.Frame.LastScrollbackVisible = resolved.ScrollbackVisible
 	out.Frame.LastScrollbackLen = len(resolved.State.ScrollbackMessage)
 	if resolved.TabBarVisible {

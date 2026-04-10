@@ -158,3 +158,22 @@ func TestActionRegressionAttachBannerPreservesPromptLeftOfBadge(t *testing.T) {
 		t.Fatalf("expected banner badge on row 1, got %q", row)
 	}
 }
+
+func TestActionRegressionLoadingBannerUsesYellowStyle(t *testing.T) {
+	rt := NewRuntime()
+	rt.ApplyAction(StatusAction{Input: StatusInput{
+		Kind:    StatusLoading,
+		Message: "loading from relay",
+	}})
+	resolved := Resolve(rt.Read(), Cursor{Row: 2, Col: 1, Visible: true}, time.Now(), ResolveOptions{})
+	if !resolved.LoadingVisible {
+		t.Fatalf("expected loading banner visible")
+	}
+	row := renderRow(t, ComposeTopOverlayResolved(80, Cursor{Row: 2, Col: 1, Visible: true}, resolved), 80, 8, 0)
+	if !strings.Contains(row, "loading from relay") {
+		t.Fatalf("expected loading banner text, got %q", row)
+	}
+	if !strings.Contains(string(ComposeTopOverlayResolved(80, Cursor{Row: 2, Col: 1, Visible: true}, resolved)), "\x1b[38;2;0;0;0;43m") {
+		t.Fatalf("expected yellow banner ANSI sequence")
+	}
+}

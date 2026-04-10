@@ -60,6 +60,7 @@ data class UiState(
     val lastFrameAtMs: Long = 0,
     val lastFrameError: String? = null,
     val panResetNonce: Int = 0,
+    val sessionSyncing: Boolean = false,
     val isRefreshing: Boolean = false,
     val lastManualRefreshAtMs: Long = 0,
     val appLockTimeoutMinutes: Int = 30,

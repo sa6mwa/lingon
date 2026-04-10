@@ -415,6 +415,53 @@ class EndToEndTest {
     }
 
     @Test
+    fun tab_switch_after_heavy_output_renders_latest_frame_without_input() {
+        if (testConfig.sessions.size < 2) return
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        val first = activeSessionId()
+        val second = testConfig.sessions.firstOrNull { it != first } ?: return
+        assertTerminalResponsive(first)
+
+        val finalToken = "done"
+        sendTerminalInput("yes cache | head -n 300; echo done")
+        sendTerminalEnter()
+
+        waitUntilNoError(20_000L) { snapshotContainsToken(finalToken) }
+
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(1_000L) { activeSessionId() == second }
+
+        selectSessionTab(first, timeoutMs = 10_000L)
+        val deadline = System.currentTimeMillis() + 3_000L
+        var ready = false
+        while (System.currentTimeMillis() < deadline) {
+            if (snapshotContainsToken(finalToken)) {
+                ready = true
+                break
+            }
+            composeRule.waitForIdle()
+            SystemClock.sleep(POLL_INTERVAL_MS)
+        }
+        if (!ready) {
+            val info = readTerminalDebugInfo()
+                ?: throw AssertionError("missing terminal debug info after reconnect")
+            throw AssertionError(
+                "latest frame did not render after tab switch; " +
+                    "row0=${info.row0.take(120)} " +
+                    "prev=${info.prevLine.take(120)} " +
+                    "tail=${info.tail.take(120)} " +
+                    "cursor=${info.cursorLine.take(120)} " +
+                    "hash=${info.hash} " +
+                    "lastSeq=${info.lastFrameSeq} lastType=${info.lastFrameType} " +
+                    "active=${info.activeSessionId}",
+            )
+        }
+    }
+
+    @Test
     fun active_tab_persists_after_activity_recreate() {
         if (testConfig.sessions.size < 2) return
         setEndpoint(testConfig.endpoint)
@@ -681,37 +728,66 @@ class EndToEndTest {
     private fun sendTerminalInput(text: String) {
         focusTerminalInput()
         text.forEach { ch ->
-            val keyCode = when (ch.lowercaseChar()) {
-                'a' -> KeyEvent.KEYCODE_A
-                'b' -> KeyEvent.KEYCODE_B
-                'c' -> KeyEvent.KEYCODE_C
-                'd' -> KeyEvent.KEYCODE_D
-                'e' -> KeyEvent.KEYCODE_E
-                'f' -> KeyEvent.KEYCODE_F
-                'g' -> KeyEvent.KEYCODE_G
-                'h' -> KeyEvent.KEYCODE_H
-                'i' -> KeyEvent.KEYCODE_I
-                'j' -> KeyEvent.KEYCODE_J
-                'k' -> KeyEvent.KEYCODE_K
-                'l' -> KeyEvent.KEYCODE_L
-                'm' -> KeyEvent.KEYCODE_M
-                'n' -> KeyEvent.KEYCODE_N
-                'o' -> KeyEvent.KEYCODE_O
-                'p' -> KeyEvent.KEYCODE_P
-                'q' -> KeyEvent.KEYCODE_Q
-                'r' -> KeyEvent.KEYCODE_R
-                's' -> KeyEvent.KEYCODE_S
-                't' -> KeyEvent.KEYCODE_T
-                'u' -> KeyEvent.KEYCODE_U
-                'v' -> KeyEvent.KEYCODE_V
-                'w' -> KeyEvent.KEYCODE_W
-                'x' -> KeyEvent.KEYCODE_X
-                'y' -> KeyEvent.KEYCODE_Y
-                'z' -> KeyEvent.KEYCODE_Z
-                ' ' -> KeyEvent.KEYCODE_SPACE
+            val lower = ch.lowercaseChar()
+            val (keyCode, shift) = when (lower) {
+                '0' -> KeyEvent.KEYCODE_0 to false
+                '1' -> KeyEvent.KEYCODE_1 to false
+                '2' -> KeyEvent.KEYCODE_2 to false
+                '3' -> KeyEvent.KEYCODE_3 to false
+                '4' -> KeyEvent.KEYCODE_4 to false
+                '5' -> KeyEvent.KEYCODE_5 to false
+                '6' -> KeyEvent.KEYCODE_6 to false
+                '7' -> KeyEvent.KEYCODE_7 to false
+                '8' -> KeyEvent.KEYCODE_8 to false
+                '9' -> KeyEvent.KEYCODE_9 to false
+                '$' -> KeyEvent.KEYCODE_4 to true
+                '(' -> KeyEvent.KEYCODE_9 to true
+                ')' -> KeyEvent.KEYCODE_0 to true
+                ';' -> KeyEvent.KEYCODE_SEMICOLON to false
+                '|' -> KeyEvent.KEYCODE_BACKSLASH to true
+                '-' -> KeyEvent.KEYCODE_MINUS to false
+                'a' -> KeyEvent.KEYCODE_A to false
+                'b' -> KeyEvent.KEYCODE_B to false
+                'c' -> KeyEvent.KEYCODE_C to false
+                'd' -> KeyEvent.KEYCODE_D to false
+                'e' -> KeyEvent.KEYCODE_E to false
+                'f' -> KeyEvent.KEYCODE_F to false
+                'g' -> KeyEvent.KEYCODE_G to false
+                'h' -> KeyEvent.KEYCODE_H to false
+                'i' -> KeyEvent.KEYCODE_I to false
+                'j' -> KeyEvent.KEYCODE_J to false
+                'k' -> KeyEvent.KEYCODE_K to false
+                'l' -> KeyEvent.KEYCODE_L to false
+                'm' -> KeyEvent.KEYCODE_M to false
+                'n' -> KeyEvent.KEYCODE_N to false
+                'o' -> KeyEvent.KEYCODE_O to false
+                'p' -> KeyEvent.KEYCODE_P to false
+                'q' -> KeyEvent.KEYCODE_Q to false
+                'r' -> KeyEvent.KEYCODE_R to false
+                's' -> KeyEvent.KEYCODE_S to false
+                't' -> KeyEvent.KEYCODE_T to false
+                'u' -> KeyEvent.KEYCODE_U to false
+                'v' -> KeyEvent.KEYCODE_V to false
+                'w' -> KeyEvent.KEYCODE_W to false
+                'x' -> KeyEvent.KEYCODE_X to false
+                'y' -> KeyEvent.KEYCODE_Y to false
+                'z' -> KeyEvent.KEYCODE_Z to false
+                ' ' -> KeyEvent.KEYCODE_SPACE to false
                 else -> throw IllegalArgumentException("unsupported terminal test character: $ch")
             }
-            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(keyCode)
+            sendKeyStroke(keyCode, shift || ch.isUpperCase())
+        }
+    }
+
+    private fun sendKeyStroke(keyCode: Int, shift: Boolean = false) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (shift) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SHIFT_LEFT))
+        }
+        instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        if (shift) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SHIFT_LEFT))
         }
     }
 
@@ -881,6 +957,9 @@ class EndToEndTest {
                 cols = cols,
                 state = state.connectionState.toString(),
                 activeSessionId = state.activeSessionId.orEmpty(),
+                lastFrameSeq = state.lastFrameSeq,
+                lastFrameType = state.lastFrameType,
+                scrollbackOffsetRows = state.scrollbackOffsetRows,
                 hash = snapshotHash(snap),
                 row0 = row0,
                 prevLine = prevLine,
@@ -1098,7 +1177,9 @@ class EndToEndTest {
             "Timed out waiting for UI condition after ${timeoutMs}ms " +
                 "(connection=${state.connectionState}, active=${state.activeSessionId}, " +
                 "shareToken=${state.shareToken}, " +
-                "sessions=[${sessions}], rows=${debug?.rows ?: 0}, cols=${debug?.cols ?: 0})",
+                "sessions=[${sessions}], rows=${debug?.rows ?: 0}, cols=${debug?.cols ?: 0}, " +
+                "lastFrameSeq=${debug?.lastFrameSeq ?: 0}, lastFrameType=${debug?.lastFrameType}, " +
+                "scrollbackOffset=${debug?.scrollbackOffsetRows ?: 0})",
         )
     }
 
@@ -1541,6 +1622,9 @@ class EndToEndTest {
         val cols: Int,
         val state: String,
         val activeSessionId: String,
+        val lastFrameSeq: Long,
+        val lastFrameType: String?,
+        val scrollbackOffsetRows: Int,
         val hash: Long,
         val row0: String,
         val prevLine: String,

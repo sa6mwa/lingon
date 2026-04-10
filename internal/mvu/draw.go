@@ -279,6 +279,8 @@ const (
 	BannerRed BannerStyle = iota
 	// BannerGreen renders a green background banner.
 	BannerGreen
+	// BannerYellow renders a yellow background banner.
+	BannerYellow
 )
 
 // DrawBanner draws a status banner on the top row, right-aligned.
@@ -315,6 +317,8 @@ func DrawBannerAtRow(w *bytes.Buffer, cols, row int, message string, style Banne
 	colorOn := "\x1b[97;41m"
 	if style == BannerGreen {
 		colorOn = "\x1b[38;2;0;0;0;42m"
+	} else if style == BannerYellow {
+		colorOn = "\x1b[38;2;0;0;0;43m"
 	}
 	colorOff := ui.Reset
 	text := message
@@ -347,6 +351,8 @@ func DrawIndicatorAtRow(w *bytes.Buffer, cols, row int, message string, style Ba
 	colorOn := "\x1b[97;41m"
 	if style == BannerGreen {
 		colorOn = "\x1b[38;2;0;0;0;42m"
+	} else if style == BannerYellow {
+		colorOn = "\x1b[38;2;0;0;0;43m"
 	}
 	colorOff := ui.Reset
 	text := message
