@@ -521,8 +521,7 @@ private fun TerminalPanel(
             }
             if (
                 state.sessionSyncing ||
-                state.connectionState == ConnectionState.Connecting ||
-                (state.connectionState == ConnectionState.Connected && state.lastFrameType == "welcome")
+                state.connectionState == ConnectionState.Connecting
             ) {
                 Surface(
                     modifier = Modifier

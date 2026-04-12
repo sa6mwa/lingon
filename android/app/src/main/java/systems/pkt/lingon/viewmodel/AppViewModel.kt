@@ -944,7 +944,7 @@ class AppViewModel(
                                 lastFrameType = "welcome",
                                 lastFrameAtMs = System.currentTimeMillis(),
                                 lastFrameError = null,
-                                sessionSyncing = true,
+                                sessionSyncing = false,
                             )
                         }
                         clearStatus()

@@ -778,6 +778,43 @@ class AppViewModelTest {
     }
 
     @Test
+    fun welcomeFrameClearsSessionSyncing() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(
+                RelaySession(id = "host-1", name = "Host 1", status = "active"),
+            ),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("welcome", viewModel.state.value.lastFrameType)
+        assertFalse(viewModel.state.value.sessionSyncing)
+        assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+    }
+
+    @Test
     fun onAppForegroundHealthyConnectionDoesNotReconnect() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
