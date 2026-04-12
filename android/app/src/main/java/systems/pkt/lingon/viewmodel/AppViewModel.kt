@@ -513,6 +513,7 @@ class AppViewModel(
                 sessionSyncing = true,
             )
         }
+        forceFullSnapshotOnNextConnect = true
         if (current.shareToken.isNullOrBlank()) {
             persistActiveSession(current.endpoint, sessionId)
         }

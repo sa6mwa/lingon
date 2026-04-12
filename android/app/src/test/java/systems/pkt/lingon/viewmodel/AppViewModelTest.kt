@@ -248,7 +248,7 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals("alpha", wsClient.lastConnectOptions?.sessionId)
-        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
     }
 
@@ -309,7 +309,7 @@ class AppViewModelTest {
         viewModel.selectSession("alpha")
         advanceUntilIdle()
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
-        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
         assertEquals(1, viewModel.state.value.scrollbackOffsetRows)
         assertEquals(2L, viewModel.state.value.lastFrameSeq)
     }
@@ -740,6 +740,69 @@ class AppViewModelTest {
     }
 
     @Test
+    fun manualRefreshPreservesScrollbackOffset() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, snapshotFrame(1, "initial"))
+            listener.onFrame(socket, diffFrame(2, "initial-diff"))
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "host-1", name = "Host 1", status = "active"),
+                ),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        setScrollbackRowsForTest(
+            viewModel,
+            listOf(
+                ScrollbackRow.newBuilder().addRunes('A'.code).addModes(0).addFg(0).addBg(0).build(),
+                ScrollbackRow.newBuilder().addRunes('B'.code).addModes(0).addFg(0).addBg(0).build(),
+                ScrollbackRow.newBuilder().addRunes('C'.code).addModes(0).addFg(0).addBg(0).build(),
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals("initial-diff", viewModel.state.value.activeSnapshot?.title)
+
+        viewModel.adjustScrollback(2)
+        assertEquals(2, viewModel.state.value.scrollbackOffsetRows)
+
+        wsClient.onConnect = { options, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, snapshotFrame(3, "reloaded"))
+        }
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("reloaded", viewModel.state.value.activeSnapshot?.title)
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(2, viewModel.state.value.scrollbackOffsetRows)
+    }
+
+    @Test
     fun scrollbackFrameClearsSessionSyncing() = runTest {
         val repository = FakeRepository(
             sessions = listOf(
@@ -1049,7 +1112,7 @@ private class FakeRepository(
 }
 
 private class FakeWsClient(
-    private val onConnect: (ConnectOptions, Listener, WebSocket) -> Unit = { _, _, _ -> },
+    var onConnect: (ConnectOptions, Listener, WebSocket) -> Unit = { _, _, _ -> },
 ) : RelayWebSocketClient(
     testHttpClientProvider(),
 ) {
