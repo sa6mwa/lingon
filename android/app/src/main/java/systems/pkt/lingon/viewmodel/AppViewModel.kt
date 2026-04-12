@@ -1079,6 +1079,7 @@ class AppViewModel(
                                 it.copy(
                                     activeSnapshot = display,
                                     scrollbackOffsetRows = scrollbackOffset,
+                                    sessionSyncing = false,
                                     lastFrameSeq = frame.seq,
                                     lastFrameType = "scrollback",
                                     lastFrameAtMs = System.currentTimeMillis(),
@@ -1089,6 +1090,7 @@ class AppViewModel(
                             _state.update {
                                 it.copy(
                                     scrollbackOffsetRows = scrollbackOffset,
+                                    sessionSyncing = false,
                                     lastFrameSeq = frame.seq,
                                     lastFrameType = "scrollback",
                                     lastFrameAtMs = System.currentTimeMillis(),

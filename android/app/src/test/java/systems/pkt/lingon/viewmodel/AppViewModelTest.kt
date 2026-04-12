@@ -38,6 +38,7 @@ import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.data.certs.CertificateStore
 import systems.pkt.lingon.protocol.Diff
 import systems.pkt.lingon.protocol.Frame
+import systems.pkt.lingon.protocol.Scrollback
 import systems.pkt.lingon.protocol.Snapshot
 import systems.pkt.lingon.protocol.Welcome
 import systems.pkt.lingon.protocol.ScrollbackRow
@@ -739,6 +740,44 @@ class AppViewModelTest {
     }
 
     @Test
+    fun scrollbackFrameClearsSessionSyncing() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(
+                RelaySession(id = "host-1", name = "Host 1", status = "active"),
+            ),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, scrollbackFrame(2L))
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("scrollback", viewModel.state.value.lastFrameType)
+        assertFalse(viewModel.state.value.sessionSyncing)
+        assertEquals(2L, viewModel.state.value.lastFrameSeq)
+    }
+
+    @Test
     fun onAppForegroundHealthyConnectionDoesNotReconnect() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
@@ -1103,6 +1142,26 @@ private fun diffFrame(seq: Long, title: String): Frame {
         .setDiff(
             Diff.newBuilder()
                 .setTitle(title)
+                .build(),
+        )
+        .build()
+}
+
+private fun scrollbackFrame(seq: Long): Frame {
+    return Frame.newBuilder()
+        .setSeq(seq)
+        .setScrollback(
+            Scrollback.newBuilder()
+                .setCols(80)
+                .setClear(false)
+                .addRows(
+                    ScrollbackRow.newBuilder()
+                        .addRunes('A'.code)
+                        .addModes(0)
+                        .addFg(0)
+                        .addBg(0)
+                        .build(),
+                )
                 .build(),
         )
         .build()
