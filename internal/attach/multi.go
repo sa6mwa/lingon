@@ -677,6 +677,22 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		renderActiveCurrent()
 		scheduleOverlayRedraw(effect)
 	}
+	scheduleLoading := func(sessionID string, view *sessionView) {
+		if localSessionMode || view == nil {
+			return
+		}
+		m.Clock.AfterFunc(3*time.Second, func() {
+			mu.Lock()
+			current := views[sessionID]
+			visible := current == view && view.visible
+			connecting := current == view && view.connecting && !view.connected
+			mu.Unlock()
+			if !visible || !connecting {
+				return
+			}
+			showLoading("loading from relay")
+		})
+	}
 	showError := func(msg string, d time.Duration) {
 		effect := ui.ApplyAction(mvu.AttachStatusAction{Input: mvu.AttachStatusInput{
 			Kind:      mvu.StatusError,
@@ -849,7 +865,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 			if showStatus && !localSessionMode {
 				showConnected(mvu.ConnectedToMessage(endpointLabel), 3*time.Second)
-				showLoading("loading from relay")
+			}
+			if !localSessionMode {
+				showLoading("")
 			}
 			if showStatus && m.OnActive != nil {
 				m.OnActive(session.ID)
@@ -887,6 +905,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		view.client = client
 		if m.OnView != nil {
 			m.OnView(session.ID, client)
+		}
+		if visible {
+			scheduleLoading(session.ID, view)
 		}
 		view.cancel = ccancel
 		view.done = make(chan error, 1)

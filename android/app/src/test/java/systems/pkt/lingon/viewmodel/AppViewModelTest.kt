@@ -247,7 +247,7 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals("alpha", wsClient.lastConnectOptions?.sessionId)
-        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
     }
 
@@ -291,6 +291,16 @@ class AppViewModelTest {
 
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
 
+        setScrollbackRowsForTest(
+            viewModel,
+            listOf(
+                ScrollbackRow.newBuilder().addRunes('A'.code).addModes(0).addFg(0).addBg(0).build(),
+                ScrollbackRow.newBuilder().addRunes('B'.code).addModes(0).addFg(0).addBg(0).build(),
+            ),
+        )
+        viewModel.adjustScrollback(1)
+        assertEquals(1, viewModel.state.value.scrollbackOffsetRows)
+
         viewModel.selectSession("beta")
         advanceUntilIdle()
         assertNull(viewModel.state.value.activeSnapshot)
@@ -298,7 +308,8 @@ class AppViewModelTest {
         viewModel.selectSession("alpha")
         advanceUntilIdle()
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
-        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(1, viewModel.state.value.scrollbackOffsetRows)
         assertEquals(2L, viewModel.state.value.lastFrameSeq)
     }
 

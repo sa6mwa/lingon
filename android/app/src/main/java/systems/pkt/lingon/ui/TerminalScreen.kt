@@ -469,7 +469,6 @@ private fun TerminalPanel(
                 .fillMaxWidth()
                 .weight(1f),
         ) {
-            val snapshotForRender = if (state.sessionSyncing) null else state.activeSnapshot
             val hostCols = state.activeSnapshot?.cols ?: 0
             val hostRows = state.activeSnapshot?.rows ?: 0
             AndroidView(
@@ -487,7 +486,7 @@ private fun TerminalPanel(
                 },
                 update = { view ->
                     view.update(
-                        snapshot = snapshotForRender,
+                        snapshot = state.activeSnapshot,
                         fontSizeSp = state.fontSizeSp,
                         minFontSizeSp = MinTerminalFontSizeSp,
                         palette = palette,

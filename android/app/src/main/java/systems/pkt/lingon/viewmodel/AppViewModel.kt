@@ -512,7 +512,6 @@ class AppViewModel(
                 sessionSyncing = true,
             )
         }
-        forceFullSnapshotOnNextConnect = true
         if (current.shareToken.isNullOrBlank()) {
             persistActiveSession(current.endpoint, sessionId)
         }
@@ -610,8 +609,19 @@ class AppViewModel(
         scrollbackRows.clear()
         scrollbackRows.addAll(cache.scrollbackRows)
         scrollbackCols = cache.scrollbackCols
-        scrollbackOffset = 0
-        val display = liveSnapshot
+        scrollbackOffset = cache.scrollbackOffset
+        if (scrollbackOffset < 0) {
+            scrollbackOffset = 0
+        }
+        val maxOffset = maxScrollbackOffset(liveSnapshot)
+        if (scrollbackOffset > maxOffset) {
+            scrollbackOffset = maxOffset
+        }
+        val display = if (scrollbackOffset > 0) {
+            liveSnapshot?.let { buildScrollbackSnapshot(it, scrollbackRows, scrollbackOffset) }
+        } else {
+            liveSnapshot
+        }
         _state.update {
             it.copy(
                 activeSnapshot = display,
@@ -992,6 +1002,7 @@ class AppViewModel(
                                 lastFrameType = "diff",
                                 lastFrameAtMs = System.currentTimeMillis(),
                                 lastFrameError = null,
+                                sessionSyncing = false,
                             )
                         }
                         clearStatus()
