@@ -527,8 +527,12 @@ private fun TerminalPanel(
                 Surface(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .statusBarsPadding()
-                        .padding(horizontal = screenPadding, vertical = screenPadding),
+                        .padding(
+                            top = screenPadding,
+                            bottom = screenPadding,
+                            start = screenPadding,
+                            end = screenPadding,
+                        ),
                     shape = RoundedCornerShape(999.dp),
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                     tonalElevation = 2.dp,
