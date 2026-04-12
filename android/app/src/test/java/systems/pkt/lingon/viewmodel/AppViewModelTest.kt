@@ -248,7 +248,7 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals("alpha", wsClient.lastConnectOptions?.sessionId)
-        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
     }
 
@@ -309,9 +309,68 @@ class AppViewModelTest {
         viewModel.selectSession("alpha")
         advanceUntilIdle()
         assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
-        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
         assertEquals(1, viewModel.state.value.scrollbackOffsetRows)
         assertEquals(2L, viewModel.state.value.lastFrameSeq)
+    }
+
+    @Test
+    fun selectSessionRestoresLastSeqInCacheWithoutFullReplay() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient { options, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            if (options.lastSeq == 0L) {
+                listener.onFrame(socket, snapshotFrame(1, "alpha-1"))
+                listener.onFrame(socket, diffFrame(2, "alpha-2"))
+            }
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "alpha", name = "Alpha", status = "active"),
+                    RelaySession(id = "beta", name = "Beta", status = "active"),
+                ),
+                activeSessionId = "alpha",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("alpha")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("alpha", wsClient.lastConnectOptions?.sessionId)
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
+        assertEquals(2L, viewModel.state.value.lastFrameSeq)
+
+        viewModel.selectSession("beta")
+        advanceUntilIdle()
+        assertEquals(2, wsClient.connectCount)
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("beta", wsClient.lastConnectOptions?.sessionId)
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+
+        viewModel.selectSession("alpha")
+        advanceUntilIdle()
+        assertEquals("alpha", wsClient.lastConnectOptions?.sessionId)
+        assertEquals(2L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals(3, wsClient.connectCount)
+        wsClient.fireConnect()
+        advanceUntilIdle()
+        assertEquals("alpha-2", viewModel.state.value.activeSnapshot?.title)
     }
 
     @Test
