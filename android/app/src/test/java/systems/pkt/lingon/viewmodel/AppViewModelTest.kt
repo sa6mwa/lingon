@@ -687,6 +687,58 @@ class AppViewModelTest {
     }
 
     @Test
+    fun manualRefreshForcesFullSnapshotReconnect() = runTest {
+        val sessionConnects = mutableListOf<Long>()
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { options, listener, socket ->
+            sessionConnects.add(options.lastSeq)
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            if (options.lastSeq == 0L) {
+                val title = if (sessionConnects.size == 1) "initial" else "reloaded"
+                val seq = if (sessionConnects.size == 1) 1L else 2L
+                listener.onFrame(socket, snapshotFrame(seq, title))
+            }
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "host-1", name = "Host 1", status = "active"),
+                ),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("initial", viewModel.state.value.activeSnapshot?.title)
+
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals(2, wsClient.connectCount)
+        assertEquals(0L, wsClient.lastConnectOptions?.lastSeq)
+        assertEquals("reloaded", viewModel.state.value.activeSnapshot?.title)
+    }
+
+    @Test
     fun onAppForegroundHealthyConnectionDoesNotReconnect() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),

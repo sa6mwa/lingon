@@ -202,6 +202,7 @@ class AppViewModel(
         refreshJob = viewModelScope.launch {
             val startedAt = System.currentTimeMillis()
             _state.update { it.copy(isRefreshing = true, lastManualRefreshAtMs = startedAt) }
+            forceFullSnapshotOnNextConnect = true
             val previousSuppressReconnect = suppressReconnect
             suppressReconnect = true
             try {
