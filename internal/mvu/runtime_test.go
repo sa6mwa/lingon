@@ -80,12 +80,12 @@ func TestResolveScrollbackSuppressesConnectionBanner(t *testing.T) {
 func TestResolveLoadingAppearsAfterConnectedExpires(t *testing.T) {
 	now := time.Now()
 	state := State{
-		Theme:             theme.TUI("default"),
-		ConnectionMessage: "connected to https://relay.example/v1",
-		ConnectionStyle:   BannerGreen,
-		ConnectionShownAt: now,
+		Theme:               theme.TUI("default"),
+		ConnectionMessage:   "connected to https://relay.example/v1",
+		ConnectionStyle:     BannerGreen,
+		ConnectionShownAt:   now,
 		ConnectionExpiresAt: now.Add(2 * time.Second),
-		LoadingMessage:    "loading from relay",
+		LoadingMessage:      "loading from relay",
 	}
 	before := Resolve(state, Cursor{Row: 2, Col: 1, Visible: true}, now, ResolveOptions{})
 	if before.LoadingVisible {
@@ -107,11 +107,11 @@ func TestResolveLoadingAppearsAfterConnectedExpires(t *testing.T) {
 func TestResolveLoadingSuppressedByScrollbackAndDisconnect(t *testing.T) {
 	now := time.Now()
 	state := State{
-		Theme:          theme.TUI("default"),
-		LoadingMessage: "loading from relay",
+		Theme:             theme.TUI("default"),
+		LoadingMessage:    "loading from relay",
 		ScrollbackMessage: "[50%]",
-		DisconnectTitle: "Not connected",
-		DisconnectDetail: "reconnecting in 2s",
+		DisconnectTitle:   "Not connected",
+		DisconnectDetail:  "reconnecting in 2s",
 		DisconnectVisible: true,
 	}
 	resolved := Resolve(state, Cursor{Row: 5, Col: 1, Visible: true}, now, ResolveOptions{})

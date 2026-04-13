@@ -14,13 +14,14 @@ func NewWallCommand(loader *lingon.Loader) *cobra.Command {
 	var endpoint string
 	var accessToken string
 	var authFile string
+	var quiet bool
 
 	v := loader.Viper()
 	v.SetDefault("client.endpoint", lingon.DefaultClientEndpoint)
 	v.SetDefault("client.auth_file", lingon.DefaultAuthPath())
 
 	cmd := &cobra.Command{
-		Use:   "wall <message...>",
+		Use:   "wall [flags] <message...>",
 		Short: "Broadcast a message to your active sessions",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -68,6 +69,9 @@ func NewWallCommand(loader *lingon.Loader) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if quiet {
+				return nil
+			}
 			return printJSON(cmd.OutOrStdout(), resp)
 		},
 	}
@@ -76,6 +80,7 @@ func NewWallCommand(loader *lingon.Loader) *cobra.Command {
 	flags.StringVarP(&endpoint, "endpoint", "e", lingon.DefaultClientEndpoint, "relay endpoint (https/wss base URL; assumes https:// if omitted)")
 	flags.StringVar(&accessToken, "access-token", "", "access token for authenticated request")
 	flags.StringVar(&authFile, "auth-file", lingon.DefaultAuthPath(), "path to auth file")
+	flags.BoolVarP(&quiet, "quiet", "q", false, "suppress success output")
 	registerEndpointFlagCompletion(cmd, loader)
 
 	return cmd
