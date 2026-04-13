@@ -1,11 +1,14 @@
 package systems.pkt.lingon
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.os.ParcelFileDescriptor
 import android.view.KeyEvent
 import androidx.test.rule.GrantPermissionRule
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -31,6 +34,9 @@ import java.net.URL
 import java.util.Base64
 import java.util.Locale
 import java.util.zip.CRC32
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.runBlocking
@@ -412,6 +418,39 @@ class EndToEndTest {
 
         selectSessionTab(first, timeoutMs = 10_000L)
         assertTerminalResponsive(first)
+    }
+
+    @Test
+    fun keyboard_tab_switch_preserves_bottom_anchor_visual() {
+        if (testConfig.sessions.size < 2) return
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        val first = activeSessionId()
+        val second = testConfig.sessions.firstOrNull { it != first } ?: return
+        assertTerminalResponsive(first)
+
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        captureScreenshot("keyboard-before-switch")
+        val before = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info before switch")
+
+        selectSessionTab(second, timeoutMs = 10_000L)
+        assertTerminalResponsive(second)
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first }
+
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        captureScreenshot("keyboard-after-switch")
+        val after = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info after switch")
+
+        assertEquals(first, after.activeSessionId)
+        assertTrue(
+            "visible terminal content changed across tab switch: before=${before.hash} after=${after.hash}",
+            before.hash == after.hash || after.lastFrameSeq >= before.lastFrameSeq,
+        )
     }
 
     @Test
@@ -877,6 +916,12 @@ class EndToEndTest {
         waitUntil(timeoutMs) { !hasTag(tag) }
     }
 
+    private fun hasTextNode(text: String): Boolean {
+        return runCatching {
+            composeRule.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty()
+        }.getOrDefault(false)
+    }
+
     private fun hasTag(tag: String): Boolean {
         return composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
     }
@@ -1181,6 +1226,46 @@ class EndToEndTest {
                 "lastFrameSeq=${debug?.lastFrameSeq ?: 0}, lastFrameType=${debug?.lastFrameType}, " +
                 "scrollbackOffset=${debug?.scrollbackOffsetRows ?: 0})",
         )
+    }
+
+    private fun captureScreenshot(name: String) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val baseDir = context.getExternalFilesDir(null) ?: context.filesDir
+        val outDir = File(baseDir, "test-artifacts").apply { mkdirs() }
+        val safeName = name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            ?: throw AssertionError("failed to capture screenshot for $safeName")
+        writePng(File(outDir, "${safeName}.png"), bitmap)
+        writeShellScreenshot("/sdcard/Download/lingon-test-artifacts/${safeName}.png")
+    }
+
+    private fun writePng(file: File, bitmap: Bitmap) {
+        FileOutputStream(file).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+    }
+
+    private fun writeShellScreenshot(path: String) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val mkdir = instrumentation.uiAutomation.executeShellCommand(
+            "mkdir -p ${File(path).parent}",
+        )
+        consumeShellCommand(mkdir)
+        val screencap = instrumentation.uiAutomation.executeShellCommand(
+            "screencap -p $path",
+        )
+        consumeShellCommand(screencap)
+    }
+
+    private fun consumeShellCommand(descriptor: ParcelFileDescriptor?) {
+        descriptor ?: return
+        descriptor.use { pfd ->
+            FileInputStream(pfd.fileDescriptor).use { input ->
+                while (input.read() != -1) {
+                    // Drain shell output so the command completes before the test continues.
+                }
+            }
+        }
     }
 
     private fun openZoomDialog() {

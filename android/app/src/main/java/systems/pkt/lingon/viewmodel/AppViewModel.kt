@@ -509,7 +509,6 @@ class AppViewModel(
         _state.update {
             it.copy(
                 activeSessionId = sessionId,
-                panResetNonce = it.panResetNonce + 1,
                 sessionSyncing = true,
             )
         }

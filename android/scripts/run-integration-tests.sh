@@ -203,6 +203,7 @@ set +e
   cd "${ANDROID_DIR}"
   TEST_SRC="${ANDROID_DIR}/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt"
   TESTS=()
+  ONLY_TEST="${LINGON_IT_ONLY:-}"
   if [[ -f "${TEST_SRC}" ]]; then
     mapfile -t TESTS < <(run_android_tools test-names --file "${TEST_SRC}")
   fi
@@ -212,6 +213,9 @@ set +e
   fi
   TEST_EXIT=0
   for test_name in "${TESTS[@]}"; do
+    if [[ -n "${ONLY_TEST}" ]] && [[ "${test_name}" != "${ONLY_TEST}" ]]; then
+      continue
+    fi
     if [[ "${test_name}" == "${SPECIAL_TEST}" ]]; then
       stop_harness
       start_harness 0

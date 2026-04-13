@@ -83,4 +83,19 @@ internal object TerminalViewportPolicy {
         if (topRow <= 0) return 0
         return min(topRow, scrollbackOffsetRows)
     }
+
+    fun preserveBottomAnchorOnHeightChange(
+        cameraOffsetYPx: Float,
+        previousViewportHeightPx: Int,
+        nextViewportHeightPx: Int,
+        totalRows: Int,
+        scaledCellHeightPx: Float,
+    ): Float {
+        if (previousViewportHeightPx <= 0 || nextViewportHeightPx <= 0) return cameraOffsetYPx
+        if (previousViewportHeightPx == nextViewportHeightPx) return cameraOffsetYPx
+        if (totalRows <= 0 || scaledCellHeightPx <= 0f) return cameraOffsetYPx
+
+        val maxOffsetYPx = max(0f, (totalRows * scaledCellHeightPx) - nextViewportHeightPx.toFloat())
+        return (cameraOffsetYPx + (previousViewportHeightPx - nextViewportHeightPx)).coerceIn(0f, maxOffsetYPx)
+    }
 }

@@ -159,7 +159,7 @@ class AppViewModelTest {
     }
 
     @Test
-    fun selectSessionResetsViewportNonceWhenSwitchingTabs() = runTest {
+    fun selectSessionPreservesViewportNonceWhenSwitchingTabs() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
         val viewModel = AppViewModel(repository, wsClient)
@@ -183,7 +183,7 @@ class AppViewModelTest {
         viewModel.selectSession("beta")
 
         assertEquals("beta", viewModel.state.value.activeSessionId)
-        assertEquals(8, viewModel.state.value.panResetNonce)
+        assertEquals(7, viewModel.state.value.panResetNonce)
     }
 
     @Test

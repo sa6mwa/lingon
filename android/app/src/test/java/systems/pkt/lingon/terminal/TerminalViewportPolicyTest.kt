@@ -233,4 +233,41 @@ class TerminalViewportPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun `height change preserves viewport bottom anchor`() {
+        assertEquals(
+            300f,
+            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
+                cameraOffsetYPx = 0f,
+                previousViewportHeightPx = 1000,
+                nextViewportHeightPx = 700,
+                totalRows = 100,
+                scaledCellHeightPx = 20f,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            0f,
+            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
+                cameraOffsetYPx = 50f,
+                previousViewportHeightPx = 700,
+                nextViewportHeightPx = 1000,
+                totalRows = 100,
+                scaledCellHeightPx = 20f,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            900f,
+            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
+                cameraOffsetYPx = 1200f,
+                previousViewportHeightPx = 700,
+                nextViewportHeightPx = 1000,
+                totalRows = 100,
+                scaledCellHeightPx = 20f,
+            ),
+            0.001f,
+        )
+    }
 }

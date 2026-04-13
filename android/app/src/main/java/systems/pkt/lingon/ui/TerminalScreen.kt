@@ -30,9 +30,11 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,6 +70,7 @@ import systems.pkt.lingon.MinTerminalFontSizeSp
 import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.terminal.TerminalGridView
 import systems.pkt.lingon.terminal.TerminalPalette
+import systems.pkt.lingon.terminal.TerminalViewportState
 import systems.pkt.lingon.ui.theme.LocalLingonExtraColors
 import systems.pkt.lingon.viewmodel.ConnectionState
 import systems.pkt.lingon.viewmodel.AppViewModel
@@ -464,6 +467,9 @@ private fun TerminalPanel(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
+        val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
+        var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
+        val sessionId = state.activeSessionId
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -474,6 +480,7 @@ private fun TerminalPanel(
             AndroidView(
                 factory = { context ->
                     TerminalGridView(context).apply {
+                        terminalGridView = this
                         tag = "terminal_view"
                         setOnZoomChanged { value ->
                             viewModel.updateZoomFactor(value)
@@ -485,6 +492,7 @@ private fun TerminalPanel(
                     }
                 },
                 update = { view ->
+                    terminalGridView = view
                     view.update(
                         snapshot = state.activeSnapshot,
                         fontSizeSp = state.fontSizeSp,
@@ -510,6 +518,17 @@ private fun TerminalPanel(
                     .fillMaxSize()
                     .testTag(TestTags.TerminalList),
             )
+            DisposableEffect(sessionId, terminalGridView, imeVisible) {
+                onDispose {
+                    val view = terminalGridView ?: return@onDispose
+                    val previousSessionId = sessionId ?: return@onDispose
+                    viewportCache[previousSessionId] = view.captureViewportState()
+                }
+            }
+            LaunchedEffect(sessionId, terminalGridView, imeVisible) {
+                val view = terminalGridView ?: return@LaunchedEffect
+                view.restoreViewportState(sessionId?.let(viewportCache::get))
+            }
             if (showStatusOverlay) {
                 StatusBanner(
                     status = state.status,

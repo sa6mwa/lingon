@@ -43,6 +43,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var scrollbackOffsetRows: Int = 0
     private var cameraOffsetXPx: Float = 0f
     private var cameraOffsetYPx: Float = 0f
+    private var lastViewportHeightPx: Int = 0
     private var panActive: Boolean = false
     private var lastTouchX: Float = 0f
     private var lastTouchY: Float = 0f
@@ -250,6 +251,23 @@ class TerminalGridView @JvmOverloads constructor(
     fun getViewCols(): Int = viewCols
 
     fun getViewRows(): Int = viewRows
+
+    fun captureViewportState(): TerminalViewportState {
+        return TerminalViewportState(
+            cameraOffsetXPx = cameraOffsetXPx,
+            cameraOffsetYPx = cameraOffsetYPx,
+            scrollRemainderY = scrollRemainderY,
+        )
+    }
+
+    fun restoreViewportState(state: TerminalViewportState?) {
+        if (state == null) return
+        cameraOffsetXPx = state.cameraOffsetXPx
+        cameraOffsetYPx = state.cameraOffsetYPx
+        scrollRemainderY = state.scrollRemainderY
+        clampCameraOffsets(resetScrollRemainder = false)
+        invalidate()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -552,6 +570,7 @@ class TerminalGridView @JvmOverloads constructor(
         val widthPx = width
         val heightPx = height
         if (widthPx <= 0 || heightPx <= 0) {
+            lastViewportHeightPx = heightPx
             updateViewSize(0, 0)
             return
         }
@@ -599,6 +618,18 @@ class TerminalGridView @JvmOverloads constructor(
         }
         val nextRows = floor(heightPx / scaledCellHeight).toInt().coerceAtLeast(0)
         updateViewSize(nextCols, nextRows)
+        val snap = snapshot
+        if (snap != null && lastViewportHeightPx > 0 && lastViewportHeightPx != heightPx) {
+            cameraOffsetYPx = TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
+                cameraOffsetYPx = cameraOffsetYPx,
+                previousViewportHeightPx = lastViewportHeightPx,
+                nextViewportHeightPx = heightPx,
+                totalRows = snap.rows,
+                scaledCellHeightPx = scaledCellHeight,
+            )
+            scrollRemainderY = 0f
+        }
+        lastViewportHeightPx = heightPx
         clampCameraOffsets(resetScrollRemainder = true)
     }
 
