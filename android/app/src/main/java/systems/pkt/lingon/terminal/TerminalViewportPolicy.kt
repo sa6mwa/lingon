@@ -98,4 +98,24 @@ internal object TerminalViewportPolicy {
         val maxOffsetYPx = max(0f, (totalRows * scaledCellHeightPx) - nextViewportHeightPx.toFloat())
         return (cameraOffsetYPx + (previousViewportHeightPx - nextViewportHeightPx)).coerceIn(0f, maxOffsetYPx)
     }
+
+    fun shouldSnapToLiveBottom(
+        fitToViewWidth: Boolean,
+        zoomFactor: Float,
+        scrollbackOffsetRows: Int,
+    ): Boolean {
+        if (!fitToViewWidth) return false
+        if (zoomFactor > DefaultTerminalZoom + zoomEpsilon) return false
+        if (scrollbackOffsetRows > 0) return false
+        return true
+    }
+
+    fun bottomAlignedCameraOffsetY(
+        totalRows: Int,
+        scaledCellHeightPx: Float,
+        viewportHeightPx: Int,
+    ): Float {
+        if (totalRows <= 0 || scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return 0f
+        return max(0f, (totalRows * scaledCellHeightPx) - viewportHeightPx.toFloat())
+    }
 }

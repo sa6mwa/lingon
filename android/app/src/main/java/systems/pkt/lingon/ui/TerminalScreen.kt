@@ -518,14 +518,14 @@ private fun TerminalPanel(
                     .fillMaxSize()
                     .testTag(TestTags.TerminalList),
             )
-            DisposableEffect(sessionId, terminalGridView, imeVisible) {
+            DisposableEffect(sessionId, terminalGridView) {
                 onDispose {
                     val view = terminalGridView ?: return@onDispose
                     val previousSessionId = sessionId ?: return@onDispose
                     viewportCache[previousSessionId] = view.captureViewportState()
                 }
             }
-            LaunchedEffect(sessionId, terminalGridView, imeVisible) {
+            LaunchedEffect(sessionId, terminalGridView) {
                 val view = terminalGridView ?: return@LaunchedEffect
                 view.restoreViewportState(sessionId?.let(viewportCache::get))
             }

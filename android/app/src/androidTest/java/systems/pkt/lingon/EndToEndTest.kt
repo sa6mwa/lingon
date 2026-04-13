@@ -37,6 +37,7 @@ import java.util.zip.CRC32
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.UUID
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.runBlocking
@@ -67,6 +68,7 @@ class EndToEndTest {
         .around(FailureCaptureRule(composeRule))
 
     private val testConfig = TestConfig.fromArgs()
+    private val screenshotRunId = UUID.randomUUID().toString().take(8)
 
     @Before
     fun ensureBackendReachable() {
@@ -451,6 +453,37 @@ class EndToEndTest {
             "visible terminal content changed across tab switch: before=${before.hash} after=${after.hash}",
             before.hash == after.hash || after.lastFrameSeq >= before.lastFrameSeq,
         )
+    }
+
+    @Test
+    fun keyboard_hide_show_preserves_bottom_anchor_visual() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearScreenshotArtifacts()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        activeSessionId()
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        composeRule.waitForIdle()
+
+        val finalToken = "300"
+        sendTerminalInput("seq 1 300")
+        sendTerminalEnter()
+        waitUntilNoError(20_000L) { snapshotContainsToken(finalToken) }
+        captureScreenshot("keyboard-precheck")
+
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        captureScreenshot("keyboard-visible-initial")
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        captureScreenshot("keyboard-hidden")
+
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        captureScreenshot("keyboard-visible-restored")
     }
 
     @Test
@@ -1232,11 +1265,19 @@ class EndToEndTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val baseDir = context.getExternalFilesDir(null) ?: context.filesDir
         val outDir = File(baseDir, "test-artifacts").apply { mkdirs() }
-        val safeName = name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val safeName = "${screenshotRunId}_${name.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
         val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
             ?: throw AssertionError("failed to capture screenshot for $safeName")
         writePng(File(outDir, "${safeName}.png"), bitmap)
         writeShellScreenshot("/sdcard/Download/lingon-test-artifacts/${safeName}.png")
+    }
+
+    private fun clearScreenshotArtifacts() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val clear = instrumentation.uiAutomation.executeShellCommand(
+            "rm -rf /sdcard/Download/lingon-test-artifacts && mkdir -p /sdcard/Download/lingon-test-artifacts",
+        )
+        consumeShellCommand(clear)
     }
 
     private fun writePng(file: File, bitmap: Bitmap) {

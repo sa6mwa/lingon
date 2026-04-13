@@ -257,13 +257,34 @@ class TerminalGridView @JvmOverloads constructor(
             cameraOffsetXPx = cameraOffsetXPx,
             cameraOffsetYPx = cameraOffsetYPx,
             scrollRemainderY = scrollRemainderY,
+            viewportHeightPx = height,
         )
     }
 
     fun restoreViewportState(state: TerminalViewportState?) {
         if (state == null) return
         cameraOffsetXPx = state.cameraOffsetXPx
-        cameraOffsetYPx = state.cameraOffsetYPx
+        val totalRows = snapshot?.rows ?: 0
+        cameraOffsetYPx = if (TerminalViewportPolicy.shouldSnapToLiveBottom(
+                fitToViewWidth = fitToViewWidth,
+                zoomFactor = zoomFactor,
+                scrollbackOffsetRows = scrollbackOffsetRows,
+            )
+        ) {
+            TerminalViewportPolicy.bottomAlignedCameraOffsetY(
+                totalRows = totalRows,
+                scaledCellHeightPx = scaledCellHeight,
+                viewportHeightPx = height,
+            )
+        } else {
+            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
+                cameraOffsetYPx = state.cameraOffsetYPx,
+                previousViewportHeightPx = state.viewportHeightPx,
+                nextViewportHeightPx = height,
+                totalRows = totalRows,
+                scaledCellHeightPx = scaledCellHeight,
+            )
+        }
         scrollRemainderY = state.scrollRemainderY
         clampCameraOffsets(resetScrollRemainder = false)
         invalidate()
@@ -620,13 +641,26 @@ class TerminalGridView @JvmOverloads constructor(
         updateViewSize(nextCols, nextRows)
         val snap = snapshot
         if (snap != null && lastViewportHeightPx > 0 && lastViewportHeightPx != heightPx) {
-            cameraOffsetYPx = TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
-                cameraOffsetYPx = cameraOffsetYPx,
-                previousViewportHeightPx = lastViewportHeightPx,
-                nextViewportHeightPx = heightPx,
-                totalRows = snap.rows,
-                scaledCellHeightPx = scaledCellHeight,
-            )
+            cameraOffsetYPx = if (TerminalViewportPolicy.shouldSnapToLiveBottom(
+                    fitToViewWidth = fitToViewWidth,
+                    zoomFactor = zoomFactor,
+                    scrollbackOffsetRows = scrollbackOffsetRows,
+                )
+            ) {
+                TerminalViewportPolicy.bottomAlignedCameraOffsetY(
+                    totalRows = snap.rows,
+                    scaledCellHeightPx = scaledCellHeight,
+                    viewportHeightPx = heightPx,
+                )
+            } else {
+                TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
+                    cameraOffsetYPx = cameraOffsetYPx,
+                    previousViewportHeightPx = lastViewportHeightPx,
+                    nextViewportHeightPx = heightPx,
+                    totalRows = snap.rows,
+                    scaledCellHeightPx = scaledCellHeight,
+                )
+            }
             scrollRemainderY = 0f
         }
         lastViewportHeightPx = heightPx

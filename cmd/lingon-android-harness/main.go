@@ -429,6 +429,16 @@ func startHostSession(ctx context.Context, endpoint, token, id, scriptPath strin
 
 func writeHostScript(baseDir, id, harnessPath string) (string, error) {
 	scriptPath := filepath.Join(baseDir, fmt.Sprintf("lingon-host-%s.sh", id))
+	if shellPath := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_HOST_SHELL")); shellPath != "" {
+		content := fmt.Sprintf(`#!/bin/sh
+export PS1='%s$ '
+exec "%s" -i
+`, id, shellPath)
+		if err := os.WriteFile(scriptPath, []byte(content), 0o700); err != nil {
+			return "", err
+		}
+		return scriptPath, nil
+	}
 	content := fmt.Sprintf(`#!/bin/sh
 stty raw -echo </dev/tty 2>/dev/null || stty raw -echo </dev/stdin 2>/dev/null || true
 exec "%s" -host-echo -host-id "%s"
