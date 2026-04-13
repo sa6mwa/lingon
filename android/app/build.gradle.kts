@@ -37,7 +37,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "v0.1.1-0.20260413100337-3fa706fe711b"
+        versionName = "v0.1.1-0.20260413112426-0497d225b48a"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         integrationRunnerArgProperties.forEach { (runnerArg, gradleProperty) ->
             providers.gradleProperty(gradleProperty).orNull?.let { value ->

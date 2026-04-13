@@ -427,31 +427,79 @@ class EndToEndTest {
         if (testConfig.sessions.size < 2) return
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
+        clearScreenshotArtifacts()
 
         loginWithConfiguredUser()
         val first = activeSessionId()
         val second = testConfig.sessions.firstOrNull { it != first } ?: return
-        assertTerminalResponsive(first)
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        composeRule.waitForIdle()
+        sendTerminalInput("while true; do seq 1 300; sleep 1; done")
+        sendTerminalEnter()
+        waitUntilNoError(20_000L) { snapshotContainsToken("300") }
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
-        captureScreenshot("keyboard-before-switch")
-        val before = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info before switch")
+        captureScreenshot("tab-first-loaded")
+        val firstLoaded = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info for first loaded tab")
 
         selectSessionTab(second, timeoutMs = 10_000L)
-        assertTerminalResponsive(second)
-        selectSessionTab(first, timeoutMs = 10_000L)
-        waitUntilNoError(10_000L) { activeSessionId() == first }
-
+        waitUntilNoError(10_000L) { activeSessionId() == second }
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        composeRule.waitForIdle()
+        sendTerminalInput("while true; do seq 1001 1300; sleep 1; done")
+        sendTerminalEnter()
+        waitUntilNoError(20_000L) { snapshotContainsToken("1300") }
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
-        captureScreenshot("keyboard-after-switch")
-        val after = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info after switch")
+        captureScreenshot("tab-second-loaded")
 
-        assertEquals(first, after.activeSessionId)
+        var firstRestored: TerminalDebugInfo? = null
+        repeat(20) { hop ->
+            val hopNumber = hop + 1
+
+            selectSessionTab(first, timeoutMs = 10_000L)
+            waitUntilNoError(10_000L) {
+                val info = readTerminalDebugInfo()
+                info != null && info.activeSessionId == first
+            }
+            composeRule.waitForIdle()
+            Thread.sleep(150)
+            captureScreenshot("tab-first-hop-${hopNumber}-immediate")
+            waitUntilNoError(10_000L) {
+                val info = readTerminalDebugInfo()
+                info != null && info.activeSessionId == first && !stateForTest().sessionSyncing
+            }
+            composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+            waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            captureScreenshot("tab-first-hop-${hopNumber}-settled")
+            if (hop == 0) {
+                firstRestored = readTerminalDebugInfo()
+            }
+
+            selectSessionTab(second, timeoutMs = 10_000L)
+            waitUntilNoError(10_000L) {
+                val info = readTerminalDebugInfo()
+                info != null && info.activeSessionId == second
+            }
+            composeRule.waitForIdle()
+            Thread.sleep(150)
+            captureScreenshot("tab-second-hop-${hopNumber}-immediate")
+            waitUntilNoError(10_000L) {
+                val info = readTerminalDebugInfo()
+                info != null && info.activeSessionId == second && !stateForTest().sessionSyncing
+            }
+            composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+            waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            captureScreenshot("tab-second-hop-${hopNumber}-settled")
+        }
+
+        val restored = firstRestored ?: throw AssertionError("missing terminal debug info after restoring first tab")
+        assertEquals(first, restored.activeSessionId)
         assertTrue(
-            "visible terminal content changed across tab switch: before=${before.hash} after=${after.hash}",
-            before.hash == after.hash || after.lastFrameSeq >= before.lastFrameSeq,
+            "visible terminal content changed across tab switch: before=${firstLoaded.hash} after=${restored.hash}",
+            firstLoaded.hash == restored.hash || restored.lastFrameSeq >= firstLoaded.lastFrameSeq,
         )
     }
 
@@ -996,7 +1044,7 @@ class EndToEndTest {
     private fun readTerminalDebugInfo(): TerminalDebugInfo? {
         var info: TerminalDebugInfo? = null
         composeRule.runOnIdle {
-            val state = appViewModel().state.value
+            val state = stateForTest()
             val snap = state.activeSnapshot
             val rows = snap?.rows ?: 0
             val cols = snap?.cols ?: 0
@@ -1051,6 +1099,8 @@ class EndToEndTest {
         }
         return info
     }
+
+    private fun stateForTest() = appViewModel().state.value
 
     private fun snapshotContainsToken(token: String): Boolean {
         var found = false

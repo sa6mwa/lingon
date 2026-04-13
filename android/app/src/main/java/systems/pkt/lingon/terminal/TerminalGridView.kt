@@ -43,6 +43,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var scrollbackOffsetRows: Int = 0
     private var cameraOffsetXPx: Float = 0f
     private var cameraOffsetYPx: Float = 0f
+    private var pendingViewportState: TerminalViewportState? = null
     private var lastViewportHeightPx: Int = 0
     private var panActive: Boolean = false
     private var lastTouchX: Float = 0f
@@ -228,6 +229,7 @@ class TerminalGridView @JvmOverloads constructor(
         }
         if (invalidate) {
             updateLayout()
+            applyPendingViewportRestoreIfReady()
             invalidate()
         }
     }
@@ -261,8 +263,25 @@ class TerminalGridView @JvmOverloads constructor(
         )
     }
 
+    fun scheduleViewportRestore(state: TerminalViewportState?) {
+        pendingViewportState = state
+        applyPendingViewportRestoreIfReady()
+    }
+
     fun restoreViewportState(state: TerminalViewportState?) {
         if (state == null) return
+        pendingViewportState = null
+        applyViewportRestore(state)
+    }
+
+    private fun applyPendingViewportRestoreIfReady() {
+        val state = pendingViewportState ?: return
+        if (height <= 0 || scaledCellHeight <= 0f) return
+        pendingViewportState = null
+        applyViewportRestore(state)
+    }
+
+    private fun applyViewportRestore(state: TerminalViewportState) {
         cameraOffsetXPx = state.cameraOffsetXPx
         val totalRows = snapshot?.rows ?: 0
         cameraOffsetYPx = if (TerminalViewportPolicy.shouldSnapToLiveBottom(

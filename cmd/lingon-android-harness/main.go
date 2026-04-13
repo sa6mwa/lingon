@@ -224,6 +224,12 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 
 	controlPath := ensureBasePath(opts.basePath) + "/__harness/start-host"
 	relayHandler := server.WrapBasePath(opts.basePath, relayServer.Handler())
+	clientDelay := time.Duration(0)
+	if raw := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_CLIENT_DELAY_MS")); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			clientDelay = time.Duration(ms) * time.Millisecond
+		}
+	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case controlPath:
@@ -251,6 +257,9 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"ids": ids})
 			return
 		default:
+			if clientDelay > 0 && strings.HasSuffix(r.URL.Path, "/ws/client") {
+				time.Sleep(clientDelay)
+			}
 			relayHandler.ServeHTTP(w, r)
 			return
 		}

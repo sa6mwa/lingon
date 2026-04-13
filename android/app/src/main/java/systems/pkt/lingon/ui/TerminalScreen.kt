@@ -91,6 +91,8 @@ fun TerminalScreen(
     var ctrlActive by remember { mutableStateOf(false) }
     var altActive by remember { mutableStateOf(false) }
     var requestInputFocus by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
+    val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
     val config = LocalConfiguration.current
     val isCompact = config.screenWidthDp < 360 || config.screenHeightDp < 700
     val isLandscape = config.screenWidthDp > config.screenHeightDp
@@ -107,6 +109,16 @@ fun TerminalScreen(
         Unit
     }
     LaunchedEffect(state.activeSessionId) { focusInput() }
+
+    val handleSelectSession: (String) -> Unit = { nextSessionId ->
+        val currentSessionId = state.activeSessionId
+        if (!currentSessionId.isNullOrBlank() && currentSessionId != nextSessionId) {
+            terminalGridView?.let { view ->
+                viewportCache[currentSessionId] = view.captureViewportState()
+            }
+        }
+        viewModel.selectSession(nextSessionId)
+    }
 
     fun sendTextFromSoftInput(payload: String) {
         val dispatch = dispatchSoftInput(payload, ctrlActive = ctrlActive, altActive = altActive)
@@ -214,13 +226,16 @@ fun TerminalScreen(
                     SessionsColumn(
                         sessions = state.sessions,
                         activeSessionId = state.activeSessionId,
-                        onSelect = viewModel::selectSession,
+                        onSelect = handleSelectSession,
                         compact = true,
                     )
                 }
                 TerminalPanel(
                     state = state,
                     viewModel = viewModel,
+                    viewportCache = viewportCache,
+                    terminalGridView = terminalGridView,
+                    onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
                     fitToViewWidth = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f,
                     screenPadding = screenPadding,
@@ -281,7 +296,7 @@ fun TerminalScreen(
                     SessionsRow(
                         sessions = state.sessions,
                         activeSessionId = state.activeSessionId,
-                        onSelect = viewModel::selectSession,
+                        onSelect = handleSelectSession,
                         compact = isCompact,
                     )
                     StatusBanner(status = state.status)
@@ -289,6 +304,9 @@ fun TerminalScreen(
                 TerminalPanel(
                     state = state,
                     viewModel = viewModel,
+                    viewportCache = viewportCache,
+                    terminalGridView = terminalGridView,
+                    onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
                     fitToViewWidth = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f,
                     screenPadding = screenPadding,
@@ -448,6 +466,9 @@ private fun SessionsColumn(
 private fun TerminalPanel(
     state: UiState,
     viewModel: AppViewModel,
+    viewportCache: MutableMap<String, TerminalViewportState>,
+    terminalGridView: TerminalGridView?,
+    onTerminalGridViewChanged: (TerminalGridView?) -> Unit,
     palette: TerminalPalette,
     fitToViewWidth: Boolean,
     screenPadding: Dp,
@@ -467,9 +488,9 @@ private fun TerminalPanel(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
-        val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
-        var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
+        var restoredSessionId by remember { mutableStateOf<String?>(null) }
         val sessionId = state.activeSessionId
+        val shouldDelayViewportRestore = state.sessionSyncing && fitToViewWidth && state.scrollbackOffsetRows == 0
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -480,7 +501,7 @@ private fun TerminalPanel(
             AndroidView(
                 factory = { context ->
                     TerminalGridView(context).apply {
-                        terminalGridView = this
+                        onTerminalGridViewChanged(this)
                         tag = "terminal_view"
                         setOnZoomChanged { value ->
                             viewModel.updateZoomFactor(value)
@@ -492,7 +513,7 @@ private fun TerminalPanel(
                     }
                 },
                 update = { view ->
-                    terminalGridView = view
+                    onTerminalGridViewChanged(view)
                     view.update(
                         snapshot = state.activeSnapshot,
                         fontSizeSp = state.fontSizeSp,
@@ -518,16 +539,23 @@ private fun TerminalPanel(
                     .fillMaxSize()
                     .testTag(TestTags.TerminalList),
             )
-            DisposableEffect(sessionId, terminalGridView) {
-                onDispose {
-                    val view = terminalGridView ?: return@onDispose
-                    val previousSessionId = sessionId ?: return@onDispose
-                    viewportCache[previousSessionId] = view.captureViewportState()
-                }
+            LaunchedEffect(sessionId) {
+                restoredSessionId = null
             }
-            LaunchedEffect(sessionId, terminalGridView) {
+            LaunchedEffect(
+                sessionId,
+                terminalGridView,
+                state.sessionSyncing,
+                state.lastFrameSeq,
+                state.scrollbackOffsetRows,
+                fitToViewWidth,
+            ) {
                 val view = terminalGridView ?: return@LaunchedEffect
-                view.restoreViewportState(sessionId?.let(viewportCache::get))
+                val activeSessionId = sessionId ?: return@LaunchedEffect
+                if (restoredSessionId == activeSessionId) return@LaunchedEffect
+                if (shouldDelayViewportRestore) return@LaunchedEffect
+                view.scheduleViewportRestore(viewportCache[activeSessionId])
+                restoredSessionId = activeSessionId
             }
             if (showStatusOverlay) {
                 StatusBanner(
