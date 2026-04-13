@@ -76,7 +76,6 @@ class AppViewModel(
     internal var nowProvider: () -> Long = System::currentTimeMillis
     private var lastBackgroundAtMs: Long? = null
     private var appInForeground = true
-    private val recentWallNotifications = LinkedHashMap<String, Long>()
     private var persistZoomJob: Job? = null
     private var lastForegroundRecoveryAtMs: Long = 0
 
@@ -1103,7 +1102,6 @@ class AppViewModel(
                         notifyWall(
                             sender = wall.sender,
                             message = wall.message,
-                            eventAtMs = System.currentTimeMillis(),
                         )
                         _state.update {
                             it.copy(
@@ -1355,7 +1353,6 @@ class AppViewModel(
         wallWorkScheduler.setEnabled(false)
         if (resetCursor) {
             wallWorkScheduler.resetCursor()
-            recentWallNotifications.clear()
         }
     }
 
@@ -1372,34 +1369,8 @@ class AppViewModel(
         wallWorkScheduler.setEnabled(enabled)
     }
 
-    private fun wallNotificationKey(sender: String, message: String): String {
-        return "${sender.trim()}\n${message.trim()}"
-    }
-
-    private fun shouldSuppressWallNotification(sender: String, message: String, eventAtMs: Long): Boolean {
-        val now = System.currentTimeMillis()
-        val pruneBefore = now - wallDedupeWindowMs
-        val iterator = recentWallNotifications.entries.iterator()
-        while (iterator.hasNext()) {
-            val entry = iterator.next()
-            if (entry.value < pruneBefore) {
-                iterator.remove()
-            }
-        }
-        val key = wallNotificationKey(sender, message)
-        val seenAt = recentWallNotifications[key]
-        if (seenAt != null && kotlin.math.abs(eventAtMs - seenAt) <= wallDedupeWindowMs) {
-            return true
-        }
-        recentWallNotifications[key] = eventAtMs
-        return false
-    }
-
-    private fun notifyWall(sender: String, message: String, eventAtMs: Long) {
+    private fun notifyWall(sender: String, message: String) {
         if (message.isBlank()) {
-            return
-        }
-        if (shouldSuppressWallNotification(sender, message, eventAtMs)) {
             return
         }
         wallNotifier.notifyWall(sender, message)
@@ -1588,7 +1559,6 @@ class AppViewModel(
     companion object {
         private const val sharedSessionId = "shared"
         private const val MissingSessionGraceMs = 5_000L
-        private const val wallDedupeWindowMs = 30_000L
         private const val foregroundRecoveryMinIntervalMs = 30_000L
 
         @VisibleForTesting

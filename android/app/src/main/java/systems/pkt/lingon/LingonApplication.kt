@@ -20,6 +20,7 @@ import systems.pkt.lingon.data.certs.CertificateStore
 import systems.pkt.lingon.data.relay.RelaySessionsClient
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.notifications.AndroidWallNotifier
+import systems.pkt.lingon.notifications.DedupingWallNotifier
 import systems.pkt.lingon.viewmodel.WallNotifier
 import systems.pkt.lingon.work.WallWorkScheduler
 import systems.pkt.lingon.work.WorkManagerWallWorkScheduler
@@ -57,7 +58,7 @@ class LingonApplication : Application() {
         val authClient = AuthClient(httpClientProvider, endpointStore)
         val sessionsClient = RelaySessionsClient(httpClientProvider, endpointStore)
         wsClient = RelayWebSocketClient(httpClientProvider)
-        wallNotifier = AndroidWallNotifier(this)
+        wallNotifier = DedupingWallNotifier(AndroidWallNotifier(this))
         wallWorkScheduler = WorkManagerWallWorkScheduler(this, wallWorkStateStore, appScope)
         repository = LingonRepository(
             authClient,
