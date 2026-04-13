@@ -559,6 +559,7 @@ class AppViewModelTest {
             loggedIn = true,
             shareToken = null,
             requiresUnlock = false,
+            backgroundWallEnabled = false,
             appInForeground = true,
             connectionState = ConnectionState.Connected,
             hasSocket = true,
@@ -572,6 +573,7 @@ class AppViewModelTest {
             loggedIn = true,
             shareToken = null,
             requiresUnlock = false,
+            backgroundWallEnabled = false,
             appInForeground = true,
             connectionState = ConnectionState.Disconnected,
             hasSocket = false,
@@ -585,6 +587,7 @@ class AppViewModelTest {
             loggedIn = true,
             shareToken = null,
             requiresUnlock = false,
+            backgroundWallEnabled = false,
             appInForeground = false,
             connectionState = ConnectionState.Connected,
             hasSocket = true,
@@ -598,6 +601,7 @@ class AppViewModelTest {
             loggedIn = false,
             shareToken = null,
             requiresUnlock = false,
+            backgroundWallEnabled = false,
             appInForeground = false,
             connectionState = ConnectionState.Disconnected,
             hasSocket = false,
@@ -607,11 +611,62 @@ class AppViewModelTest {
             loggedIn = true,
             shareToken = "token",
             requiresUnlock = false,
+            backgroundWallEnabled = false,
             appInForeground = false,
             connectionState = ConnectionState.Disconnected,
             hasSocket = false,
         )
         assertFalse(shareTokenMode)
+    }
+
+    @Test
+    fun shouldEnableWallWorkBackgroundLiveModeDisablesWorker() {
+        val enabled = AppViewModel.shouldEnableWallWork(
+            loggedIn = true,
+            shareToken = null,
+            requiresUnlock = false,
+            backgroundWallEnabled = true,
+            appInForeground = false,
+            connectionState = ConnectionState.Disconnected,
+            hasSocket = false,
+        )
+        assertFalse(enabled)
+    }
+
+    @Test
+    fun shouldEnableBackgroundWallServiceOnlyWhenLoggedInBackgroundAndEnabled() {
+        assertTrue(
+            AppViewModel.shouldEnableBackgroundWallService(
+                loggedIn = true,
+                shareToken = null,
+                backgroundWallEnabled = true,
+                appInForeground = false,
+            ),
+        )
+        assertFalse(
+            AppViewModel.shouldEnableBackgroundWallService(
+                loggedIn = true,
+                shareToken = null,
+                backgroundWallEnabled = true,
+                appInForeground = true,
+            ),
+        )
+        assertFalse(
+            AppViewModel.shouldEnableBackgroundWallService(
+                loggedIn = false,
+                shareToken = null,
+                backgroundWallEnabled = true,
+                appInForeground = false,
+            ),
+        )
+        assertFalse(
+            AppViewModel.shouldEnableBackgroundWallService(
+                loggedIn = true,
+                shareToken = "token",
+                backgroundWallEnabled = true,
+                appInForeground = false,
+            ),
+        )
     }
 
     @Test
@@ -1084,6 +1139,7 @@ private class FakeRepository(
     override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
     override val zoomFlow: Flow<Float> = MutableStateFlow(1.0f)
     override val resizeHostFlow: Flow<Boolean> = MutableStateFlow(false)
+    override val backgroundWallEnabledFlow: Flow<Boolean> = MutableStateFlow(false)
     override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
     override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(listOf("https://localhost:12843/v1"))
     override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
@@ -1106,6 +1162,10 @@ private class FakeRepository(
     }
 
     override fun setResizeHostEnabled(value: Boolean) {
+        // no-op
+    }
+
+    override fun setBackgroundWallEnabled(value: Boolean) {
         // no-op
     }
 

@@ -35,6 +35,8 @@ import systems.pkt.lingon.protocol.ScrollbackRow
 import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
 import systems.pkt.lingon.ui.translateAppCursorKeys
 import systems.pkt.lingon.work.NoopWallWorkScheduler
+import systems.pkt.lingon.work.BackgroundWallServiceController
+import systems.pkt.lingon.work.NoopBackgroundWallServiceController
 import systems.pkt.lingon.work.WallWorkScheduler
 import java.util.LinkedHashMap
 import java.util.UUID
@@ -47,6 +49,7 @@ class AppViewModel(
     private val wsClient: RelayWebSocketClient,
     private val wallNotifier: WallNotifier = NoopWallNotifier,
     private val wallWorkScheduler: WallWorkScheduler = NoopWallWorkScheduler,
+    private val backgroundWallServiceController: BackgroundWallServiceController = NoopBackgroundWallServiceController,
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -100,6 +103,12 @@ class AppViewModel(
                 if (resizeHostOverride != null) return@collectLatest
                 _state.update { it.copy(resizeHostEnabled = enabled) }
                 maybeSendResize(_state.value)
+            }
+        }
+        viewModelScope.launch {
+            repository.backgroundWallEnabledFlow.collectLatest { enabled ->
+                _state.update { it.copy(backgroundWallEnabled = enabled) }
+                syncWallPollingSchedule()
             }
         }
         viewModelScope.launch {
@@ -178,6 +187,12 @@ class AppViewModel(
         repository.setResizeHostEnabled(enabled)
         _state.update { it.copy(resizeHostEnabled = enabled) }
         maybeSendResize(_state.value)
+    }
+
+    fun setBackgroundWallEnabled(enabled: Boolean) {
+        repository.setBackgroundWallEnabled(enabled)
+        _state.update { it.copy(backgroundWallEnabled = enabled) }
+        syncWallPollingSchedule()
     }
 
     fun showCertificates(show: Boolean) {
@@ -1100,8 +1115,11 @@ class AppViewModel(
                     frame.hasWall() -> {
                         val wall = frame.wall
                         notifyWall(
-                            sender = wall.sender,
-                            message = wall.message,
+                            WallNotification(
+                                eventId = wall.id,
+                                sender = wall.sender,
+                                message = wall.message,
+                            ),
                         )
                         _state.update {
                             it.copy(
@@ -1358,10 +1376,18 @@ class AppViewModel(
 
     private fun syncWallPollingSchedule() {
         val state = _state.value
+        val backgroundServiceEnabled = shouldEnableBackgroundWallService(
+            loggedIn = state.loggedIn,
+            shareToken = state.shareToken,
+            backgroundWallEnabled = state.backgroundWallEnabled,
+            appInForeground = appInForeground,
+        )
+        backgroundWallServiceController.setEnabled(backgroundServiceEnabled)
         val enabled = shouldEnableWallWork(
             loggedIn = state.loggedIn,
             shareToken = state.shareToken,
             requiresUnlock = state.requiresAppUnlock,
+            backgroundWallEnabled = state.backgroundWallEnabled,
             appInForeground = appInForeground,
             connectionState = state.connectionState,
             hasSocket = ws != null,
@@ -1369,11 +1395,11 @@ class AppViewModel(
         wallWorkScheduler.setEnabled(enabled)
     }
 
-    private fun notifyWall(sender: String, message: String) {
-        if (message.isBlank()) {
+    private fun notifyWall(notification: WallNotification) {
+        if (notification.message.isBlank()) {
             return
         }
-        wallNotifier.notifyWall(sender, message)
+        wallNotifier.notifyWall(notification)
     }
 
     private fun handleUnauthorizedResponse() {
@@ -1581,6 +1607,7 @@ class AppViewModel(
             loggedIn: Boolean,
             shareToken: String?,
             requiresUnlock: Boolean,
+            backgroundWallEnabled: Boolean,
             appInForeground: Boolean,
             connectionState: ConnectionState,
             hasSocket: Boolean,
@@ -1588,11 +1615,27 @@ class AppViewModel(
             if (!loggedIn || !shareToken.isNullOrBlank() || requiresUnlock) {
                 return false
             }
+            if (backgroundWallEnabled && !appInForeground) {
+                return false
+            }
             if (!appInForeground) {
                 return true
             }
             val connected = connectionState == ConnectionState.Connected && hasSocket
             return !connected
+        }
+
+        @VisibleForTesting
+        internal fun shouldEnableBackgroundWallService(
+            loggedIn: Boolean,
+            shareToken: String?,
+            backgroundWallEnabled: Boolean,
+            appInForeground: Boolean,
+        ): Boolean {
+            if (!loggedIn || !shareToken.isNullOrBlank() || !backgroundWallEnabled) {
+                return false
+            }
+            return !appInForeground
         }
 
         @VisibleForTesting

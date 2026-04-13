@@ -1,48 +1,30 @@
 package systems.pkt.lingon.notifications
 
+import systems.pkt.lingon.viewmodel.WallNotification
 import systems.pkt.lingon.viewmodel.WallNotifier
 
 class DedupingWallNotifier(
     private val delegate: WallNotifier,
-    private val nowProvider: () -> Long = System::currentTimeMillis,
 ) : WallNotifier {
     private val lock = Any()
-    private val recentNotifications = LinkedHashMap<String, Long>()
+    private val deliveredEventIDs = LinkedHashSet<Long>()
 
-    override fun notifyWall(sender: String, message: String) {
-        val body = message.trim()
+    override fun notifyWall(notification: WallNotification) {
+        val body = notification.message.trim()
         if (body.isBlank()) {
             return
         }
-        val now = nowProvider()
-        val key = wallNotificationKey(sender, body)
+        val eventID = notification.eventId
+        if (eventID <= 0) {
+            delegate.notifyWall(notification.copy(message = body))
+            return
+        }
         synchronized(lock) {
-            pruneOldEntries(now)
-            val seenAt = recentNotifications[key]
-            if (seenAt != null && kotlin.math.abs(now - seenAt) <= dedupeWindowMs) {
+            if (deliveredEventIDs.contains(eventID)) {
                 return
             }
-            recentNotifications[key] = now
+            deliveredEventIDs.add(eventID)
         }
-        delegate.notifyWall(sender, body)
-    }
-
-    private fun pruneOldEntries(now: Long) {
-        val pruneBefore = now - dedupeWindowMs
-        val iterator = recentNotifications.entries.iterator()
-        while (iterator.hasNext()) {
-            val entry = iterator.next()
-            if (entry.value < pruneBefore) {
-                iterator.remove()
-            }
-        }
-    }
-
-    private fun wallNotificationKey(sender: String, message: String): String {
-        return "${sender.trim()}\n${message.trim()}"
-    }
-
-    private companion object {
-        private const val dedupeWindowMs = 30_000L
+        delegate.notifyWall(notification.copy(message = body))
     }
 }

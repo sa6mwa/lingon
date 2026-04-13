@@ -203,7 +203,7 @@ func (s *WallService) sendUserWallForSession(username, sender, message, sourceSe
 		return 0, nil
 	}
 	timeoutSeconds := s.timeoutSeconds()
-	s.recordEvent(username, sourceSessionID, sender, message, timeoutSeconds, now)
+	eventID := s.recordEvent(username, sourceSessionID, sender, message, timeoutSeconds, now)
 	sent := 0
 	for _, session := range sessions {
 		if session.Status != "active" {
@@ -212,7 +212,7 @@ func (s *WallService) sendUserWallForSession(username, sender, message, sourceSe
 		if !s.hub.HasParticipants(session.ID) {
 			continue
 		}
-		frame := frameWall(session.ID, sender, message, timeoutSeconds)
+		frame := frameWall(session.ID, eventID, sender, message, timeoutSeconds)
 		if s.hub.BroadcastSessionFrame(context.Background(), session.ID, frame, true) {
 			sent++
 		}

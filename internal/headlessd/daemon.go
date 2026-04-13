@@ -743,7 +743,9 @@ func (d *Daemon) routeWallEventWithSource(wall *protocolpb.Wall, sourceSessionID
 	if sourceID == "" {
 		sourceID = d.sessionID
 	}
+	eventID := wall.GetId()
 	out := &protocolpb.Wall{
+		Id:             eventID,
 		Sender:         strings.TrimSpace(wall.GetSender()),
 		Message:        msg,
 		TimeoutSeconds: wall.GetTimeoutSeconds(),

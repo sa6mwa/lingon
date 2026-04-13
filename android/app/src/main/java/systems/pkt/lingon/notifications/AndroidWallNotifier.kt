@@ -13,10 +13,11 @@ import androidx.core.app.NotificationManagerCompat
 import java.util.concurrent.atomic.AtomicInteger
 import systems.pkt.lingon.MainActivity
 import systems.pkt.lingon.R
+import systems.pkt.lingon.viewmodel.WallNotification
 import systems.pkt.lingon.viewmodel.WallNotifier
 
 class AndroidWallNotifier(private val context: Context) : WallNotifier {
-    override fun notifyWall(sender: String, message: String) {
+    override fun notifyWall(notification: WallNotification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
             if (!granted) {
@@ -24,8 +25,9 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             }
         }
         ensureChannel()
+        val sender = notification.sender.trim()
+        val body = notification.message.trim()
         val title = if (sender.isNotBlank()) "Broadcast from $sender" else "Broadcast"
-        val body = message.trim()
         val launchIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }

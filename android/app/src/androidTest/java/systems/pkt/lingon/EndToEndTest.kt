@@ -949,7 +949,13 @@ class EndToEndTest {
 
     private fun appViewModel(): AppViewModel {
         val app = composeRule.activity.application as LingonApplication
-        val factory = AppViewModelFactory(app.repository, app.wsClient, app.wallNotifier, app.wallWorkScheduler)
+        val factory = AppViewModelFactory(
+            app.repository,
+            app.wsClient,
+            app.wallNotifier,
+            app.wallWorkScheduler,
+            app.backgroundWallServiceController,
+        )
         return ViewModelProvider(composeRule.activity, factory)[AppViewModel::class.java]
     }
 

@@ -72,6 +72,9 @@ func TestWallServiceSendUserWallScopesToParticipantSessions(t *testing.T) {
 	if got := host.sent[0].GetWall(); got == nil || got.Message != "hello" {
 		t.Fatalf("unexpected host wall frame: %#v", host.sent[0].GetWall())
 	}
+	if got := host.sent[0].GetWall(); got == nil || got.GetId() == 0 {
+		t.Fatalf("expected wall frame to carry event id, got %#v", host.sent[0].GetWall())
+	}
 }
 
 func TestWallServiceSendUserWallSanitizesMessage(t *testing.T) {

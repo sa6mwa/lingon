@@ -61,6 +61,8 @@ fun LingonApp(viewModel: AppViewModel) {
                         resizeHostEnabled = state.resizeHostEnabled,
                         resizeHostAvailable = state.hasControl,
                         onToggleResizeHost = { enabled -> viewModel.setResizeHostEnabled(enabled) },
+                        backgroundWallEnabled = state.backgroundWallEnabled,
+                        onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
                         onLogout = { viewModel.logout() },
                         compact = false,
                         vertical = false,

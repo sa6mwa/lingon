@@ -22,7 +22,13 @@ import systems.pkt.lingon.viewmodel.AppViewModelFactory
 class MainActivity : ComponentActivity() {
     private val viewModel: AppViewModel by viewModels {
         val app = application as LingonApplication
-        AppViewModelFactory(app.repository, app.wsClient, app.wallNotifier, app.wallWorkScheduler)
+        AppViewModelFactory(
+            app.repository,
+            app.wsClient,
+            app.wallNotifier,
+            app.wallWorkScheduler,
+            app.backgroundWallServiceController,
+        )
     }
     private var unlockPromptInFlight = false
     private val unlockLauncher =

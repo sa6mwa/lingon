@@ -2,67 +2,53 @@ package systems.pkt.lingon.notifications
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import systems.pkt.lingon.viewmodel.WallNotification
 
 class DedupingWallNotifierTest {
     @Test
-    fun suppressesDuplicateMessageAcrossSourcesWithinWindow() {
+    fun suppressesDuplicateEventAcrossSources() {
         val delegate = RecordingWallNotifier()
-        var nowMs = 1_000L
-        val notifier = DedupingWallNotifier(
-            delegate = delegate,
-            nowProvider = { nowMs },
-        )
+        val notifier = DedupingWallNotifier(delegate = delegate)
 
-        notifier.notifyWall("relay", "hello world")
-        nowMs += 1_000L
-        notifier.notifyWall("relay", "hello world")
+        notifier.notifyWall(WallNotification(eventId = 42, sender = "relay", message = "hello world"))
+        notifier.notifyWall(WallNotification(eventId = 42, sender = "relay", message = "hello world"))
 
-        assertEquals(listOf("relay\nhello world"), delegate.deliveries)
+        assertEquals(listOf(42L to "relay\nhello world"), delegate.deliveries)
     }
 
     @Test
-    fun allowsDifferentMessagesWithinWindow() {
+    fun allowsDifferentEventIdsForSameMessage() {
         val delegate = RecordingWallNotifier()
-        var nowMs = 1_000L
-        val notifier = DedupingWallNotifier(
-            delegate = delegate,
-            nowProvider = { nowMs },
-        )
+        val notifier = DedupingWallNotifier(delegate = delegate)
 
-        notifier.notifyWall("relay", "first")
-        nowMs += 1_000L
-        notifier.notifyWall("relay", "second")
+        notifier.notifyWall(WallNotification(eventId = 7, sender = "relay", message = "hello world"))
+        notifier.notifyWall(WallNotification(eventId = 8, sender = "relay", message = "hello world"))
 
         assertEquals(
-            listOf("relay\nfirst", "relay\nsecond"),
+            listOf(7L to "relay\nhello world", 8L to "relay\nhello world"),
             delegate.deliveries,
         )
     }
 
     @Test
-    fun allowsRepeatAfterDedupeWindowExpires() {
+    fun passesThroughUnknownEventIdWithoutDedupe() {
         val delegate = RecordingWallNotifier()
-        var nowMs = 1_000L
-        val notifier = DedupingWallNotifier(
-            delegate = delegate,
-            nowProvider = { nowMs },
-        )
+        val notifier = DedupingWallNotifier(delegate = delegate)
 
-        notifier.notifyWall("relay", "hello world")
-        nowMs += 30_001L
-        notifier.notifyWall("relay", "hello world")
+        notifier.notifyWall(WallNotification(eventId = 0, sender = "relay", message = "hello world"))
+        notifier.notifyWall(WallNotification(eventId = 0, sender = "relay", message = "hello world"))
 
         assertEquals(
-            listOf("relay\nhello world", "relay\nhello world"),
+            listOf(0L to "relay\nhello world", 0L to "relay\nhello world"),
             delegate.deliveries,
         )
     }
 
     private class RecordingWallNotifier : systems.pkt.lingon.viewmodel.WallNotifier {
-        val deliveries = mutableListOf<String>()
+        val deliveries = mutableListOf<Pair<Long, String>>()
 
-        override fun notifyWall(sender: String, message: String) {
-            deliveries += "${sender.trim()}\n${message.trim()}"
+        override fun notifyWall(notification: WallNotification) {
+            deliveries += notification.eventId to "${notification.sender.trim()}\n${notification.message.trim()}"
         }
     }
 }

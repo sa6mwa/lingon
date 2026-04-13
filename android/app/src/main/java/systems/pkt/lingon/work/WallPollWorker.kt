@@ -6,6 +6,7 @@ import androidx.work.WorkerParameters
 import kotlinx.coroutines.flow.first
 import systems.pkt.lingon.LingonApplication
 import systems.pkt.lingon.data.ApiException
+import systems.pkt.lingon.viewmodel.WallNotification
 
 class WallPollWorker(
     appContext: Context,
@@ -26,7 +27,13 @@ class WallPollWorker(
                 if (event.message.isBlank()) {
                     return@forEach
                 }
-                app.wallNotifier.notifyWall(event.sender, event.message)
+                app.wallNotifier.notifyWall(
+                    WallNotification(
+                        eventId = event.id,
+                        sender = event.sender,
+                        message = event.message,
+                    ),
+                )
                 if (event.id > next) {
                     next = event.id
                 }

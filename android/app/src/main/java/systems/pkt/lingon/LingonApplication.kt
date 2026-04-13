@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import systems.pkt.lingon.data.AuthClient
+import systems.pkt.lingon.data.BackgroundWallStore
 import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.data.EndpointStore
 import systems.pkt.lingon.data.FontSizeStore
@@ -22,6 +23,8 @@ import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.notifications.AndroidWallNotifier
 import systems.pkt.lingon.notifications.DedupingWallNotifier
 import systems.pkt.lingon.viewmodel.WallNotifier
+import systems.pkt.lingon.work.AndroidBackgroundWallServiceController
+import systems.pkt.lingon.work.BackgroundWallServiceController
 import systems.pkt.lingon.work.WallWorkScheduler
 import systems.pkt.lingon.work.WorkManagerWallWorkScheduler
 
@@ -40,6 +43,8 @@ class LingonApplication : Application() {
         private set
     lateinit var wallWorkScheduler: WallWorkScheduler
         private set
+    lateinit var backgroundWallServiceController: BackgroundWallServiceController
+        private set
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -50,6 +55,7 @@ class LingonApplication : Application() {
         val fontSizeStore = FontSizeStore(dataStore, appScope)
         val zoomStore = ZoomStore(dataStore, appScope)
         val terminalResizeStore = TerminalResizeStore(dataStore, appScope)
+        val backgroundWallStore = BackgroundWallStore(dataStore, appScope)
         val appLockStore = AppLockStore(dataStore, appScope)
         val cookieJar = PersistentCookieJar(dataStore, appScope)
         wallWorkStateStore = WallWorkStateStore(dataStore)
@@ -60,6 +66,7 @@ class LingonApplication : Application() {
         wsClient = RelayWebSocketClient(httpClientProvider)
         wallNotifier = DedupingWallNotifier(AndroidWallNotifier(this))
         wallWorkScheduler = WorkManagerWallWorkScheduler(this, wallWorkStateStore, appScope)
+        backgroundWallServiceController = AndroidBackgroundWallServiceController(this)
         repository = LingonRepository(
             authClient,
             sessionsClient,
@@ -69,6 +76,7 @@ class LingonApplication : Application() {
             fontSizeStore,
             zoomStore,
             terminalResizeStore,
+            backgroundWallStore,
             appLockStore,
         )
     }

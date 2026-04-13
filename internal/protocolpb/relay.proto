@@ -141,9 +141,10 @@ message SessionInfo {
 }
 
 message Wall {
-  string sender = 1;
-  string message = 2;
-  uint32 timeout_seconds = 3;
+  uint64 id = 1;
+  string sender = 2;
+  string message = 3;
+  uint32 timeout_seconds = 4;
 }
 
 message SessionClosed {

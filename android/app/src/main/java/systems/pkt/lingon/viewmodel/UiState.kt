@@ -44,6 +44,7 @@ data class UiState(
     val fontSizeSp: Int = DefaultTerminalFontSizeSp,
     val zoomFactor: Float = DefaultTerminalZoom,
     val resizeHostEnabled: Boolean = false,
+    val backgroundWallEnabled: Boolean = false,
     val shareToken: String? = null,
     val shareTokenError: String? = null,
     val certificateError: String? = null,

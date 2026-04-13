@@ -10,6 +10,7 @@ interface LingonClient {
     val fontSizeFlow: Flow<Int>
     val zoomFlow: Flow<Float>
     val resizeHostFlow: Flow<Boolean>
+    val backgroundWallEnabledFlow: Flow<Boolean>
     val appLockTimeoutMinutesFlow: Flow<Int>
     val savedEndpointsFlow: Flow<List<String>>
     val certificatesFlow: Flow<Map<String, List<TrustedCert>>>
@@ -18,6 +19,7 @@ interface LingonClient {
     fun setFontSize(value: Int)
     fun setZoom(value: Float)
     fun setResizeHostEnabled(value: Boolean)
+    fun setBackgroundWallEnabled(value: Boolean)
     fun setAppLockTimeoutMinutes(value: Int)
     fun saveLastActiveSessionId(endpoint: String, sessionId: String)
     fun clearLastActiveSession()

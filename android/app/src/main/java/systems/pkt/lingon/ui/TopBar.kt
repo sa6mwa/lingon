@@ -54,6 +54,8 @@ fun TopBar(
     resizeHostEnabled: Boolean,
     resizeHostAvailable: Boolean,
     onToggleResizeHost: (Boolean) -> Unit,
+    backgroundWallEnabled: Boolean,
+    onToggleBackgroundWall: (Boolean) -> Unit,
     onLogout: () -> Unit,
     compact: Boolean,
     vertical: Boolean,
@@ -163,6 +165,24 @@ fun TopBar(
                         },
                         enabled = resizeHostAvailable,
                         modifier = Modifier.testTag(TestTags.ResizeHostMenuItem),
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Background wall notifications") },
+                        onClick = {
+                            onToggleBackgroundWall(!backgroundWallEnabled)
+                            onDismissMenu()
+                        },
+                        trailingIcon = {
+                            Switch(
+                                checked = backgroundWallEnabled,
+                                onCheckedChange = { checked ->
+                                    onToggleBackgroundWall(checked)
+                                    onDismissMenu()
+                                },
+                                modifier = Modifier.testTag(TestTags.BackgroundWallToggle),
+                            )
+                        },
+                        modifier = Modifier.testTag(TestTags.BackgroundWallMenuItem),
                     )
                     DropdownMenuItem(
                         text = { Text("Select theme") },

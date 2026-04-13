@@ -25,6 +25,8 @@ object TestTags {
     const val CertificatesButton = "certificates_button"
     const val ResizeHostMenuItem = "resize_host_menu_item"
     const val ResizeHostToggle = "resize_host_toggle"
+    const val BackgroundWallMenuItem = "background_wall_menu_item"
+    const val BackgroundWallToggle = "background_wall_toggle"
 
     const val LoginUsername = "login_username"
     const val LoginPassword = "login_password"
