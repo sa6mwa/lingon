@@ -586,6 +586,9 @@ func (c *Client) pingLoop(ctx context.Context, ws *websocket.Conn, cancel func()
 		pingCancel()
 		c.writeMu.Unlock()
 		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return
+			}
 			c.setError(err)
 			cancel()
 			return

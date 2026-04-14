@@ -867,44 +867,9 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 	if err := chromedp.Run(ctx, network.Enable()); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
-	code := totpCode(t, created.TOTPSecret)
 	loginURL := endpoint + "/"
-	if err := chromedp.Run(ctx,
-		chromedp.Navigate(loginURL),
-		chromedp.WaitVisible("body", chromedp.ByQuery),
-	); err != nil {
-		t.Fatalf("chromedp navigate: %v", err)
-	}
-	waitUntilDebug(t, 20*time.Second, func() bool {
-		var ready bool
-		_ = chromedp.Run(ctx, chromedp.Evaluate(`(() => {
-  const login = document.getElementById("login-view");
-  const form = document.getElementById("login-form");
-  const terminal = document.getElementById("terminal-view");
-  if (terminal && !terminal.classList.contains("hidden")) return true;
-  return Boolean(login && form && !login.classList.contains("hidden"));
-})()`, &ready))
-		return ready
-	}, func() string {
-		return "login or terminal view not ready"
-	}, hostErr)
-
-	var terminalVisible bool
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
-  const terminal = document.getElementById("terminal-view");
-  return Boolean(terminal && !terminal.classList.contains("hidden"));
-})()`, &terminalVisible)); err != nil {
-		t.Fatalf("chromedp terminal visible check: %v", err)
-	}
-	if !terminalVisible {
-		if err := chromedp.Run(ctx,
-			chromedp.SendKeys("input[name='username']", created.User.Username, chromedp.ByQuery),
-			chromedp.SendKeys("input[name='password']", "pass", chromedp.ByQuery),
-			chromedp.SendKeys("input[name='totp']", code, chromedp.ByQuery),
-			chromedp.Click("button[type='submit']", chromedp.ByQuery),
-		); err != nil {
-			t.Fatalf("chromedp login submit: %v", err)
-		}
+	if err := ensureWebUILogin(ctx, loginURL, created.User.Username, "pass", totpCode(t, created.TOTPSecret)); err != nil {
+		t.Fatalf("chromedp login: %v", err)
 	}
 
 	waitForTerminalReady(t, ctx, 60*time.Second, hostErr)
