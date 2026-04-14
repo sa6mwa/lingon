@@ -620,6 +620,60 @@ class EndToEndTest {
     }
 
     @Test
+    fun background_foreground_resumes_input_without_tab_switch() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val sessionId = activeSessionId()
+        assertTerminalResponsive(sessionId)
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val info = readTerminalDebugInfo()
+            info != null && info.state == "Connected" && info.activeSessionId == sessionId
+        }
+        assertTerminalResponsive(sessionId)
+    }
+
+    @Test
+    fun background_foreground_preserves_bottom_anchor_visual() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val sessionId = activeSessionId()
+        assertTerminalResponsive(sessionId)
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        composeRule.waitForIdle()
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before background/foreground fixture")
+        sendTerminalInput("seq 1 60")
+        sendTerminalEnter()
+        val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.activeSessionId == sessionId &&
+                info.lastFrameSeq > beforeLoad.lastFrameSeq &&
+                info.hash != beforeLoad.hash &&
+                info.visibleEndRowExclusive > info.visibleStartRow
+        } ?: throw AssertionError("terminal fixture did not render before background/foreground cycle")
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == sessionId &&
+                info.visibleStartRow == loaded.visibleStartRow &&
+                info.visibleEndRowExclusive == loaded.visibleEndRowExclusive &&
+                (info.hash == loaded.hash || info.lastFrameSeq >= loaded.lastFrameSeq)
+        } ?: throw AssertionError("viewport anchor changed across background/foreground cycle")
+    }
+
+    @Test
     fun share_token_dialog_rejects_invalid_token() {
         openMenu()
         composeRule.onNodeWithTag(TestTags.ShareTokenButton).performClick()
@@ -1100,6 +1154,8 @@ class EndToEndTest {
                 resizeEnabled = state.resizeHostEnabled,
                 viewCols = terminalView?.getViewCols() ?: state.terminalCols,
                 viewRows = terminalView?.getViewRows() ?: state.terminalRows,
+                visibleStartRow = terminalView?.getVisibleStartRow() ?: 0,
+                visibleEndRowExclusive = terminalView?.getVisibleEndRowExclusive() ?: 0,
                 zoomFactor = state.zoomFactor,
             )
         }
@@ -1806,6 +1862,8 @@ class EndToEndTest {
         val resizeEnabled: Boolean,
         val viewCols: Int,
         val viewRows: Int,
+        val visibleStartRow: Int,
+        val visibleEndRowExclusive: Int,
         val zoomFactor: Float,
     )
 }

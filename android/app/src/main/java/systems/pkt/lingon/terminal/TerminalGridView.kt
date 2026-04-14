@@ -256,6 +256,26 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun getViewRows(): Int = viewRows
 
+    fun getVisibleStartRow(): Int {
+        val snap = snapshot ?: return 0
+        val rows = snap.rows
+        if (rows <= 0 || scaledCellHeight <= 0f || height <= 0) return 0
+        val maxRows = floor(height / scaledCellHeight).toInt().coerceAtLeast(0)
+        val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
+        val maxOffsetRows = max(0, rows - visibleRows)
+        val startRow = floor(cameraOffsetYPx.coerceAtLeast(0f) / scaledCellHeight).toInt()
+        return startRow.coerceIn(0, maxOffsetRows)
+    }
+
+    fun getVisibleEndRowExclusive(): Int {
+        val snap = snapshot ?: return 0
+        val rows = snap.rows
+        if (rows <= 0 || scaledCellHeight <= 0f || height <= 0) return 0
+        val maxRows = floor(height / scaledCellHeight).toInt().coerceAtLeast(0)
+        val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
+        return (getVisibleStartRow() + visibleRows).coerceAtMost(rows)
+    }
+
     fun captureViewportState(): TerminalViewportState {
         return TerminalViewportState(
             cameraOffsetXPx = cameraOffsetXPx,

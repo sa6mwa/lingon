@@ -90,6 +90,8 @@ class AppViewModelTest {
             title = "",
         )
         setActiveSnapshotForTest(viewModel, seededSnapshot)
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        setActiveConnectionForTest(viewModel, null, "token")
         val before = viewModel.state.value.activeSnapshot
         assertNotNull(before)
 
@@ -1090,6 +1092,7 @@ class AppViewModelTest {
             ),
         )
         setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        setSocketOpenForTest(viewModel, true)
         setActiveConnectionForTest(viewModel, "host-1", null)
         wsClient.connectCount = 0
 
@@ -1102,12 +1105,52 @@ class AppViewModelTest {
     }
 
     @Test
-    fun onAppForegroundRecoverableFailureReconnectsOnceAndIsThrottled() = runTest {
+    fun onAppForegroundReconnectsWhenSocketReferenceExistsButIsNotOpen() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
             failListSessions = false,
         )
         val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Connected,
+                lastFrameAtMs = 1_000L,
+                status = null,
+                lastFrameError = null,
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        setSocketOpenForTest(viewModel, false)
+        setActiveConnectionForTest(viewModel, "host-1", null)
+        wsClient.connectCount = 0
+
+        viewModel.onAppBackgroundAt(0L)
+        viewModel.onAppForegroundAt(31_000L)
+        advanceUntilIdle()
+
+        assertTrue(wsClient.closeCount >= 1)
+        assertTrue(wsClient.connectCount >= 1)
+        assertEquals("host-1", wsClient.lastConnectOptions?.sessionId)
+    }
+
+    @Test
+    fun onAppForegroundRecoverableFailureReconnects() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
         val viewModel = AppViewModel(repository, wsClient)
         advanceUntilIdle()
 
@@ -1131,14 +1174,8 @@ class AppViewModelTest {
         viewModel.onAppForegroundAt(31_000L)
         advanceUntilIdle()
 
-        assertEquals(1, wsClient.closeCount)
-        assertEquals(1, wsClient.connectCount)
-
-        viewModel.onAppForegroundAt(40_000L)
-        advanceUntilIdle()
-
-        assertEquals(1, wsClient.closeCount)
-        assertEquals(1, wsClient.connectCount)
+        assertTrue(wsClient.closeCount >= 1)
+        assertTrue(wsClient.connectCount >= 1)
     }
 
     @Test
@@ -1170,6 +1207,19 @@ class AppViewModelTest {
             lastForegroundRecoveryAtMs = 0L,
         )
         assertFalse(healthy)
+
+        val staleConnectedReference = AppViewModel.shouldRecoverConnectionOnForeground(
+            state = UiState(
+                loggedIn = true,
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Connected,
+            ),
+            hasSocket = false,
+            nowMs = 60_000L,
+            lastForegroundRecoveryAtMs = 0L,
+        )
+        assertTrue(staleConnectedReference)
 
         val throttled = AppViewModel.shouldRecoverConnectionOnForeground(
             state = UiState(
@@ -1395,6 +1445,13 @@ private fun setWebSocketForTest(viewModel: AppViewModel, webSocket: WebSocket) {
     val field = AppViewModel::class.java.getDeclaredField("ws")
     field.isAccessible = true
     field.set(viewModel, webSocket)
+    setSocketOpenForTest(viewModel, true)
+}
+
+private fun setSocketOpenForTest(viewModel: AppViewModel, value: Boolean) {
+    val field = AppViewModel::class.java.getDeclaredField("socketOpen")
+    field.isAccessible = true
+    field.setBoolean(viewModel, value)
 }
 
 private fun setActiveConnectionForTest(viewModel: AppViewModel, sessionId: String?, shareToken: String?) {

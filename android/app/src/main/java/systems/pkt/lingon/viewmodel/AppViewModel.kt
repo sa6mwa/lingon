@@ -55,6 +55,7 @@ class AppViewModel(
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var ws: WebSocket? = null
+    private var socketOpen = false
     private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
     private var suppressReconnect = false
@@ -842,7 +843,12 @@ class AppViewModel(
     private fun sendProcessedInput(bytes: ByteArray) {
         val appCursorActive = (liveSnapshot?.mode ?: _state.value.activeSnapshot?.mode ?: 0) and SNAPSHOT_MODE_APP_CURSOR != 0
         val payload = translateAppCursorKeys(bytes, appCursorActive)
-        ws?.let { wsClient.sendInput(it, payload) } ?: setStatus("not connected", StatusLevel.Warn)
+        val webSocket = ws
+        if (!socketOpen || webSocket == null) {
+            setStatus("not connected", StatusLevel.Warn)
+            return
+        }
+        wsClient.sendInput(webSocket, payload)
     }
 
     private suspend fun bootstrapSessions() {
@@ -874,8 +880,8 @@ class AppViewModel(
         }
     }
 
-    private suspend fun updateSessions(sessions: List<RelaySession>) {
-        if (_state.value.shareToken != null) return
+    private suspend fun updateSessions(sessions: List<RelaySession>): Boolean {
+        if (_state.value.shareToken != null) return false
         val now = nowProvider()
         val currentActive = _state.value.activeSessionId?.trim().orEmpty()
         val merged = LinkedHashMap<String, RelaySession>(sessions.size + 1)
@@ -901,20 +907,22 @@ class AppViewModel(
         _state.update { it.copy(sessions = merged.values.toList()) }
         prefetchSessionViewStates(_state.value.endpoint, merged.values)
         syncWallPollingSchedule()
-        ensureActiveSession(merged.values.toList())
+        val connectionHandled = ensureActiveSession(merged.values.toList())
         if (merged.isNotEmpty()) {
             stopSessionPoll()
         }
+        return connectionHandled
     }
 
-    private suspend fun ensureActiveSession(sessions: List<RelaySession>) {
+    private suspend fun ensureActiveSession(sessions: List<RelaySession>): Boolean {
         val current = _state.value.activeSessionId
         val hasCurrent = current != null && sessions.any { it.id == current }
         if (hasCurrent) {
             if (ws == null || _state.value.connectionState != ConnectionState.Connected) {
                 connectActiveSession()
+                return true
             }
-            return
+            return false
         }
         val endpoint = resolveEndpointForPersistence()
         val preferredSessionId = withTimeoutOrNull(1500) {
@@ -931,7 +939,9 @@ class AppViewModel(
         activateSessionViewState()
         if (next != null && next != current) {
             connectActiveSession()
+            return true
         }
+        return false
     }
 
     private suspend fun resolveEndpointForPersistence(): String {
@@ -989,7 +999,7 @@ class AppViewModel(
             return
         }
         val key = ConnectionKey(sessionId = sessionId, shareToken = shareToken)
-        if (activeConnection == key && ws != null) {
+        if (activeConnection == key && socketOpen && ws != null) {
             if (sessionId != null && sessionCaches[sessionId]?.liveSnapshot != null) {
                 applySessionCache(sessionId)
             }
@@ -1015,11 +1025,12 @@ class AppViewModel(
 
     private fun openWebSocket(baseUrl: HttpUrl, sessionId: String?, shareToken: String?, state: UiState) {
         val key = ConnectionKey(sessionId = sessionId, shareToken = shareToken)
-        if (activeConnection == key && ws != null) {
+        if (activeConnection == key && socketOpen && ws != null) {
             return
         }
         stopReconnect()
         closeWebSocket("switch")
+        socketOpen = false
         _state.update {
             it.copy(
                 connectionState = ConnectionState.Connecting,
@@ -1048,6 +1059,7 @@ class AppViewModel(
 
             override fun onOpen(webSocket: WebSocket) {
                 if (isStale(webSocket)) return
+                socketOpen = true
                 reconnectAttempt = 0
                 stopReconnect()
                 clearStatus()
@@ -1308,6 +1320,7 @@ class AppViewModel(
             override fun onFailure(webSocket: WebSocket, t: Throwable?, response: Response?) {
                 if (isStale(webSocket)) return
                 ws = null
+                socketOpen = false
                 if (response?.code == 401) {
                     setStatus("session expired", StatusLevel.Error)
                     handleAuthFailureWithoutLogout()
@@ -1328,6 +1341,7 @@ class AppViewModel(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String?) {
                 if (isStale(webSocket)) return
                 ws = null
+                socketOpen = false
                 _state.update {
                     it.copy(
                         lastFrameType = "closed",
@@ -1382,6 +1396,7 @@ class AppViewModel(
     private fun closeWebSocket(reason: String) {
         val current = ws
         ws = null
+        socketOpen = false
         activeConnection = null
         syncWallPollingSchedule()
         current?.close(1000, reason)
@@ -1402,6 +1417,7 @@ class AppViewModel(
         if (suppressReconnect) return
         if (reconnectJob?.isActive == true) return
         ws = null
+        socketOpen = false
         _state.update {
             it.copy(
                 connectionState = ConnectionState.Disconnected,
@@ -1473,9 +1489,12 @@ class AppViewModel(
         }
         try {
             val sessions = listSessionsWithRecovery()
-            updateSessions(sessions)
+            val connectionHandled = updateSessions(sessions)
             if (sessions.isEmpty()) {
                 scheduleSessionPoll()
+                return
+            }
+            if (connectionHandled) {
                 return
             }
         } catch (err: ApiException) {
@@ -1530,7 +1549,7 @@ class AppViewModel(
             backgroundWallEnabled = state.backgroundWallEnabled,
             appInForeground = appInForeground,
             connectionState = state.connectionState,
-            hasSocket = ws != null,
+            hasSocket = socketOpen,
         )
         wallWorkScheduler.setEnabled(enabled)
     }
@@ -1660,7 +1679,7 @@ class AppViewModel(
             }
             if (shouldRecoverConnectionOnForeground(
                     state = _state.value,
-                    hasSocket = ws != null,
+                    hasSocket = socketOpen,
                     nowMs = nowMs,
                     lastForegroundRecoveryAtMs = lastForegroundRecoveryAtMs,
                 )
@@ -1689,7 +1708,9 @@ class AppViewModel(
         val cols = state.terminalCols
         val rows = state.terminalRows
         if (cols <= 0 || rows <= 0) return
-        ws?.let { wsClient.sendResize(it, cols, rows) }
+        val webSocket = ws
+        if (!socketOpen || webSocket == null) return
+        wsClient.sendResize(webSocket, cols, rows)
     }
 
     private fun setBusy(value: Boolean) {
@@ -1779,8 +1800,7 @@ class AppViewModel(
         ): Boolean {
             if (state.requiresAppUnlock) return false
             if (!state.canAttach) return false
-            if (nowMs-lastForegroundRecoveryAtMs < foregroundRecoveryMinIntervalMs) return false
-            if (state.connectionState == ConnectionState.Connected && hasSocket) return false
+            if (nowMs - lastForegroundRecoveryAtMs < foregroundRecoveryMinIntervalMs) return false
             if (state.isRefreshing) return false
 
             val hasRecoverableError = !state.lastFrameError.isNullOrBlank() || !state.status?.message.isNullOrBlank()

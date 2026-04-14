@@ -52,6 +52,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.content.Context
 import android.text.Editable
 import android.text.InputType
@@ -491,9 +494,33 @@ private fun TerminalPanel(
 ) {
     Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
         var restoredSessionId by remember { mutableStateOf<String?>(null) }
+        var lifecycleRestoreNonce by remember { mutableStateOf(0) }
+        var restoredLifecycleNonce by remember { mutableStateOf(0) }
         val sessionId = state.activeSessionId
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(lifecycleOwner, terminalGridView, sessionId) {
+            val observer = LifecycleEventObserver { _, event ->
+                val activeSessionId = sessionId ?: return@LifecycleEventObserver
+                val view = terminalGridView
+                when (event) {
+                    Lifecycle.Event.ON_STOP -> {
+                        if (view != null) {
+                            viewportCache[activeSessionId] = view.captureViewportState()
+                        }
+                    }
+                    Lifecycle.Event.ON_START -> {
+                        lifecycleRestoreNonce += 1
+                    }
+                    else -> Unit
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+            }
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -552,13 +579,17 @@ private fun TerminalPanel(
                 state.lastFrameSeq,
                 state.scrollbackOffsetRows,
                 fitToViewWidth,
+                lifecycleRestoreNonce,
             ) {
                 val view = terminalGridView ?: return@LaunchedEffect
                 val activeSessionId = sessionId ?: return@LaunchedEffect
-                if (restoredSessionId == activeSessionId) return@LaunchedEffect
+                if (restoredSessionId == activeSessionId && restoredLifecycleNonce == lifecycleRestoreNonce) {
+                    return@LaunchedEffect
+                }
                 if (shouldDelayViewportRestore) return@LaunchedEffect
                 view.scheduleViewportRestore(viewportCache[activeSessionId])
                 restoredSessionId = activeSessionId
+                restoredLifecycleNonce = lifecycleRestoreNonce
             }
             if (showStatusOverlay) {
                 StatusBanner(
