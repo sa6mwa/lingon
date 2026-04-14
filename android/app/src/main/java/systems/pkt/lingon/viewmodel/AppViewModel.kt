@@ -79,7 +79,10 @@ class AppViewModel(
     internal var nowProvider: () -> Long = System::currentTimeMillis
     private var lastBackgroundAtMs: Long? = null
     private var appInForeground = true
-    private var persistZoomJob: Job? = null
+    private val sessionViewStates = LinkedHashMap<SessionViewStateKey, SessionViewState>()
+    private val zoomLoadJobs = LinkedHashMap<SessionViewStateKey, Job>()
+    private val zoomPersistJobs = LinkedHashMap<SessionViewStateKey, Job>()
+    private var nextPanResetToken = 0
     private var lastForegroundRecoveryAtMs: Long = 0
 
     init {
@@ -91,11 +94,6 @@ class AppViewModel(
         viewModelScope.launch {
             repository.fontSizeFlow.collectLatest { size ->
                 _state.update { it.copy(fontSizeSp = size) }
-            }
-        }
-        viewModelScope.launch {
-            repository.zoomFlow.collectLatest { factor ->
-                _state.update { it.copy(zoomFactor = factor) }
             }
         }
         viewModelScope.launch {
@@ -161,10 +159,6 @@ class AppViewModel(
 
     fun showThemePicker(show: Boolean) {
         _state.update { it.copy(showThemePicker = show) }
-    }
-
-    fun showZoom(show: Boolean) {
-        _state.update { it.copy(showZoom = show) }
     }
 
     fun showAppLockTimeoutDialog(show: Boolean) {
@@ -323,6 +317,8 @@ class AppViewModel(
                 shareToken = null,
                 shareTokenError = null,
                 scrollbackOffsetRows = 0,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
                 hasControl = false,
                 lastFrameSeq = 0,
                 lastFrameType = null,
@@ -348,23 +344,44 @@ class AppViewModel(
 
     fun updateZoomFactor(value: Float) {
         val normalized = value.coerceIn(MinTerminalZoom, MaxTerminalZoom)
-        _state.update {
-            if (abs(it.zoomFactor - normalized) < 0.0005f) {
-                it
-            } else {
-                it.copy(zoomFactor = normalized)
+        val key = activeSessionViewStateKey()
+        if (key == null) {
+            _state.update {
+                if (abs(it.zoomFactor - normalized) < 0.0005f) {
+                    it
+                } else {
+                    it.copy(zoomFactor = normalized)
+                }
             }
+            return
         }
-        persistZoomDebounced(normalized)
+        val currentViewState = sessionViewStates[key] ?: SessionViewState()
+        if (abs(currentViewState.zoomFactor - normalized) < 0.0005f) {
+            return
+        }
+        sessionViewStates[key] = currentViewState.copy(zoomFactor = normalized)
+        _state.update { it.copy(zoomFactor = normalized) }
+        persistSessionZoomDebounced(key, normalized)
     }
 
     fun resetZoomAndPan() {
-        persistZoomJob?.cancel()
-        repository.setZoom(DefaultTerminalZoom)
+        val key = activeSessionViewStateKey()
+        if (key == null) {
+            _state.update { it.copy(zoomFactor = DefaultTerminalZoom, panResetNonce = it.panResetNonce + 1) }
+            return
+        }
+        cancelZoomPersistence(key)
+        nextPanResetToken += 1
+        val updatedViewState = (sessionViewStates[key] ?: SessionViewState()).copy(
+            zoomFactor = DefaultTerminalZoom,
+            panResetNonce = nextPanResetToken,
+        )
+        sessionViewStates[key] = updatedViewState
+        repository.saveSessionZoom(key.endpoint, key.sessionId, DefaultTerminalZoom)
         _state.update {
             it.copy(
                 zoomFactor = DefaultTerminalZoom,
-                panResetNonce = it.panResetNonce + 1,
+                panResetNonce = updatedViewState.panResetNonce,
             )
         }
     }
@@ -443,6 +460,8 @@ class AppViewModel(
                         showCertificates = false,
                         certificateError = null,
                         scrollbackOffsetRows = 0,
+                        zoomFactor = DefaultTerminalZoom,
+                        panResetNonce = 0,
                         connectionState = ConnectionState.Idle,
                         hasControl = false,
                         lastFrameSeq = 0,
@@ -485,6 +504,7 @@ class AppViewModel(
                 sessionSyncing = false,
             )
         }
+        activateSessionViewState()
         syncWallPollingSchedule()
         viewModelScope.launch {
             val endpointValue = if (!endpointOverride.isNullOrBlank()) {
@@ -503,6 +523,7 @@ class AppViewModel(
                 return@launch
             }
             _state.update { it.copy(endpoint = endpointValue) }
+            activateSessionViewState()
             connectActiveSession()
         }
     }
@@ -511,6 +532,7 @@ class AppViewModel(
         val current = _state.value
         if (sessionId == current.activeSessionId) {
             syncCurrentSessionCache()
+            activateSessionViewState()
             if (sessionCaches[sessionId]?.liveSnapshot != null) {
                 applySessionCache(sessionId)
             }
@@ -526,6 +548,7 @@ class AppViewModel(
                 sessionSyncing = true,
             )
         }
+        activateSessionViewState()
         if (current.shareToken.isNullOrBlank()) {
             persistActiveSession(current.endpoint, sessionId)
         }
@@ -580,10 +603,122 @@ class AppViewModel(
         sessionCaches.clear()
         sessionListCache.clear()
         missingSessionSinceMs.clear()
+        zoomLoadJobs.values.forEach { it.cancel() }
+        zoomPersistJobs.values.forEach { it.cancel() }
+        zoomLoadJobs.clear()
+        zoomPersistJobs.clear()
+        sessionViewStates.clear()
+        nextPanResetToken = 0
     }
+
+    private data class SessionViewStateKey(
+        val endpoint: String,
+        val sessionId: String,
+    )
+
+    private data class SessionViewState(
+        val zoomFactor: Float = DefaultTerminalZoom,
+        val panResetNonce: Int = 0,
+    )
 
     private fun currentSessionCacheKey(): String? {
         return _state.value.activeSessionId?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun activeSessionViewStateKey(state: UiState = _state.value): SessionViewStateKey? {
+        val endpoint = state.endpoint.trim()
+        val sessionId = state.activeSessionId?.trim().orEmpty()
+        if (endpoint.isBlank() || sessionId.isBlank()) {
+            return null
+        }
+        return SessionViewStateKey(endpoint = endpoint, sessionId = sessionId)
+    }
+
+    private fun activateSessionViewState(state: UiState = _state.value) {
+        val key = activeSessionViewStateKey(state)
+        if (key == null) {
+            _state.update { it.copy(zoomFactor = DefaultTerminalZoom, panResetNonce = 0) }
+            return
+        }
+        val cached = sessionViewStates[key]
+        if (cached != null) {
+            _state.update { current ->
+                if (current.activeSessionId == key.sessionId && current.endpoint.trim() == key.endpoint) {
+                    current.copy(
+                        zoomFactor = cached.zoomFactor,
+                        panResetNonce = cached.panResetNonce,
+                    )
+                } else {
+                    current
+                }
+            }
+            return
+        }
+        _state.update { current ->
+            if (current.activeSessionId == key.sessionId && current.endpoint.trim() == key.endpoint) {
+                current.copy(zoomFactor = DefaultTerminalZoom, panResetNonce = 0)
+            } else {
+                current
+            }
+        }
+        if (zoomLoadJobs[key]?.isActive == true) {
+            return
+        }
+        zoomLoadJobs[key] = viewModelScope.launch {
+            try {
+                val zoom = repository.loadSessionZoom(key.endpoint, key.sessionId)
+                val previous = sessionViewStates[key] ?: SessionViewState()
+                val loadedState = previous.copy(zoomFactor = zoom)
+                sessionViewStates[key] = loadedState
+                _state.update { current ->
+                    if (current.activeSessionId == key.sessionId && current.endpoint.trim() == key.endpoint) {
+                        current.copy(
+                            zoomFactor = loadedState.zoomFactor,
+                            panResetNonce = loadedState.panResetNonce,
+                        )
+                    } else {
+                        current
+                    }
+                }
+            } finally {
+                zoomLoadJobs.remove(key)
+            }
+        }
+    }
+
+    private fun prefetchSessionViewStates(endpoint: String, sessions: Collection<RelaySession>) {
+        val cleanedEndpoint = endpoint.trim()
+        if (cleanedEndpoint.isBlank()) return
+        for (session in sessions) {
+            val cleanedSessionId = session.id.trim()
+            if (cleanedSessionId.isBlank()) continue
+            val key = SessionViewStateKey(cleanedEndpoint, cleanedSessionId)
+            if (sessionViewStates.containsKey(key) || zoomLoadJobs[key]?.isActive == true) {
+                continue
+            }
+            zoomLoadJobs[key] = viewModelScope.launch {
+                try {
+                    val zoom = repository.loadSessionZoom(key.endpoint, key.sessionId)
+                    val existing = sessionViewStates[key] ?: SessionViewState()
+                    sessionViewStates[key] = existing.copy(zoomFactor = zoom)
+                } finally {
+                    zoomLoadJobs.remove(key)
+                }
+            }
+        }
+    }
+
+    private fun persistSessionZoomDebounced(key: SessionViewStateKey, value: Float) {
+        cancelZoomPersistence(key)
+        zoomPersistJobs[key] = viewModelScope.launch {
+            delay(150)
+            repository.saveSessionZoom(key.endpoint, key.sessionId, value)
+            zoomPersistJobs.remove(key)
+        }
+    }
+
+    private fun cancelZoomPersistence(key: SessionViewStateKey) {
+        zoomPersistJobs.remove(key)?.cancel()
     }
 
     private fun syncCurrentSessionCache() {
@@ -764,6 +899,7 @@ class AppViewModel(
             }
         }
         _state.update { it.copy(sessions = merged.values.toList()) }
+        prefetchSessionViewStates(_state.value.endpoint, merged.values)
         syncWallPollingSchedule()
         ensureActiveSession(merged.values.toList())
         if (merged.isNotEmpty()) {
@@ -792,6 +928,7 @@ class AppViewModel(
         if (!next.isNullOrBlank()) {
             persistActiveSession(endpoint, next)
         }
+        activateSessionViewState()
         if (next != null && next != current) {
             connectActiveSession()
         }
@@ -836,10 +973,11 @@ class AppViewModel(
                         activeSessionId = fallback,
                         activeSnapshot = null,
                         scrollbackOffsetRows = 0,
-                        panResetNonce = it.panResetNonce + 1,
+                        panResetNonce = 0,
                         sessionSyncing = true,
                     )
                 }
+                activateSessionViewState()
                 persistActiveSession(state.endpoint, fallback)
             }
         }
@@ -1223,6 +1361,8 @@ class AppViewModel(
                 activeSnapshot = null,
                 shareToken = null,
                 scrollbackOffsetRows = 0,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
                 showCertificates = false,
                 certificateError = null,
                 connectionState = ConnectionState.Disconnected,
@@ -1459,14 +1599,6 @@ class AppViewModel(
             max(backoffMs, retryAfterSeconds * 1000)
         } else {
             backoffMs
-        }
-    }
-
-    private fun persistZoomDebounced(value: Float) {
-        persistZoomJob?.cancel()
-        persistZoomJob = viewModelScope.launch {
-            delay(150)
-            repository.setZoom(value)
         }
     }
 

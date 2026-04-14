@@ -22,7 +22,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import systems.pkt.lingon.share.ShareTokens
 import systems.pkt.lingon.ui.dialogs.AppLockTimeoutDialog
 import systems.pkt.lingon.ui.dialogs.EndpointDialog
-import systems.pkt.lingon.ui.dialogs.ZoomDialog
 import systems.pkt.lingon.ui.dialogs.ShareTokenDialog
 import systems.pkt.lingon.ui.dialogs.ThemeDialog
 import systems.pkt.lingon.ui.theme.LingonTheme
@@ -52,7 +51,6 @@ fun LingonApp(viewModel: AppViewModel) {
                         onDismissMenu = { menuExpanded = false },
                         onShowSettings = { viewModel.showSettings(true) },
                         onShowTheme = { viewModel.showThemePicker(true) },
-                        onShowZoom = { viewModel.showZoom(true) },
                         onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
                         onResetZoomPan = { viewModel.resetZoomAndPan() },
                         onReload = { viewModel.manualRefresh() },
@@ -105,17 +103,6 @@ fun LingonApp(viewModel: AppViewModel) {
                 onSave = { theme ->
                     viewModel.setTheme(theme)
                     viewModel.showThemePicker(false)
-                },
-            )
-        }
-
-        if (state.showZoom) {
-            ZoomDialog(
-                zoomFactor = state.zoomFactor,
-                onDismiss = { viewModel.showZoom(false) },
-                onSave = { value ->
-                    viewModel.updateZoomFactor(value)
-                    viewModel.showZoom(false)
                 },
             )
         }

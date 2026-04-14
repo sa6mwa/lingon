@@ -210,10 +210,12 @@ class TerminalGridView @JvmOverloads constructor(
             this.zoomFactor = zoomFactor
             invalidate = true
         }
-        if (this.panResetNonce != panResetNonce) {
+        if (panResetNonce > this.panResetNonce) {
             this.panResetNonce = panResetNonce
             resetPan()
             invalidate = true
+        } else if (this.panResetNonce != panResetNonce) {
+            this.panResetNonce = panResetNonce
         }
         if (this.scrollbackOffsetRows != scrollbackOffsetRows) {
             this.scrollbackOffsetRows = scrollbackOffsetRows.coerceAtLeast(0)
@@ -643,8 +645,12 @@ class TerminalGridView @JvmOverloads constructor(
                 val heightScale = heightPx.toFloat() / (hostRows.toFloat() * baseCellHeight)
                 minOf(widthScale, heightScale)
             }
-            scaleX *= fitScale
-            scaleY *= fitScale
+            val effectiveScale = TerminalViewportPolicy.effectiveRenderScale(
+                zoomFactor = zoomFactor,
+                fitScale = fitScale,
+            )
+            scaleX = effectiveScale
+            scaleY = effectiveScale
         }
         renderScaleX = scaleX
         renderScaleY = scaleY

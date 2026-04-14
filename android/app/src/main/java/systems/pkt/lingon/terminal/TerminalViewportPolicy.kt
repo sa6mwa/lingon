@@ -8,6 +8,14 @@ import kotlin.math.min
 internal object TerminalViewportPolicy {
     private const val zoomEpsilon = 0.001f
 
+    fun effectiveRenderScale(
+        zoomFactor: Float,
+        fitScale: Float,
+    ): Float {
+        if (fitScale <= 0f) return zoomFactor
+        return fitScale + (zoomFactor - DefaultTerminalZoom)
+    }
+
     fun shouldAutoFollowCursor(
         imeVisible: Boolean,
         fitToViewWidth: Boolean,

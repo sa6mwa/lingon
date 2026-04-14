@@ -50,8 +50,6 @@ import systems.pkt.lingon.test.FailureCaptureRule
 import systems.pkt.lingon.ui.TestTags
 import systems.pkt.lingon.viewmodel.AppViewModel
 import systems.pkt.lingon.viewmodel.AppViewModelFactory
-import systems.pkt.lingon.MaxTerminalZoom
-import systems.pkt.lingon.MinTerminalZoom
 import kotlin.math.min
 import kotlin.math.max
 
@@ -218,32 +216,6 @@ class EndToEndTest {
             val cr = "ECHO_${sessionId} 0d"
             val lf = "ECHO_${sessionId} 0a"
             snapshotContainsToken(cr) || snapshotContainsToken(lf)
-        }
-    }
-
-    @Test
-    fun zoom_menu_adjusts_view_and_resets() {
-        setEndpoint(testConfig.endpoint)
-        ensureLoggedOut()
-
-        loginWithConfiguredUser()
-        waitForTagNoError(TestTags.TerminalInput)
-        assertTerminalResponsive()
-        val initial = readTerminalDebugInfo()
-            ?: throw AssertionError("missing terminal debug info")
-
-        openZoomDialog()
-        setZoomSlider(1.5f)
-        composeRule.onNodeWithTag(TestTags.ZoomSave, useUnmergedTree = true).performClick()
-        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
-            val info = readTerminalDebugInfo()
-            info != null && info.viewCols < initial.viewCols
-        }
-
-        resetZoomPan()
-        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
-            val info = readTerminalDebugInfo()
-            info != null && info.viewCols >= initial.viewCols
         }
     }
 
@@ -1363,33 +1335,6 @@ class EndToEndTest {
                 }
             }
         }
-    }
-
-    private fun openZoomDialog() {
-        openMenu()
-        composeRule.onNodeWithTag(TestTags.ZoomButton).performClick()
-        waitForTag(TestTags.ZoomSlider)
-        waitForTagUnmerged(TestTags.ZoomSave)
-    }
-
-    private fun setZoomSlider(value: Float) {
-        val fraction = ((value - MinTerminalZoom) / (MaxTerminalZoom - MinTerminalZoom)).coerceIn(0f, 1f)
-        composeRule.onNodeWithTag(TestTags.ZoomSlider, useUnmergedTree = true).performTouchInput {
-            val x = width * fraction
-            val y = height / 2f
-            down(0, Offset(x, y))
-            up(0)
-        }
-    }
-
-    private fun waitForTagUnmerged(tag: String, timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
-        waitUntil(timeoutMs) { hasTagUnmerged(tag) }
-    }
-
-    private fun hasTagUnmerged(tag: String): Boolean {
-        return composeRule.onAllNodesWithTag(tag, useUnmergedTree = true)
-            .fetchSemanticsNodes()
-            .isNotEmpty()
     }
 
     private fun resetZoomPan() {

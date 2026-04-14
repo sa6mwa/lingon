@@ -37,7 +37,6 @@ data class UiState(
     val isBusy: Boolean = false,
     val showSettings: Boolean = false,
     val showThemePicker: Boolean = false,
-    val showZoom: Boolean = false,
     val showAppLockTimeoutDialog: Boolean = false,
     val showShareToken: Boolean = false,
     val showCertificates: Boolean = false,

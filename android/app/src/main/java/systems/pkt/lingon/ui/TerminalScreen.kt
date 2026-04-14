@@ -209,7 +209,6 @@ fun TerminalScreen(
                         onDismissMenu = onDismissMenu,
                         onShowSettings = { viewModel.showSettings(true) },
                         onShowTheme = { viewModel.showThemePicker(true) },
-                        onShowZoom = { viewModel.showZoom(true) },
                         onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
                         onResetZoomPan = { viewModel.resetZoomAndPan() },
                         onReload = { viewModel.manualRefresh() },
@@ -239,7 +238,7 @@ fun TerminalScreen(
                     terminalGridView = terminalGridView,
                     onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
-                    fitToViewWidth = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f,
+                    fitToViewWidth = true,
                     screenPadding = screenPadding,
                     isCompact = isCompact,
                     isLandscape = true,
@@ -275,7 +274,6 @@ fun TerminalScreen(
                     onDismissMenu = onDismissMenu,
                     onShowSettings = { viewModel.showSettings(true) },
                     onShowTheme = { viewModel.showThemePicker(true) },
-                    onShowZoom = { viewModel.showZoom(true) },
                     onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
                     onResetZoomPan = { viewModel.resetZoomAndPan() },
                     onReload = { viewModel.manualRefresh() },
@@ -312,7 +310,7 @@ fun TerminalScreen(
                     terminalGridView = terminalGridView,
                     onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
-                    fitToViewWidth = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f,
+                    fitToViewWidth = true,
                     screenPadding = screenPadding,
                     isCompact = isCompact,
                     isLandscape = false,
@@ -494,7 +492,8 @@ private fun TerminalPanel(
     Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
         var restoredSessionId by remember { mutableStateOf<String?>(null) }
         val sessionId = state.activeSessionId
-        val shouldDelayViewportRestore = state.sessionSyncing && fitToViewWidth && state.scrollbackOffsetRows == 0
+        val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
+        val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
         Box(
             modifier = Modifier
                 .fillMaxWidth()

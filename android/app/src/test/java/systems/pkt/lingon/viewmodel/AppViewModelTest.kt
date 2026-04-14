@@ -42,6 +42,7 @@ import systems.pkt.lingon.protocol.Scrollback
 import systems.pkt.lingon.protocol.Snapshot
 import systems.pkt.lingon.protocol.Welcome
 import systems.pkt.lingon.protocol.ScrollbackRow
+import systems.pkt.lingon.DefaultTerminalZoom
 import systems.pkt.lingon.terminal.TerminalSnapshot
 import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
 
@@ -159,7 +160,7 @@ class AppViewModelTest {
     }
 
     @Test
-    fun selectSessionPreservesViewportNonceWhenSwitchingTabs() = runTest {
+    fun selectSessionDoesNotInheritViewportResetTokenWhenSwitchingTabs() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
         val viewModel = AppViewModel(repository, wsClient)
@@ -183,7 +184,7 @@ class AppViewModelTest {
         viewModel.selectSession("beta")
 
         assertEquals("beta", viewModel.state.value.activeSessionId)
-        assertEquals(7, viewModel.state.value.panResetNonce)
+        assertEquals(0, viewModel.state.value.panResetNonce)
     }
 
     @Test
@@ -706,21 +707,95 @@ class AppViewModelTest {
     }
 
     @Test
-    fun updateZoomFactorDebouncesPersistence() = runTest {
-        val repository = FakeRepository()
+    fun updateZoomFactorPersistsPerSessionAndRestoresOnTabSwitch() = runTest {
+        val repository = FakeRepository(
+            initialSessionZooms = mapOf(
+                "https://localhost:12843/v1|host-1" to 1.2f,
+                "https://localhost:12843/v1|host-2" to 1.4f,
+            ),
+        )
         val wsClient = FakeWsClient()
         val viewModel = AppViewModel(repository, wsClient)
         advanceUntilIdle()
 
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "host-1", name = "Host 1", status = "active"),
+                    RelaySession(id = "host-2", name = "Host 2", status = "active"),
+                ),
+                activeSessionId = "host-1",
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        assertEquals(1.2f, viewModel.state.value.zoomFactor, 0.0001f)
+
         viewModel.updateZoomFactor(1.3f)
         viewModel.updateZoomFactor(1.6f)
         assertEquals(1.6f, viewModel.state.value.zoomFactor, 0.0001f)
-        assertEquals(0, repository.setZoomCalls)
+        assertEquals(0, repository.saveZoomCalls)
 
         advanceTimeBy(200)
         advanceUntilIdle()
-        assertEquals(1, repository.setZoomCalls)
-        assertEquals(1.6f, repository.lastZoom, 0.0001f)
+        assertEquals(1, repository.saveZoomCalls)
+        assertEquals(1.6f, repository.savedZooms["https://localhost:12843/v1|host-1"]!!, 0.0001f)
+
+        viewModel.selectSession("host-2")
+        advanceUntilIdle()
+        assertEquals(1.4f, viewModel.state.value.zoomFactor, 0.0001f)
+
+        viewModel.updateZoomFactor(1.8f)
+        advanceTimeBy(200)
+        advanceUntilIdle()
+        assertEquals(2, repository.saveZoomCalls)
+        assertEquals(1.8f, repository.savedZooms["https://localhost:12843/v1|host-2"]!!, 0.0001f)
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        assertEquals(1.6f, viewModel.state.value.zoomFactor, 0.0001f)
+    }
+
+    @Test
+    fun resetZoomAndPanOnlyAffectsActiveSession() = runTest {
+        val repository = FakeRepository(
+            initialSessionZooms = mapOf(
+                "https://localhost:12843/v1|host-1" to 1.7f,
+                "https://localhost:12843/v1|host-2" to 1.4f,
+            ),
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "host-1", name = "Host 1", status = "active"),
+                    RelaySession(id = "host-2", name = "Host 2", status = "active"),
+                ),
+                activeSessionId = "host-1",
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        assertEquals(1.7f, viewModel.state.value.zoomFactor, 0.0001f)
+
+        viewModel.resetZoomAndPan()
+        advanceUntilIdle()
+        assertEquals(DefaultTerminalZoom, viewModel.state.value.zoomFactor, 0.0001f)
+        assertEquals(DefaultTerminalZoom, repository.savedZooms["https://localhost:12843/v1|host-1"]!!, 0.0001f)
+
+        viewModel.selectSession("host-2")
+        advanceUntilIdle()
+        assertEquals(1.4f, viewModel.state.value.zoomFactor, 0.0001f)
+        assertEquals(0, viewModel.state.value.panResetNonce)
     }
 
     @Test
@@ -1133,11 +1208,11 @@ private class FakeRepository(
     private val failListSessions: Boolean = true,
     private val refreshAuthResult: Boolean = true,
     private val refreshAuthError: Throwable? = null,
+    initialSessionZooms: Map<String, Float> = emptyMap(),
     initialLastActiveSessionByEndpoint: Map<String, String> = emptyMap(),
 ) : LingonClient {
     override val endpointFlow: Flow<String> = MutableStateFlow("https://localhost:12843/v1")
     override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
-    override val zoomFlow: Flow<Float> = MutableStateFlow(1.0f)
     override val resizeHostFlow: Flow<Boolean> = MutableStateFlow(false)
     override val backgroundWallEnabledFlow: Flow<Boolean> = MutableStateFlow(false)
     override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
@@ -1145,8 +1220,8 @@ private class FakeRepository(
     override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
     private val lastActiveSessionByEndpoint = initialLastActiveSessionByEndpoint.toMutableMap()
     var refreshAuthCalls: Int = 0
-    var setZoomCalls: Int = 0
-    var lastZoom: Float = 1.0f
+    var saveZoomCalls: Int = 0
+    val savedZooms = initialSessionZooms.toMutableMap()
 
     override fun setEndpoint(value: String) {
         // no-op
@@ -1156,9 +1231,9 @@ private class FakeRepository(
         // no-op
     }
 
-    override fun setZoom(value: Float) {
-        setZoomCalls += 1
-        lastZoom = value
+    override fun saveSessionZoom(endpoint: String, sessionId: String, value: Float) {
+        saveZoomCalls += 1
+        savedZooms["${endpoint.trim()}|${sessionId.trim()}"] = value
     }
 
     override fun setResizeHostEnabled(value: Boolean) {
@@ -1200,6 +1275,10 @@ private class FakeRepository(
         refreshAuthCalls += 1
         refreshAuthError?.let { throw it }
         return refreshAuthResult
+    }
+
+    override suspend fun loadSessionZoom(endpoint: String, sessionId: String): Float {
+        return savedZooms["${endpoint.trim()}|${sessionId.trim()}"] ?: DefaultTerminalZoom
     }
 
     override suspend fun loadLastActiveSessionId(endpoint: String): String? {

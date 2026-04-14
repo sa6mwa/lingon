@@ -45,7 +45,6 @@ fun TopBar(
     onDismissMenu: () -> Unit,
     onShowSettings: () -> Unit,
     onShowTheme: () -> Unit,
-    onShowZoom: () -> Unit,
     onShowAppLock: () -> Unit,
     onResetZoomPan: () -> Unit,
     onReload: () -> Unit,
@@ -191,14 +190,6 @@ fun TopBar(
                             onDismissMenu()
                         },
                         modifier = Modifier.testTag(TestTags.ThemeButton),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Zoom") },
-                        onClick = {
-                            onShowZoom()
-                            onDismissMenu()
-                        },
-                        modifier = Modifier.testTag(TestTags.ZoomButton),
                     )
                     DropdownMenuItem(
                         text = { Text("App lock timeout") },

@@ -24,7 +24,6 @@ class LingonRepository(
 ) : LingonClient {
     override val endpointFlow: Flow<String> = endpointStore.endpointFlow
     override val fontSizeFlow: Flow<Int> = fontSizeStore.fontSizeFlow
-    override val zoomFlow: Flow<Float> = zoomStore.zoomFlow
     override val resizeHostFlow: Flow<Boolean> = terminalResizeStore.resizeFlow
     override val backgroundWallEnabledFlow: Flow<Boolean> = backgroundWallStore.enabledFlow
     override val appLockTimeoutMinutesFlow: Flow<Int> = appLockStore.timeoutMinutesFlow
@@ -40,8 +39,8 @@ class LingonRepository(
         fontSizeStore.setFontSize(value)
     }
 
-    override fun setZoom(value: Float) {
-        zoomStore.setZoom(value)
+    override fun saveSessionZoom(endpoint: String, sessionId: String, value: Float) {
+        zoomStore.saveZoom(endpoint, sessionId, value)
     }
 
     override fun setResizeHostEnabled(value: Boolean) {
@@ -81,6 +80,10 @@ class LingonRepository(
             authClient.refresh()
             true
         }.getOrDefault(false)
+    }
+
+    override suspend fun loadSessionZoom(endpoint: String, sessionId: String): Float {
+        return zoomStore.loadZoom(endpoint, sessionId)
     }
 
     override suspend fun loadLastActiveSessionId(endpoint: String): String? {

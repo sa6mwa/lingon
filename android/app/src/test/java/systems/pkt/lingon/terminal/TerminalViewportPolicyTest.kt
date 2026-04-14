@@ -8,6 +8,42 @@ import systems.pkt.lingon.DefaultTerminalZoom
 
 class TerminalViewportPolicyTest {
     @Test
+    fun `effective render scale starts at fitted size and grows smoothly`() {
+        assertEquals(
+            0.6f,
+            TerminalViewportPolicy.effectiveRenderScale(
+                zoomFactor = DefaultTerminalZoom,
+                fitScale = 0.6f,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            0.85f,
+            TerminalViewportPolicy.effectiveRenderScale(
+                zoomFactor = DefaultTerminalZoom + 0.25f,
+                fitScale = 0.6f,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            1.0f,
+            TerminalViewportPolicy.effectiveRenderScale(
+                zoomFactor = DefaultTerminalZoom,
+                fitScale = 1.0f,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            1.35f,
+            TerminalViewportPolicy.effectiveRenderScale(
+                zoomFactor = DefaultTerminalZoom + 0.15f,
+                fitScale = 1.2f,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
     fun `auto follow start row centers cursor and clamps edges`() {
         assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 0, totalRows = 100, visibleRows = 20))
         assertEquals(40, TerminalViewportPolicy.autoFollowStartRow(cursorY = 50, totalRows = 100, visibleRows = 20))
