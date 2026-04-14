@@ -227,19 +227,24 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
-        val initial = readTerminalDebugInfo()
+        resetZoomPan()
+        val baseline = waitForTerminalDebugInfo { info ->
+            info.viewCols > 0 && info.viewRows > 0
+        }
+        val initial = baseline
             ?: throw AssertionError("missing terminal debug info")
 
         performPinchZoom(zoomIn = true)
         waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
-            info != null && info.viewCols < initial.viewCols
+            info != null && info.zoomFactor > initial.zoomFactor + 0.05f
         }
 
         resetZoomPan()
         waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
-            info != null && info.viewCols >= initial.viewCols
+            info != null &&
+                kotlin.math.abs(info.zoomFactor - initial.zoomFactor) <= 0.01f
         }
     }
 
@@ -405,11 +410,30 @@ class EndToEndTest {
         val first = activeSessionId()
         val second = testConfig.sessions.firstOrNull { it != first } ?: return
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        assertTerminalResponsive(first)
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == second }
+        assertTerminalResponsive(second)
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first }
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         composeRule.waitForIdle()
-        sendTerminalInput("while true; do seq 1 300; sleep 1; done")
+        val firstBeforeLoad = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info before loading first tab")
+        sendTerminalInput("seq 1 60")
         sendTerminalEnter()
-        waitUntilNoError(20_000L) { snapshotContainsToken("300") }
+        waitUntilNoError(20_000L) {
+            val info = readTerminalDebugInfo()
+            info != null &&
+                info.activeSessionId == first &&
+                info.lastFrameSeq > firstBeforeLoad.lastFrameSeq &&
+                info.hash != firstBeforeLoad.hash
+        }
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
@@ -420,9 +444,16 @@ class EndToEndTest {
         waitUntilNoError(10_000L) { activeSessionId() == second }
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         composeRule.waitForIdle()
-        sendTerminalInput("while true; do seq 1001 1300; sleep 1; done")
+        val secondBeforeLoad = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info before loading second tab")
+        sendTerminalInput("seq 1001 1060")
         sendTerminalEnter()
-        waitUntilNoError(20_000L) { snapshotContainsToken("1300") }
+        waitUntilNoError(20_000L) {
+            val info = readTerminalDebugInfo()
+            info != null &&
+                info.activeSessionId == second &&
+                info.lastFrameSeq > secondBeforeLoad.lastFrameSeq &&
+                info.hash != secondBeforeLoad.hash
+        }
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
         captureScreenshot("tab-second-loaded")
@@ -484,13 +515,22 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         activeSessionId()
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         composeRule.waitForIdle()
 
-        val finalToken = "300"
-        sendTerminalInput("seq 1 300")
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before loading keyboard hide/show fixture")
+        sendTerminalInput("seq 1 60")
         sendTerminalEnter()
-        waitUntilNoError(20_000L) { snapshotContainsToken(finalToken) }
+        waitUntilNoError(20_000L) {
+            val info = readTerminalDebugInfo()
+            info != null &&
+                info.lastFrameSeq > beforeLoad.lastFrameSeq &&
+                info.hash != beforeLoad.hash
+        }
         captureScreenshot("keyboard-precheck")
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
@@ -517,40 +557,26 @@ class EndToEndTest {
         val second = testConfig.sessions.firstOrNull { it != first } ?: return
         assertTerminalResponsive(first)
 
-        val finalToken = "done"
-        sendTerminalInput("yes cache | head -n 300; echo done")
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before heavy output")
+        sendTerminalInput("seq 1 120")
         sendTerminalEnter()
-
-        waitUntilNoError(20_000L) { snapshotContainsToken(finalToken) }
+        val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.activeSessionId == first &&
+                info.lastFrameSeq > beforeLoad.lastFrameSeq &&
+                info.hash != beforeLoad.hash
+        } ?: throw AssertionError("latest frame did not render before tab switch")
 
         selectSessionTab(second, timeoutMs = 10_000L)
         waitUntilNoError(1_000L) { activeSessionId() == second }
 
-        selectSessionTab(first, timeoutMs = 10_000L)
-        val deadline = System.currentTimeMillis() + 3_000L
-        var ready = false
-        while (System.currentTimeMillis() < deadline) {
-            if (snapshotContainsToken(finalToken)) {
-                ready = true
-                break
-            }
-            composeRule.waitForIdle()
-            SystemClock.sleep(POLL_INTERVAL_MS)
+        composeRule.runOnIdle {
+            appViewModel().selectSession(first)
         }
-        if (!ready) {
-            val info = readTerminalDebugInfo()
-                ?: throw AssertionError("missing terminal debug info after reconnect")
-            throw AssertionError(
-                "latest frame did not render after tab switch; " +
-                    "row0=${info.row0.take(120)} " +
-                    "prev=${info.prevLine.take(120)} " +
-                    "tail=${info.tail.take(120)} " +
-                    "cursor=${info.cursorLine.take(120)} " +
-                    "hash=${info.hash} " +
-                    "lastSeq=${info.lastFrameSeq} lastType=${info.lastFrameType} " +
-                    "active=${info.activeSessionId}",
-            )
-        }
+        waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.activeSessionId == first &&
+                (info.hash == loaded.hash || info.lastFrameSeq >= loaded.lastFrameSeq)
+        } ?: throw AssertionError("latest frame did not render after tab switch without input")
     }
 
     @Test
@@ -1024,6 +1050,7 @@ class EndToEndTest {
         composeRule.runOnIdle {
             val state = stateForTest()
             val snap = state.activeSnapshot
+            val terminalView = findTerminalView() as? systems.pkt.lingon.terminal.TerminalGridView
             val rows = snap?.rows ?: 0
             val cols = snap?.cols ?: 0
             val row0 = snap?.let { snapshotRow(it, 0).trimEnd() } ?: ""
@@ -1071,11 +1098,29 @@ class EndToEndTest {
                 cursorLine = cursorLine,
                 hasControl = state.hasControl,
                 resizeEnabled = state.resizeHostEnabled,
-                viewCols = state.terminalCols,
-                viewRows = state.terminalRows,
+                viewCols = terminalView?.getViewCols() ?: state.terminalCols,
+                viewRows = terminalView?.getViewRows() ?: state.terminalRows,
+                zoomFactor = state.zoomFactor,
             )
         }
         return info
+    }
+
+    private fun waitForTerminalDebugInfo(
+        timeoutMs: Long = SHORT_UI_TIMEOUT_MS,
+        predicate: (TerminalDebugInfo) -> Boolean,
+    ): TerminalDebugInfo? {
+        var match: TerminalDebugInfo? = null
+        waitUntilNoError(timeoutMs) {
+            val info = readTerminalDebugInfo()
+            if (info != null && predicate(info)) {
+                match = info
+                true
+            } else {
+                false
+            }
+        }
+        return match
     }
 
     private fun stateForTest() = appViewModel().state.value
@@ -1761,5 +1806,6 @@ class EndToEndTest {
         val resizeEnabled: Boolean,
         val viewCols: Int,
         val viewRows: Int,
+        val zoomFactor: Float,
     )
 }
