@@ -400,6 +400,35 @@ class EndToEndTest {
     }
 
     @Test
+    fun tab_switch_does_not_rearm_wall_inactivity_without_terminal_input() {
+        if (testConfig.sessions.size < 2) return
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        val first = activeSessionId()
+        val second = testConfig.sessions.firstOrNull { it != first } ?: return
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+
+        val baselineWalls = wallEventCount()
+        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        waitUntilNoError(5_000L) {
+            appViewModel().state.value.wallInactivityEnabled &&
+                appViewModel().state.value.wallInactivityLabel == "250ms"
+        }
+        waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
+
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == second }
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first }
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+
+        SystemClock.sleep(1500L)
+        assertEquals(baselineWalls + 1, wallEventCount())
+    }
+
+    @Test
     fun keyboard_tab_switch_preserves_bottom_anchor_visual() {
         if (testConfig.sessions.size < 2) return
         setEndpoint(testConfig.endpoint)
@@ -814,6 +843,13 @@ class EndToEndTest {
             }
         }
         composeRule.waitForIdle()
+    }
+
+    private fun wallEventCount(): Int {
+        val app = composeRule.activity.application as LingonApplication
+        return runBlocking {
+            app.repository.listWallEvents(sinceId = 0, limit = 32).events.size
+        }
     }
 
     private fun assertTerminalResponsive(sessionId: String? = null, requireControl: Boolean = true) {

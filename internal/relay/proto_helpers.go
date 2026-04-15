@@ -78,3 +78,10 @@ func frameWall(sessionID string, eventID uint64, sender, message string, timeout
 		}},
 	}
 }
+
+func frameActivity(sessionID string) *protocolpb.Frame {
+	return &protocolpb.Frame{
+		SessionId: sessionID,
+		Payload:   &protocolpb.Frame_Activity{Activity: &protocolpb.Activity{}},
+	}
+}

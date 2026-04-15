@@ -100,6 +100,7 @@ echo "Building harness..."
 
 HARNESS_ARGS=()
 SPECIAL_TEST="refreshes_sessions_when_host_starts_late"
+QUIET_HOST_TEST="tab_switch_does_not_rearm_wall_inactivity_without_terminal_input"
 if [[ -z "${HOST_COLS_OVERRIDE}" ]]; then
   HOST_COLS_OVERRIDE="120"
 fi
@@ -221,6 +222,14 @@ set +e
       start_harness 0
       ensure_adb_reverse
     fi
+    if [[ "${test_name}" == "${QUIET_HOST_TEST}" ]]; then
+      stop_harness
+      export LINGON_ANDROID_HARNESS_HOST_SHELL=/bin/sh
+      start_harness 2
+      ensure_adb_reverse
+    else
+      unset LINGON_ANDROID_HARNESS_HOST_SHELL
+    fi
     echo "Running ${test_name}..."
     ./gradlew :app:connectedDebugAndroidTest \
       --no-configuration-cache \
@@ -250,6 +259,12 @@ set +e
     fi
     if [[ "${test_name}" == "${SPECIAL_TEST}" ]]; then
       stop_harness
+      start_harness 2
+      ensure_adb_reverse
+    fi
+    if [[ "${test_name}" == "${QUIET_HOST_TEST}" ]]; then
+      stop_harness
+      unset LINGON_ANDROID_HARNESS_HOST_SHELL
       start_harness 2
       ensure_adb_reverse
     fi

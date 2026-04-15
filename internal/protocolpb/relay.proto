@@ -24,6 +24,7 @@ message Frame {
     SessionClosed session_closed = 22;
     Command command = 23;
     WallInactivityStatus wall_inactivity_status = 24;
+    Activity activity = 25;
   }
 }
 
@@ -164,3 +165,5 @@ message WallInactivityStatus {
 message SessionClosed {
   string reason = 1;
 }
+
+message Activity {}

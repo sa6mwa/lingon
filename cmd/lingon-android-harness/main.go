@@ -201,6 +201,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	hub := relay.NewHub(nil)
 	auth := relay.NewAuthenticator(users)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
+	relayServer.ConfigureWall(harnessWallTimeout(), harnessWallLevels())
 	relayServer.UsersFile = usersPath
 	relayServer.DataDir = filepath.Join(home, ".lingon")
 	h := &harness{
@@ -331,6 +332,42 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	h.config.Users = []harnessUser{user1, user2}
 
 	return h, nil
+}
+
+func harnessWallTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_WALL_TIMEOUT"))
+	if raw == "" {
+		return time.Second
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		return time.Second
+	}
+	return parsed
+}
+
+func harnessWallLevels() []time.Duration {
+	raw := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_WALL_LEVELS"))
+	if raw == "" {
+		return []time.Duration{250 * time.Millisecond, time.Second, 2 * time.Second}
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]time.Duration, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		parsed, err := time.ParseDuration(part)
+		if err != nil || parsed <= 0 {
+			continue
+		}
+		out = append(out, parsed)
+	}
+	if len(out) == 0 {
+		return []time.Duration{250 * time.Millisecond, time.Second, 2 * time.Second}
+	}
+	return out
 }
 
 func (h *harness) stop() {

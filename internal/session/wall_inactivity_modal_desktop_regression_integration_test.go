@@ -2,15 +2,24 @@ package session_test
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
+	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"google.golang.org/protobuf/proto"
+
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/desktopnotify"
+	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/ptytest"
 	"pkt.systems/lingon/internal/relayclient"
+	"pkt.systems/lingon/internal/tlsmgr"
 )
 
 type integrationRecordingNotifier struct {
@@ -490,6 +499,138 @@ func TestRelayBackedLocalWallInactivityDoesNotRepeatWithoutActivity(t *testing.T
 	if screenContainsWithin(hostB, "wall-prop-no-repeat-a inactive", 1200*time.Millisecond) {
 		t.Fatalf("expected no repeated inactivity wall modal without renewed activity")
 	}
+}
+
+func TestRelayBackedLocalWallInactivityClientReconnectDoesNotRearmWithoutTerminalInput(t *testing.T) {
+	h := newHarness(t, ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "wall-prop-reconnect-a",
+		SessionName: "wall-prop-reconnect-a",
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 1, 5*time.Second)
+
+	host.SendCtrlL()
+	host.Send("w")
+	if !screenContainsWithin(host, "wall inactivity 250ms", 2*time.Second) {
+		t.Fatalf("expected wall inactivity status banner on source tab")
+	}
+
+	waitForWallEventCount(t, h.Endpoint(), h.AccessToken(), h.AuthFile(), 1, 3*time.Second)
+
+	conn := dialRelayClient(t, h.Endpoint(), h.AccessToken(), h.AuthFile(), "wall-prop-reconnect-a")
+	_ = conn.Close(websocket.StatusNormalClosure, "bye")
+
+	time.Sleep(1500 * time.Millisecond)
+
+	count, events := wallEventsForTest(t, h.Endpoint(), h.AccessToken(), h.AuthFile())
+	if count != 1 {
+		t.Fatalf("expected reconnect without terminal input to keep wall events at 1, got %d events=%v", count, events)
+	}
+}
+
+type wallEventForTest struct {
+	ID              uint64 `json:"id"`
+	Message         string `json:"message"`
+	SourceSessionID string `json:"source_session_id"`
+	Kind            uint32 `json:"kind"`
+}
+
+type wallEventsResponseForTest struct {
+	Events []wallEventForTest `json:"events"`
+}
+
+func waitForWallEventCount(t *testing.T, endpoint, accessToken, authFile string, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		got, _ := wallEventsForTest(t, endpoint, accessToken, authFile)
+		if got == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	got, events := wallEventsForTest(t, endpoint, accessToken, authFile)
+	t.Fatalf("wall event count = %d, want %d; events=%v", got, want, events)
+}
+
+func wallEventsForTest(t *testing.T, endpoint, accessToken, authFile string) (int, []wallEventForTest) {
+	t.Helper()
+	tlsDir := filepath.Join(filepath.Dir(authFile), "tls")
+	tlsPool, err := tlsmgr.LoadLocalCARoots(tlsDir, nil)
+	if err != nil {
+		t.Fatalf("LoadLocalCARoots: %v", err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: tlsPool, MinVersion: tls.VersionTLS12}},
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint+"/wall/events?limit=16", nil)
+	if err != nil {
+		t.Fatalf("new wall events request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("wall events request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("wall events status = %s", resp.Status)
+	}
+	var decoded wallEventsResponseForTest
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode wall events: %v", err)
+	}
+	return len(decoded.Events), decoded.Events
+}
+
+func dialRelayClient(t *testing.T, endpoint, accessToken, authFile, sessionID string) *websocket.Conn {
+	t.Helper()
+	tlsDir := filepath.Join(filepath.Dir(authFile), "tls")
+	tlsPool, err := tlsmgr.LoadLocalCARoots(tlsDir, nil)
+	if err != nil {
+		t.Fatalf("LoadLocalCARoots: %v", err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: tlsPool, MinVersion: tls.VersionTLS12}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURLForWallTest(endpoint, "/ws/client"), &websocket.DialOptions{
+		HTTPClient: client,
+		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + accessToken}},
+	})
+	if err != nil {
+		t.Fatalf("ws client dial: %v", err)
+	}
+	hello := &protocolpb.Frame{
+		SessionId: sessionID,
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "wall-reconnect-test",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: true,
+			ClientType:   "client",
+		}},
+	}
+	data, err := proto.Marshal(hello)
+	if err != nil {
+		t.Fatalf("marshal client hello: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+		t.Fatalf("send client hello: %v", err)
+	}
+	return conn
+}
+
+func wsURLForWallTest(base, path string) string {
+	ws := strings.Replace(base, "http://", "ws://", 1)
+	ws = strings.Replace(ws, "https://", "wss://", 1)
+	return ws + path
 }
 
 func TestRelayBackedLocalWallInactivityPropagatesModalToAttachTUI(t *testing.T) {

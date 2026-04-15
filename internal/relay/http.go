@@ -1061,9 +1061,6 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = replacedHost.Close(context.Background(), "superseded by reconnect")
 	}
-	if svc := s.wallService(); svc != nil {
-		svc.markActivity(frame.SessionId, time.Now().UTC())
-	}
 	logger.Info("relay.host.connect.done", "session", frame.SessionId, "reconnected", reconnected, "ip", remoteIP)
 	s.notifySessions(username)
 
@@ -1238,6 +1235,12 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 
 		switch ws.role {
 		case RoleHost:
+			if frame.GetActivity() != nil {
+				if svc := s.wallService(); svc != nil {
+					svc.markActivity(ws.sessionID, time.Now().UTC())
+				}
+				continue
+			}
 			if err := s.Hub.HandleHostFrame(ctx, ws, frame); err != nil {
 				if errors.Is(err, errHostSessionClosed) {
 					if ws.logger != nil {
@@ -1255,14 +1258,14 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 					return
 				}
 				_ = ws.Send(ctx, frameError(err.Error()))
-			} else if isHostActivityFrame(frame) {
-				if svc := s.wallService(); svc != nil {
-					svc.markActivity(ws.sessionID, time.Now().UTC())
-				}
 			}
 		case RoleClient:
 			if err := s.Hub.HandleClientFrame(ctx, ws, frame); err != nil {
 				_ = ws.Send(ctx, frameError(err.Error()))
+			} else if isClientActivityFrame(frame) {
+				if svc := s.wallService(); svc != nil {
+					svc.markActivity(ws.sessionID, time.Now().UTC())
+				}
 			}
 		}
 	}
@@ -1454,14 +1457,17 @@ func formatDurationCompact(d time.Duration) string {
 	return b.String()
 }
 
-func isHostActivityFrame(frame *protocolpb.Frame) bool {
+func isClientActivityFrame(frame *protocolpb.Frame) bool {
 	if frame == nil {
 		return false
 	}
-	return frame.GetSnapshot() != nil ||
-		frame.GetDiff() != nil ||
-		frame.GetOut() != nil ||
-		frame.GetScrollback() != nil
+	if in := frame.GetIn(); in != nil {
+		return len(in.GetData()) > 0
+	}
+	if command := frame.GetCommand(); command != nil {
+		return command.GetKind() == protocolpb.CommandKind_COMMAND_KIND_SEND_EOF
+	}
+	return false
 }
 
 func (s *HTTPServer) cookiePath() string {

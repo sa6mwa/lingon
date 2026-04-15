@@ -80,6 +80,8 @@ func (r *WSRecorder) record(role string, dir Direction, data []byte) {
 			rec.Payload = "resize"
 		case *protocolpb.Frame_Control:
 			rec.Payload = "control"
+		case *protocolpb.Frame_Activity:
+			rec.Payload = "activity"
 		case *protocolpb.Frame_Error:
 			rec.Payload = "error"
 		case *protocolpb.Frame_WallInactivityStatus:

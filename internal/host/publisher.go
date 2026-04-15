@@ -410,6 +410,9 @@ func (p *Publisher) Publish(data []byte, snap *protocolpb.Snapshot) {
 	if snap == nil {
 		return
 	}
+	if len(data) > 0 {
+		p.sendActivity()
+	}
 	snapFrame := &protocolpb.Frame{
 		SessionId: p.opts.SessionID,
 		Payload:   &protocolpb.Frame_Snapshot{Snapshot: snap},
@@ -709,6 +712,10 @@ func (p *Publisher) sendFrame(frame *protocolpb.Frame) bool {
 	return true
 }
 
+func (p *Publisher) sendActivity() {
+	_ = p.sendFrame(activityFrame(p.opts.SessionID))
+}
+
 func (p *Publisher) sendSnapshot() {
 	p.mu.Lock()
 	snap := p.lastSnap
@@ -906,6 +913,13 @@ func (p *Publisher) touchActivity() {
 		return
 	}
 	p.lastActivity.Store(p.clock.Now().UnixNano())
+}
+
+func activityFrame(sessionID string) *protocolpb.Frame {
+	return &protocolpb.Frame{
+		SessionId: sessionID,
+		Payload:   &protocolpb.Frame_Activity{Activity: &protocolpb.Activity{}},
+	}
 }
 
 func (p *Publisher) idleFor() time.Duration {

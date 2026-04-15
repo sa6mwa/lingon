@@ -31,6 +31,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/relay"
+	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/lingon/internal/tlsmgr"
@@ -2397,6 +2398,142 @@ func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 		return fmt.Sprintf("expected manual refresh to discover/connect host (active=%q ws=%.0f attempt=%d pending=%t debug=%s)",
 			active, info.WSState, info.ReconnectAttempt, info.ReconnectPending, debug)
 	}, hostErr)
+}
+
+func TestWebUIConnectAndReloadDoNotRearmWallInactivityWithoutTerminalInput(t *testing.T) {
+	clk := newTestClock()
+
+	home := testutil.TempDir(t)
+	t.Setenv("HOME", home)
+
+	tlsDir := filepath.Join(home, ".lingon", "tls")
+	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
+		t.Fatalf("GenerateAll: %v", err)
+	}
+	cert, err := tlsmgr.LoadLocalServerCert(tlsDir)
+	if err != nil {
+		t.Fatalf("LoadLocalServerCert: %v", err)
+	}
+
+	users := relay.NewUserStore()
+	created, err := relay.CreateUser(users, "webwall", "pass", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	auth := relay.NewAuthenticator(users)
+	store := relay.NewStore()
+	hub := relay.NewHub(nil)
+	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
+	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.ConfigureWall(1*time.Second, []time.Duration{250 * time.Millisecond})
+
+	handler := server.WrapBasePath("/v1", relayServer.Handler())
+	srv := httptest.NewUnstartedServer(handler)
+	srv.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	baseURL := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
+	endpoint := baseURL + "/v1"
+
+	access, err := store.CreateAccessToken(created.User.Username, time.Minute, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	hostSessionID := "web-wall-idle"
+	hostCtx, hostCancel := context.WithCancel(context.Background())
+	t.Cleanup(hostCancel)
+	hostErr := make(chan error, 1)
+	h := &host.Host{
+		Endpoint:  endpoint,
+		Token:     access.Token,
+		SessionID: hostSessionID,
+		Cols:      80,
+		Rows:      24,
+		Command:   []string{"/bin/sh", "-c", "printf 'WEB_WALL_READY\\r\\n'; sleep 3600"},
+	}
+	go func() { hostErr <- h.Run(hostCtx) }()
+
+	waitUntil(t, clk, 5*time.Second, func() bool {
+		return hub.HasHost(hostSessionID)
+	}, hostErr)
+
+	if _, err := relayclient.ToggleWallInactivity(context.Background(), endpoint, access.Token, hostSessionID, tlsDir, false); err != nil {
+		t.Fatalf("ToggleWallInactivity: %v", err)
+	}
+	waitUntil(t, clk, 5*time.Second, func() bool {
+		return fetchWallEventCount(t, endpoint, access.Token) == 1
+	}, hostErr)
+
+	ctx, cancel := newChromedpContext(t, filepath.Join(home, "chromedp-wall-idle"))
+	defer cancel()
+	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+		t.Fatalf("chromedp network enable: %v", err)
+	}
+
+	loginURL := endpoint + "/"
+	if err := ensureWebUILogin(ctx, loginURL, created.User.Username, "pass", totpCode(t, created.TOTPSecret)); err != nil {
+		t.Fatalf("chromedp login: %v", err)
+	}
+	waitForTerminalView(t, ctx, 15*time.Second, hostErr)
+	waitForTerminalReady(t, ctx, 15*time.Second, hostErr)
+	waitUntilDebug(t, 10*time.Second, func() bool {
+		active, err := readActiveSessionID(ctx)
+		return err == nil && active == hostSessionID
+	}, func() string {
+		active, _ := readActiveSessionID(ctx)
+		debug, _ := readDebugInfo(ctx)
+		return fmt.Sprintf("expected webui active session %q after connect (active=%q debug=%s)", hostSessionID, active, debug)
+	}, hostErr)
+
+	time.Sleep(1500 * time.Millisecond)
+	if got := fetchWallEventCount(t, endpoint, access.Token); got != 1 {
+		t.Fatalf("expected webui connect to avoid rearming inactivity, got %d wall events", got)
+	}
+
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return page.Reload().Do(ctx)
+	})); err != nil {
+		t.Fatalf("chromedp reload: %v", err)
+	}
+	waitForTerminalView(t, ctx, 15*time.Second, hostErr)
+	waitForTerminalReady(t, ctx, 15*time.Second, hostErr)
+
+	time.Sleep(1500 * time.Millisecond)
+	if got := fetchWallEventCount(t, endpoint, access.Token); got != 1 {
+		t.Fatalf("expected webui reload to avoid rearming inactivity, got %d wall events", got)
+	}
+}
+
+func fetchWallEventCount(t *testing.T, endpoint, accessToken string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, endpoint+"/wall/events?limit=16", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := (&http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}).Do(req)
+	if err != nil {
+		t.Fatalf("wall events request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("wall events status = %s body=%q", resp.Status, string(body))
+	}
+	var payload struct {
+		Events []json.RawMessage `json:"events"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode wall events: %v", err)
+	}
+	return len(payload.Events)
 }
 
 func hasCookie(cookies []*network.Cookie, name string) bool {
