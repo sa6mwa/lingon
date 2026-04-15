@@ -88,6 +88,7 @@ class AppViewModel(
     private var nextPanResetToken = 0
     private var lastForegroundRecoveryAtMs: Long = 0
     private var pendingWallInactivitySessionId: String? = null
+    private var transientStatusJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -444,6 +445,7 @@ class AppViewModel(
                         shareToken = null,
                         shareTokenError = null,
                         status = null,
+                        transientStatus = null,
                         requiresAppUnlock = false,
                         unlockPromptPending = false,
                     )
@@ -472,7 +474,12 @@ class AppViewModel(
             try {
                 repository.logout()
             } catch (err: ApiException) {
-                _state.update { it.copy(status = StatusMessage(err.message ?: "logout failed", StatusLevel.Error)) }
+                _state.update {
+                    it.copy(
+                        status = StatusMessage(err.message ?: "logout failed", StatusLevel.Error),
+                        transientStatus = null,
+                    )
+                }
             } finally {
                 try {
                     repository.clearAuth()
@@ -942,11 +949,21 @@ class AppViewModel(
                 handleUnauthorizedResponse()
                 return
             }
-            _state.update { it.copy(status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error)) }
+            _state.update {
+                it.copy(
+                    status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error),
+                    transientStatus = null,
+                )
+            }
         } catch (err: CancellationException) {
             throw err
         } catch (err: Exception) {
-            _state.update { it.copy(status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error)) }
+            _state.update {
+                it.copy(
+                    status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error),
+                    transientStatus = null,
+                )
+            }
         }
     }
 
@@ -1406,7 +1423,7 @@ class AppViewModel(
                             pendingWallInactivitySessionId = null
                         }
                         if (shouldShowBanner && _state.value.activeSessionId == cleanedSessionId) {
-                            setStatus(wallInactivityBanner(nextState), StatusLevel.Info)
+                            showTransientStatus(wallInactivityBanner(nextState), StatusLevel.Info)
                         }
                     }
                     frame.hasError() -> {
@@ -1634,11 +1651,21 @@ class AppViewModel(
                 handleUnauthorizedResponse()
                 return
             }
-            _state.update { it.copy(status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error)) }
+            _state.update {
+                it.copy(
+                    status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error),
+                    transientStatus = null,
+                )
+            }
         } catch (err: CancellationException) {
             throw err
         } catch (err: Exception) {
-            _state.update { it.copy(status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error)) }
+            _state.update {
+                it.copy(
+                    status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error),
+                    transientStatus = null,
+                )
+            }
         }
         connectActiveSession()
     }
@@ -1758,7 +1785,33 @@ class AppViewModel(
     }
 
     private fun setStatus(message: String, level: StatusLevel = StatusLevel.Info) {
-        _state.update { it.copy(status = StatusMessage(message, level)) }
+        transientStatusJob?.cancel()
+        transientStatusJob = null
+        _state.update {
+            it.copy(
+                status = StatusMessage(message, level),
+                transientStatus = null,
+            )
+        }
+    }
+
+    private fun showTransientStatus(
+        message: String,
+        level: StatusLevel = StatusLevel.Info,
+        timeoutMs: Long = transientStatusDurationMs,
+    ) {
+        transientStatusJob?.cancel()
+        _state.update { it.copy(transientStatus = StatusMessage(message, level)) }
+        transientStatusJob = viewModelScope.launch {
+            delay(timeoutMs)
+            _state.update { state ->
+                if (state.transientStatus?.message == message && state.transientStatus.level == level) {
+                    state.copy(transientStatus = null)
+                } else {
+                    state
+                }
+            }
+        }
     }
 
     fun onAppBackground() {
@@ -1831,11 +1884,21 @@ class AppViewModel(
     }
 
     private fun clearStatus() {
-        _state.update { it.copy(status = null) }
+        transientStatusJob?.cancel()
+        transientStatusJob = null
+        _state.update { it.copy(status = null, transientStatus = null) }
     }
 
     fun dismissStatus() {
-        clearStatus()
+        transientStatusJob?.cancel()
+        transientStatusJob = null
+        _state.update { state ->
+            when {
+                state.transientStatus != null -> state.copy(transientStatus = null)
+                state.status != null -> state.copy(status = null)
+                else -> state
+            }
+        }
     }
 
     private fun maybeSendResize(state: UiState) {
@@ -1866,6 +1929,12 @@ class AppViewModel(
         return "https://$trimmed"
     }
 
+    override fun onCleared() {
+        transientStatusJob?.cancel()
+        transientStatusJob = null
+        super.onCleared()
+    }
+
     private data class ConnectionKey(
         val sessionId: String?,
         val shareToken: String?,
@@ -1875,6 +1944,7 @@ class AppViewModel(
         private const val sharedSessionId = "shared"
         private const val MissingSessionGraceMs = 5_000L
         private const val foregroundRecoveryMinIntervalMs = 30_000L
+        private const val transientStatusDurationMs = 3000L
 
         @VisibleForTesting
         internal fun shouldRequireAppUnlock(

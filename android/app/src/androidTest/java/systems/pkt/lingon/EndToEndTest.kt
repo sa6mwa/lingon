@@ -429,6 +429,23 @@ class EndToEndTest {
     }
 
     @Test
+    fun wall_inactivity_banner_auto_dismisses_without_tab_switch() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+
+        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        waitUntilNoError(5_000L) {
+            readStatusBanner()?.message == "wall 250ms"
+        }
+        waitUntilNoError(6_000L) {
+            readStatusBanner() == null
+        }
+    }
+
+    @Test
     fun keyboard_tab_switch_preserves_bottom_anchor_visual() {
         if (testConfig.sessions.size < 2) return
         setEndpoint(testConfig.endpoint)
@@ -1353,7 +1370,7 @@ class EndToEndTest {
     private fun readStatusBanner(): StatusInfo? {
         var status: systems.pkt.lingon.viewmodel.StatusMessage? = null
         composeRule.runOnIdle {
-            status = appViewModel().state.value.status
+            status = appViewModel().state.value.bannerStatus
         }
         val current = status ?: return null
         return StatusInfo(level = current.level.name, message = current.message)

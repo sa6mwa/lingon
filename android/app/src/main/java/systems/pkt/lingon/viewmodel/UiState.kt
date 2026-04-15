@@ -33,6 +33,7 @@ data class UiState(
     val activeSessionId: String? = null,
     val activeSnapshot: TerminalSnapshot? = null,
     val status: StatusMessage? = null,
+    val transientStatus: StatusMessage? = null,
     val theme: String? = null,
     val isBusy: Boolean = false,
     val showSettings: Boolean = false,
@@ -69,6 +70,9 @@ data class UiState(
     val requiresAppUnlock: Boolean = false,
     val unlockPromptPending: Boolean = false,
 ) {
+    val bannerStatus: StatusMessage?
+        get() = transientStatus ?: status
+
     val canAttach: Boolean
         get() = loggedIn || !shareToken.isNullOrBlank()
 }

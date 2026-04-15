@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.resetMain
@@ -879,7 +880,7 @@ class AppViewModelTest {
         viewModel.selectSession("host-1")
         advanceUntilIdle()
         wsClient.fireConnect()
-        advanceUntilIdle()
+        runCurrent()
 
         assertEquals(1, wsClient.connectCount)
         assertEquals("host-1", wsClient.lastConnectOptions?.sessionId)
@@ -931,7 +932,7 @@ class AppViewModelTest {
         viewModel.selectSession("host-1")
         advanceUntilIdle()
         wsClient.fireConnect()
-        advanceUntilIdle()
+        runCurrent()
 
         assertEquals(1, wsClient.connectCount)
         assertEquals("initial", viewModel.state.value.activeSnapshot?.title)
@@ -1043,7 +1044,6 @@ class AppViewModelTest {
         val wsClient = FakeWsClient { _, listener, socket ->
             listener.onOpen(socket)
             listener.onFrame(socket, welcomeFrame())
-            listener.onFrame(socket, wallInactivityStatusFrame(seq = 2, sessionId = "host-1", enabled = true, label = "5m"))
         }
         val viewModel = AppViewModel(repository, wsClient)
 
@@ -1062,10 +1062,101 @@ class AppViewModelTest {
         viewModel.selectSession("host-1")
         advanceUntilIdle()
         wsClient.fireConnect()
-        advanceUntilIdle()
+        runCurrent()
+        wsClient.fireFrame(wallInactivityStatusFrame(seq = 2, sessionId = "host-1", enabled = true, label = "5m"))
+        runCurrent()
 
         assertTrue("enabled=${viewModel.state.value.wallInactivityEnabled} label=${viewModel.state.value.wallInactivityLabel}", viewModel.state.value.wallInactivityEnabled)
         assertEquals("5m", viewModel.state.value.wallInactivityLabel)
+        assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
+    }
+
+    @Test
+    fun wallInactivityBannerAutoDismisses() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        runCurrent()
+        wsClient.fireFrame(wallInactivityStatusFrame(seq = 2, sessionId = "host-1", enabled = true, label = "5m"))
+        runCurrent()
+
+        assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
+
+        advanceTimeBy(2999)
+        runCurrent()
+        assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertNull(viewModel.state.value.transientStatus)
+    }
+
+    @Test
+    fun wallInactivityBannerReplacementRearmsDismissTimer() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Connected,
+                shareToken = null,
+            ),
+        )
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        runCurrent()
+
+        wsClient.fireFrame(wallInactivityStatusFrame(seq = 2, sessionId = "host-1", enabled = true, label = "2m"))
+        runCurrent()
+        assertEquals("wall 2m", viewModel.state.value.transientStatus?.message)
+
+        advanceTimeBy(2000)
+        wsClient.fireFrame(wallInactivityStatusFrame(seq = 3, sessionId = "host-1", enabled = true, label = "5m"))
+        runCurrent()
+        assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
+
+        advanceTimeBy(2999)
+        runCurrent()
+        assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertNull(viewModel.state.value.transientStatus)
     }
 
     @Test
@@ -1471,6 +1562,10 @@ private class FakeWsClient(
         val callback = pendingConnect ?: return
         pendingConnect = null
         callback(fakeSocket)
+    }
+
+    fun fireFrame(frame: Frame) {
+        lastListener?.onFrame(fakeSocket, frame)
     }
 
     override fun sendInput(webSocket: WebSocket, data: ByteArray) {

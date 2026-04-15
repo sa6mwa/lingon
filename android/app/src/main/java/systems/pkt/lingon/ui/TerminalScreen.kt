@@ -312,7 +312,7 @@ fun TerminalScreen(
                         onSelect = handleSelectSession,
                         compact = isCompact,
                     )
-                    StatusBanner(status = state.status)
+                    StatusBanner(status = state.bannerStatus)
                 }
                 TerminalPanel(
                     state = state,
@@ -601,7 +601,7 @@ private fun TerminalPanel(
             }
             if (showStatusOverlay) {
                 StatusBanner(
-                    status = state.status,
+                    status = state.bannerStatus,
                     onDismiss = { viewModel.dismissStatus() },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
