@@ -405,6 +405,10 @@ func (s *WallService) listEvents(username string, sinceID uint64, limit int, now
 		if event.ID <= sinceID {
 			continue
 		}
+		if !s.eventVisibleLocked(event) {
+			nextID = event.ID
+			continue
+		}
 		if len(out) < limit {
 			out = append(out, event)
 			nextID = event.ID
@@ -414,6 +418,21 @@ func (s *WallService) listEvents(username string, sinceID uint64, limit int, now
 		break
 	}
 	return out, nextID, more
+}
+
+func (s *WallService) eventVisibleLocked(event wallEvent) bool {
+	if event.Kind != protocolpb.WallKind_WALL_KIND_INACTIVITY {
+		return true
+	}
+	sessionID := strings.TrimSpace(event.SessionID)
+	if sessionID == "" || s.store == nil {
+		return true
+	}
+	session, ok := s.store.GetSession(sessionID)
+	if !ok {
+		return false
+	}
+	return session.Status == "active"
 }
 
 func (s *WallService) timeoutSeconds() uint32 {
