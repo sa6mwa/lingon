@@ -422,6 +422,12 @@ func TestRelayBackedLocalWallInactivityPropagatesAfterSecondIdlePeriod(t *testin
 		}
 		return nil
 	})
+	hostB.Eventually(1500*time.Millisecond, 50*time.Millisecond, func(_ ptytest.Screen) error {
+		if len(notifier.snapshot()) != 1 {
+			return errStillVisible("waiting for source desktop notifications to remain single while idle")
+		}
+		return nil
+	})
 
 	hostA.Send("echo SECOND_IDLE_ARM\n")
 	if !screenContainsWithin(hostA, "SECOND_IDLE_ARM", 2*time.Second) {
@@ -434,6 +440,55 @@ func TestRelayBackedLocalWallInactivityPropagatesAfterSecondIdlePeriod(t *testin
 	requests := notifier.snapshot()
 	if len(requests) < 2 {
 		t.Fatalf("expected repeated desktop notifications on source host, got %d", len(requests))
+	}
+}
+
+func TestRelayBackedLocalWallInactivityDoesNotRepeatWithoutActivity(t *testing.T) {
+	h := newHarness(t, ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
+	notifier := &integrationRecordingNotifier{}
+
+	hostA := h.StartHost(ptytest.HostOptions{
+		SessionID:       "wall-prop-no-repeat-a",
+		SessionName:     "wall-prop-no-repeat-a",
+		Cols:            100,
+		Rows:            30,
+		DesktopNotifier: notifier,
+	})
+	t.Cleanup(hostA.Cancel)
+
+	hostB := h.StartHost(ptytest.HostOptions{
+		SessionID:   "wall-prop-no-repeat-b",
+		SessionName: "wall-prop-no-repeat-b",
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(hostB.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 5*time.Second)
+
+	hostA.SendCtrlL()
+	hostA.Send("w")
+	if !screenContainsWithin(hostA, "wall inactivity 250ms", 2*time.Second) {
+		t.Fatalf("expected wall inactivity status banner on source tab")
+	}
+
+	if !screenContainsWithin(hostB, "wall-prop-no-repeat-a inactive", 3*time.Second) {
+		t.Fatalf("expected first propagated inactivity wall modal on peer host TUI; screen:\n%s", hostB.Screen().String())
+	}
+	hostB.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if screen.Contains("wall-prop-no-repeat-a inactive") {
+			return errStillVisible("waiting for first inactivity wall to auto-hide")
+		}
+		return nil
+	})
+
+	time.Sleep(1500 * time.Millisecond)
+	requests := notifier.snapshot()
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly one desktop notification without renewed activity, got %d", len(requests))
+	}
+	if screenContainsWithin(hostB, "wall-prop-no-repeat-a inactive", 1200*time.Millisecond) {
+		t.Fatalf("expected no repeated inactivity wall modal without renewed activity")
 	}
 }
 

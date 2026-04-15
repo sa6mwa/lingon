@@ -591,6 +591,7 @@ func (s *WallService) fireMonitor(key string) {
 		s.mu.Unlock()
 		return
 	}
+	monitor.timer = nil
 	idle := now.Sub(monitor.lastActivity)
 	inactiveAfter := monitor.inactiveAfter
 	if inactiveAfter <= 0 {
@@ -605,8 +606,6 @@ func (s *WallService) fireMonitor(key string) {
 	sessionID = monitor.sessionID
 	username = monitor.username
 	sender = monitor.sender
-	monitor.lastActivity = now
-	s.scheduleMonitorLocked(key, monitor, now)
 	s.mu.Unlock()
 
 	message := fmt.Sprintf("%s inactive", s.sessionLabel(sessionID))

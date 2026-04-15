@@ -153,13 +153,51 @@ func TestWallServiceInactivityFiresAfterEachActivityWhileEnabled(t *testing.T) {
 	if got := peer.sent[0].GetWall(); got == nil || got.GetKind() != protocolpb.WallKind_WALL_KIND_INACTIVITY {
 		t.Fatalf("expected inactivity wall kind, got %#v", peer.sent[0].GetWall())
 	}
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond)
 	if len(host.sent) != first || len(peer.sent) != firstPeer {
 		t.Fatalf("expected one inactivity wall while enabled, got host=%d peer=%d", len(host.sent), len(peer.sent))
 	}
 
 	svc.markActivity("s1", time.Now().UTC())
 	waitFor(first + 1)
+}
+
+func TestWallServiceInactivityDoesNotRepeatWithoutActivity(t *testing.T) {
+	store := NewStore()
+	hub := NewHub(nil)
+	now := time.Now().UTC()
+	store.CreateSession(Session{ID: "s1", Username: "alice", Name: "session-a", Status: "active", CreatedAt: now, LastActiveAt: now})
+	store.CreateSession(Session{ID: "s2", Username: "alice", Name: "session-b", Status: "active", CreatedAt: now, LastActiveAt: now})
+	host := &fakeConn{id: "host-s1", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	peer := &fakeConn{id: "host-s2", role: RoleHost, sessionID: "s2", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+	if err := hub.RegisterHost(peer, "s2", 80, 24); err != nil {
+		t.Fatalf("RegisterHost peer: %v", err)
+	}
+
+	svc := newWallService(store, hub, nil, 2*time.Second, []time.Duration{25 * time.Millisecond})
+	enabled, _ := svc.setInactivity("alice", "s1", "alice@127.0.0.1", true, now)
+	if !enabled {
+		t.Fatalf("setInactivity should enable monitor")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(peer.sent) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(peer.sent) != 1 {
+		t.Fatalf("expected exactly one first inactivity wall, got %d", len(peer.sent))
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+	if len(host.sent) != 1 || len(peer.sent) != 1 {
+		t.Fatalf("expected no repeated inactivity wall without activity, got host=%d peer=%d", len(host.sent), len(peer.sent))
+	}
 }
 
 func TestWallServiceToggleInactivityCyclesLevelsThenOff(t *testing.T) {
