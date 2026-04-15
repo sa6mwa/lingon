@@ -1530,11 +1530,10 @@ func (c *Client) notifyDesktop(wall *protocolpb.Wall) {
 	if wall == nil || c.DisableDesktopNotifications || c.DesktopNotifier == nil || !c.desktopNotificationsEnabled() {
 		return
 	}
-	message := strings.TrimSpace(wall.GetMessage())
-	if !desktopnotify.IsInactivityWallMessage(message) {
+	if !desktopnotify.IsInactivityWall(wall) {
 		return
 	}
-	label := strings.TrimSpace(strings.TrimSuffix(message, " inactive"))
+	label := strings.TrimSpace(wall.GetSourceSessionId())
 	if label == "" {
 		label = "Lingon"
 	}

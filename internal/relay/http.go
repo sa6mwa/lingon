@@ -715,6 +715,7 @@ type wallEventResponse struct {
 	Sender         string    `json:"sender"`
 	Message        string    `json:"message"`
 	TimeoutSeconds uint32    `json:"timeout_seconds"`
+	Kind           uint32    `json:"kind,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -871,6 +872,7 @@ func (s *HTTPServer) handleWallEvents(w http.ResponseWriter, r *http.Request) {
 			Sender:         event.Sender,
 			Message:        event.Message,
 			TimeoutSeconds: event.TimeoutSeconds,
+			Kind:           uint32(event.Kind),
 			CreatedAt:      event.CreatedAt,
 		})
 	}

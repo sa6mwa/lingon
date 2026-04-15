@@ -65,14 +65,16 @@ func frameSessions(sessions []Session) *protocolpb.Frame {
 	}
 }
 
-func frameWall(sessionID string, eventID uint64, sender, message string, timeoutSeconds uint32) *protocolpb.Frame {
+func frameWall(sessionID string, eventID uint64, sender, message string, timeoutSeconds uint32, kind protocolpb.WallKind, sourceSessionID string) *protocolpb.Frame {
 	return &protocolpb.Frame{
 		SessionId: sessionID,
 		Payload: &protocolpb.Frame_Wall{Wall: &protocolpb.Wall{
-			Id:             eventID,
-			Sender:         sender,
-			Message:        message,
-			TimeoutSeconds: timeoutSeconds,
+			Id:              eventID,
+			Sender:          sender,
+			Message:         message,
+			TimeoutSeconds:  timeoutSeconds,
+			Kind:            kind,
+			SourceSessionId: sourceSessionID,
 		}},
 	}
 }

@@ -745,10 +745,12 @@ func (d *Daemon) routeWallEventWithSource(wall *protocolpb.Wall, sourceSessionID
 	}
 	eventID := wall.GetId()
 	out := &protocolpb.Wall{
-		Id:             eventID,
-		Sender:         strings.TrimSpace(wall.GetSender()),
-		Message:        msg,
-		TimeoutSeconds: wall.GetTimeoutSeconds(),
+		Id:              eventID,
+		Sender:          strings.TrimSpace(wall.GetSender()),
+		Message:         msg,
+		TimeoutSeconds:  wall.GetTimeoutSeconds(),
+		Kind:            wall.GetKind(),
+		SourceSessionId: sourceID,
 	}
 	frame := &protocolpb.Frame{
 		SessionId: sourceID,
@@ -772,9 +774,10 @@ func (d *Daemon) handleInternalWall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wall := &protocolpb.Wall{
-		Sender:         strings.TrimSpace(evt.Sender),
-		Message:        strings.TrimSpace(evt.Message),
-		TimeoutSeconds: evt.TimeoutSeconds,
+		Sender:          strings.TrimSpace(evt.Sender),
+		Message:         strings.TrimSpace(evt.Message),
+		TimeoutSeconds:  evt.TimeoutSeconds,
+		SourceSessionId: strings.TrimSpace(evt.SourceSessionID),
 	}
 	if wall.Message == "" {
 		http.Error(w, "message is required", http.StatusBadRequest)
@@ -796,9 +799,11 @@ func (d *Daemon) currentStatusWall() *protocolpb.Wall {
 		return nil
 	}
 	return &protocolpb.Wall{
-		Sender:         d.status.Sender,
-		Message:        d.status.Message,
-		TimeoutSeconds: d.status.TimeoutSeconds,
+		Sender:          d.status.Sender,
+		Message:         d.status.Message,
+		TimeoutSeconds:  d.status.TimeoutSeconds,
+		Kind:            d.status.Kind,
+		SourceSessionId: d.status.SourceSessionId,
 	}
 }
 
@@ -1181,22 +1186,23 @@ func (d *Daemon) monitorLocalWallInactivity(ctx context.Context) {
 			continue
 		}
 		wall := &protocolpb.Wall{
-			Sender:         d.sessionID,
-			Message:        fmt.Sprintf("%s inactive", d.sessionID),
-			TimeoutSeconds: 5,
+			Sender:          d.sessionID,
+			Message:         fmt.Sprintf("%s inactive", d.sessionID),
+			TimeoutSeconds:  5,
+			Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+			SourceSessionId: d.sessionID,
 		}
-		d.notifyDesktop(wall.GetMessage())
+		d.notifyDesktop(wall)
 		d.routeWallEvent(wall, true)
 		d.forwardWallToRelayAsync(wall)
 	}
 }
 
-func (d *Daemon) notifyDesktop(message string) {
-	if d == nil || d.opts.DisableDesktopNotifications {
+func (d *Daemon) notifyDesktop(wall *protocolpb.Wall) {
+	if d == nil || d.opts.DisableDesktopNotifications || wall == nil {
 		return
 	}
-	message = strings.TrimSpace(message)
-	if !desktopnotify.IsInactivityWallMessage(message) {
+	if !desktopnotify.IsInactivityWall(wall) {
 		return
 	}
 	if d.desktopNotifier == nil {
@@ -1205,7 +1211,10 @@ func (d *Daemon) notifyDesktop(message string) {
 	if d.desktopNotifier == nil {
 		return
 	}
-	label := strings.TrimSpace(d.sessionID)
+	label := strings.TrimSpace(wall.GetSourceSessionId())
+	if label == "" {
+		label = strings.TrimSpace(d.sessionID)
+	}
 	if label == "" {
 		label = "Lingon"
 	}

@@ -28,6 +28,8 @@ data class RelayWallEvent(
     val id: Long = 0,
     @SerialName("session_id")
     val sessionId: String? = null,
+    @SerialName("kind")
+    val kind: Int = 0,
     @SerialName("sender")
     val sender: String = "",
     @SerialName("message")

@@ -2484,8 +2484,10 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 		return
 	}
 	r.showWall(&protocolpb.Wall{
-		Message:        label + " inactive",
-		TimeoutSeconds: 5,
+		Message:         label + " inactive",
+		TimeoutSeconds:  5,
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: sessionID,
 	}, r.stdout())
 }
 
@@ -2497,22 +2499,14 @@ func (r *Runner) suppressFocusedLocalInactivityWall(wall *protocolpb.Wall) bool 
 	if !activeLocal || activeID == "" {
 		return false
 	}
-	message := strings.TrimSpace(wall.GetMessage())
-	if !desktopnotify.IsInactivityWallMessage(message) {
+	if !desktopnotify.IsInactivityWall(wall) {
 		return false
 	}
-	label := strings.TrimSpace(strings.TrimSuffix(message, " inactive"))
-	if label == "" {
+	sourceID := strings.TrimSpace(wall.GetSourceSessionId())
+	if sourceID == "" {
 		return false
 	}
-	if label == activeID {
-		return true
-	}
-	active := r.localSession(activeID)
-	if active == nil {
-		return false
-	}
-	return label == strings.TrimSpace(active.Name())
+	return sourceID == activeID
 }
 
 func (r *Runner) toggleRespawn(sessionID string, stdout *os.File) {

@@ -180,7 +180,7 @@ func TestRelayWallInactivitySkipsSelfModalOnFocusedSourceTab(t *testing.T) {
 	}
 }
 
-func TestInactivityShapedRelayWallSkipsSelfModalOnFocusedSourceTab(t *testing.T) {
+func TestInactivityShapedRelayWallDoesNotSuppressFocusedTabWithoutExplicitKind(t *testing.T) {
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "wall-relay-shaped-a",
@@ -197,12 +197,12 @@ func TestInactivityShapedRelayWallSkipsSelfModalOnFocusedSourceTab(t *testing.T)
 		t.Fatalf("send wall: %v", err)
 	}
 
-	if screenContainsWithin(host, "wall-relay-shaped-a inactive", 1500*time.Millisecond) {
-		t.Fatalf("expected no inactivity wall modal on focused source tab for relay wall")
+	if !screenContainsWithin(host, "wall-relay-shaped-a inactive", 1500*time.Millisecond) {
+		t.Fatalf("expected plain relay wall to remain visible without explicit inactivity kind")
 	}
 }
 
-func TestInactivityShapedRelayWallSkipsSelfModalOnFocusedSourceTabWithSiblingLocalPTY(t *testing.T) {
+func TestInactivityShapedRelayWallDoesNotSuppressFocusedTabWithSiblingLocalPTYWithoutExplicitKind(t *testing.T) {
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "wall-relay-shaped-sibling-a",
@@ -237,8 +237,8 @@ func TestInactivityShapedRelayWallSkipsSelfModalOnFocusedSourceTabWithSiblingLoc
 		t.Fatalf("send wall: %v", err)
 	}
 
-	if screenContainsWithin(host, "wall-relay-shaped-sibling-a inactive", 1500*time.Millisecond) {
-		t.Fatalf("expected no inactivity wall modal on focused source tab with sibling local pty")
+	if !screenContainsWithin(host, "wall-relay-shaped-sibling-a inactive", 1500*time.Millisecond) {
+		t.Fatalf("expected plain relay wall to remain visible without explicit inactivity kind")
 	}
 }
 
@@ -325,5 +325,183 @@ func TestTwoEnabledLocalPTYsSuppressFocusedSelfModalAndAvoidDuplicateNotificatio
 	}
 	if got["wall-dual-a-2"] != 1 {
 		t.Fatalf("expected one desktop notification for wall-dual-a-2, got %d", got["wall-dual-a-2"])
+	}
+}
+
+func TestRelayBackedLocalWallInactivityPropagatesModalToOtherHostTUI(t *testing.T) {
+	h := newHarness(t, ptytest.WithWallConfig(5*time.Second, []time.Duration{time.Second}))
+	notifier := &integrationRecordingNotifier{}
+
+	hostA := h.StartHost(ptytest.HostOptions{
+		SessionID:       "wall-prop-a",
+		SessionName:     "wall-prop-a",
+		Cols:            100,
+		Rows:            30,
+		DesktopNotifier: notifier,
+	})
+	t.Cleanup(hostA.Cancel)
+
+	hostB := h.StartHost(ptytest.HostOptions{
+		SessionID:   "wall-prop-b",
+		SessionName: "wall-prop-b",
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(hostB.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 5*time.Second)
+
+	hostA.SendCtrlL()
+	hostA.Send("w")
+	if !screenContainsWithin(hostA, "wall inactivity 1s", 2*time.Second) {
+		t.Fatalf("expected wall inactivity status banner on source tab")
+	}
+
+	hostA.Eventually(3*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
+		requests := notifier.snapshot()
+		if len(requests) != 1 {
+			return errStillVisible("waiting for desktop notification")
+		}
+		return nil
+	})
+
+	if screenContainsWithin(hostA, "wall-prop-a inactive", 1500*time.Millisecond) {
+		t.Fatalf("expected no inactivity wall modal on focused source tab")
+	}
+	if !screenContainsWithin(hostB, "wall-prop-a inactive", 3*time.Second) {
+		t.Fatalf("expected propagated inactivity wall modal on peer host TUI; screen:\n%s", hostB.Screen().String())
+	}
+
+	requests := notifier.snapshot()
+	if len(requests) != 1 {
+		t.Fatalf("expected one desktop notification, got %d", len(requests))
+	}
+	if requests[0].Title != "wall-prop-a" {
+		t.Fatalf("desktop notification Title = %q, want %q", requests[0].Title, "wall-prop-a")
+	}
+	if requests[0].Body != "inactive" {
+		t.Fatalf("desktop notification Body = %q, want %q", requests[0].Body, "inactive")
+	}
+}
+
+func TestRelayBackedLocalWallInactivityPropagatesAfterSecondIdlePeriod(t *testing.T) {
+	h := newHarness(t, ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
+	notifier := &integrationRecordingNotifier{}
+
+	hostA := h.StartHost(ptytest.HostOptions{
+		SessionID:       "wall-prop-repeat-a",
+		SessionName:     "wall-prop-repeat-a",
+		Cols:            100,
+		Rows:            30,
+		DesktopNotifier: notifier,
+	})
+	t.Cleanup(hostA.Cancel)
+
+	hostB := h.StartHost(ptytest.HostOptions{
+		SessionID:   "wall-prop-repeat-b",
+		SessionName: "wall-prop-repeat-b",
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(hostB.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 5*time.Second)
+
+	hostA.SendCtrlL()
+	hostA.Send("w")
+	if !screenContainsWithin(hostA, "wall inactivity 250ms", 2*time.Second) {
+		t.Fatalf("expected wall inactivity status banner on source tab")
+	}
+
+	if !screenContainsWithin(hostB, "wall-prop-repeat-a inactive", 3*time.Second) {
+		t.Fatalf("expected first propagated inactivity wall modal on peer host TUI; screen:\n%s", hostB.Screen().String())
+	}
+	hostB.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if screen.Contains("wall-prop-repeat-a inactive") {
+			return errStillVisible("waiting for first inactivity wall to auto-hide")
+		}
+		return nil
+	})
+
+	hostA.Send("echo SECOND_IDLE_ARM\n")
+	if !screenContainsWithin(hostA, "SECOND_IDLE_ARM", 2*time.Second) {
+		t.Fatalf("expected activity marker before second idle period")
+	}
+	if !screenContainsWithin(hostB, "wall-prop-repeat-a inactive", 3*time.Second) {
+		t.Fatalf("expected second propagated inactivity wall modal on peer host TUI; screen:\n%s", hostB.Screen().String())
+	}
+
+	requests := notifier.snapshot()
+	if len(requests) < 2 {
+		t.Fatalf("expected repeated desktop notifications on source host, got %d", len(requests))
+	}
+}
+
+func TestRelayBackedLocalWallInactivityPropagatesModalToAttachTUI(t *testing.T) {
+	h := newHarness(t, ptytest.WithWallConfig(5*time.Second, []time.Duration{time.Second}))
+	notifier := &integrationRecordingNotifier{}
+
+	hostA := h.StartHost(ptytest.HostOptions{
+		SessionID:       "wall-prop-attach-a",
+		SessionName:     "wall-prop-attach-a",
+		Cols:            100,
+		Rows:            30,
+		DesktopNotifier: notifier,
+	})
+	t.Cleanup(hostA.Cancel)
+
+	hostB := h.StartHost(ptytest.HostOptions{
+		SessionID:   "wall-prop-attach-b",
+		SessionName: "wall-prop-attach-b",
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(hostB.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 5*time.Second)
+
+	attachSess := h.StartMultiAttach(ptytest.MultiAttachOptions{
+		SessionID: "wall-prop-attach-b",
+		Cols:      100,
+		Rows:      30,
+	})
+	t.Cleanup(attachSess.Cancel)
+
+	hostBMark := "WALL_PROP_ATTACH_B_READY"
+	hostB.Send("echo " + hostBMark + "\n")
+	if !screenContainsWithin(attachSess, hostBMark, 3*time.Second) {
+		t.Fatalf("expected attach TUI to be ready on peer session before inactivity trigger; screen:\n%s", attachSess.Screen().String())
+	}
+
+	hostA.SendCtrlL()
+	hostA.Send("w")
+	if !screenContainsWithin(hostA, "wall inactivity 1s", 2*time.Second) {
+		t.Fatalf("expected wall inactivity status banner on source tab")
+	}
+
+	hostA.Eventually(3*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
+		requests := notifier.snapshot()
+		if len(requests) != 1 {
+			return errStillVisible("waiting for desktop notification")
+		}
+		return nil
+	})
+
+	if screenContainsWithin(hostA, "wall-prop-attach-a inactive", 1500*time.Millisecond) {
+		t.Fatalf("expected no inactivity wall modal on focused source tab")
+	}
+	if !screenContainsWithin(attachSess, "wall-prop-attach-a inactive", 3*time.Second) {
+		t.Fatalf("expected propagated inactivity wall modal on attach TUI; screen:\n%s", attachSess.Screen().String())
+	}
+
+	requests := notifier.snapshot()
+	if len(requests) != 1 {
+		t.Fatalf("expected one desktop notification, got %d", len(requests))
+	}
+	if requests[0].Title != "wall-prop-attach-a" {
+		t.Fatalf("desktop notification Title = %q, want %q", requests[0].Title, "wall-prop-attach-a")
+	}
+	if requests[0].Body != "inactive" {
+		t.Fatalf("desktop notification Body = %q, want %q", requests[0].Body, "inactive")
 	}
 }

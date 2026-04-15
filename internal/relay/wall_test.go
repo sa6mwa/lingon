@@ -3,6 +3,8 @@ package relay
 import (
 	"testing"
 	"time"
+
+	"pkt.systems/lingon/internal/protocolpb"
 )
 
 func TestSanitizeWallMessage(t *testing.T) {
@@ -106,7 +108,7 @@ func TestWallServiceSendUserWallSanitizesMessage(t *testing.T) {
 	}
 }
 
-func TestWallServiceInactivityFiresOnceThenDisables(t *testing.T) {
+func TestWallServiceInactivityFiresAfterEachActivityWhileEnabled(t *testing.T) {
 	store := NewStore()
 	hub := NewHub(nil)
 	now := time.Now().UTC()
@@ -148,21 +150,15 @@ func TestWallServiceInactivityFiresOnceThenDisables(t *testing.T) {
 	if got := peer.sent[0].GetWall(); got == nil || got.Message != "session-a inactive" {
 		t.Fatalf("unexpected peer wall frame: %#v", peer.sent[0].GetWall())
 	}
+	if got := peer.sent[0].GetWall(); got == nil || got.GetKind() != protocolpb.WallKind_WALL_KIND_INACTIVITY {
+		t.Fatalf("expected inactivity wall kind, got %#v", peer.sent[0].GetWall())
+	}
 	time.Sleep(80 * time.Millisecond)
 	if len(host.sent) != first || len(peer.sent) != firstPeer {
 		t.Fatalf("expected one inactivity wall while enabled, got host=%d peer=%d", len(host.sent), len(peer.sent))
 	}
 
 	svc.markActivity("s1", time.Now().UTC())
-	time.Sleep(80 * time.Millisecond)
-	if len(host.sent) != first || len(peer.sent) != firstPeer {
-		t.Fatalf("expected monitor to auto-disable after fire, got host=%d peer=%d walls", len(host.sent), len(peer.sent))
-	}
-
-	enabled, _ = svc.setInactivity("alice", "s1", "alice@127.0.0.1", true, time.Now().UTC())
-	if !enabled {
-		t.Fatalf("setInactivity should re-enable monitor")
-	}
 	waitFor(first + 1)
 }
 

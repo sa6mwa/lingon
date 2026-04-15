@@ -76,6 +76,52 @@ func (CommandKind) EnumDescriptor() ([]byte, []int) {
 	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{0}
 }
 
+type WallKind int32
+
+const (
+	WallKind_WALL_KIND_UNSPECIFIED WallKind = 0
+	WallKind_WALL_KIND_INACTIVITY  WallKind = 1
+)
+
+// Enum value maps for WallKind.
+var (
+	WallKind_name = map[int32]string{
+		0: "WALL_KIND_UNSPECIFIED",
+		1: "WALL_KIND_INACTIVITY",
+	}
+	WallKind_value = map[string]int32{
+		"WALL_KIND_UNSPECIFIED": 0,
+		"WALL_KIND_INACTIVITY":  1,
+	}
+)
+
+func (x WallKind) Enum() *WallKind {
+	p := new(WallKind)
+	*p = x
+	return p
+}
+
+func (x WallKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WallKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_protocolpb_relay_proto_enumTypes[1].Descriptor()
+}
+
+func (WallKind) Type() protoreflect.EnumType {
+	return &file_internal_protocolpb_relay_proto_enumTypes[1]
+}
+
+func (x WallKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WallKind.Descriptor instead.
+func (WallKind) EnumDescriptor() ([]byte, []int) {
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{1}
+}
+
 type Frame struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -1423,13 +1469,15 @@ func (x *SessionInfo) GetLastActiveUnix() int64 {
 }
 
 type Wall struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Id             uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Sender         string                 `protobuf:"bytes,2,opt,name=sender,proto3" json:"sender,omitempty"`
-	Message        string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	TimeoutSeconds uint32                 `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Id              uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Sender          string                 `protobuf:"bytes,2,opt,name=sender,proto3" json:"sender,omitempty"`
+	Message         string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	TimeoutSeconds  uint32                 `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	Kind            WallKind               `protobuf:"varint,5,opt,name=kind,proto3,enum=lingon.protocol.WallKind" json:"kind,omitempty"`
+	SourceSessionId string                 `protobuf:"bytes,6,opt,name=source_session_id,json=sourceSessionId,proto3" json:"source_session_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Wall) Reset() {
@@ -1488,6 +1536,20 @@ func (x *Wall) GetTimeoutSeconds() uint32 {
 		return x.TimeoutSeconds
 	}
 	return 0
+}
+
+func (x *Wall) GetKind() WallKind {
+	if x != nil {
+		return x.Kind
+	}
+	return WallKind_WALL_KIND_UNSPECIFIED
+}
+
+func (x *Wall) GetSourceSessionId() string {
+	if x != nil {
+		return x.SourceSessionId
+	}
+	return ""
 }
 
 type WallInactivityStatus struct {
@@ -1700,12 +1762,14 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12(\n" +
-	"\x10last_active_unix\x18\x04 \x01(\x03R\x0elastActiveUnix\"q\n" +
+	"\x10last_active_unix\x18\x04 \x01(\x03R\x0elastActiveUnix\"\xcc\x01\n" +
 	"\x04Wall\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x16\n" +
 	"\x06sender\x18\x02 \x01(\tR\x06sender\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12'\n" +
-	"\x0ftimeout_seconds\x18\x04 \x01(\rR\x0etimeoutSeconds\"m\n" +
+	"\x0ftimeout_seconds\x18\x04 \x01(\rR\x0etimeoutSeconds\x12-\n" +
+	"\x04kind\x18\x05 \x01(\x0e2\x19.lingon.protocol.WallKindR\x04kind\x12*\n" +
+	"\x11source_session_id\x18\x06 \x01(\tR\x0fsourceSessionId\"m\n" +
 	"\x14WallInactivityStatus\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0einactive_after\x18\x02 \x01(\tR\rinactiveAfter\x12\x14\n" +
@@ -1717,7 +1781,10 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\x15COMMAND_KIND_SEND_EOF\x10\x01\x12\x1f\n" +
 	"\x1bCOMMAND_KIND_TOGGLE_OFFLINE\x10\x02\x12\x1f\n" +
 	"\x1bCOMMAND_KIND_TOGGLE_RESPAWN\x10\x03\x12&\n" +
-	"\"COMMAND_KIND_CYCLE_WALL_INACTIVITY\x10\x04B3Z1pkt.systems/lingon/internal/protocolpb;protocolpbb\x06proto3"
+	"\"COMMAND_KIND_CYCLE_WALL_INACTIVITY\x10\x04*?\n" +
+	"\bWallKind\x12\x19\n" +
+	"\x15WALL_KIND_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14WALL_KIND_INACTIVITY\x10\x01B3Z1pkt.systems/lingon/internal/protocolpb;protocolpbb\x06proto3"
 
 var (
 	file_internal_protocolpb_relay_proto_rawDescOnce sync.Once
@@ -1731,58 +1798,60 @@ func file_internal_protocolpb_relay_proto_rawDescGZIP() []byte {
 	return file_internal_protocolpb_relay_proto_rawDescData
 }
 
-var file_internal_protocolpb_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_internal_protocolpb_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_internal_protocolpb_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_internal_protocolpb_relay_proto_goTypes = []any{
 	(CommandKind)(0),             // 0: lingon.protocol.CommandKind
-	(*Frame)(nil),                // 1: lingon.protocol.Frame
-	(*Hello)(nil),                // 2: lingon.protocol.Hello
-	(*Welcome)(nil),              // 3: lingon.protocol.Welcome
-	(*Snapshot)(nil),             // 4: lingon.protocol.Snapshot
-	(*DiffRow)(nil),              // 5: lingon.protocol.DiffRow
-	(*Diff)(nil),                 // 6: lingon.protocol.Diff
-	(*ScrollbackRow)(nil),        // 7: lingon.protocol.ScrollbackRow
-	(*Scrollback)(nil),           // 8: lingon.protocol.Scrollback
-	(*Out)(nil),                  // 9: lingon.protocol.Out
-	(*In)(nil),                   // 10: lingon.protocol.In
-	(*Command)(nil),              // 11: lingon.protocol.Command
-	(*Resize)(nil),               // 12: lingon.protocol.Resize
-	(*Control)(nil),              // 13: lingon.protocol.Control
-	(*Error)(nil),                // 14: lingon.protocol.Error
-	(*Cursor)(nil),               // 15: lingon.protocol.Cursor
-	(*Sessions)(nil),             // 16: lingon.protocol.Sessions
-	(*SessionInfo)(nil),          // 17: lingon.protocol.SessionInfo
-	(*Wall)(nil),                 // 18: lingon.protocol.Wall
-	(*WallInactivityStatus)(nil), // 19: lingon.protocol.WallInactivityStatus
-	(*SessionClosed)(nil),        // 20: lingon.protocol.SessionClosed
+	(WallKind)(0),                // 1: lingon.protocol.WallKind
+	(*Frame)(nil),                // 2: lingon.protocol.Frame
+	(*Hello)(nil),                // 3: lingon.protocol.Hello
+	(*Welcome)(nil),              // 4: lingon.protocol.Welcome
+	(*Snapshot)(nil),             // 5: lingon.protocol.Snapshot
+	(*DiffRow)(nil),              // 6: lingon.protocol.DiffRow
+	(*Diff)(nil),                 // 7: lingon.protocol.Diff
+	(*ScrollbackRow)(nil),        // 8: lingon.protocol.ScrollbackRow
+	(*Scrollback)(nil),           // 9: lingon.protocol.Scrollback
+	(*Out)(nil),                  // 10: lingon.protocol.Out
+	(*In)(nil),                   // 11: lingon.protocol.In
+	(*Command)(nil),              // 12: lingon.protocol.Command
+	(*Resize)(nil),               // 13: lingon.protocol.Resize
+	(*Control)(nil),              // 14: lingon.protocol.Control
+	(*Error)(nil),                // 15: lingon.protocol.Error
+	(*Cursor)(nil),               // 16: lingon.protocol.Cursor
+	(*Sessions)(nil),             // 17: lingon.protocol.Sessions
+	(*SessionInfo)(nil),          // 18: lingon.protocol.SessionInfo
+	(*Wall)(nil),                 // 19: lingon.protocol.Wall
+	(*WallInactivityStatus)(nil), // 20: lingon.protocol.WallInactivityStatus
+	(*SessionClosed)(nil),        // 21: lingon.protocol.SessionClosed
 }
 var file_internal_protocolpb_relay_proto_depIdxs = []int32{
-	2,  // 0: lingon.protocol.Frame.hello:type_name -> lingon.protocol.Hello
-	3,  // 1: lingon.protocol.Frame.welcome:type_name -> lingon.protocol.Welcome
-	4,  // 2: lingon.protocol.Frame.snapshot:type_name -> lingon.protocol.Snapshot
-	6,  // 3: lingon.protocol.Frame.diff:type_name -> lingon.protocol.Diff
-	9,  // 4: lingon.protocol.Frame.out:type_name -> lingon.protocol.Out
-	10, // 5: lingon.protocol.Frame.in:type_name -> lingon.protocol.In
-	12, // 6: lingon.protocol.Frame.resize:type_name -> lingon.protocol.Resize
-	13, // 7: lingon.protocol.Frame.control:type_name -> lingon.protocol.Control
-	14, // 8: lingon.protocol.Frame.error:type_name -> lingon.protocol.Error
-	8,  // 9: lingon.protocol.Frame.scrollback:type_name -> lingon.protocol.Scrollback
-	16, // 10: lingon.protocol.Frame.sessions:type_name -> lingon.protocol.Sessions
-	18, // 11: lingon.protocol.Frame.wall:type_name -> lingon.protocol.Wall
-	20, // 12: lingon.protocol.Frame.session_closed:type_name -> lingon.protocol.SessionClosed
-	11, // 13: lingon.protocol.Frame.command:type_name -> lingon.protocol.Command
-	19, // 14: lingon.protocol.Frame.wall_inactivity_status:type_name -> lingon.protocol.WallInactivityStatus
-	15, // 15: lingon.protocol.Snapshot.cursor:type_name -> lingon.protocol.Cursor
-	5,  // 16: lingon.protocol.Diff.diff_rows:type_name -> lingon.protocol.DiffRow
-	15, // 17: lingon.protocol.Diff.cursor:type_name -> lingon.protocol.Cursor
-	7,  // 18: lingon.protocol.Scrollback.rows:type_name -> lingon.protocol.ScrollbackRow
+	3,  // 0: lingon.protocol.Frame.hello:type_name -> lingon.protocol.Hello
+	4,  // 1: lingon.protocol.Frame.welcome:type_name -> lingon.protocol.Welcome
+	5,  // 2: lingon.protocol.Frame.snapshot:type_name -> lingon.protocol.Snapshot
+	7,  // 3: lingon.protocol.Frame.diff:type_name -> lingon.protocol.Diff
+	10, // 4: lingon.protocol.Frame.out:type_name -> lingon.protocol.Out
+	11, // 5: lingon.protocol.Frame.in:type_name -> lingon.protocol.In
+	13, // 6: lingon.protocol.Frame.resize:type_name -> lingon.protocol.Resize
+	14, // 7: lingon.protocol.Frame.control:type_name -> lingon.protocol.Control
+	15, // 8: lingon.protocol.Frame.error:type_name -> lingon.protocol.Error
+	9,  // 9: lingon.protocol.Frame.scrollback:type_name -> lingon.protocol.Scrollback
+	17, // 10: lingon.protocol.Frame.sessions:type_name -> lingon.protocol.Sessions
+	19, // 11: lingon.protocol.Frame.wall:type_name -> lingon.protocol.Wall
+	21, // 12: lingon.protocol.Frame.session_closed:type_name -> lingon.protocol.SessionClosed
+	12, // 13: lingon.protocol.Frame.command:type_name -> lingon.protocol.Command
+	20, // 14: lingon.protocol.Frame.wall_inactivity_status:type_name -> lingon.protocol.WallInactivityStatus
+	16, // 15: lingon.protocol.Snapshot.cursor:type_name -> lingon.protocol.Cursor
+	6,  // 16: lingon.protocol.Diff.diff_rows:type_name -> lingon.protocol.DiffRow
+	16, // 17: lingon.protocol.Diff.cursor:type_name -> lingon.protocol.Cursor
+	8,  // 18: lingon.protocol.Scrollback.rows:type_name -> lingon.protocol.ScrollbackRow
 	0,  // 19: lingon.protocol.Command.kind:type_name -> lingon.protocol.CommandKind
-	17, // 20: lingon.protocol.Sessions.sessions:type_name -> lingon.protocol.SessionInfo
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	18, // 20: lingon.protocol.Sessions.sessions:type_name -> lingon.protocol.SessionInfo
+	1,  // 21: lingon.protocol.Wall.kind:type_name -> lingon.protocol.WallKind
+	22, // [22:22] is the sub-list for method output_type
+	22, // [22:22] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_internal_protocolpb_relay_proto_init() }
@@ -1812,7 +1881,7 @@ func file_internal_protocolpb_relay_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_protocolpb_relay_proto_rawDesc), len(file_internal_protocolpb_relay_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,

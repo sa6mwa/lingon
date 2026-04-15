@@ -26,7 +26,11 @@ func TestClientNotifyDesktopForRemoteInactivityWall(t *testing.T) {
 		runCtx:          context.Background(),
 	}
 
-	client.notifyDesktop(&protocolpb.Wall{Message: "session-a inactive"})
+	client.notifyDesktop(&protocolpb.Wall{
+		Message:         "session-a inactive",
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: "session-a",
+	})
 
 	if len(notifier.requests) != 1 {
 		t.Fatalf("expected one notification, got %d", len(notifier.requests))
@@ -48,10 +52,18 @@ func TestClientNotifyDesktopSkipsLocalAndDisabled(t *testing.T) {
 		runCtx:                      context.Background(),
 	}
 
-	client.notifyDesktop(&protocolpb.Wall{Message: "session-a inactive"})
+	client.notifyDesktop(&protocolpb.Wall{
+		Message:         "session-a inactive",
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: "session-a",
+	})
 	client.DisableDesktopNotifications = false
 	client.Endpoint = "local://headless"
-	client.notifyDesktop(&protocolpb.Wall{Message: "session-a inactive"})
+	client.notifyDesktop(&protocolpb.Wall{
+		Message:         "session-a inactive",
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: "session-a",
+	})
 
 	if len(notifier.requests) != 0 {
 		t.Fatalf("expected no notifications, got %d", len(notifier.requests))
@@ -67,7 +79,11 @@ func TestClientNotifyDesktopSkipsUnixSocketAndNonInactivity(t *testing.T) {
 		runCtx:          context.Background(),
 	}
 
-	client.notifyDesktop(&protocolpb.Wall{Message: "session-a inactive"})
+	client.notifyDesktop(&protocolpb.Wall{
+		Message:         "session-a inactive",
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: "session-a",
+	})
 	client.UnixSocket = ""
 	client.notifyDesktop(&protocolpb.Wall{Message: "hello operators"})
 
@@ -86,9 +102,11 @@ func TestClientHandleWallKeepsModalVisibleWhileNotifyingDesktop(t *testing.T) {
 	}
 
 	client.handleWall(&protocolpb.Wall{
-		Sender:         "alice@relay",
-		Message:        "session-a inactive",
-		TimeoutSeconds: 5,
+		Sender:          "alice@relay",
+		Message:         "session-a inactive",
+		TimeoutSeconds:  5,
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: "session-a",
 	})
 
 	if len(notifier.requests) != 1 {

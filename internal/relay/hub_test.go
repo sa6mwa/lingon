@@ -194,7 +194,7 @@ func TestHubBroadcastSessionFrame(t *testing.T) {
 	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
 	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
 
-	frame := frameWall("s1", 42, "alice@127.0.0.1", "hello", 5)
+	frame := frameWall("s1", 42, "alice@127.0.0.1", "hello", 5, protocolpb.WallKind_WALL_KIND_UNSPECIFIED, "")
 	if !hub.BroadcastSessionFrame(context.Background(), "s1", frame, true) {
 		t.Fatalf("expected broadcast success")
 	}

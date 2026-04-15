@@ -3,6 +3,8 @@ package desktopnotify
 import (
 	"context"
 	"strings"
+
+	"pkt.systems/lingon/internal/protocolpb"
 )
 
 // Request describes one desktop notification.
@@ -25,6 +27,11 @@ func New() Notifier {
 func IsInactivityWallMessage(message string) bool {
 	message = strings.TrimSpace(message)
 	return message != "" && strings.HasSuffix(message, " inactive")
+}
+
+// IsInactivityWall reports whether a wall carries Lingon's explicit inactivity kind.
+func IsInactivityWall(wall *protocolpb.Wall) bool {
+	return wall != nil && wall.GetKind() == protocolpb.WallKind_WALL_KIND_INACTIVITY
 }
 
 func desktopEnvLikely(getenv func(string) string) bool {

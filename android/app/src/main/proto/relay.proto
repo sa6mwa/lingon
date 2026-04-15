@@ -108,6 +108,11 @@ enum CommandKind {
   COMMAND_KIND_CYCLE_WALL_INACTIVITY = 4;
 }
 
+enum WallKind {
+  WALL_KIND_UNSPECIFIED = 0;
+  WALL_KIND_INACTIVITY = 1;
+}
+
 message Command {
   CommandKind kind = 1;
 }
@@ -148,6 +153,8 @@ message Wall {
   string sender = 2;
   string message = 3;
   uint32 timeout_seconds = 4;
+  WallKind kind = 5;
+  string source_session_id = 6;
 }
 
 message WallInactivityStatus {
