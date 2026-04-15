@@ -167,9 +167,9 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 		return hub.HasHost("session_a")
 	}, runErrA, runErrB)
 
-	if runnerA.remoteSessions == nil {
-		t.Fatalf("remote sessions not initialized")
-	}
+	waitUntilAll(t, 5*time.Second, func() bool {
+		return runnerA.remoteSessions != nil
+	}, runErrA, runErrB)
 	var sessions []remoteSessionInfo
 	waitUntilAll(t, 15*time.Second, func() bool {
 		refreshCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)

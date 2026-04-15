@@ -38,9 +38,11 @@ import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.data.certs.CertificateStore
 import systems.pkt.lingon.protocol.Diff
 import systems.pkt.lingon.protocol.Frame
+import systems.pkt.lingon.protocol.CommandKind
 import systems.pkt.lingon.protocol.Scrollback
 import systems.pkt.lingon.protocol.Snapshot
 import systems.pkt.lingon.protocol.Welcome
+import systems.pkt.lingon.protocol.WallInactivityStatus
 import systems.pkt.lingon.protocol.ScrollbackRow
 import systems.pkt.lingon.DefaultTerminalZoom
 import systems.pkt.lingon.terminal.TerminalSnapshot
@@ -1008,6 +1010,65 @@ class AppViewModelTest {
     }
 
     @Test
+    fun toggleWallInactivitySendsCycleCommandForActiveSession() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Connected,
+                shareToken = null,
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        setActiveConnectionForTest(viewModel, "host-1", null)
+
+        viewModel.toggleWallInactivity()
+
+        assertEquals(CommandKind.COMMAND_KIND_CYCLE_WALL_INACTIVITY, wsClient.lastSentCommand)
+    }
+
+    @Test
+    fun wallInactivityStatusFrameUpdatesActiveSessionState() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, wallInactivityStatusFrame(seq = 2, sessionId = "host-1", enabled = true, label = "5m"))
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertTrue("enabled=${viewModel.state.value.wallInactivityEnabled} label=${viewModel.state.value.wallInactivityLabel}", viewModel.state.value.wallInactivityEnabled)
+        assertEquals("5m", viewModel.state.value.wallInactivityLabel)
+    }
+
+    @Test
     fun scrollbackFrameClearsSessionSyncing() = runTest {
         val repository = FakeRepository(
             sessions = listOf(
@@ -1381,6 +1442,7 @@ private class FakeWsClient(
     var connectCount: Int = 0
     var lastConnectOptions: ConnectOptions? = null
     var lastSentBytes: ByteArray? = null
+    var lastSentCommand: CommandKind? = null
     var closeCount: Int = 0
     private var pendingConnect: ((WebSocket) -> Unit)? = null
     val fakeSocket: WebSocket = object : WebSocket {
@@ -1421,6 +1483,10 @@ private class FakeWsClient(
 
     override fun sendResize(webSocket: WebSocket, cols: Int, rows: Int) {
         // no-op
+    }
+
+    override fun sendCommand(webSocket: WebSocket, kind: CommandKind) {
+        lastSentCommand = kind
     }
 }
 
@@ -1534,6 +1600,28 @@ private fun scrollbackFrame(seq: Long): Frame {
                 .build(),
         )
         .build()
+}
+
+private fun wallInactivityStatusFrame(
+    seq: Long,
+    sessionId: String = "",
+    enabled: Boolean,
+    label: String,
+    error: String = "",
+): Frame {
+    val builder = Frame.newBuilder()
+        .setSeq(seq)
+        .setWallInactivityStatus(
+            WallInactivityStatus.newBuilder()
+                .setEnabled(enabled)
+                .setInactiveAfter(label)
+                .setError(error)
+                .build(),
+        )
+    if (sessionId.isNotBlank()) {
+        builder.sessionId = sessionId
+    }
+    return builder.build()
 }
 
 private fun testHttpClientProvider(): HttpClientProvider {

@@ -23,6 +23,7 @@ message Frame {
     Wall wall = 21;
     SessionClosed session_closed = 22;
     Command command = 23;
+    WallInactivityStatus wall_inactivity_status = 24;
   }
 }
 
@@ -145,6 +146,12 @@ message Wall {
   string sender = 2;
   string message = 3;
   uint32 timeout_seconds = 4;
+}
+
+message WallInactivityStatus {
+  bool enabled = 1;
+  string inactive_after = 2;
+  string error = 3;
 }
 
 message SessionClosed {

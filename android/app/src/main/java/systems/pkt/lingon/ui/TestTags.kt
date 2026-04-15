@@ -4,6 +4,7 @@ object TestTags {
     const val TopBarTitle = "topbar_title"
     const val TopBarMenuButton = "topbar_menu"
     const val TopBarMenu = "topbar_menu_popup"
+    const val WallInactivityButton = "wall_inactivity_button"
     const val ReloadButton = "reload_button"
     const val EndpointButton = "endpoint_button"
     const val EndpointInput = "endpoint_input"

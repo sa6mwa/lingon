@@ -105,6 +105,8 @@ func (h *Hub) registerHost(conn connection, sessionID string, cols, rows int) co
 	var replaced connection
 	if state.host != nil && state.host.ID() != conn.ID() {
 		replaced = state.host
+		state.history = nil
+		state.historyBytes = 0
 		h.logger.Info("relay.hub.host.takeover", "session", sessionID, "old_conn", state.host.ID(), "new_conn", conn.ID())
 	}
 	state.host = conn

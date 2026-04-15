@@ -82,6 +82,8 @@ func (r *WSRecorder) record(role string, dir Direction, data []byte) {
 			rec.Payload = "control"
 		case *protocolpb.Frame_Error:
 			rec.Payload = "error"
+		case *protocolpb.Frame_WallInactivityStatus:
+			rec.Payload = "wall_inactivity_status"
 		default:
 			rec.Payload = "other"
 		}

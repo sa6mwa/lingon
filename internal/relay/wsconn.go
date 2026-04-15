@@ -197,7 +197,7 @@ func isControlFrame(frame *protocolpb.Frame) bool {
 	if frame == nil {
 		return false
 	}
-	if frame.GetControl() != nil || frame.GetWelcome() != nil || frame.GetError() != nil || frame.GetSessions() != nil {
+	if frame.GetControl() != nil || frame.GetWelcome() != nil || frame.GetError() != nil || frame.GetSessions() != nil || frame.GetWallInactivityStatus() != nil {
 		return true
 	}
 	return false

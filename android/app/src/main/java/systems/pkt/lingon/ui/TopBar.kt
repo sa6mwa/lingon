@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
@@ -47,6 +48,10 @@ fun TopBar(
     onShowTheme: () -> Unit,
     onShowAppLock: () -> Unit,
     onResetZoomPan: () -> Unit,
+    wallInactivityEnabled: Boolean,
+    wallInactivityLabel: String?,
+    wallInactivityAvailable: Boolean,
+    onToggleWallInactivity: () -> Unit,
     onReload: () -> Unit,
     onShowShareToken: () -> Unit,
     onShowCertificates: () -> Unit,
@@ -240,11 +245,38 @@ fun TopBar(
     }
 
     @Composable
+    fun WallInactivityActionButton(compactVertical: Boolean) {
+        if (!wallInactivityAvailable) {
+            return
+        }
+        val buttonSize = if (compactVertical) 28.dp else 40.dp
+        val label = wallInactivityLabel?.takeIf { it.isNotBlank() }
+        val description = if (wallInactivityEnabled) {
+            "Wall inactivity ${label ?: "on"}"
+        } else {
+            "Wall inactivity off"
+        }
+        IconButton(
+            onClick = onToggleWallInactivity,
+            modifier = Modifier
+                .size(buttonSize)
+                .testTag(TestTags.WallInactivityButton),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Alarm,
+                contentDescription = description,
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (wallInactivityEnabled) 1f else 0.55f),
+            )
+        }
+    }
+
+    @Composable
     fun TopBarActions(compactVertical: Boolean) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(if (compactVertical) 2.dp else 4.dp),
         ) {
+            WallInactivityActionButton(compactVertical = compactVertical)
             ReloadActionButton(compactVertical = compactVertical)
             MenuActionButton(compactVertical = compactVertical)
         }

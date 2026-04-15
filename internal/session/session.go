@@ -181,6 +181,7 @@ type Runner struct {
 
 	wallNotifyMu    sync.Mutex
 	wallNotifyAfter map[string]time.Duration
+	wallNotifyLabel map[string]string
 	wallNotifyTimer map[string]*clock.Timer
 	wallNotifyArmed map[string]bool
 
@@ -1813,6 +1814,9 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			}
 			r.showWall(wall, stdout)
 		}
+		publisher.SetWallInactivityStatus(func() *protocolpb.WallInactivityStatus {
+			return r.currentWallInactivityStatus(session.ID())
+		})
 		session.SetPublisher(publisher)
 		go func() {
 			if err := publisher.Run(session.ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -2130,17 +2134,43 @@ func (r *Runner) handleSessionListUpdate(sessions []remoteSessionInfo, stdout, s
 	preferredRemoteID := r.preferredRemoteID
 	r.viewMu.RUnlock()
 	if preferredRemoteID != "" && r.remoteSessions != nil {
-		if activeID != preferredRemoteID {
+		if !mvu.SessionIDExists(mergedSources, preferredRemoteID) {
+			r.viewMu.Lock()
+			if r.preferredRemoteID == preferredRemoteID {
+				r.preferredRemoteID = ""
+			}
+			r.viewMu.Unlock()
+			preferredRemoteID = ""
+		} else if activeID != preferredRemoteID {
 			if err := r.activateRemote(r.runCtx, preferredRemoteID, stdout, stdin); err == nil {
 				return
 			}
+			r.viewMu.Lock()
+			if r.preferredRemoteID == preferredRemoteID {
+				r.preferredRemoteID = ""
+			}
+			r.viewMu.Unlock()
+			preferredRemoteID = ""
 		}
-		r.refreshTabBar(stdout)
-		return
+		if preferredRemoteID != "" {
+			r.refreshTabBar(stdout)
+			return
+		}
 	}
 	if activeID != "" && mvu.SessionIDExists(mergedSources, activeID) {
 		r.refreshTabBar(stdout)
 		return
+	}
+	if r.activateAnyLocal(stdout, stdin) {
+		return
+	}
+	for _, session := range merged {
+		if r.isLocalSession(session.ID) {
+			continue
+		}
+		if err := r.activateRemote(r.runCtx, session.ID, stdout, stdin); err == nil {
+			return
+		}
 	}
 	r.refreshTabBar(stdout)
 }
@@ -2309,11 +2339,12 @@ func (r *Runner) stopLocalWallNotifications() {
 		}
 	}
 	r.wallNotifyAfter = nil
+	r.wallNotifyLabel = nil
 	r.wallNotifyTimer = nil
 	r.wallNotifyArmed = nil
 }
 
-func (r *Runner) configureLocalWallNotification(sessionID string, after time.Duration) {
+func (r *Runner) configureLocalWallNotification(sessionID string, after time.Duration, label string) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return
@@ -2322,6 +2353,9 @@ func (r *Runner) configureLocalWallNotification(sessionID string, after time.Dur
 	defer r.wallNotifyMu.Unlock()
 	if r.wallNotifyAfter == nil {
 		r.wallNotifyAfter = make(map[string]time.Duration)
+	}
+	if r.wallNotifyLabel == nil {
+		r.wallNotifyLabel = make(map[string]string)
 	}
 	if r.wallNotifyTimer == nil {
 		r.wallNotifyTimer = make(map[string]*clock.Timer)
@@ -2335,10 +2369,12 @@ func (r *Runner) configureLocalWallNotification(sessionID string, after time.Dur
 	}
 	if after <= 0 {
 		delete(r.wallNotifyAfter, sessionID)
+		delete(r.wallNotifyLabel, sessionID)
 		delete(r.wallNotifyArmed, sessionID)
 		return
 	}
 	r.wallNotifyAfter[sessionID] = after
+	r.wallNotifyLabel[sessionID] = strings.TrimSpace(label)
 	r.wallNotifyArmed[sessionID] = true
 	r.wallNotifyTimer[sessionID] = r.clock.AfterFunc(after, func() {
 		r.fireLocalWallNotification(sessionID)
@@ -2346,7 +2382,41 @@ func (r *Runner) configureLocalWallNotification(sessionID string, after time.Dur
 }
 
 func (r *Runner) disableLocalWallNotification(sessionID string) {
-	r.configureLocalWallNotification(sessionID, 0)
+	r.configureLocalWallNotification(sessionID, 0, "")
+}
+
+func (r *Runner) currentWallInactivityStatus(sessionID string) *protocolpb.WallInactivityStatus {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return &protocolpb.WallInactivityStatus{}
+	}
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	status := &protocolpb.WallInactivityStatus{}
+	if after := r.wallNotifyAfter[sessionID]; after > 0 {
+		status.Enabled = true
+	}
+	if label := strings.TrimSpace(r.wallNotifyLabel[sessionID]); label != "" {
+		status.InactiveAfter = label
+	}
+	return status
+}
+
+func (r *Runner) publishWallInactivityStatus(sessionID, errText string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	local := r.localSession(sessionID)
+	if local == nil || local.publisher == nil {
+		return
+	}
+	status := r.currentWallInactivityStatus(sessionID)
+	if status == nil {
+		status = &protocolpb.WallInactivityStatus{}
+	}
+	status.Error = strings.TrimSpace(errText)
+	local.publisher.PublishWallInactivityStatus(status)
 }
 
 func (r *Runner) noteLocalActivity(sessionID string) {
@@ -2500,19 +2570,22 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		result, err := r.opts.ToggleWallInactivityFallback(ctx, sessionID)
 		if err != nil {
 			r.showErrorStatus("wall inactivity toggle failed", stdout, 2*time.Second)
+			r.publishWallInactivityStatus(sessionID, "wall inactivity toggle failed")
 			return true
 		}
 		if result.Enabled {
-			r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(result.InactiveAfter))
+			r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(result.InactiveAfter), result.InactiveAfter)
 			status := "wall inactivity on"
 			if label := strings.TrimSpace(result.InactiveAfter); label != "" {
 				status = "wall inactivity " + label
 			}
 			r.showStatus(status, stdout, 2*time.Second)
+			r.publishWallInactivityStatus(sessionID, "")
 			return true
 		}
 		r.disableLocalWallNotification(sessionID)
 		r.showStatus("wall inactivity off", stdout, 2*time.Second)
+		r.publishWallInactivityStatus(sessionID, "")
 		return true
 	}
 	if local := r.localSession(sessionID); local != nil && local.Offline() {
@@ -2527,6 +2600,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return
 		}
 		r.showStatus("wall inactivity requires relay endpoint", stdout, 2*time.Second)
+		r.publishWallInactivityStatus(sessionID, "wall inactivity requires relay endpoint")
 		return
 	}
 	token := strings.TrimSpace(r.opts.Token)
@@ -2537,6 +2611,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 				return
 			}
 			r.showErrorStatus("wall inactivity toggle failed: token refresh", stdout, 2*time.Second)
+			r.publishWallInactivityStatus(sessionID, "wall inactivity toggle failed: token refresh")
 			return
 		}
 		token = strings.TrimSpace(refreshed)
@@ -2549,6 +2624,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return
 		}
 		r.showStatus("wall inactivity requires authentication", stdout, 2*time.Second)
+		r.publishWallInactivityStatus(sessionID, "wall inactivity requires authentication")
 		return
 	}
 	resp, err := relayclient.ToggleWallInactivity(
@@ -2564,19 +2640,22 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return
 		}
 		r.showErrorStatus("wall inactivity toggle failed", stdout, 2*time.Second)
+		r.publishWallInactivityStatus(sessionID, "wall inactivity toggle failed")
 		return
 	}
 	if resp.Enabled {
-		r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(resp.InactiveAfter))
+		r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(resp.InactiveAfter), resp.InactiveAfter)
 		status := "wall inactivity on"
 		if label := strings.TrimSpace(resp.InactiveAfter); label != "" {
 			status = "wall inactivity " + label
 		}
 		r.showStatus(status, stdout, 2*time.Second)
+		r.publishWallInactivityStatus(sessionID, "")
 		return
 	}
 	r.disableLocalWallNotification(sessionID)
 	r.showStatus("wall inactivity off", stdout, 2*time.Second)
+	r.publishWallInactivityStatus(sessionID, "")
 }
 
 func parseWallInactiveAfter(raw string) time.Duration {

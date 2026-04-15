@@ -24,6 +24,8 @@ message Frame {
     Sessions sessions = 20;
     Wall wall = 21;
     SessionClosed session_closed = 22;
+    Command command = 23;
+    WallInactivityStatus wall_inactivity_status = 24;
   }
 }
 
@@ -98,6 +100,18 @@ message In {
   bytes data = 1;
 }
 
+enum CommandKind {
+  COMMAND_KIND_UNSPECIFIED = 0;
+  COMMAND_KIND_SEND_EOF = 1;
+  COMMAND_KIND_TOGGLE_OFFLINE = 2;
+  COMMAND_KIND_TOGGLE_RESPAWN = 3;
+  COMMAND_KIND_CYCLE_WALL_INACTIVITY = 4;
+}
+
+message Command {
+  CommandKind kind = 1;
+}
+
 message Resize {
   uint32 cols = 1;
   uint32 rows = 2;
@@ -134,6 +148,12 @@ message Wall {
   string sender = 2;
   string message = 3;
   uint32 timeout_seconds = 4;
+}
+
+message WallInactivityStatus {
+  bool enabled = 1;
+  string inactive_after = 2;
+  string error = 3;
 }
 
 message SessionClosed {

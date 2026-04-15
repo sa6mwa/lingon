@@ -32,7 +32,7 @@ func TestRunnerLocalWallNotificationFiresOnceUntilActivityResets(t *testing.T) {
 		},
 	}
 
-	r.configureLocalWallNotification("s1", 2*time.Minute)
+	r.configureLocalWallNotification("s1", 2*time.Minute, "2m")
 	clk.Add(2 * time.Minute)
 
 	if len(notifier.requests) != 1 {
@@ -72,7 +72,7 @@ func TestRunnerLocalWallNotificationSkipsWhenDisabled(t *testing.T) {
 		},
 	}
 
-	r.configureLocalWallNotification("s1", time.Minute)
+	r.configureLocalWallNotification("s1", time.Minute, "1m")
 	clk.Add(time.Minute)
 
 	if len(notifier.requests) != 0 {
@@ -93,8 +93,8 @@ func TestRunnerLocalWallNotificationIsPerSession(t *testing.T) {
 		},
 	}
 
-	r.configureLocalWallNotification("s1", 2*time.Minute)
-	r.configureLocalWallNotification("s2", time.Minute)
+	r.configureLocalWallNotification("s1", 2*time.Minute, "2m")
+	r.configureLocalWallNotification("s2", time.Minute, "1m")
 	r.noteLocalActivity("s1")
 
 	clk.Add(time.Minute)
@@ -126,7 +126,7 @@ func TestRunnerDisableLocalWallNotificationCancelsPendingTimer(t *testing.T) {
 		},
 	}
 
-	r.configureLocalWallNotification("s1", time.Minute)
+	r.configureLocalWallNotification("s1", time.Minute, "1m")
 	r.disableLocalWallNotification("s1")
 	clk.Add(2 * time.Minute)
 

@@ -44,6 +44,8 @@ data class UiState(
     val zoomFactor: Float = DefaultTerminalZoom,
     val resizeHostEnabled: Boolean = false,
     val backgroundWallEnabled: Boolean = false,
+    val wallInactivityEnabled: Boolean = false,
+    val wallInactivityLabel: String? = null,
     val shareToken: String? = null,
     val shareTokenError: String? = null,
     val certificateError: String? = null,

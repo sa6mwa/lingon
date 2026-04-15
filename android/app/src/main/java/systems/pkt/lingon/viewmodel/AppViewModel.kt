@@ -31,6 +31,7 @@ import systems.pkt.lingon.DefaultScrollbackLines
 import systems.pkt.lingon.DefaultTerminalZoom
 import systems.pkt.lingon.MaxTerminalZoom
 import systems.pkt.lingon.MinTerminalZoom
+import systems.pkt.lingon.protocol.CommandKind
 import systems.pkt.lingon.protocol.ScrollbackRow
 import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
 import systems.pkt.lingon.ui.translateAppCursorKeys
@@ -81,10 +82,12 @@ class AppViewModel(
     private var lastBackgroundAtMs: Long? = null
     private var appInForeground = true
     private val sessionViewStates = LinkedHashMap<SessionViewStateKey, SessionViewState>()
+    private val sessionWallInactivityStates = LinkedHashMap<SessionViewStateKey, SessionWallInactivityState>()
     private val zoomLoadJobs = LinkedHashMap<SessionViewStateKey, Job>()
     private val zoomPersistJobs = LinkedHashMap<SessionViewStateKey, Job>()
     private var nextPanResetToken = 0
     private var lastForegroundRecoveryAtMs: Long = 0
+    private var pendingWallInactivitySessionId: String? = null
 
     init {
         viewModelScope.launch {
@@ -228,6 +231,34 @@ class AppViewModel(
         }
     }
 
+    fun toggleWallInactivity() {
+        val state = _state.value
+        val sessionId = state.activeSessionId?.trim().orEmpty()
+        if (sessionId.isBlank()) {
+            setStatus("no active session", StatusLevel.Warn)
+            return
+        }
+        if (state.requiresAppUnlock) {
+            setStatus("unlock required", StatusLevel.Warn)
+            return
+        }
+        if (state.connectionState != ConnectionState.Connected) {
+            setStatus("not connected", StatusLevel.Warn)
+            return
+        }
+        if (state.shareToken != null && !state.hasControl) {
+            setStatus("view-only session", StatusLevel.Warn)
+            return
+        }
+        val webSocket = ws
+        if (!socketOpen || webSocket == null) {
+            setStatus("not connected", StatusLevel.Warn)
+            return
+        }
+        pendingWallInactivitySessionId = sessionId
+        wsClient.sendCommand(webSocket, CommandKind.COMMAND_KIND_CYCLE_WALL_INACTIVITY)
+    }
+
     fun selectCertEndpoint(endpoint: String) {
         _state.update { it.copy(selectedCertEndpoint = endpoint, certificateError = null) }
         viewModelScope.launch { loadTrustedCertificates(endpoint) }
@@ -317,6 +348,8 @@ class AppViewModel(
                 activeSessionId = null,
                 shareToken = null,
                 shareTokenError = null,
+                wallInactivityEnabled = false,
+                wallInactivityLabel = null,
                 scrollbackOffsetRows = 0,
                 zoomFactor = DefaultTerminalZoom,
                 panResetNonce = 0,
@@ -458,6 +491,8 @@ class AppViewModel(
                         activeSnapshot = null,
                         shareToken = null,
                         shareTokenError = null,
+                        wallInactivityEnabled = false,
+                        wallInactivityLabel = null,
                         showCertificates = false,
                         certificateError = null,
                         scrollbackOffsetRows = 0,
@@ -531,11 +566,18 @@ class AppViewModel(
 
     fun selectSession(sessionId: String) {
         val current = _state.value
+        val wallState = currentWallInactivityState(sessionId)
         if (sessionId == current.activeSessionId) {
             syncCurrentSessionCache()
             activateSessionViewState()
             if (sessionCaches[sessionId]?.liveSnapshot != null) {
                 applySessionCache(sessionId)
+            }
+            _state.update {
+                it.copy(
+                    wallInactivityEnabled = wallState.enabled,
+                    wallInactivityLabel = wallState.label,
+                )
             }
             if (ws == null || current.connectionState != ConnectionState.Connected) {
                 connectActiveSession()
@@ -547,6 +589,8 @@ class AppViewModel(
             it.copy(
                 activeSessionId = sessionId,
                 sessionSyncing = true,
+                wallInactivityEnabled = wallState.enabled,
+                wallInactivityLabel = wallState.label,
             )
         }
         activateSessionViewState()
@@ -792,6 +836,32 @@ class AppViewModel(
         var scrollbackOffset: Int = 0,
     )
 
+    private data class SessionWallInactivityState(
+        val enabled: Boolean = false,
+        val label: String? = null,
+    )
+
+    private fun currentWallInactivityState(sessionId: String?, endpoint: String = _state.value.endpoint): SessionWallInactivityState {
+        val cleanedSession = sessionId?.trim().orEmpty()
+        val cleanedEndpoint = endpoint.trim()
+        if (cleanedSession.isBlank() || cleanedEndpoint.isBlank()) {
+            return SessionWallInactivityState()
+        }
+        return sessionWallInactivityStates[SessionViewStateKey(cleanedEndpoint, cleanedSession)] ?: SessionWallInactivityState()
+    }
+
+    private fun wallInactivityBanner(state: SessionWallInactivityState): String {
+        if (!state.enabled) {
+            return "wall off"
+        }
+        val label = state.label?.trim().orEmpty()
+        return if (label.isNotBlank()) {
+            "wall $label"
+        } else {
+            "wall on"
+        }
+    }
+
     private fun maxScrollbackOffset(snapshot: TerminalSnapshot?): Int {
         val live = snapshot ?: return 0
         val totalRows = scrollbackRows.size + live.rows
@@ -932,7 +1002,14 @@ class AppViewModel(
             !preferredSessionId.isNullOrBlank() && sessions.any { it.id == preferredSessionId } -> preferredSessionId
             else -> sessions.firstOrNull()?.id
         }
-        _state.update { it.copy(activeSessionId = next) }
+        val wallState = currentWallInactivityState(next)
+        _state.update {
+            it.copy(
+                activeSessionId = next,
+                wallInactivityEnabled = wallState.enabled,
+                wallInactivityLabel = wallState.label,
+            )
+        }
         if (!next.isNullOrBlank()) {
             persistActiveSession(endpoint, next)
         }
@@ -985,6 +1062,8 @@ class AppViewModel(
                         scrollbackOffsetRows = 0,
                         panResetNonce = 0,
                         sessionSyncing = true,
+                        wallInactivityEnabled = currentWallInactivityState(fallback).enabled,
+                        wallInactivityLabel = currentWallInactivityState(fallback).label,
                     )
                 }
                 activateSessionViewState()
@@ -1281,6 +1360,55 @@ class AppViewModel(
                             )
                         }
                     }
+                    frame.hasWallInactivityStatus() -> {
+                        val sessionIdForStatus = frame.sessionId.takeIf { it.isNotBlank() }
+                            ?: _state.value.activeSessionId
+                            ?: activeConnection?.sessionId
+                        val cleanedSessionId = sessionIdForStatus.orEmpty().trim()
+                        val endpoint = _state.value.endpoint.trim()
+                        val nextState = SessionWallInactivityState(
+                            enabled = frame.wallInactivityStatus.enabled,
+                            label = frame.wallInactivityStatus.inactiveAfter.takeIf { it.isNotBlank() },
+                        )
+                        val previousState = currentWallInactivityState(cleanedSessionId, endpoint)
+                        if (cleanedSessionId.isNotBlank() && endpoint.isNotBlank()) {
+                            sessionWallInactivityStates[SessionViewStateKey(endpoint, cleanedSessionId)] = nextState
+                        }
+                        _state.update {
+                            val updated = it.copy(
+                                lastFrameSeq = frame.seq,
+                                lastFrameType = "wall_inactivity_status",
+                                lastFrameAtMs = System.currentTimeMillis(),
+                                lastFrameError = null,
+                            )
+                            if (updated.activeSessionId == cleanedSessionId) {
+                                updated.copy(
+                                    wallInactivityEnabled = nextState.enabled,
+                                    wallInactivityLabel = nextState.label,
+                                )
+                            } else {
+                                updated
+                            }
+                        }
+                        val errText = frame.wallInactivityStatus.error.trim()
+                        if (errText.isNotBlank()) {
+                            if (_state.value.activeSessionId == cleanedSessionId) {
+                                setStatus(errText, StatusLevel.Error)
+                            }
+                            if (pendingWallInactivitySessionId == cleanedSessionId) {
+                                pendingWallInactivitySessionId = null
+                            }
+                            return
+                        }
+                        val shouldShowBanner =
+                            pendingWallInactivitySessionId == cleanedSessionId || previousState != nextState
+                        if (pendingWallInactivitySessionId == cleanedSessionId) {
+                            pendingWallInactivitySessionId = null
+                        }
+                        if (shouldShowBanner && _state.value.activeSessionId == cleanedSessionId) {
+                            setStatus(wallInactivityBanner(nextState), StatusLevel.Info)
+                        }
+                    }
                     frame.hasError() -> {
                         val msg = frame.error.message.ifBlank { "connection error" }
                         _state.update {
@@ -1375,6 +1503,8 @@ class AppViewModel(
                 activeSessionId = null,
                 activeSnapshot = null,
                 shareToken = null,
+                wallInactivityEnabled = false,
+                wallInactivityLabel = null,
                 scrollbackOffsetRows = 0,
                 zoomFactor = DefaultTerminalZoom,
                 panResetNonce = 0,
@@ -1399,6 +1529,7 @@ class AppViewModel(
         ws = null
         socketOpen = false
         activeConnection = null
+        pendingWallInactivitySessionId = null
         syncWallPollingSchedule()
         current?.close(1000, reason)
     }
@@ -1569,6 +1700,8 @@ class AppViewModel(
                     loggedIn = false,
                     sessions = emptyList(),
                     activeSessionId = null,
+                    wallInactivityEnabled = false,
+                    wallInactivityLabel = null,
                     sessionSyncing = false,
                 )
             }
@@ -1596,6 +1729,8 @@ class AppViewModel(
                 activeSessionId = null,
                 activeSnapshot = null,
                 shareToken = null,
+                wallInactivityEnabled = false,
+                wallInactivityLabel = null,
                 scrollbackOffsetRows = 0,
                 showCertificates = false,
                 certificateError = null,

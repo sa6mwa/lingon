@@ -47,17 +47,18 @@ type PublishOptions struct {
 type Publisher struct {
 	opts PublishOptions
 
-	Logger            pslog.Logger
-	OnInput           func([]byte)
-	OnResize          func(cols, rows int)
-	OnCommand         func(kind protocolpb.CommandKind)
-	OnControl         func(holderID string)
-	OnFrame           func(*protocolpb.Frame)
-	OnSessions        func([]*protocolpb.SessionInfo)
-	OnWall            func(*protocolpb.Wall)
-	OnStatus          func(connected bool, err error)
-	OnBackoff         func(remaining time.Duration)
-	OnSessionRejected func(message string)
+	Logger                 pslog.Logger
+	OnInput                func([]byte)
+	OnResize               func(cols, rows int)
+	OnCommand              func(kind protocolpb.CommandKind)
+	OnControl              func(holderID string)
+	OnFrame                func(*protocolpb.Frame)
+	OnSessions             func([]*protocolpb.SessionInfo)
+	OnWall                 func(*protocolpb.Wall)
+	OnWallInactivityStatus func(*protocolpb.WallInactivityStatus)
+	OnStatus               func(connected bool, err error)
+	OnBackoff              func(remaining time.Duration)
+	OnSessionRejected      func(message string)
 
 	mu           sync.Mutex
 	lastSnap     *protocolpb.Snapshot
@@ -72,7 +73,8 @@ type Publisher struct {
 	holderID    string
 	wantControl bool
 
-	scrollbackSnapshot func() []terminal.ScrollbackRow
+	scrollbackSnapshot   func() []terminal.ScrollbackRow
+	wallInactivityStatus func() *protocolpb.WallInactivityStatus
 
 	backoffPolicy  backoff.Policy
 	backoffAttempt int
@@ -572,6 +574,7 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 		if hello := frame.GetHello(); hello != nil {
 			p.sendScrollbackSnapshot()
 			p.sendSnapshot()
+			p.sendWallInactivityStatus()
 			continue
 		}
 		if in := frame.GetIn(); in != nil && p.OnInput != nil {
@@ -606,6 +609,12 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 			}
 			continue
 		}
+		if status := frame.GetWallInactivityStatus(); status != nil {
+			if p.OnWallInactivityStatus != nil {
+				p.OnWallInactivityStatus(status)
+			}
+			continue
+		}
 		if errMsg := frame.GetError(); errMsg != nil {
 			msg := errMsg.Message
 			if msg == "" {
@@ -630,6 +639,11 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 // SetScrollbackSnapshot sets the callback used to fetch scrollback for new clients.
 func (p *Publisher) SetScrollbackSnapshot(fn func() []terminal.ScrollbackRow) {
 	p.scrollbackSnapshot = fn
+}
+
+// SetWallInactivityStatus sets the callback used to fetch current inactivity status for new clients.
+func (p *Publisher) SetWallInactivityStatus(fn func() *protocolpb.WallInactivityStatus) {
+	p.wallInactivityStatus = fn
 }
 
 // PublishScrollback enqueues scrollback rows for delivery to clients.
@@ -665,6 +679,17 @@ func (p *Publisher) sendScrollbackSnapshot() {
 	}
 }
 
+func (p *Publisher) sendWallInactivityStatus() {
+	if p.wallInactivityStatus == nil {
+		return
+	}
+	status := p.wallInactivityStatus()
+	if status == nil {
+		return
+	}
+	p.PublishWallInactivityStatus(status)
+}
+
 func (p *Publisher) sendFrame(frame *protocolpb.Frame) bool {
 	p.mu.Lock()
 	ws := p.conn
@@ -695,6 +720,21 @@ func (p *Publisher) sendSnapshot() {
 	frame := &protocolpb.Frame{
 		SessionId: p.opts.SessionID,
 		Payload:   &protocolpb.Frame_Snapshot{Snapshot: snap},
+	}
+	if p.OnFrame != nil {
+		p.OnFrame(frame)
+	}
+	_ = p.sendFrame(frame)
+}
+
+// PublishWallInactivityStatus sends inactivity wall status to connected clients.
+func (p *Publisher) PublishWallInactivityStatus(status *protocolpb.WallInactivityStatus) {
+	if status == nil {
+		return
+	}
+	frame := &protocolpb.Frame{
+		SessionId: p.opts.SessionID,
+		Payload:   &protocolpb.Frame_WallInactivityStatus{WallInactivityStatus: status},
 	}
 	if p.OnFrame != nil {
 		p.OnFrame(frame)

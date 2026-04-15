@@ -377,6 +377,63 @@ func TestHubFallsBackToHelloWhenReplayHistoryIsTooOld(t *testing.T) {
 	}
 }
 
+func TestHubClearsReplayHistoryWhenHostIsReplaced(t *testing.T) {
+	hub := NewHub(nil)
+	hostA := &fakeConn{id: "host-a", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	hostB := &fakeConn{id: "host-b", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(hostA, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost(hostA): %v", err)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), hostA, hostSnapshotFrame("alpha-1")); err != nil {
+		t.Fatalf("HandleHostFrame(snapshot): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), hostA, hostDiffFrame("alpha-2")); err != nil {
+		t.Fatalf("HandleHostFrame(diff): %v", err)
+	}
+
+	replaced := hub.registerHost(hostB, "s1", 80, 24)
+	if replaced == nil || replaced.ID() != hostA.ID() {
+		t.Fatalf("registerHost(hostB): replaced=%v, want host-a", replaced)
+	}
+
+	state := hub.session("s1")
+	if len(state.history) != 0 {
+		t.Fatalf("history length after takeover = %d, want 0", len(state.history))
+	}
+	if state.historyBytes != 0 {
+		t.Fatalf("historyBytes after takeover = %d, want 0", state.historyBytes)
+	}
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	hello := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "client",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			LastSeq:      2,
+			ClientType:   "android",
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, hello); err != nil {
+		t.Fatalf("HandleClientFrame(hello): %v", err)
+	}
+
+	if len(client.sent) != 0 {
+		t.Fatalf("expected no stale replay after host takeover, got %d frames", len(client.sent))
+	}
+	if len(hostB.sent) != 1 {
+		t.Fatalf("expected hello to be forwarded to replacement host, got %d frames", len(hostB.sent))
+	}
+	if got := hostB.sent[0].GetHello(); got == nil || got.LastSeq != 2 {
+		t.Fatalf("forwarded hello last_seq=%+v, want 2", got)
+	}
+}
+
 func hostSnapshotFrame(title string) *protocolpb.Frame {
 	return &protocolpb.Frame{
 		SessionId: "s1",
