@@ -71,6 +71,7 @@ class BackgroundWallForegroundService : Service() {
                     }
                     app.wallNotifier.notifyWall(
                         WallNotification(
+                            endpoint = endpoint,
                             eventId = event.id,
                             sender = event.sender,
                             message = event.message,

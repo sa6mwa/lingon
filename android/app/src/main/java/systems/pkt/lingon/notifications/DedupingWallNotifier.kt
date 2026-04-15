@@ -7,7 +7,7 @@ class DedupingWallNotifier(
     private val delegate: WallNotifier,
 ) : WallNotifier {
     private val lock = Any()
-    private val deliveredEventIDs = LinkedHashSet<Long>()
+    private val deliveredEventKeys = LinkedHashSet<String>()
 
     override fun notifyWall(notification: WallNotification) {
         val body = notification.message.trim()
@@ -19,11 +19,17 @@ class DedupingWallNotifier(
             delegate.notifyWall(notification.copy(message = body))
             return
         }
+        val endpoint = notification.endpoint.trim()
+        if (endpoint.isBlank()) {
+            delegate.notifyWall(notification.copy(message = body))
+            return
+        }
+        val eventKey = "$endpoint#$eventID"
         synchronized(lock) {
-            if (deliveredEventIDs.contains(eventID)) {
+            if (deliveredEventKeys.contains(eventKey)) {
                 return
             }
-            deliveredEventIDs.add(eventID)
+            deliveredEventKeys.add(eventKey)
         }
         delegate.notifyWall(notification.copy(message = body))
     }

@@ -1266,6 +1266,7 @@ class AppViewModel(
                         val wall = frame.wall
                         notifyWall(
                             WallNotification(
+                                endpoint = _state.value.endpoint.trim(),
                                 eventId = wall.id,
                                 sender = wall.sender,
                                 message = wall.message,
@@ -1768,11 +1769,8 @@ class AppViewModel(
             if (!loggedIn || !shareToken.isNullOrBlank() || requiresUnlock) {
                 return false
             }
-            if (backgroundWallEnabled && !appInForeground) {
-                return false
-            }
             if (!appInForeground) {
-                return true
+                return false
             }
             val connected = connectionState == ConnectionState.Connected && hasSocket
             return !connected

@@ -1,6 +1,7 @@
 package systems.pkt.lingon.viewmodel
 
 data class WallNotification(
+    val endpoint: String = "",
     val eventId: Long = 0,
     val sender: String,
     val message: String,

@@ -585,7 +585,7 @@ class AppViewModelTest {
     }
 
     @Test
-    fun shouldEnableWallWorkBackgroundLoggedInIsTrue() {
+    fun shouldEnableWallWorkBackgroundLoggedInIsFalse() {
         val enabled = AppViewModel.shouldEnableWallWork(
             loggedIn = true,
             shareToken = null,
@@ -595,7 +595,7 @@ class AppViewModelTest {
             connectionState = ConnectionState.Connected,
             hasSocket = true,
         )
-        assertTrue(enabled)
+        assertFalse(enabled)
     }
 
     @Test
@@ -629,6 +629,20 @@ class AppViewModelTest {
             shareToken = null,
             requiresUnlock = false,
             backgroundWallEnabled = true,
+            appInForeground = false,
+            connectionState = ConnectionState.Disconnected,
+            hasSocket = false,
+        )
+        assertFalse(enabled)
+    }
+
+    @Test
+    fun shouldEnableWallWorkBackgroundDisabledSettingKeepsWorkerOff() {
+        val enabled = AppViewModel.shouldEnableWallWork(
+            loggedIn = true,
+            shareToken = null,
+            requiresUnlock = false,
+            backgroundWallEnabled = false,
             appInForeground = false,
             connectionState = ConnectionState.Disconnected,
             hasSocket = false,
