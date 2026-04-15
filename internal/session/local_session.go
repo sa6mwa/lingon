@@ -77,13 +77,14 @@ type localSession struct {
 	onSnapshot  func(terminal.Snapshot)
 	onExit      func(id string, err error)
 	csiState    csiParser
-	oscState    oscParser
+	oscState    oscStreamParser
 	cursorQuery func(terminal.Snapshot) (row, col int, ok bool)
 
 	oscDefaultsMu    sync.RWMutex
 	oscDefaultFg     string
 	oscDefaultBg     string
 	oscDefaultCursor string
+	oscEchoState     oscEchoParser
 
 	recentInputMu sync.Mutex
 	recentInput   []byte
@@ -452,14 +453,30 @@ func (s *localSession) notifyRemoteSessionClosed(reason string) {
 }
 
 func (s *localSession) writePTY(data []byte) (int, error) {
+	return s.writePTYWithMode(data, false)
+}
+
+func (s *localSession) writeTerminalReply(data []byte) (int, error) {
+	return s.writePTYWithMode(data, true)
+}
+
+func (s *localSession) writePTYWithMode(data []byte, disableEcho bool) (int, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	s.ptyMu.RLock()
 	ptyFile := s.pty
+	ttyFile := s.tty
 	s.ptyMu.RUnlock()
 	if ptyFile == nil {
 		return 0, errPTYNotReady
 	}
+	restoreEcho := func() {}
+	if disableEcho && ttyFile != nil {
+		if restore, err := disableTTYEcho(ttyFile); err == nil && restore != nil {
+			restoreEcho = restore
+		}
+	}
+	defer restoreEcho()
 	sleep := time.Sleep
 	if s.clock != nil {
 		sleep = s.clock.Sleep
@@ -779,9 +796,10 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				copy(cp, data)
 				s.onPTYRead(cp)
 			}
+			filtered := s.filterOSCOutput(data)
 			var scrollRows []terminal.ScrollbackRow
 			s.emuMu.Lock()
-			if err := s.emulator.Write(data); err != nil {
+			if err := s.emulator.Write(filtered); err != nil {
 				s.logger.Debug("session.emulator.write.failed", "err", err, "session", s.id)
 			}
 			rawSnap, err := s.emulator.Snapshot()
@@ -803,13 +821,13 @@ func (s *localSession) runOnce(ctx context.Context) error {
 			snap := protocol.SnapshotToProto(rawSnap)
 			s.storeSnapshot(snap)
 			if s.onOutput != nil {
-				s.onOutput(s.id, data, snap)
+				s.onOutput(s.id, filtered, snap)
 			}
 			if s.publisher != nil {
 				if len(scrollRows) > 0 {
 					s.publisher.PublishScrollback(scrollRows, int(snap.Cols), false)
 				}
-				s.publisher.Publish(data, snap)
+				s.publisher.Publish(filtered, snap)
 			}
 		}
 	}()
@@ -833,30 +851,6 @@ func (s *localSession) runOnce(ctx context.Context) error {
 func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snapshot) {
 	s.recordRecentInput(data)
 	for _, b := range data {
-		if code, payload, ok := s.oscState.Feed(b); ok {
-			if payload == "?" {
-				color := s.oscQueryColor(code)
-				if color != "" {
-					resp := []byte(fmt.Sprintf("\x1b]%d;%s\x07", code, color))
-					if s.trace != nil {
-						s.trace.Event("osc_query_request", map[string]any{
-							"component":  "host",
-							"session_id": s.id,
-							"code":       code,
-						})
-					}
-					if s.trace != nil {
-						s.trace.Event("osc_query_response", map[string]any{
-							"component":  "host",
-							"session_id": s.id,
-							"code":       code,
-							"response":   trace.SummarizeBytes(resp, 120),
-						})
-					}
-					_, _ = s.writePTY(resp)
-				}
-			}
-		}
 		final, params, private, ok := s.csiState.Feed(b)
 		if !ok {
 			continue
@@ -888,7 +882,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 							"response":   trace.SummarizeBytes(resp, 80),
 						})
 					}
-					_, _ = s.writePTY(resp)
+					_, _ = s.writeTerminalReply(resp)
 				case 6:
 					if s.trace != nil {
 						recent := s.recentInputSnapshot()
@@ -948,7 +942,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 							"response":   trace.SummarizeBytes(resp, 80),
 						})
 					}
-					_, _ = s.writePTY(resp)
+					_, _ = s.writeTerminalReply(resp)
 				}
 			case '?':
 				switch params[0] {
@@ -971,7 +965,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 							"response":   trace.SummarizeBytes(resp, 80),
 						})
 					}
-					_, _ = s.writePTY(resp)
+					_, _ = s.writeTerminalReply(resp)
 				case 6:
 					if s.trace != nil {
 						recent := s.recentInputSnapshot()
@@ -1031,7 +1025,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 							"response":   trace.SummarizeBytes(resp, 80),
 						})
 					}
-					_, _ = s.writePTY(resp)
+					_, _ = s.writeTerminalReply(resp)
 				}
 			}
 		case 'u':
@@ -1055,7 +1049,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 					"response":   trace.SummarizeBytes(resp, 80),
 				})
 			}
-			_, _ = s.writePTY(resp)
+			_, _ = s.writeTerminalReply(resp)
 		case 'c':
 			switch private {
 			case 0:
@@ -1075,7 +1069,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 						"response":   trace.SummarizeBytes(resp, 80),
 					})
 				}
-				_, _ = s.writePTY(resp)
+				_, _ = s.writeTerminalReply(resp)
 			case '>':
 				if s.trace != nil {
 					s.trace.Event("device_attributes_request", map[string]any{
@@ -1093,10 +1087,73 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 						"response":   trace.SummarizeBytes(resp, 80),
 					})
 				}
-				_, _ = s.writePTY(resp)
+				_, _ = s.writeTerminalReply(resp)
 			}
 		}
 	}
+}
+
+func (s *localSession) filterOSCOutput(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	for _, b := range data {
+		code, payload, raw, ok := s.oscState.Feed(b)
+		if !ok {
+			continue
+		}
+		if !s.shouldSuppressOSC(code) {
+			s.oscState.AddPassthrough(raw)
+			continue
+		}
+		if payload == "?" {
+			s.respondToOSCQuery(code)
+		}
+	}
+	return s.filterOSCEcho(s.oscState.DrainPassthrough())
+}
+
+func (s *localSession) shouldSuppressOSC(code int) bool {
+	switch code {
+	case 10, 11, 12:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *localSession) respondToOSCQuery(code int) {
+	color := s.oscQueryColor(code)
+	if color == "" {
+		return
+	}
+	resp := []byte(fmt.Sprintf("\x1b]%d;%s\x07", code, color))
+	if s.trace != nil {
+		s.trace.Event("osc_query_request", map[string]any{
+			"component":  "host",
+			"session_id": s.id,
+			"code":       code,
+		})
+	}
+	if s.trace != nil {
+		s.trace.Event("osc_query_response", map[string]any{
+			"component":  "host",
+			"session_id": s.id,
+			"code":       code,
+			"response":   trace.SummarizeBytes(resp, 120),
+		})
+	}
+	_, _ = s.writeTerminalReply(resp)
+}
+
+func (s *localSession) filterOSCEcho(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	for _, b := range data {
+		s.oscEchoState.Feed(b)
+	}
+	return s.oscEchoState.DrainPassthrough()
 }
 
 func (s *localSession) setOscDefaults(fg, bg, cursor string) {
@@ -1221,61 +1278,6 @@ func (p *csiParser) Feed(b byte) (final byte, params []int, private byte, ok boo
 	return 0, nil, 0, false
 }
 
-type oscParser struct {
-	state  int
-	oscEsc bool
-	buf    []byte
-}
-
-func (p *oscParser) reset() {
-	p.state = 0
-	p.oscEsc = false
-	p.buf = p.buf[:0]
-}
-
-func (p *oscParser) Feed(b byte) (code int, payload string, ok bool) {
-	switch p.state {
-	case 0:
-		if b == 0x1b {
-			p.state = 1
-		}
-	case 1:
-		if b == ']' {
-			p.state = 2
-			p.oscEsc = false
-			p.buf = p.buf[:0]
-		} else if b == 0x1b {
-			p.state = 1
-		} else {
-			p.state = 0
-		}
-	case 2:
-		if p.oscEsc {
-			p.oscEsc = false
-			if b == '\\' {
-				code, payload, ok = parseOSCQuery(p.buf)
-				p.reset()
-				return code, payload, ok
-			}
-			p.buf = append(p.buf, 0x1b, b)
-			return 0, "", false
-		}
-		switch b {
-		case 0x1b:
-			p.oscEsc = true
-		case 0x07:
-			code, payload, ok = parseOSCQuery(p.buf)
-			p.reset()
-			return code, payload, ok
-		default:
-			p.buf = append(p.buf, b)
-		}
-	default:
-		p.reset()
-	}
-	return 0, "", false
-}
-
 func parseOSCQuery(buf []byte) (int, string, bool) {
 	if len(buf) == 0 {
 		return 0, "", false
@@ -1293,6 +1295,91 @@ func parseOSCQuery(buf []byte) (int, string, bool) {
 		return code, string(buf[i+1:]), true
 	}
 	return code, "", true
+}
+
+type oscEchoParser struct {
+	state       int
+	raw         []byte
+	code        int
+	digits      int
+	passthrough []byte
+}
+
+func (p *oscEchoParser) reset() {
+	p.state = 0
+	p.raw = p.raw[:0]
+	p.code = 0
+	p.digits = 0
+}
+
+func (p *oscEchoParser) flushRaw() {
+	if len(p.raw) > 0 {
+		p.passthrough = append(p.passthrough, p.raw...)
+	}
+	p.reset()
+}
+
+func (p *oscEchoParser) Feed(b byte) {
+	switch p.state {
+	case 0:
+		if b == '^' {
+			p.state = 1
+			p.raw = p.raw[:0]
+			p.raw = append(p.raw, b)
+			return
+		}
+		p.passthrough = append(p.passthrough, b)
+	case 1:
+		p.raw = append(p.raw, b)
+		if b == '[' {
+			p.state = 2
+			return
+		}
+		p.flushRaw()
+	case 2:
+		p.raw = append(p.raw, b)
+		if b == ']' {
+			p.state = 3
+			p.code = 0
+			p.digits = 0
+			return
+		}
+		p.flushRaw()
+	case 3:
+		p.raw = append(p.raw, b)
+		switch {
+		case b >= '0' && b <= '9':
+			p.code = p.code*10 + int(b-'0')
+			p.digits++
+		case b == ';' && p.digits > 0 && (p.code == 10 || p.code == 11 || p.code == 12):
+			p.state = 4
+		default:
+			p.flushRaw()
+		}
+	case 4:
+		p.raw = append(p.raw, b)
+		if b == '^' {
+			p.state = 5
+		}
+	case 5:
+		p.raw = append(p.raw, b)
+		if b == 'G' {
+			p.reset()
+			return
+		}
+		p.state = 4
+	default:
+		p.flushRaw()
+	}
+}
+
+func (p *oscEchoParser) DrainPassthrough() []byte {
+	if len(p.passthrough) == 0 {
+		return nil
+	}
+	out := append([]byte(nil), p.passthrough...)
+	p.passthrough = p.passthrough[:0]
+	return out
 }
 
 func (s *localSession) Run() {
