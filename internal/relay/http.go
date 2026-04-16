@@ -931,6 +931,12 @@ func (s *HTTPServer) handleWallInactivity(w http.ResponseWriter, r *http.Request
 	if enabled {
 		afterLabel = formatDurationCompact(after)
 	}
+	s.Hub.BroadcastSessionFrame(r.Context(), req.SessionID, &protocolpb.Frame{
+		Payload: &protocolpb.Frame_WallInactivityStatus{WallInactivityStatus: &protocolpb.WallInactivityStatus{
+			Enabled:       enabled,
+			InactiveAfter: afterLabel,
+		}},
+	}, true)
 	writeJSON(w, http.StatusOK, wallInactivityResponse{
 		SessionID:     req.SessionID,
 		Enabled:       enabled,

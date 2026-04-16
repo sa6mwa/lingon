@@ -2676,7 +2676,6 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return
 		}
 		r.showErrorStatus("wall inactivity toggle failed", stdout, 2*time.Second)
-		r.publishWallInactivityStatus(sessionID, "wall inactivity toggle failed")
 		return
 	}
 	if resp.Enabled {
@@ -2686,12 +2685,10 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			status = "wall inactivity " + label
 		}
 		r.showStatus(status, stdout, 2*time.Second)
-		r.publishWallInactivityStatus(sessionID, "")
 		return
 	}
 	r.disableLocalWallNotification(sessionID)
 	r.showStatus("wall inactivity off", stdout, 2*time.Second)
-	r.publishWallInactivityStatus(sessionID, "")
 }
 
 func parseWallInactiveAfter(raw string) time.Duration {

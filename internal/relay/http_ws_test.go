@@ -381,6 +381,16 @@ func TestWSHostActivityFrameDoesNotForwardToClients(t *testing.T) {
 	if err := hostConn.Write(ctx, websocket.MessageBinary, activityData); err != nil {
 		t.Fatalf("send activity frame: %v", err)
 	}
+	state := server.Hub.sessions["activity-session"]
+	if state == nil {
+		t.Fatal("expected hub session state")
+	}
+	if len(state.history) != 0 {
+		t.Fatalf("activity frame should not enter replay history, got %d frames", len(state.history))
+	}
+	if state.historyBytes != 0 {
+		t.Fatalf("activity frame should not consume replay history bytes, got %d", state.historyBytes)
+	}
 
 	noFrameCtx, noFrameCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer noFrameCancel()

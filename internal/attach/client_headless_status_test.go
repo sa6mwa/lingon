@@ -133,6 +133,42 @@ func TestHandleRoutedHeadlessStatusBackoffWithoutTimeout(t *testing.T) {
 	}
 }
 
+func TestHandleWallInactivityStatus(t *testing.T) {
+	client := &Client{
+		Endpoint: "https://relay.example",
+	}
+	client.runCtx = context.Background()
+	client.effects = mvu.NewEffectScheduler(client.clock())
+	defer client.effects.StopAll()
+
+	client.handleWallInactivityStatus(&protocolpb.WallInactivityStatus{
+		Enabled:       true,
+		InactiveAfter: "2m",
+	})
+	state := client.ensureCompositor().State()
+	if !strings.Contains(state.ConnectionMessage, "wall inactivity 2m") {
+		t.Fatalf("expected enabled wall inactivity banner, got %q", state.ConnectionMessage)
+	}
+	if state.ConnectionStyle != mvu.BannerGreen {
+		t.Fatalf("expected green wall inactivity banner, got %v", state.ConnectionStyle)
+	}
+
+	client.handleWallInactivityStatus(&protocolpb.WallInactivityStatus{})
+	state = client.ensureCompositor().State()
+	if !strings.Contains(state.ConnectionMessage, "wall inactivity off") {
+		t.Fatalf("expected disabled wall inactivity banner, got %q", state.ConnectionMessage)
+	}
+
+	client.handleWallInactivityStatus(&protocolpb.WallInactivityStatus{Error: "wall inactivity toggle failed"})
+	state = client.ensureCompositor().State()
+	if !strings.Contains(state.ConnectionMessage, "wall inactivity toggle failed") {
+		t.Fatalf("expected error wall inactivity banner, got %q", state.ConnectionMessage)
+	}
+	if state.ConnectionStyle != mvu.BannerRed {
+		t.Fatalf("expected red wall inactivity error banner, got %v", state.ConnectionStyle)
+	}
+}
+
 func TestPrepareForCtrlLClearStopsPendingRedrawEffects(t *testing.T) {
 	clk := clock.NewMock()
 	var buf bytes.Buffer

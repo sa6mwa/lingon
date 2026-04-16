@@ -22,6 +22,10 @@ func TestAttachReconnectsAfterServerRestart(t *testing.T) {
 	})
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"session_attach"})
+	host.Send("echo ATTACH_RECONNECT_READY\n")
+	if !screenContainsWithin(host, "ATTACH_RECONNECT_READY", 2*time.Second) {
+		t.Fatalf("expected host marker before attach connects")
+	}
 
 	var viewsMu sync.Mutex
 	views := make(map[string]*attach.Client)
@@ -45,7 +49,7 @@ func TestAttachReconnectsAfterServerRestart(t *testing.T) {
 	})
 
 	attach.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		if !screen.Contains("connected to ") {
+		if !screen.Contains("ATTACH_RECONNECT_READY") {
 			return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
 		}
 		return nil

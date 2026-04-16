@@ -904,6 +904,10 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 			c.handleWall(wall)
 			continue
 		}
+		if status := frame.GetWallInactivityStatus(); status != nil {
+			c.handleWallInactivityStatus(status)
+			continue
+		}
 		if errMsg := frame.GetError(); errMsg != nil {
 			msg := errMsg.Message
 			if msg == "" {
@@ -1451,25 +1455,10 @@ func (c *Client) showViewOnlyBanner(message string) {
 	if message == "" {
 		return
 	}
-	expires := 3 * time.Second
-	compositor := c.ensureCompositor()
-	effect := compositor.ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{
+	c.showStatusBanner(mvu.StatusInput{
 		Kind:     mvu.StatusError,
 		Message:  message,
-		Duration: expires,
-	}})
-	c.RenderCurrent()
-	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
-		Scheduler: c.effects,
-		Ctx:       c.runCtx,
-		Key:       mvu.EffectKeyStateExpiry,
-		Result:    effect,
-		Callback: func(_ bool) {
-			if cb := c.OnOverlayStateChange; cb != nil {
-				cb()
-			}
-			c.RenderCurrent()
-		},
+		Duration: 3 * time.Second,
 	})
 }
 
@@ -1581,21 +1570,36 @@ func (c *Client) handleRoutedHeadlessStatus(wall *protocolpb.Wall) bool {
 	default:
 		return false
 	}
-	effect := c.ensureCompositor().ApplyAction(mvu.StatusAction{Input: input})
-	c.RenderCurrent()
-	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
-		Scheduler: c.effects,
-		Ctx:       c.runCtx,
-		Key:       mvu.EffectKeyStateExpiry,
-		Result:    effect,
-		Callback: func(_ bool) {
-			if cb := c.OnOverlayStateChange; cb != nil {
-				cb()
-			}
-			c.RenderCurrent()
-		},
-	})
+	c.showStatusBanner(input)
 	return true
+}
+
+func wallInactivityStatusMessage(status *protocolpb.WallInactivityStatus) (message string, kind mvu.StatusKind) {
+	if status == nil {
+		return "", mvu.StatusConnected
+	}
+	if errText := strings.TrimSpace(status.GetError()); errText != "" {
+		return errText, mvu.StatusError
+	}
+	if status.GetEnabled() {
+		if label := strings.TrimSpace(status.GetInactiveAfter()); label != "" {
+			return "wall inactivity " + label, mvu.StatusConnected
+		}
+		return "wall inactivity on", mvu.StatusConnected
+	}
+	return "wall inactivity off", mvu.StatusConnected
+}
+
+func (c *Client) handleWallInactivityStatus(status *protocolpb.WallInactivityStatus) {
+	message, kind := wallInactivityStatusMessage(status)
+	if message == "" {
+		return
+	}
+	c.showStatusBanner(mvu.StatusInput{
+		Kind:     kind,
+		Message:  message,
+		Duration: 2 * time.Second,
+	})
 }
 
 func (c *Client) toggleWallInactivity(ctx context.Context) {
@@ -1635,15 +1639,10 @@ func (c *Client) toggleWallInactivity(ctx context.Context) {
 		c.showViewOnlyBanner("wall inactivity toggle failed")
 		return
 	}
-	if resp.Enabled {
-		status := "wall inactivity: on"
-		if label := strings.TrimSpace(resp.InactiveAfter); label != "" {
-			status = "wall inactivity: " + label
-		}
-		c.showInfoStatus(status)
-		return
-	}
-	c.showInfoStatus("wall inactivity: off")
+	c.handleWallInactivityStatus(&protocolpb.WallInactivityStatus{
+		Enabled:       resp.Enabled,
+		InactiveAfter: strings.TrimSpace(resp.InactiveAfter),
+	})
 }
 
 func (c *Client) setTheme(name string) {
@@ -1667,11 +1666,18 @@ func (c *Client) showInfoStatus(message string) {
 	if message == "" {
 		return
 	}
-	effect := c.ensureCompositor().ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{
+	c.showStatusBanner(mvu.StatusInput{
 		Kind:     mvu.StatusConnected,
 		Message:  message,
 		Duration: 2 * time.Second,
-	}})
+	})
+}
+
+func (c *Client) showStatusBanner(input mvu.StatusInput) {
+	if strings.TrimSpace(input.Message) == "" {
+		return
+	}
+	effect := c.ensureCompositor().ApplyAction(mvu.StatusAction{Input: input})
 	c.RenderCurrent()
 	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
 		Scheduler: c.effects,

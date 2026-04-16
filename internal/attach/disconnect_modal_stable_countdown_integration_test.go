@@ -31,6 +31,11 @@ func TestDisconnectModalCountdownStable(t *testing.T) {
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"host-countdown"})
 
+	host.Send("echo HOST_COUNTDOWN_READY\n")
+	if !screenContainsWithin(host, "HOST_COUNTDOWN_READY", 2*time.Second) {
+		t.Fatalf("expected host marker before attach connects")
+	}
+
 	attachSess := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: "host-countdown",
 		Cols:      80,
@@ -47,8 +52,8 @@ func TestDisconnectModalCountdownStable(t *testing.T) {
 		t.Fatalf("attach exited early: %v", err)
 	}
 	waitForClientCount(t, h, "host-countdown", 1, 3*time.Second)
-	if !screenContainsWithin(attachSess, "connected to ", 3*time.Second) {
-		t.Fatalf("attach did not reach connected state before disconnect")
+	if !screenContainsWithin(attachSess, "HOST_COUNTDOWN_READY", 3*time.Second) {
+		t.Fatalf("attach did not render host content before disconnect")
 	}
 
 	h.StopServer()

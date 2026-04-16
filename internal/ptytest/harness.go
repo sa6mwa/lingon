@@ -470,6 +470,16 @@ func effectiveHostDesktopNotificationConfig(opts HostOptions) (bool, desktopnoti
 	return false, noopNotifier{}
 }
 
+func effectiveAttachDesktopNotificationConfig(disabled bool, notifier desktopnotify.Notifier) (bool, desktopnotify.Notifier) {
+	if disabled {
+		return true, notifier
+	}
+	if notifier != nil {
+		return false, notifier
+	}
+	return false, noopNotifier{}
+}
+
 // StartHost launches a host session attached to a PTY.
 func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 	h.t.Helper()
@@ -551,6 +561,10 @@ type AttachOptions struct {
 	Cols           int
 	Rows           int
 	Clock          clock.Clock
+	// DisableDesktopNotifications suppresses desktop notifications in the attach client.
+	DisableDesktopNotifications bool
+	// DesktopNotifier overrides the attach client's notifier.
+	DesktopNotifier desktopnotify.Notifier
 	// NoHostTimeout controls how long to wait for a host before failing.
 	NoHostTimeout time.Duration
 	// AccessToken overrides the harness default access token.
@@ -615,19 +629,25 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 	if authFile == "" && opts.AccessToken == "" {
 		authFile = h.authPath
 	}
+	disableDesktopNotifications, desktopNotifier := effectiveAttachDesktopNotificationConfig(
+		opts.DisableDesktopNotifications,
+		opts.DesktopNotifier,
+	)
 	client := &attach.Client{
-		Endpoint:       h.endpoint,
-		SessionID:      opts.SessionID,
-		AccessToken:    token,
-		ShareToken:     opts.ShareToken,
-		RequestControl: opts.RequestControl,
-		ClientID:       clientID,
-		Stdin:          slave,
-		Stdout:         slave,
-		Stderr:         io.Discard,
-		TermSize:       size.Size,
-		Clock:          clk,
-		NoHostTimeout:  opts.NoHostTimeout,
+		Endpoint:                    h.endpoint,
+		SessionID:                   opts.SessionID,
+		AccessToken:                 token,
+		ShareToken:                  opts.ShareToken,
+		RequestControl:              opts.RequestControl,
+		ClientID:                    clientID,
+		DisableDesktopNotifications: disableDesktopNotifications,
+		DesktopNotifier:             desktopNotifier,
+		Stdin:                       slave,
+		Stdout:                      slave,
+		Stderr:                      io.Discard,
+		TermSize:                    size.Size,
+		Clock:                       clk,
+		NoHostTimeout:               opts.NoHostTimeout,
 	}
 	if authFile != "" {
 		client.TokenRefresher = relayclient.TokenRefresher(h.endpoint, authFile, "", false, func(token string) {
@@ -655,6 +675,10 @@ type MultiAttachOptions struct {
 	SessionID string
 	Cols      int
 	Rows      int
+	// DisableDesktopNotifications suppresses desktop notifications in child attach views.
+	DisableDesktopNotifications bool
+	// DesktopNotifier overrides the notifier used by child attach views.
+	DesktopNotifier desktopnotify.Notifier
 	// Endpoint overrides the harness relay endpoint.
 	Endpoint string
 	// AccessToken overrides the harness default access token.
@@ -729,27 +753,33 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 	if endpoint == "" {
 		endpoint = h.endpoint
 	}
+	disableDesktopNotifications, desktopNotifier := effectiveAttachDesktopNotificationConfig(
+		opts.DisableDesktopNotifications,
+		opts.DesktopNotifier,
+	)
 	client := &attach.MultiClient{
-		Endpoint:           endpoint,
-		AccessToken:        token,
-		SessionID:          opts.SessionID,
-		Stdin:              slave,
-		Stdout:             slave,
-		Stderr:             io.Discard,
-		TermSize:           size.Size,
-		AuthFile:           opts.AuthFile,
-		AllowOfflineToggle: opts.AllowOfflineToggle,
-		SessionSource:      opts.SessionSource,
-		SocketResolver:     opts.SocketResolver,
-		SessionEvents:      opts.SessionEvents,
-		Clock:              clk,
-		OnView:             opts.OnView,
-		OnReconnect:        opts.OnReconnect,
-		OnViewClosed:       opts.OnViewClosed,
-		OnActive:           opts.OnActive,
-		BackoffPolicy:      opts.BackoffPolicy,
-		InactiveTTL:        opts.InactiveTTL,
-		RefreshInterval:    opts.RefreshInterval,
+		Endpoint:                    endpoint,
+		AccessToken:                 token,
+		SessionID:                   opts.SessionID,
+		DisableDesktopNotifications: disableDesktopNotifications,
+		DesktopNotifier:             desktopNotifier,
+		Stdin:                       slave,
+		Stdout:                      slave,
+		Stderr:                      io.Discard,
+		TermSize:                    size.Size,
+		AuthFile:                    opts.AuthFile,
+		AllowOfflineToggle:          opts.AllowOfflineToggle,
+		SessionSource:               opts.SessionSource,
+		SocketResolver:              opts.SocketResolver,
+		SessionEvents:               opts.SessionEvents,
+		Clock:                       clk,
+		OnView:                      opts.OnView,
+		OnReconnect:                 opts.OnReconnect,
+		OnViewClosed:                opts.OnViewClosed,
+		OnActive:                    opts.OnActive,
+		BackoffPolicy:               opts.BackoffPolicy,
+		InactiveTTL:                 opts.InactiveTTL,
+		RefreshInterval:             opts.RefreshInterval,
 	}
 	requestControl := true
 	if opts.RequestControl != nil {

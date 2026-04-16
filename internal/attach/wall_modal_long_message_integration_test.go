@@ -31,6 +31,11 @@ func TestAttachWallModalShowsWrappedLongMessage(t *testing.T) {
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-wall-long"})
 
+	host.Send("echo ATTACH_WALL_LONG_READY\n")
+	if !screenContainsWithin(host, "ATTACH_WALL_LONG_READY", 2*time.Second) {
+		t.Fatalf("expected host session marker before attach connects")
+	}
+
 	attachSess := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: "attach-wall-long",
 		Cols:      80,
@@ -38,8 +43,8 @@ func TestAttachWallModalShowsWrappedLongMessage(t *testing.T) {
 	})
 	t.Cleanup(attachSess.Cancel)
 
-	if !screenContainsWithin(attachSess, "connected to ", 3*time.Second) {
-		t.Fatalf("expected attach session connected before wall modal")
+	if !screenContainsWithin(attachSess, "ATTACH_WALL_LONG_READY", 3*time.Second) {
+		t.Fatalf("expected attach session content before wall modal")
 	}
 
 	tlsDir := filepath.Join(filepath.Dir(h.AuthFile()), "tls")

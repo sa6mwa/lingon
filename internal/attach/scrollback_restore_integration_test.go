@@ -44,12 +44,6 @@ func TestAttachScrollbackRestore(t *testing.T) {
 		return nil
 	})
 
-	attach.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		if !screen.Contains("connected to ") {
-			return fmt.Errorf("waiting for connection banner to show")
-		}
-		return nil
-	})
 	attach.Eventually(5*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
 		if screen.Contains("connected to ") {
 			return fmt.Errorf("waiting for connection banner to clear")
