@@ -40,11 +40,11 @@ internal object TerminalViewportPolicy {
         if (totalRows <= 0 || visibleRows <= 0 || visibleRows >= totalRows) return 0
         val maxOffset = totalRows - visibleRows
         val clampedCursor = cursorY.coerceIn(0, totalRows - 1)
-        if (clampedCursor >= totalRows - 1) {
-            return maxOffset
+        val filledRows = clampedCursor + 1
+        if (filledRows <= visibleRows) {
+            return 0
         }
-        val centered = clampedCursor - (visibleRows / 2)
-        return centered.coerceIn(0, maxOffset)
+        return (filledRows - visibleRows).coerceIn(0, maxOffset)
     }
 
     fun autoFollowCursorCameraOffsetX(

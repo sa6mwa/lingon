@@ -249,6 +249,54 @@ class EndToEndTest {
     }
 
     @Test
+    fun terminal_fills_from_top_before_live_scrolling() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        resetZoomPan()
+        val baseline = waitForTerminalDebugInfo(TERMINAL_READY_TIMEOUT_MS) { info ->
+            info.viewRows > 0 &&
+                info.visibleStartRow == 0 &&
+                info.visibleEndRowExclusive > info.visibleStartRow &&
+                info.renderScaleX > 0f
+        } ?: throw AssertionError("missing baseline terminal debug info")
+        var zoomed = baseline
+        for (attempt in 0 until 3) {
+            performPinchZoom(zoomIn = true)
+            zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+                    info.visibleStartRow == 0 &&
+                    info.viewRows > 0
+            } ?: throw AssertionError("missing zoomed terminal debug info")
+            val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
+            if (visibleRows < zoomed.rows) {
+                break
+            }
+        }
+        val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
+        if (visibleRows >= zoomed.rows) {
+            throw AssertionError(
+                "zoomed viewport still fits the whole host screen " +
+                    "(visibleRows=$visibleRows, rows=${zoomed.rows})",
+            )
+        }
+
+        val partialCount = max(3, visibleRows - 4)
+        val partialEnd = 100 + partialCount
+        sendTerminalInput("seq 101 $partialEnd")
+        sendTerminalEnter()
+        val partial = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > zoomed.lastFrameSeq &&
+                info.hash != zoomed.hash
+        } ?: throw AssertionError("partial terminal output did not render")
+        assertEquals(0, partial.visibleStartRow)
+
+    }
+
+    @Test
     fun resize_setting_default_off_does_not_resize_host() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()

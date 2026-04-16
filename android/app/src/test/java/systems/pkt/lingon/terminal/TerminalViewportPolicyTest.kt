@@ -44,9 +44,12 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `auto follow start row centers cursor and clamps edges`() {
+    fun `auto follow start row fills viewport before scrolling`() {
         assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 0, totalRows = 100, visibleRows = 20))
-        assertEquals(40, TerminalViewportPolicy.autoFollowStartRow(cursorY = 50, totalRows = 100, visibleRows = 20))
+        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 9, totalRows = 100, visibleRows = 20))
+        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 19, totalRows = 100, visibleRows = 20))
+        assertEquals(1, TerminalViewportPolicy.autoFollowStartRow(cursorY = 20, totalRows = 100, visibleRows = 20))
+        assertEquals(31, TerminalViewportPolicy.autoFollowStartRow(cursorY = 50, totalRows = 100, visibleRows = 20))
         assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 99, totalRows = 100, visibleRows = 20))
         assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 200, totalRows = 100, visibleRows = 20))
         assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = -5, totalRows = 100, visibleRows = 20))
