@@ -227,11 +227,13 @@ func TestAttachNoFullRedrawOnScrollbackPaging(t *testing.T) {
 	if !waitForRawContains(t, attach, "SCROLL-120", 3*time.Second) {
 		t.Fatalf("expected SCROLL-120 output before scrollback paging")
 	}
-	waitForRawIdle(t, attach, 100*time.Millisecond, 2*time.Second)
+	attach.Wait(150 * time.Millisecond)
+	_ = attach.DrainRaw()
 
 	attach.SendBytes([]byte{0x0c, '['})
 	ptytest.Advance(h.Clock(), 120*time.Millisecond)
-	waitForRawIdle(t, attach, 100*time.Millisecond, 2*time.Second)
+	attach.Wait(150 * time.Millisecond)
+	_ = attach.DrainRaw()
 
 	assertNoScrollbackFlickerAfterAction(t, attach, 24, 600*time.Millisecond, func() {
 		attach.SendBytes([]byte{0x1b, '[', 'A'})

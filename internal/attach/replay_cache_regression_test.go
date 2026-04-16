@@ -50,6 +50,10 @@ func TestAttachTabSwitchUsesReplaySeqAfterServerRestart(t *testing.T) {
 	t.Cleanup(attachSess.Cancel)
 	waitForTabLabels(t, attachSess, []string{"ra", "rb"}, 6*time.Second)
 	primeTabsByCount(t, attachSess, 2)
+	assertNoTabSwitchFlickerAfterAction(t, attachSess, 24, 800*time.Millisecond, func() {
+		attachSess.SendCtrlL()
+		attachSess.Send("p")
+	})
 
 	if !screenContainsWithin(attachSess, "RA_BASELINE", 2*time.Second) {
 		t.Fatalf("expected baseline output before switch")
@@ -83,9 +87,9 @@ func TestAttachTabSwitchUsesReplaySeqAfterServerRestart(t *testing.T) {
 		}
 		switch rec.SessionID {
 		case "replay-cache-a":
-			aHelloSeq = parseHelloLastSeq(rec.Raw)
+			aHelloSeq = max(aHelloSeq, parseHelloLastSeq(rec.Raw))
 		case "replay-cache-b":
-			bHelloSeq = parseHelloLastSeq(rec.Raw)
+			bHelloSeq = max(bHelloSeq, parseHelloLastSeq(rec.Raw))
 		}
 	}
 	if aHelloSeq == 0 {

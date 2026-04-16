@@ -89,6 +89,7 @@ type Client struct {
 	lastSeq          uint64
 	needsResync      bool
 	resyncRequested  bool
+	forceFreshHello  bool
 	renderCache      mvu.RenderCache
 	scrollbackMu     sync.RWMutex
 	scrollbackBuffer *mvu.ProtoScrollbackBuffer
@@ -335,25 +336,16 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		_ = ws.Close(websocket.StatusNormalClosure, "closing")
 	}()
 
-	hello := &protocolpb.Frame{
-		SessionId: c.SessionID,
-		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
-			ClientId:     c.ClientID,
-			Cols:         uint32(cols),
-			Rows:         uint32(rows),
-			WantsControl: c.RequestControl,
-			LastSeq:      c.lastSeq,
-			ClientType:   "attach",
-		}},
-	}
+	hello := c.buildHelloFrame(cols, rows)
+	lastSeq := hello.GetHello().GetLastSeq()
 	if c.Trace != nil {
 		c.Trace.Event("hello", map[string]any{
 			"client_id": c.ClientID,
-			"last_seq":  c.lastSeq,
+			"last_seq":  lastSeq,
 		})
 	}
 	if c.Logger != nil {
-		c.Logger.Debug("attach.client.hello", "session", c.SessionID, "client", c.ClientID, "last_seq", c.lastSeq)
+		c.Logger.Debug("attach.client.hello", "session", c.SessionID, "client", c.ClientID, "last_seq", lastSeq)
 	}
 	if err := c.writeFrame(ctx, ws, hello); err != nil {
 		return err
@@ -1025,6 +1017,7 @@ func (c *Client) handleSnapshot(seq uint64, snap *protocolpb.Snapshot) {
 	}
 	c.needsResync = false
 	c.resyncRequested = false
+	c.forceFreshHello = false
 	c.mu.Unlock()
 	c.renderSnapshot(snap)
 	c.markReady()
@@ -1412,6 +1405,7 @@ func (c *Client) requestResync(ctx context.Context, ws *websocket.Conn) error {
 		return nil
 	}
 	c.resyncRequested = true
+	c.forceFreshHello = true
 	c.mu.Unlock()
 	return c.sendHello(ctx, ws)
 }
@@ -1707,15 +1701,18 @@ func (c *Client) error() error {
 	return c.runErr
 }
 
-func (c *Client) sendHello(ctx context.Context, ws *websocket.Conn) error {
-	cols, rows := c.terminalSize()
-	if cols == 0 || rows == 0 {
-		cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
-	}
+func (c *Client) helloLastSeq() uint64 {
 	c.mu.RLock()
-	lastSeq := c.lastSeq
-	c.mu.RUnlock()
-	frame := &protocolpb.Frame{
+	defer c.mu.RUnlock()
+	if c.forceFreshHello {
+		return 0
+	}
+	return c.lastSeq
+}
+
+func (c *Client) buildHelloFrame(cols, rows int) *protocolpb.Frame {
+	lastSeq := c.helloLastSeq()
+	return &protocolpb.Frame{
 		SessionId: c.SessionID,
 		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
 			ClientId:     c.ClientID,
@@ -1726,6 +1723,14 @@ func (c *Client) sendHello(ctx context.Context, ws *websocket.Conn) error {
 			ClientType:   "attach",
 		}},
 	}
+}
+
+func (c *Client) sendHello(ctx context.Context, ws *websocket.Conn) error {
+	cols, rows := c.terminalSize()
+	if cols == 0 || rows == 0 {
+		cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+	}
+	frame := c.buildHelloFrame(cols, rows)
 	return c.writeFrame(ctx, ws, frame)
 }
 
