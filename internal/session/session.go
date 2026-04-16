@@ -179,11 +179,13 @@ type Runner struct {
 	scrollbackView    mvu.ScrollbackViewport
 	scrollbackSession string
 
-	wallNotifyMu    sync.Mutex
-	wallNotifyAfter map[string]time.Duration
-	wallNotifyLabel map[string]string
-	wallNotifyTimer map[string]*clock.Timer
-	wallNotifyArmed map[string]bool
+	wallNotifyMu            sync.Mutex
+	wallNotifyAfter         map[string]time.Duration
+	wallNotifyLabel         map[string]string
+	wallNotifyTimer         map[string]*clock.Timer
+	wallNotifyArmed         map[string]bool
+	wallNotifyRelay         map[string]bool
+	wallNotifySuppressRelay map[string]bool
 
 	tokenRefresher func(context.Context) (string, error)
 
@@ -1809,6 +1811,9 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			if r.opts.OnPublishWall != nil {
 				r.opts.OnPublishWall(wall)
 			}
+			if r.suppressRelayBackedLocalInactivityDuplicate(wall) {
+				return
+			}
 			if r.suppressFocusedLocalInactivityWall(wall) {
 				return
 			}
@@ -2342,9 +2347,11 @@ func (r *Runner) stopLocalWallNotifications() {
 	r.wallNotifyLabel = nil
 	r.wallNotifyTimer = nil
 	r.wallNotifyArmed = nil
+	r.wallNotifyRelay = nil
+	r.wallNotifySuppressRelay = nil
 }
 
-func (r *Runner) configureLocalWallNotification(sessionID string, after time.Duration, label string) {
+func (r *Runner) configureLocalWallNotification(sessionID string, after time.Duration, label string, relayBacked bool) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return
@@ -2363,6 +2370,12 @@ func (r *Runner) configureLocalWallNotification(sessionID string, after time.Dur
 	if r.wallNotifyArmed == nil {
 		r.wallNotifyArmed = make(map[string]bool)
 	}
+	if r.wallNotifyRelay == nil {
+		r.wallNotifyRelay = make(map[string]bool)
+	}
+	if r.wallNotifySuppressRelay == nil {
+		r.wallNotifySuppressRelay = make(map[string]bool)
+	}
 	if timer := r.wallNotifyTimer[sessionID]; timer != nil {
 		timer.Stop()
 		delete(r.wallNotifyTimer, sessionID)
@@ -2371,18 +2384,21 @@ func (r *Runner) configureLocalWallNotification(sessionID string, after time.Dur
 		delete(r.wallNotifyAfter, sessionID)
 		delete(r.wallNotifyLabel, sessionID)
 		delete(r.wallNotifyArmed, sessionID)
+		delete(r.wallNotifyRelay, sessionID)
+		delete(r.wallNotifySuppressRelay, sessionID)
 		return
 	}
 	r.wallNotifyAfter[sessionID] = after
 	r.wallNotifyLabel[sessionID] = strings.TrimSpace(label)
 	r.wallNotifyArmed[sessionID] = true
+	r.wallNotifyRelay[sessionID] = relayBacked
 	r.wallNotifyTimer[sessionID] = r.clock.AfterFunc(after, func() {
 		r.fireLocalWallNotification(sessionID)
 	})
 }
 
 func (r *Runner) disableLocalWallNotification(sessionID string) {
-	r.configureLocalWallNotification(sessionID, 0, "")
+	r.configureLocalWallNotification(sessionID, 0, "", false)
 }
 
 func (r *Runner) currentWallInactivityStatus(sessionID string) *protocolpb.WallInactivityStatus {
@@ -2450,6 +2466,7 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 	r.wallNotifyMu.Lock()
 	after := r.wallNotifyAfter[sessionID]
 	armed := r.wallNotifyArmed[sessionID]
+	relayBacked := r.wallNotifyRelay[sessionID]
 	if after <= 0 || !armed {
 		r.wallNotifyMu.Unlock()
 		return
@@ -2483,6 +2500,14 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 	if activeID == sessionID {
 		return
 	}
+	if relayBacked {
+		r.wallNotifyMu.Lock()
+		if r.wallNotifySuppressRelay == nil {
+			r.wallNotifySuppressRelay = make(map[string]bool)
+		}
+		r.wallNotifySuppressRelay[sessionID] = true
+		r.wallNotifyMu.Unlock()
+	}
 	r.showWall(&protocolpb.Wall{
 		Message:         label + " inactive",
 		TimeoutSeconds:  5,
@@ -2507,6 +2532,23 @@ func (r *Runner) suppressFocusedLocalInactivityWall(wall *protocolpb.Wall) bool 
 		return false
 	}
 	return sourceID == activeID
+}
+
+func (r *Runner) suppressRelayBackedLocalInactivityDuplicate(wall *protocolpb.Wall) bool {
+	if wall == nil || !desktopnotify.IsInactivityWall(wall) {
+		return false
+	}
+	sourceID := strings.TrimSpace(wall.GetSourceSessionId())
+	if sourceID == "" {
+		return false
+	}
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	if r.wallNotifySuppressRelay == nil || !r.wallNotifySuppressRelay[sourceID] {
+		return false
+	}
+	delete(r.wallNotifySuppressRelay, sourceID)
+	return true
 }
 
 func (r *Runner) toggleRespawn(sessionID string, stdout *os.File) {
@@ -2568,7 +2610,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return true
 		}
 		if result.Enabled {
-			r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(result.InactiveAfter), result.InactiveAfter)
+			r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(result.InactiveAfter), result.InactiveAfter, false)
 			status := "wall inactivity on"
 			if label := strings.TrimSpace(result.InactiveAfter); label != "" {
 				status = "wall inactivity " + label
@@ -2638,7 +2680,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		return
 	}
 	if resp.Enabled {
-		r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(resp.InactiveAfter), resp.InactiveAfter)
+		r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(resp.InactiveAfter), resp.InactiveAfter, true)
 		status := "wall inactivity on"
 		if label := strings.TrimSpace(resp.InactiveAfter); label != "" {
 			status = "wall inactivity " + label

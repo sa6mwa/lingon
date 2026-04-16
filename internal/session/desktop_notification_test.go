@@ -32,7 +32,7 @@ func TestRunnerLocalWallNotificationFiresOnceUntilActivityResets(t *testing.T) {
 		},
 	}
 
-	r.configureLocalWallNotification("s1", 2*time.Minute, "2m")
+	r.configureLocalWallNotification("s1", 2*time.Minute, "2m", false)
 	clk.Add(2 * time.Minute)
 
 	if len(notifier.requests) != 1 {
@@ -72,7 +72,7 @@ func TestRunnerLocalWallNotificationSkipsWhenDisabled(t *testing.T) {
 		},
 	}
 
-	r.configureLocalWallNotification("s1", time.Minute, "1m")
+	r.configureLocalWallNotification("s1", time.Minute, "1m", false)
 	clk.Add(time.Minute)
 
 	if len(notifier.requests) != 0 {
@@ -93,8 +93,8 @@ func TestRunnerLocalWallNotificationIsPerSession(t *testing.T) {
 		},
 	}
 
-	r.configureLocalWallNotification("s1", 2*time.Minute, "2m")
-	r.configureLocalWallNotification("s2", time.Minute, "1m")
+	r.configureLocalWallNotification("s1", 2*time.Minute, "2m", false)
+	r.configureLocalWallNotification("s2", time.Minute, "1m", false)
 	r.noteLocalActivity("s1")
 
 	clk.Add(time.Minute)
@@ -126,7 +126,7 @@ func TestRunnerDisableLocalWallNotificationCancelsPendingTimer(t *testing.T) {
 		},
 	}
 
-	r.configureLocalWallNotification("s1", time.Minute, "1m")
+	r.configureLocalWallNotification("s1", time.Minute, "1m", false)
 	r.disableLocalWallNotification("s1")
 	clk.Add(2 * time.Minute)
 
@@ -208,5 +208,49 @@ func TestRunnerShowWallKeepsModalVisibleWhenDesktopNotifierConfigured(t *testing
 	}
 	if len(notifier.requests) != 0 {
 		t.Fatalf("expected wall rendering path not to emit desktop notifications directly, got %d", len(notifier.requests))
+	}
+}
+
+func TestRunnerRelayBackedLocalWallNotificationSuppressesDuplicateRelayWall(t *testing.T) {
+	notifier := &recordingNotifier{}
+	clk := clock.NewMock()
+	r := &Runner{
+		opts:   Options{DesktopNotifier: notifier},
+		runCtx: context.Background(),
+		clock:  clk,
+		localSessions: map[string]*localSession{
+			"s1": {id: "s1", name: "session-a", clock: clk},
+			"s2": {id: "s2", name: "session-b", clock: clk},
+		},
+		activeSessionID: "s2",
+		activeIsLocal:   true,
+	}
+
+	r.configureLocalWallNotification("s1", time.Minute, "1m", true)
+	clk.Add(time.Minute)
+
+	if len(notifier.requests) != 1 {
+		t.Fatalf("expected one desktop notification, got %d", len(notifier.requests))
+	}
+	state := r.runtime().State()
+	if !state.WallVisible {
+		t.Fatalf("expected relay-backed local inactivity to keep same-host sibling modal behavior")
+	}
+	if state.WallMessage != "session-a inactive" {
+		t.Fatalf("WallMessage = %q, want %q", state.WallMessage, "session-a inactive")
+	}
+	if !r.suppressRelayBackedLocalInactivityDuplicate(&protocolpb.Wall{
+		Message:         "session-a inactive",
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: "s1",
+	}) {
+		t.Fatalf("expected duplicate relay inactivity wall to be suppressed after local modal path")
+	}
+	if r.suppressRelayBackedLocalInactivityDuplicate(&protocolpb.Wall{
+		Message:         "session-a inactive",
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: "s1",
+	}) {
+		t.Fatalf("expected suppression token to be one-shot")
 	}
 }

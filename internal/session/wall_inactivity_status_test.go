@@ -20,7 +20,7 @@ func TestRunnerPublishWallInactivityStatusUsesCurrentState(t *testing.T) {
 		clock:         clock.New(),
 		localSessions: map[string]*localSession{"s1": {id: "s1", publisher: publisher}},
 	}
-	r.configureLocalWallNotification("s1", 2*time.Minute, "2m")
+	r.configureLocalWallNotification("s1", 2*time.Minute, "2m", false)
 
 	r.publishWallInactivityStatus("s1", "")
 
