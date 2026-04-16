@@ -428,19 +428,34 @@ func startHostSession(ctx context.Context, endpoint, token, id, scriptPath strin
 		ptyBuf   bytes.Buffer
 		ptyDebug = os.Getenv("LINGON_DEBUG_INPUT") == "1"
 	)
-	runner := session.New(session.Options{
-		Endpoint:       endpoint,
-		Token:          token,
-		SessionID:      id,
-		SessionName:    id,
-		Cols:           cols,
-		Rows:           rows,
-		Shell:          scriptPath,
-		Publish:        true,
-		PublishControl: true,
-		Stdin:          stdinFile,
-		Stdout:         stdoutFile,
-		DisableRaw:     true,
+	runner := session.New(buildHostSessionOptions(endpoint, token, id, scriptPath, cols, rows, stdinFile, stdoutFile, ptyDebug, &ptyMu, &ptyBuf))
+	go func() {
+		if err := runner.Run(sessionCtx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("session %s stopped: %v", id, err)
+		}
+	}()
+	return func() {
+		cancel()
+		_ = stdinFile.Close()
+		_ = stdoutFile.Close()
+	}, nil
+}
+
+func buildHostSessionOptions(endpoint, token, id, scriptPath string, cols, rows int, stdinFile, stdoutFile *os.File, ptyDebug bool, ptyMu *sync.Mutex, ptyBuf *bytes.Buffer) session.Options {
+	return session.Options{
+		Endpoint:                    endpoint,
+		Token:                       token,
+		SessionID:                   id,
+		SessionName:                 id,
+		Cols:                        cols,
+		Rows:                        rows,
+		Shell:                       scriptPath,
+		Publish:                     true,
+		PublishControl:              true,
+		Stdin:                       stdinFile,
+		Stdout:                      stdoutFile,
+		DisableRaw:                  true,
+		DisableDesktopNotifications: true,
 		OnPTYRead: func(data []byte) {
 			if !ptyDebug || len(data) == 0 {
 				return
@@ -460,17 +475,7 @@ func startHostSession(ctx context.Context, endpoint, token, id, scriptPath strin
 				}
 			}
 		},
-	})
-	go func() {
-		if err := runner.Run(sessionCtx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("session %s stopped: %v", id, err)
-		}
-	}()
-	return func() {
-		cancel()
-		_ = stdinFile.Close()
-		_ = stdoutFile.Close()
-	}, nil
+	}
 }
 
 func writeHostScript(baseDir, id, harnessPath string) (string, error) {

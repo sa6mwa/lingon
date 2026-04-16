@@ -454,6 +454,22 @@ type HostOptions struct {
 	AuthFile string
 }
 
+type noopNotifier struct{}
+
+func (noopNotifier) Notify(context.Context, desktopnotify.Request) error {
+	return nil
+}
+
+func effectiveHostDesktopNotificationConfig(opts HostOptions) (bool, desktopnotify.Notifier) {
+	if opts.DisableDesktopNotifications {
+		return true, opts.DesktopNotifier
+	}
+	if opts.DesktopNotifier != nil {
+		return false, opts.DesktopNotifier
+	}
+	return false, noopNotifier{}
+}
+
 // StartHost launches a host session attached to a PTY.
 func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 	h.t.Helper()
@@ -495,6 +511,7 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 	if authFile == "" && opts.AccessToken == "" {
 		authFile = h.authPath
 	}
+	disableDesktopNotifications, desktopNotifier := effectiveHostDesktopNotificationConfig(opts)
 	runner := session.New(session.Options{
 		Endpoint:                    h.endpoint,
 		Token:                       token,
@@ -509,8 +526,8 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		Stdout:                      slave,
 		DisableRaw:                  opts.DisableRaw,
 		Clock:                       clk,
-		DisableDesktopNotifications: opts.DisableDesktopNotifications,
-		DesktopNotifier:             opts.DesktopNotifier,
+		DisableDesktopNotifications: disableDesktopNotifications,
+		DesktopNotifier:             desktopNotifier,
 		Trace:                       h.trace,
 	})
 
