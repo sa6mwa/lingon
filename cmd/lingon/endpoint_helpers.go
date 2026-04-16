@@ -14,6 +14,9 @@ import (
 
 func resolveEndpointValue(cmd *cobra.Command, loader *lingon.Loader, configuredEndpoint, flagEndpoint, authPath string) (string, error) {
 	endpointValue := resolveConfiguredEndpointValue(cmd, loader, configuredEndpoint, flagEndpoint)
+	if cmd != nil && cmd.Flags().Changed("endpoint") {
+		return endpointValue, nil
+	}
 	if endpointExplicitlyConfigured(loader) && strings.TrimSpace(configuredEndpoint) != "" {
 		return endpointValue, nil
 	}

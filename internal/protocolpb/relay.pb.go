@@ -1486,10 +1486,10 @@ func (x *SessionInfo) GetLastActiveUnix() int64 {
 
 type Wall struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	Id              uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Sender          string                 `protobuf:"bytes,2,opt,name=sender,proto3" json:"sender,omitempty"`
-	Message         string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	TimeoutSeconds  uint32                 `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	Sender          string                 `protobuf:"bytes,1,opt,name=sender,proto3" json:"sender,omitempty"`
+	Message         string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	TimeoutSeconds  uint32                 `protobuf:"varint,3,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	Id              uint64                 `protobuf:"varint,4,opt,name=id,proto3" json:"id,omitempty"`
 	Kind            WallKind               `protobuf:"varint,5,opt,name=kind,proto3,enum=lingon.protocol.WallKind" json:"kind,omitempty"`
 	SourceSessionId string                 `protobuf:"bytes,6,opt,name=source_session_id,json=sourceSessionId,proto3" json:"source_session_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
@@ -1526,13 +1526,6 @@ func (*Wall) Descriptor() ([]byte, []int) {
 	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{17}
 }
 
-func (x *Wall) GetId() uint64 {
-	if x != nil {
-		return x.Id
-	}
-	return 0
-}
-
 func (x *Wall) GetSender() string {
 	if x != nil {
 		return x.Sender
@@ -1550,6 +1543,13 @@ func (x *Wall) GetMessage() string {
 func (x *Wall) GetTimeoutSeconds() uint32 {
 	if x != nil {
 		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+func (x *Wall) GetId() uint64 {
+	if x != nil {
+		return x.Id
 	}
 	return 0
 }
@@ -1816,11 +1816,11 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12(\n" +
 	"\x10last_active_unix\x18\x04 \x01(\x03R\x0elastActiveUnix\"\xcc\x01\n" +
-	"\x04Wall\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x16\n" +
-	"\x06sender\x18\x02 \x01(\tR\x06sender\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\x12'\n" +
-	"\x0ftimeout_seconds\x18\x04 \x01(\rR\x0etimeoutSeconds\x12-\n" +
+	"\x04Wall\x12\x16\n" +
+	"\x06sender\x18\x01 \x01(\tR\x06sender\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12'\n" +
+	"\x0ftimeout_seconds\x18\x03 \x01(\rR\x0etimeoutSeconds\x12\x0e\n" +
+	"\x02id\x18\x04 \x01(\x04R\x02id\x12-\n" +
 	"\x04kind\x18\x05 \x01(\x0e2\x19.lingon.protocol.WallKindR\x04kind\x12*\n" +
 	"\x11source_session_id\x18\x06 \x01(\tR\x0fsourceSessionId\"m\n" +
 	"\x14WallInactivityStatus\x12\x18\n" +

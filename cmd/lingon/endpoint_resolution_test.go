@@ -329,3 +329,42 @@ func TestSessionsCommandIgnoresStoredAuthForExplicitAccessToken(t *testing.T) {
 		t.Fatalf("expected no stderr output, got %q", errOut.String())
 	}
 }
+
+func TestResolveEndpointValuePrefersExplicitFlagOverAmbiguousStoredAuth(t *testing.T) {
+	home := testutil.TempDir(t)
+	t.Setenv("HOME", home)
+
+	authPath := filepath.Join(home, ".lingon", "auth.json")
+	now := time.Now().UTC()
+	for _, endpoint := range []string{
+		"https://alpha.example.com/v1",
+		"https://beta.example.com/v1",
+	} {
+		if err := lingon.SaveAuth(authPath, lingon.AuthState{
+			Endpoint:         endpoint,
+			AccessToken:      "access-" + endpoint,
+			AccessExpiresAt:  now.Add(5 * time.Minute),
+			RefreshToken:     "refresh-" + endpoint,
+			RefreshExpiresAt: now.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("SaveAuth(%q): %v", endpoint, err)
+		}
+	}
+
+	loader := lingon.NewLoader()
+	loader.Viper().SetDefault("client.endpoint", lingon.DefaultClientEndpoint)
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("endpoint", lingon.DefaultClientEndpoint, "")
+	if err := cmd.Flags().Set("endpoint", "https://flag.example.com/v1"); err != nil {
+		t.Fatalf("Set(endpoint): %v", err)
+	}
+
+	endpointValue, err := resolveEndpointValue(cmd, loader, lingon.DefaultClientEndpoint, "https://flag.example.com/v1", authPath)
+	if err != nil {
+		t.Fatalf("resolveEndpointValue: %v", err)
+	}
+	if endpointValue != "https://flag.example.com/v1" {
+		t.Fatalf("endpointValue = %q, want %q", endpointValue, "https://flag.example.com/v1")
+	}
+}
