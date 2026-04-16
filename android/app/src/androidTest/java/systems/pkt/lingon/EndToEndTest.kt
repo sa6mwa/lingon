@@ -229,22 +229,22 @@ class EndToEndTest {
         assertTerminalResponsive()
         resetZoomPan()
         val baseline = waitForTerminalDebugInfo { info ->
-            info.viewCols > 0 && info.viewRows > 0
+            info.viewCols > 0 && info.viewRows > 0 && info.renderScaleX > 0f
         }
         val initial = baseline
             ?: throw AssertionError("missing terminal debug info")
 
         performPinchZoom(zoomIn = true)
-        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
-            val info = readTerminalDebugInfo()
-            info != null && info.zoomFactor > initial.zoomFactor + 0.05f
-        }
+        val zoomedIn = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+            info.renderScaleX > initial.renderScaleX + 0.05f
+        } ?: throw AssertionError("missing zoomed-in terminal debug info")
+        assertTrue(zoomedIn.renderScaleX > initial.renderScaleX)
 
         resetZoomPan()
         waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
             info != null &&
-                kotlin.math.abs(info.zoomFactor - initial.zoomFactor) <= 0.01f
+                kotlin.math.abs(info.renderScaleX - initial.renderScaleX) <= 0.03f
         }
     }
 
@@ -1057,7 +1057,7 @@ class EndToEndTest {
         val factory = AppViewModelFactory(
             app.repository,
             app.wsClient,
-            app.wallNotifier,
+            app.wallDeliveryCoordinator,
             app.wallWorkScheduler,
             app.backgroundWallServiceController,
         )
@@ -1207,6 +1207,8 @@ class EndToEndTest {
                 resizeEnabled = state.resizeHostEnabled,
                 viewCols = terminalView?.getViewCols() ?: state.terminalCols,
                 viewRows = terminalView?.getViewRows() ?: state.terminalRows,
+                renderScaleX = terminalView?.getRenderScaleX() ?: 0f,
+                renderScaleY = terminalView?.getRenderScaleY() ?: 0f,
                 visibleStartRow = terminalView?.getVisibleStartRow() ?: 0,
                 visibleEndRowExclusive = terminalView?.getVisibleEndRowExclusive() ?: 0,
                 zoomFactor = state.zoomFactor,
@@ -1915,6 +1917,8 @@ class EndToEndTest {
         val resizeEnabled: Boolean,
         val viewCols: Int,
         val viewRows: Int,
+        val renderScaleX: Float,
+        val renderScaleY: Float,
         val visibleStartRow: Int,
         val visibleEndRowExclusive: Int,
         val zoomFactor: Float,

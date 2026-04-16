@@ -18,7 +18,7 @@ class TerminalViewportPolicyTest {
             0.001f,
         )
         assertEquals(
-            0.85f,
+            0.75f,
             TerminalViewportPolicy.effectiveRenderScale(
                 zoomFactor = DefaultTerminalZoom + 0.25f,
                 fitScale = 0.6f,
@@ -34,7 +34,7 @@ class TerminalViewportPolicyTest {
             0.001f,
         )
         assertEquals(
-            1.35f,
+            1.38f,
             TerminalViewportPolicy.effectiveRenderScale(
                 zoomFactor = DefaultTerminalZoom + 0.15f,
                 fitScale = 1.2f,

@@ -222,12 +222,6 @@ func (s *WallService) sendUserWallForSession(username, sender, message, sourceSe
 	if sent > 0 {
 		s.logger.Info("relay.wall.sent", "user", username, "sessions", sent)
 	}
-	if !now.IsZero() {
-		// Treat manual wall dispatch as activity for monitored sessions.
-		for _, session := range sessions {
-			s.markActivity(session.ID, now)
-		}
-	}
 	return sent, nil
 }
 

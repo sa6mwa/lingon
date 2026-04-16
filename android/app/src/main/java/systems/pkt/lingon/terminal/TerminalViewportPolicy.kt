@@ -13,7 +13,7 @@ internal object TerminalViewportPolicy {
         fitScale: Float,
     ): Float {
         if (fitScale <= 0f) return zoomFactor
-        return fitScale + (zoomFactor - DefaultTerminalZoom)
+        return fitScale * (zoomFactor / DefaultTerminalZoom)
     }
 
     fun shouldAutoFollowCursor(

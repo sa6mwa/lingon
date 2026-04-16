@@ -501,6 +501,69 @@ func TestRelayBackedLocalWallInactivityDoesNotRepeatWithoutActivity(t *testing.T
 	}
 }
 
+func TestRelayBackedManualWallDoesNotRearmInactivity(t *testing.T) {
+	h := newHarness(t, ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
+	notifier := &integrationRecordingNotifier{}
+
+	hostA := h.StartHost(ptytest.HostOptions{
+		SessionID:       "wall-manual-no-rearm-a",
+		SessionName:     "wall-manual-no-rearm-a",
+		Cols:            100,
+		Rows:            30,
+		DesktopNotifier: notifier,
+	})
+	t.Cleanup(hostA.Cancel)
+
+	hostB := h.StartHost(ptytest.HostOptions{
+		SessionID:   "wall-manual-no-rearm-b",
+		SessionName: "wall-manual-no-rearm-b",
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(hostB.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 5*time.Second)
+
+	hostA.SendCtrlL()
+	hostA.Send("w")
+	if !screenContainsWithin(hostA, "wall inactivity 250ms", 2*time.Second) {
+		t.Fatalf("expected wall inactivity status banner on source tab")
+	}
+
+	if !screenContainsWithin(hostB, "wall-manual-no-rearm-a inactive", 3*time.Second) {
+		t.Fatalf("expected first propagated inactivity wall modal on peer host TUI; screen:\n%s", hostB.Screen().String())
+	}
+	hostB.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if screen.Contains("wall-manual-no-rearm-a inactive") {
+			return errStillVisible("waiting for first inactivity wall to auto-hide")
+		}
+		return nil
+	})
+
+	tlsDir := filepath.Join(filepath.Dir(h.AuthFile()), "tls")
+	if _, err := relayclient.SendWall(context.Background(), h.Endpoint(), h.AccessToken(), "manual hello", tlsDir, false); err != nil {
+		t.Fatalf("send manual wall: %v", err)
+	}
+	if !screenContainsWithin(hostB, "manual hello", 1500*time.Millisecond) {
+		t.Fatalf("expected manual wall modal on peer host TUI")
+	}
+	hostB.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if screen.Contains("manual hello") {
+			return errStillVisible("waiting for manual wall to auto-hide")
+		}
+		return nil
+	})
+
+	time.Sleep(1500 * time.Millisecond)
+	requests := notifier.snapshot()
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly one desktop inactivity notification after manual wall, got %d", len(requests))
+	}
+	if screenContainsWithin(hostB, "wall-manual-no-rearm-a inactive", 1200*time.Millisecond) {
+		t.Fatalf("expected manual wall not to re-arm inactivity")
+	}
+}
+
 func TestRelayBackedLocalWallInactivityClientReconnectDoesNotRearmWithoutTerminalInput(t *testing.T) {
 	h := newHarness(t, ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
 

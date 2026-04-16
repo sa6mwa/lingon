@@ -25,6 +25,8 @@ import systems.pkt.lingon.data.ApiException
 import systems.pkt.lingon.data.LingonClient
 import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
+import systems.pkt.lingon.notifications.NoopWallDeliveryCoordinator
+import systems.pkt.lingon.notifications.WallDeliveryCoordinator
 import systems.pkt.lingon.terminal.TerminalSnapshot
 import systems.pkt.lingon.terminal.buildScrollbackSnapshot
 import systems.pkt.lingon.DefaultScrollbackLines
@@ -48,7 +50,7 @@ import kotlin.math.min
 class AppViewModel(
     private val repository: LingonClient,
     private val wsClient: RelayWebSocketClient,
-    private val wallNotifier: WallNotifier = NoopWallNotifier,
+    private val wallDeliveryCoordinator: WallDeliveryCoordinator = NoopWallDeliveryCoordinator,
     private val wallWorkScheduler: WallWorkScheduler = NoopWallWorkScheduler,
     private val backgroundWallServiceController: BackgroundWallServiceController = NoopBackgroundWallServiceController,
 ) : ViewModel() {
@@ -1360,14 +1362,15 @@ class AppViewModel(
                     }
                     frame.hasWall() -> {
                         val wall = frame.wall
-                        notifyWall(
-                            WallNotification(
-                                endpoint = _state.value.endpoint.trim(),
-                                eventId = wall.id,
-                                sender = wall.sender,
-                                message = wall.message,
-                            ),
+                        val notification = WallNotification(
+                            endpoint = _state.value.endpoint.trim(),
+                            eventId = wall.id,
+                            sender = wall.sender,
+                            message = wall.message,
                         )
+                        viewModelScope.launch {
+                            wallDeliveryCoordinator.deliver(notification)
+                        }
                         _state.update {
                             it.copy(
                                 lastFrameSeq = frame.seq,
@@ -1711,13 +1714,6 @@ class AppViewModel(
             hasSocket = socketOpen,
         )
         wallWorkScheduler.setEnabled(enabled)
-    }
-
-    private fun notifyWall(notification: WallNotification) {
-        if (notification.message.isBlank()) {
-            return
-        }
-        wallNotifier.notifyWall(notification)
     }
 
     private fun handleUnauthorizedResponse() {

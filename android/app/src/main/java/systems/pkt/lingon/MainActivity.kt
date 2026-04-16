@@ -25,7 +25,7 @@ class MainActivity : ComponentActivity() {
         AppViewModelFactory(
             app.repository,
             app.wsClient,
-            app.wallNotifier,
+            app.wallDeliveryCoordinator,
             app.wallWorkScheduler,
             app.backgroundWallServiceController,
         )

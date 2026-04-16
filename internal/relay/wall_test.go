@@ -200,6 +200,54 @@ func TestWallServiceInactivityDoesNotRepeatWithoutActivity(t *testing.T) {
 	}
 }
 
+func TestWallServiceManualWallDoesNotRearmInactivity(t *testing.T) {
+	store := NewStore()
+	hub := NewHub(nil)
+	now := time.Now().UTC()
+	store.CreateSession(Session{ID: "s1", Username: "alice", Name: "session-a", Status: "active", CreatedAt: now, LastActiveAt: now})
+	store.CreateSession(Session{ID: "s2", Username: "alice", Name: "session-b", Status: "active", CreatedAt: now, LastActiveAt: now})
+	host := &fakeConn{id: "host-s1", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	peer := &fakeConn{id: "host-s2", role: RoleHost, sessionID: "s2", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+	if err := hub.RegisterHost(peer, "s2", 80, 24); err != nil {
+		t.Fatalf("RegisterHost peer: %v", err)
+	}
+
+	svc := newWallService(store, hub, nil, 2*time.Second, []time.Duration{25 * time.Millisecond})
+	enabled, _ := svc.setInactivity("alice", "s1", "alice@127.0.0.1", true, now)
+	if !enabled {
+		t.Fatalf("setInactivity should enable monitor")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(peer.sent) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(peer.sent) != 1 {
+		t.Fatalf("expected exactly one first inactivity wall, got %d", len(peer.sent))
+	}
+
+	if _, err := svc.sendUserWall("alice", "alice@127.0.0.1", "manual hello", time.Now().UTC()); err != nil {
+		t.Fatalf("sendUserWall: %v", err)
+	}
+	if len(host.sent) != 2 || len(peer.sent) != 2 {
+		t.Fatalf("expected only the manual wall after first inactivity, got host=%d peer=%d", len(host.sent), len(peer.sent))
+	}
+	if got := peer.sent[1].GetWall(); got == nil || got.Message != "manual hello" {
+		t.Fatalf("expected second frame to be manual wall, got %#v", peer.sent[1].GetWall())
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+	if len(host.sent) != 2 || len(peer.sent) != 2 {
+		t.Fatalf("expected manual wall not to re-arm inactivity, got host=%d peer=%d", len(host.sent), len(peer.sent))
+	}
+}
+
 func TestWallServiceToggleInactivityCyclesLevelsThenOff(t *testing.T) {
 	store := NewStore()
 	hub := NewHub(nil)

@@ -69,7 +69,7 @@ class BackgroundWallForegroundService : Service() {
                     if (event.message.isBlank()) {
                         return@forEach
                     }
-                    app.wallNotifier.notifyWall(
+                    app.wallDeliveryCoordinator.deliver(
                         WallNotification(
                             endpoint = endpoint,
                             eventId = event.id,
@@ -85,7 +85,7 @@ class BackgroundWallForegroundService : Service() {
                     next = page.nextId
                 }
                 if (next > since) {
-                    app.wallWorkStateStore.saveCursor(endpoint, next)
+                    app.wallDeliveryCoordinator.advanceCursor(endpoint, next)
                 }
             } catch (err: ApiException) {
                 if (err.statusCode == 401) {

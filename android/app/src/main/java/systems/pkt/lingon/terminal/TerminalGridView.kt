@@ -256,6 +256,10 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun getViewRows(): Int = viewRows
 
+    fun getRenderScaleX(): Float = renderScaleX
+
+    fun getRenderScaleY(): Float = renderScaleY
+
     fun getVisibleStartRow(): Int {
         val snap = snapshot ?: return 0
         val rows = snap.rows

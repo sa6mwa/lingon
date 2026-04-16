@@ -32,11 +32,13 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import systems.pkt.lingon.data.ApiException
 import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.data.LingonClient
+import systems.pkt.lingon.data.WallWorkStateStore
 import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.data.relay.RelayWallEventsPage
 import systems.pkt.lingon.data.certs.TrustedCert
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.data.certs.CertificateStore
+import systems.pkt.lingon.notifications.MonotonicWallDeliveryCoordinator
 import systems.pkt.lingon.protocol.Diff
 import systems.pkt.lingon.protocol.Frame
 import systems.pkt.lingon.protocol.CommandKind
@@ -1072,6 +1074,60 @@ class AppViewModelTest {
     }
 
     @Test
+    fun liveWallFrameAdvancesCursorAndSuppressesReplay() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val recordingNotifier = RecordingWallNotifier()
+        val wallStore = testWallWorkStateStore()
+        val viewModel = AppViewModel(
+            repository = repository,
+            wsClient = wsClient,
+            wallDeliveryCoordinator = MonotonicWallDeliveryCoordinator(wallStore, recordingNotifier),
+        )
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        runCurrent()
+
+        val frame = Frame.newBuilder()
+            .setSeq(2)
+            .setWall(
+                systems.pkt.lingon.protocol.Wall.newBuilder()
+                    .setId(42)
+                    .setSender("relay")
+                    .setMessage("bash inactive")
+                    .build(),
+            )
+            .build()
+        wsClient.fireFrame(frame)
+        advanceUntilIdle()
+        wsClient.fireFrame(frame)
+        advanceUntilIdle()
+
+        assertEquals(listOf("https://localhost:12843/v1#42" to "relay\nbash inactive"), recordingNotifier.deliveries)
+        assertEquals(42L, wallStore.loadCursor("https://localhost:12843/v1"))
+    }
+
+    @Test
     fun wallInactivityBannerAutoDismisses() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
@@ -1726,4 +1782,21 @@ private fun testHttpClientProvider(): HttpClientProvider {
     )
     val certStore = CertificateStore(dataStore)
     return HttpClientProvider(certStore, CookieJar.NO_COOKIES)
+}
+
+private fun testWallWorkStateStore(): WallWorkStateStore {
+    val dataStore = PreferenceDataStoreFactory.create(
+        scope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
+        produceFile = { Files.createTempFile("lingon-wall", ".preferences_pb").toFile() },
+    )
+    return WallWorkStateStore(dataStore)
+}
+
+private class RecordingWallNotifier : WallNotifier {
+    val deliveries = mutableListOf<Pair<String, String>>()
+
+    override fun notifyWall(notification: WallNotification) {
+        deliveries += "${notification.endpoint.trim()}#${notification.eventId}" to
+            "${notification.sender.trim()}\n${notification.message.trim()}"
+    }
 }

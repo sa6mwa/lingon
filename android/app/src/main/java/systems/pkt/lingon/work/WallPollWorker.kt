@@ -27,7 +27,7 @@ class WallPollWorker(
                 if (event.message.isBlank()) {
                     return@forEach
                 }
-                app.wallNotifier.notifyWall(
+                app.wallDeliveryCoordinator.deliver(
                     WallNotification(
                         endpoint = endpoint,
                         eventId = event.id,
@@ -43,7 +43,7 @@ class WallPollWorker(
                 next = page.nextId
             }
             if (next > since) {
-                app.wallWorkStateStore.saveCursor(endpoint, next)
+                app.wallDeliveryCoordinator.advanceCursor(endpoint, next)
             }
             Result.success()
         } catch (err: ApiException) {
