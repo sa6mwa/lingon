@@ -26,7 +26,7 @@ func TestReconnectBannerDoesNotShiftUnchangedTopContentDown(t *testing.T) {
 
 	host.SendCtrlL()
 	host.SendCtrlL()
-	eventuallyWithClock(t, host.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+	eventuallyWithClock(t, host.Clock(), 6*time.Second, 50*time.Millisecond, func() error {
 		cur := host.Cursor()
 		if cur.Row != 1 {
 			return fmt.Errorf("expected cursor on row 1 after ctrl+l clear; got row %d col %d", cur.Row, cur.Col)

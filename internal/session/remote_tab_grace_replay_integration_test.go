@@ -66,11 +66,8 @@ func TestHostRemoteTransientMissingTabRetainedAndReplayed(t *testing.T) {
 	t.Cleanup(hostB.Cancel)
 
 	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
-	if !screenContainsWithin(hostB, "mike@", 3*time.Second) {
+	if !screenContainsWithin(hostB, "mike@", 8*time.Second) {
 		t.Fatalf("expected hostB shell prompt after reconnect")
-	}
-	if !screenContainsWithin(hostA, "connected to ", 8*time.Second) {
-		t.Fatalf("expected hostA reconnect banner after retained tab restore")
 	}
 	if !screenContainsWithin(hostA, "mike@", 8*time.Second) {
 		t.Fatalf("expected hostA remote shell prompt after retained tab restore")

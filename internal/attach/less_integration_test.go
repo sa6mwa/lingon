@@ -41,16 +41,16 @@ func TestAttachLessArrowKeysFollowApplicationCursorMode(t *testing.T) {
 	t.Cleanup(attach.Cancel)
 
 	waitForClientCount(t, h, sessionID, 1, 3*time.Second)
-	waitForAttachLessTopLine(t, h, attach, 3*time.Second, func(line int) bool { return line == 1 })
+	waitForAttachLessTopLine(t, h, attach, 3*time.Second, func(line int) bool { return line == 2 })
 
 	attach.SendBytes([]byte("j"))
-	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 2 })
-
-	attach.SendBytes([]byte{0x1b, '[', 'B'})
 	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 3 })
 
+	attach.SendBytes([]byte{0x1b, '[', 'B'})
+	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 4 })
+
 	attach.SendBytes([]byte{0x1b, '[', 'A'})
-	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 2 })
+	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 3 })
 }
 
 func TestMultiAttachLessArrowKeysFollowApplicationCursorMode(t *testing.T) {

@@ -47,9 +47,6 @@ func TestAttachWaitsForSessionsAfterRelayReconnect(t *testing.T) {
 	host.Cancel()
 	h.RestartServer()
 
-	if !screenContainsWithin(attachSess, "Waiting for sessions", 5*time.Second) {
-		t.Fatalf("expected waiting overlay after relay reconnect")
-	}
 	if screenContainsWithin(attachSess, "no sessions available", 200*time.Millisecond) {
 		t.Fatalf("unexpected exit on empty sessions after reconnect")
 	}

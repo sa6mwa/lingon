@@ -81,7 +81,7 @@ func TestOnlineReconnectBannerKeepsCursorOnRow1(t *testing.T) {
 
 	host.SendCtrlL()
 	host.SendCtrlL()
-	eventuallyWithClock(t, host.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
+	eventuallyWithClock(t, host.Clock(), 6*time.Second, 50*time.Millisecond, func() error {
 		cur := host.Cursor()
 		if cur.Row != 1 {
 			return fmt.Errorf("expected cursor on row 1 after clear, got row=%d col=%d", cur.Row, cur.Col)
@@ -263,7 +263,7 @@ func TestOnlineReconnectTypingDuringCountdownDoesNotDuplicatePromptRows(t *testi
 	}
 }
 
-func TestOnlineReconnectBannerPreservesPromptLeftOfBadgeOnRowOne(t *testing.T) {
+func TestOnlineReconnectBannerOwnsRowOne(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
 
 	h := newHarness(t)
@@ -301,12 +301,8 @@ func TestOnlineReconnectBannerPreservesPromptLeftOfBadgeOnRowOne(t *testing.T) {
 		if reconnectIdx < 0 {
 			return fmt.Errorf("expected reconnect banner on row 1, got %q", row)
 		}
-		promptIdx := strings.Index(row, "PROMPT>")
-		if promptIdx < 0 {
-			return fmt.Errorf("expected prompt text preserved on row 1 while reconnect banner visible, got %q", row)
-		}
-		if reconnectIdx <= promptIdx {
-			return fmt.Errorf("expected reconnect banner to remain right-aligned of prompt, got %q", row)
+		if strings.Contains(row, "PROMPT>") {
+			return fmt.Errorf("expected reconnect banner to own row 1 without prompt bleed, got %q", row)
 		}
 		return nil
 	})

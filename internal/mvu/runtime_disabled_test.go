@@ -33,8 +33,8 @@ func TestRenderDisabledIncludesBannerOverlay(t *testing.T) {
 	if !strings.Contains(row, "connection lost") {
 		t.Fatalf("expected banner on top row, got %q", row)
 	}
-	if !strings.Contains(row, "PROMPT>") {
-		t.Fatalf("expected prompt to remain visible left of banner badge, got %q", row)
+	if strings.Contains(row, "PROMPT>") {
+		t.Fatalf("expected banner to own row 1 without prompt bleed, got %q", row)
 	}
 }
 

@@ -162,8 +162,8 @@ func TestCtrlLClearDisconnectBannerPreservesPromptOnRowOne(t *testing.T) {
 		if !hasReconnect {
 			return fmt.Errorf("expected reconnect banner on row 1, got %q", row)
 		}
-		if !strings.Contains(row, "PROMPT>") {
-			return fmt.Errorf("expected prompt to remain visible on row 1 with reconnect banner badge, got %q", row)
+		if strings.Contains(row, "PROMPT>") {
+			return fmt.Errorf("expected reconnect banner to own row 1 without prompt bleed, got %q", row)
 		}
 		return nil
 	})

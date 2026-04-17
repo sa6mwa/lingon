@@ -129,7 +129,7 @@ func TestActionRegressionDeltaSingleCharNoFullRow(t *testing.T) {
 	}
 }
 
-func TestActionRegressionAttachBannerPreservesPromptLeftOfBadge(t *testing.T) {
+func TestActionRegressionAttachBannerOwnsTopRow(t *testing.T) {
 	const cols, rows = 80, 8
 	snap := makeSnapshot(cols, rows, 0, 0)
 	setRow(snap, 0, "PROMPT> visible with badge")
@@ -151,8 +151,8 @@ func TestActionRegressionAttachBannerPreservesPromptLeftOfBadge(t *testing.T) {
 		t.Fatalf("render attach: %v", err)
 	}
 	row := renderRow(t, out.Bytes, cols, rows, 0)
-	if !strings.Contains(row, "PROMPT>") {
-		t.Fatalf("expected prompt to remain visible on row 1 with banner badge, got %q", row)
+	if strings.Contains(row, "PROMPT>") {
+		t.Fatalf("expected banner to own row 1 without prompt bleed, got %q", row)
 	}
 	if !strings.Contains(row, "connection lost") {
 		t.Fatalf("expected banner badge on row 1, got %q", row)

@@ -80,9 +80,18 @@ type AttachRenderOutput struct {
 }
 
 type topOverlayRenderOptions struct {
-	SkipTabBar        bool
-	PrevConnectionLen int
-	PrevScrollbackLen int
+	SkipTabBar         bool
+	PrevConnectionLen  int
+	PrevScrollbackLen  int
+	PrevBannerRowOwned bool
+}
+
+func bannerRowOwned(resolved Resolved) bool {
+	return !resolved.TabBarVisible && (resolved.ConnectionVisible || resolved.LoadingVisible)
+}
+
+func frameBannerRowOwned(frame FrameState) bool {
+	return !frame.LastTabBarVisible && (frame.LastConnectionVisible || frame.LastLoadingVisible)
 }
 
 func topStatusStable(prev FrameState, resolved Resolved) bool {
@@ -147,9 +156,10 @@ func RenderHost(in HostRenderInput) (HostRenderOutput, error) {
 	skipTabBar = skipTabBar && prev != nil
 	var frame bytes.Buffer
 	if err := renderSnapshot(&frame, prev, composed, in.Cols, in.Rows, in.ForceFull, resolved, in.Cursor, topOverlayRenderOptions{
-		SkipTabBar:        skipTabBar,
-		PrevConnectionLen: in.Frame.LastConnectionLen,
-		PrevScrollbackLen: in.Frame.LastScrollbackLen,
+		SkipTabBar:         skipTabBar,
+		PrevConnectionLen:  in.Frame.LastConnectionLen,
+		PrevScrollbackLen:  in.Frame.LastScrollbackLen,
+		PrevBannerRowOwned: frameBannerRowOwned(in.Frame),
 	}); err != nil {
 		return out, err
 	}
@@ -210,9 +220,10 @@ func RenderAttach(in AttachRenderInput) (AttachRenderOutput, error) {
 		prev != nil
 	var frame bytes.Buffer
 	if err := renderSnapshot(&frame, prev, composed, in.Cols, in.Rows, in.ForceFull, resolved, in.Cursor, topOverlayRenderOptions{
-		SkipTabBar:        skipTabBar,
-		PrevConnectionLen: in.Frame.LastConnectionLen,
-		PrevScrollbackLen: in.Frame.LastScrollbackLen,
+		SkipTabBar:         skipTabBar,
+		PrevConnectionLen:  in.Frame.LastConnectionLen,
+		PrevScrollbackLen:  in.Frame.LastScrollbackLen,
+		PrevBannerRowOwned: frameBannerRowOwned(in.Frame),
 	}); err != nil {
 		return out, err
 	}
@@ -249,7 +260,7 @@ func renderSnapshot(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int
 	if forceClear {
 		return render.SnapshotViewport(w, snap, cols, rows)
 	}
-	topRowOwned := resolved.TabBarVisible
+	topRowOwned := resolved.TabBarVisible || resolved.ConnectionVisible || resolved.LoadingVisible
 	if topRowOwned {
 		var err error
 		if prev != nil {
@@ -269,7 +280,28 @@ func renderSnapshot(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int
 		if len(overlay) == 0 {
 			return nil
 		}
+		if bannerRowOwned(resolved) {
+			var row bytes.Buffer
+			ClearRow(&row, cols, 1, resolved.State.Theme)
+			if _, err := w.Write(row.Bytes()); err != nil {
+				return err
+			}
+		}
 		_, err = w.Write(overlay)
+		return err
+	}
+	if top.PrevBannerRowOwned {
+		if err := render.SnapshotViewportNoClear(w, snap, cols, 1); err != nil {
+			return err
+		}
+		if rows > 1 {
+			if err := render.SnapshotViewportDeltaSkipTopRow(w, prev, snap, cols, rows); err != nil {
+				return err
+			}
+		}
+		var cursorBuf bytes.Buffer
+		WriteCursor(&cursorBuf, cursor)
+		_, err := w.Write(cursorBuf.Bytes())
 		return err
 	}
 	if prev != nil {
