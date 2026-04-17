@@ -1366,6 +1366,7 @@ class AppViewModel(
                             endpoint = _state.value.endpoint.trim(),
                             eventId = wall.id,
                             sender = wall.sender,
+                            sourceSessionName = wall.sourceSessionName,
                             message = wall.message,
                         )
                         viewModelScope.launch {

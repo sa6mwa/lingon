@@ -191,17 +191,18 @@ func TestRunnerShowWallKeepsModalVisibleWhenDesktopNotifierConfigured(t *testing
 	}
 
 	r.showWall(&protocolpb.Wall{
-		Sender:         "alice@relay",
-		Message:        "session-a inactive",
-		TimeoutSeconds: 5,
+		Sender:            "alice@relay",
+		Message:           "session-a inactive",
+		TimeoutSeconds:    5,
+		SourceSessionName: "build-host",
 	}, nil)
 
 	state := r.runtime().State()
 	if !state.WallVisible {
 		t.Fatalf("expected in-app wall modal to remain visible")
 	}
-	if state.WallTitle != "Broadcast from alice@relay:" {
-		t.Fatalf("WallTitle = %q, want %q", state.WallTitle, "Broadcast from alice@relay:")
+	if state.WallTitle != "Broadcast from alice@relay#build-host:" {
+		t.Fatalf("WallTitle = %q, want %q", state.WallTitle, "Broadcast from alice@relay#build-host:")
 	}
 	if state.WallMessage != "session-a inactive" {
 		t.Fatalf("WallMessage = %q, want %q", state.WallMessage, "session-a inactive")

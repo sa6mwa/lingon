@@ -104,4 +104,7 @@ func TestHandlerAppJSSurfacesWallNotificationsForEveryView(t *testing.T) {
 	if !strings.Contains(body, "showWallNotification({") {
 		t.Fatalf("expected wall poll notifications to still call showWallNotification")
 	}
+	if !strings.Contains(body, "source_session_name") {
+		t.Fatalf("expected source session names in wall notification payloads")
+	}
 }

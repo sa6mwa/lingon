@@ -710,13 +710,29 @@ function shouldSuppressWallNotification(sender, message, eventMs) {
   return false;
 }
 
+function formatWallSource(sender, sessionName) {
+  const cleanSender = String(sender || "").trim();
+  const cleanSession = String(sessionName || "").trim();
+  if (!cleanSender) {
+    return cleanSession;
+  }
+  if (!cleanSession) {
+    return cleanSender;
+  }
+  return `${cleanSender}#${cleanSession}`;
+}
+
 function showWallNotification(data) {
   if (typeof window === "undefined" || typeof Notification === "undefined") {
     return;
   }
-  const sender = data && data.sender ? String(data.sender).trim() : "";
-  const title = sender ? `Broadcast from ${sender}` : "Broadcast";
-  const body = data && data.message ? String(data.message).trim() : "";
+  const sender = formatWallSource(
+    data && data.sender ? String(data.sender) : "",
+    data && (data.source_session_name || data.sourceSessionName) ? String(data.source_session_name || data.sourceSessionName) : "",
+  );
+  const title = "Broadcast";
+  const message = data && data.message ? String(data.message).trim() : "";
+  const body = sender && message ? `${sender}: ${message}` : sender || message;
   const eventMs =
     data && data.created_at && !Number.isNaN(Date.parse(data.created_at))
       ? Date.parse(data.created_at)
@@ -2550,6 +2566,7 @@ async function pollWallEvents(generation) {
         const timeoutSeconds = Number(event.timeout_seconds) || Number(event.timeoutSeconds) || 0;
         showWallNotification({
           sender: event.sender || "",
+          source_session_name: event.session_name || "",
           message: event.message || "",
           timeoutSeconds: timeoutSeconds > 0 ? timeoutSeconds : 5,
           created_at: event.created_at || "",

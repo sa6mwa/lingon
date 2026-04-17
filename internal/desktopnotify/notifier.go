@@ -34,6 +34,22 @@ func IsInactivityWall(wall *protocolpb.Wall) bool {
 	return wall != nil && wall.GetKind() == protocolpb.WallKind_WALL_KIND_INACTIVITY
 }
 
+// FormatWallSource formats the transport sender and human session name as one label.
+func FormatWallSource(wall *protocolpb.Wall) string {
+	if wall == nil {
+		return ""
+	}
+	sender := strings.TrimSpace(wall.GetSender())
+	sessionName := strings.TrimSpace(wall.GetSourceSessionName())
+	if sender == "" {
+		return sessionName
+	}
+	if sessionName == "" {
+		return sender
+	}
+	return sender + "#" + sessionName
+}
+
 func desktopEnvLikely(getenv func(string) string) bool {
 	if getenv == nil {
 		return false

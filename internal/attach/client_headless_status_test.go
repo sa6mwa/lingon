@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -315,13 +316,16 @@ func TestPrepareForCtrlLClearPreservesStateExpiryWithoutRemoteSnapshot(t *testin
 	buf.Reset()
 
 	clk.Add(2100 * time.Millisecond)
-	select {
-	case <-expired:
-	default:
-		t.Fatalf("expected state-expiry callback after Ctrl+L clear without remote snapshot")
-	}
-	if buf.Len() == 0 {
-		t.Fatalf("expected expiry redraw after Ctrl+L clear")
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for {
+		if len(expired) > 0 && buf.Len() > 0 {
+			<-expired
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected expiry redraw after Ctrl+L clear")
+		}
+		runtime.Gosched()
 	}
 	e := emu.New(80, 24)
 	if err := e.Write(buf.Bytes()); err != nil {

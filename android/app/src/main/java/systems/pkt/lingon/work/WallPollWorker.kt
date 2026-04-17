@@ -32,6 +32,7 @@ class WallPollWorker(
                         endpoint = endpoint,
                         eventId = event.id,
                         sender = event.sender,
+                        sourceSessionName = event.sessionName ?: "",
                         message = event.message,
                     ),
                 )

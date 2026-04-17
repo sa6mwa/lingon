@@ -41,6 +41,7 @@ type wallEvent struct {
 	ID             uint64
 	Username       string
 	SessionID      string
+	SessionName    string
 	Sender         string
 	Message        string
 	TimeoutSeconds uint32
@@ -199,13 +200,20 @@ func (s *WallService) sendUserWallForSession(username, sender, message, sourceSe
 		return 0, fmt.Errorf("wall service unavailable")
 	}
 	sessions := s.store.ListSessions(username)
+	sourceSessionName := ""
+	for _, session := range sessions {
+		if session.ID == sourceSessionID {
+			sourceSessionName = strings.TrimSpace(session.Name)
+			break
+		}
+	}
 	if len(sessions) == 0 {
 		// Keep backlog entries even when no live participants are currently connected.
-		s.recordEvent(username, sourceSessionID, sender, message, s.timeoutSeconds(), kind, now)
+		s.recordEvent(username, sourceSessionID, sourceSessionName, sender, message, s.timeoutSeconds(), kind, now)
 		return 0, nil
 	}
 	timeoutSeconds := s.timeoutSeconds()
-	eventID := s.recordEvent(username, sourceSessionID, sender, message, timeoutSeconds, kind, now)
+	eventID := s.recordEvent(username, sourceSessionID, sourceSessionName, sender, message, timeoutSeconds, kind, now)
 	sent := 0
 	for _, session := range sessions {
 		if session.Status != "active" {
@@ -214,7 +222,7 @@ func (s *WallService) sendUserWallForSession(username, sender, message, sourceSe
 		if !s.hub.HasParticipants(session.ID) {
 			continue
 		}
-		frame := frameWall(session.ID, eventID, sender, message, timeoutSeconds, kind, sourceSessionID)
+		frame := frameWall(session.ID, eventID, sender, message, timeoutSeconds, kind, sourceSessionID, sourceSessionName)
 		if s.hub.BroadcastSessionFrame(context.Background(), session.ID, frame, true) {
 			sent++
 		}
@@ -352,7 +360,7 @@ func (s *WallService) pruneEventsLocked(username string, now time.Time) {
 	s.eventsByUser[username] = next
 }
 
-func (s *WallService) recordEvent(username, sourceSessionID, sender, message string, timeoutSeconds uint32, kind protocolpb.WallKind, now time.Time) uint64 {
+func (s *WallService) recordEvent(username, sourceSessionID, sourceSessionName, sender, message string, timeoutSeconds uint32, kind protocolpb.WallKind, now time.Time) uint64 {
 	if strings.TrimSpace(username) == "" {
 		return 0
 	}
@@ -367,6 +375,7 @@ func (s *WallService) recordEvent(username, sourceSessionID, sender, message str
 		ID:             s.nextEventID,
 		Username:       username,
 		SessionID:      strings.TrimSpace(sourceSessionID),
+		SessionName:    strings.TrimSpace(sourceSessionName),
 		Sender:         strings.TrimSpace(sender),
 		Message:        strings.TrimSpace(message),
 		TimeoutSeconds: timeoutSeconds,

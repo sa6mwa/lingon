@@ -156,6 +156,7 @@ message Wall {
   uint64 id = 4;
   WallKind kind = 5;
   string source_session_id = 6;
+  string source_session_name = 7;
 }
 
 message WallInactivityStatus {

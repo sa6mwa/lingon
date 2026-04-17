@@ -4,6 +4,7 @@ data class WallNotification(
     val endpoint: String = "",
     val eventId: Long = 0,
     val sender: String,
+    val sourceSessionName: String = "",
     val message: String,
 )
 

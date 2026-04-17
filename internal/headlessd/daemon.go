@@ -109,11 +109,12 @@ type wsClient struct {
 }
 
 type internalWallEvent struct {
-	SourceSessionID string              `json:"source_session_id"`
-	Sender          string              `json:"sender"`
-	Message         string              `json:"message"`
-	TimeoutSeconds  uint32              `json:"timeout_seconds"`
-	Kind            protocolpb.WallKind `json:"kind"`
+	SourceSessionID   string              `json:"source_session_id"`
+	SourceSessionName string              `json:"source_session_name"`
+	Sender            string              `json:"sender"`
+	Message           string              `json:"message"`
+	TimeoutSeconds    uint32              `json:"timeout_seconds"`
+	Kind              protocolpb.WallKind `json:"kind"`
 }
 
 // New constructs a daemon.
@@ -747,12 +748,13 @@ func (d *Daemon) routeWallEventWithSource(wall *protocolpb.Wall, sourceSessionID
 	}
 	eventID := wall.GetId()
 	out := &protocolpb.Wall{
-		Id:              eventID,
-		Sender:          strings.TrimSpace(wall.GetSender()),
-		Message:         msg,
-		TimeoutSeconds:  wall.GetTimeoutSeconds(),
-		Kind:            wall.GetKind(),
-		SourceSessionId: sourceID,
+		Id:                eventID,
+		Sender:            strings.TrimSpace(wall.GetSender()),
+		Message:           msg,
+		TimeoutSeconds:    wall.GetTimeoutSeconds(),
+		Kind:              wall.GetKind(),
+		SourceSessionId:   sourceID,
+		SourceSessionName: strings.TrimSpace(wall.GetSourceSessionName()),
 	}
 	frame := &protocolpb.Frame{
 		SessionId: sourceID,
@@ -776,11 +778,12 @@ func (d *Daemon) handleInternalWall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wall := &protocolpb.Wall{
-		Sender:          strings.TrimSpace(evt.Sender),
-		Message:         strings.TrimSpace(evt.Message),
-		TimeoutSeconds:  evt.TimeoutSeconds,
-		Kind:            evt.Kind,
-		SourceSessionId: strings.TrimSpace(evt.SourceSessionID),
+		Sender:            strings.TrimSpace(evt.Sender),
+		Message:           strings.TrimSpace(evt.Message),
+		TimeoutSeconds:    evt.TimeoutSeconds,
+		Kind:              evt.Kind,
+		SourceSessionId:   strings.TrimSpace(evt.SourceSessionID),
+		SourceSessionName: strings.TrimSpace(evt.SourceSessionName),
 	}
 	if wall.Message == "" {
 		http.Error(w, "message is required", http.StatusBadRequest)
@@ -827,11 +830,12 @@ func (d *Daemon) broadcastWallToPeers(wall *protocolpb.Wall) {
 			continue
 		}
 		evt := internalWallEvent{
-			SourceSessionID: d.sessionID,
-			Sender:          strings.TrimSpace(wall.GetSender()),
-			Message:         strings.TrimSpace(wall.GetMessage()),
-			TimeoutSeconds:  wall.GetTimeoutSeconds(),
-			Kind:            wall.GetKind(),
+			SourceSessionID:   d.sessionID,
+			SourceSessionName: strings.TrimSpace(wall.GetSourceSessionName()),
+			Sender:            strings.TrimSpace(wall.GetSender()),
+			Message:           strings.TrimSpace(wall.GetMessage()),
+			TimeoutSeconds:    wall.GetTimeoutSeconds(),
+			Kind:              wall.GetKind(),
 		}
 		_ = postInternalWallEvent(socketPath, evt)
 	}

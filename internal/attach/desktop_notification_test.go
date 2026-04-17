@@ -102,11 +102,12 @@ func TestClientHandleWallKeepsModalVisibleWhileNotifyingDesktop(t *testing.T) {
 	}
 
 	client.handleWall(&protocolpb.Wall{
-		Sender:          "alice@relay",
-		Message:         "session-a inactive",
-		TimeoutSeconds:  5,
-		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
-		SourceSessionId: "session-a",
+		Sender:            "alice@relay",
+		Message:           "session-a inactive",
+		TimeoutSeconds:    5,
+		Kind:              protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId:   "session-a",
+		SourceSessionName: "build-host",
 	})
 
 	if len(notifier.requests) != 1 {
@@ -116,8 +117,8 @@ func TestClientHandleWallKeepsModalVisibleWhileNotifyingDesktop(t *testing.T) {
 	if !state.WallVisible {
 		t.Fatalf("expected in-app wall modal to remain visible")
 	}
-	if state.WallTitle != "Broadcast from alice@relay:" {
-		t.Fatalf("WallTitle = %q, want %q", state.WallTitle, "Broadcast from alice@relay:")
+	if state.WallTitle != "Broadcast from alice@relay#build-host:" {
+		t.Fatalf("WallTitle = %q, want %q", state.WallTitle, "Broadcast from alice@relay#build-host:")
 	}
 	if state.WallMessage != "session-a inactive" {
 		t.Fatalf("WallMessage = %q, want %q", state.WallMessage, "session-a inactive")

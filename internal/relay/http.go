@@ -712,6 +712,7 @@ type wallResponse struct {
 type wallEventResponse struct {
 	ID             uint64    `json:"id"`
 	SessionID      string    `json:"session_id,omitempty"`
+	SessionName    string    `json:"session_name,omitempty"`
 	Sender         string    `json:"sender"`
 	Message        string    `json:"message"`
 	TimeoutSeconds uint32    `json:"timeout_seconds"`
@@ -869,6 +870,7 @@ func (s *HTTPServer) handleWallEvents(w http.ResponseWriter, r *http.Request) {
 		payload = append(payload, wallEventResponse{
 			ID:             event.ID,
 			SessionID:      event.SessionID,
+			SessionName:    event.SessionName,
 			Sender:         event.Sender,
 			Message:        event.Message,
 			TimeoutSeconds: event.TimeoutSeconds,

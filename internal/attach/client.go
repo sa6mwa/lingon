@@ -1475,7 +1475,7 @@ func (c *Client) handleWall(wall *protocolpb.Wall) {
 	}
 	c.notifyDesktop(wall)
 	compositor := c.ensureCompositor()
-	sender := strings.TrimSpace(wall.Sender)
+	sender := desktopnotify.FormatWallSource(wall)
 	title := "Broadcast:"
 	if sender != "" {
 		title = fmt.Sprintf("Broadcast from %s:", sender)

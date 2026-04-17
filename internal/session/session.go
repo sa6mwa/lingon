@@ -2313,7 +2313,7 @@ func (r *Runner) showWall(wall *protocolpb.Wall, stdout *os.File) {
 		return
 	}
 	ui := r.runtime()
-	sender := strings.TrimSpace(wall.Sender)
+	sender := desktopnotify.FormatWallSource(wall)
 	title := "Broadcast:"
 	if sender != "" {
 		title = fmt.Sprintf("Broadcast from %s:", sender)

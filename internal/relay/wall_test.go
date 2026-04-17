@@ -47,7 +47,7 @@ func TestWallServiceSendUserWallScopesToParticipantSessions(t *testing.T) {
 	store := NewStore()
 	hub := NewHub(nil)
 	now := time.Now().UTC()
-	store.CreateSession(Session{ID: "s1", Username: "alice", Status: "active", CreatedAt: now, LastActiveAt: now})
+	store.CreateSession(Session{ID: "s1", Username: "alice", Name: "build-host", Status: "active", CreatedAt: now, LastActiveAt: now})
 	store.CreateSession(Session{ID: "s2", Username: "alice", Status: "active", CreatedAt: now, LastActiveAt: now})
 
 	host := &fakeConn{id: "host-s1", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
@@ -76,6 +76,29 @@ func TestWallServiceSendUserWallScopesToParticipantSessions(t *testing.T) {
 	}
 	if got := host.sent[0].GetWall(); got == nil || got.GetId() == 0 {
 		t.Fatalf("expected wall frame to carry event id, got %#v", host.sent[0].GetWall())
+	}
+}
+
+func TestWallServiceSendUserWallForSessionIncludesSourceSessionName(t *testing.T) {
+	store := NewStore()
+	hub := NewHub(nil)
+	now := time.Now().UTC()
+	store.CreateSession(Session{ID: "s1", Username: "alice", Name: "build-host", Status: "active", CreatedAt: now, LastActiveAt: now})
+	host := &fakeConn{id: "host-s1", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	svc := newWallService(store, hub, nil, 5*time.Second, []time.Duration{5 * time.Minute})
+	sent, err := svc.sendUserWallForSession("alice", "alice@127.0.0.1", "hello", "s1", protocolpb.WallKind_WALL_KIND_UNSPECIFIED, now)
+	if err != nil {
+		t.Fatalf("sendUserWallForSession: %v", err)
+	}
+	if sent != 1 {
+		t.Fatalf("sent = %d, want 1", sent)
+	}
+	if got := host.sent[0].GetWall(); got == nil || got.GetSourceSessionName() != "build-host" {
+		t.Fatalf("unexpected source session name: %#v", host.sent[0].GetWall())
 	}
 }
 

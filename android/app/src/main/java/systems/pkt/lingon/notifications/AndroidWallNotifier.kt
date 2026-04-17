@@ -25,9 +25,9 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             }
         }
         ensureChannel()
-        val sender = notification.sender.trim()
         val body = notification.message.trim()
-        val title = if (sender.isNotBlank()) "Broadcast from $sender" else "Broadcast"
+        val title = "Broadcast"
+        val content = formatWallContent(notification.sender, notification.sourceSessionName, body)
         val launchIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -45,8 +45,8 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
         val notification = NotificationCompat.Builder(context, channelID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
@@ -76,4 +76,20 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
         const val channelID = "lingon_wall"
         val nextID = AtomicInteger(1000)
     }
+}
+
+internal fun formatWallSource(sender: String, sourceSessionName: String): String {
+    val cleanSender = sender.trim()
+    val cleanSession = sourceSessionName.trim()
+    if (cleanSender.isEmpty()) return cleanSession
+    if (cleanSession.isEmpty()) return cleanSender
+    return "$cleanSender#$cleanSession"
+}
+
+internal fun formatWallContent(sender: String, sourceSessionName: String, message: String): String {
+    val source = formatWallSource(sender, sourceSessionName)
+    val body = message.trim()
+    if (source.isNotEmpty() && body.isNotEmpty()) return "$source: $body"
+    if (source.isNotEmpty()) return source
+    return body
 }

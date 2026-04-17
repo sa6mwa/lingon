@@ -32,6 +32,8 @@ data class RelayWallEvent(
     val kind: Int = 0,
     @SerialName("sender")
     val sender: String = "",
+    @SerialName("session_name")
+    val sessionName: String? = null,
     @SerialName("message")
     val message: String = "",
     @SerialName("timeout_seconds")
