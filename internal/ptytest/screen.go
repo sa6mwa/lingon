@@ -280,6 +280,19 @@ func (s *PTYSession) Resize(cols, rows int) {
 	}
 }
 
+// TTYSize returns the current PTY window size reported by the slave.
+func (s *PTYSession) TTYSize() (cols, rows int) {
+	s.t.Helper()
+	if s.slave == nil {
+		return 0, 0
+	}
+	rows, cols, err := pty.Getsize(s.slave)
+	if err != nil {
+		s.t.Fatalf("pty.Getsize: %v", err)
+	}
+	return cols, rows
+}
+
 // Wait sleeps for the provided duration.
 func (s *PTYSession) Wait(d time.Duration) {
 	Advance(s.Clock(), d)

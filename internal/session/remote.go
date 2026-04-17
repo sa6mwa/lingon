@@ -725,6 +725,7 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 			SessionID:                   session.ID,
 			AccessToken:                 m.token,
 			RequestControl:              true,
+			DisableResizePropagation:    true,
 			DisableDesktopNotifications: m.disableDesktopNotifications,
 			DesktopNotifier:             m.desktopNotifier,
 			TLSDir:                      m.tlsDir,

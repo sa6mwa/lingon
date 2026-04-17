@@ -71,6 +71,9 @@ type Client struct {
 	Stdout                      io.Writer
 	Stderr                      io.Writer
 	TermSize                    func() (int, int)
+	// DisableResizePropagation treats the terminal as a camera onto the remote
+	// session and suppresses resize frames from local viewport changes.
+	DisableResizePropagation bool
 	// Clock controls time for timers and ping loops.
 	Clock clock.Clock
 	// NoHostTimeout controls how long to wait for the first snapshot before failing.
@@ -2158,12 +2161,12 @@ func (c *Client) handleResize(ctx context.Context, ws *websocket.Conn) {
 			if snap := c.getSnapshot(); snap != nil {
 				c.renderSnapshot(snap)
 			}
-			if c.isController() {
+			if !c.DisableResizePropagation && c.isController() {
 				frame := &protocolpb.Frame{Payload: &protocolpb.Frame_Resize{Resize: &protocolpb.Resize{Cols: uint32(cols), Rows: uint32(rows)}}}
 				_ = c.writeFrame(ctx, ws, frame)
 			}
 		case <-c.controlCh:
-			if !c.isController() || ws == nil {
+			if c.DisableResizePropagation || !c.isController() || ws == nil {
 				continue
 			}
 			cols, rows := c.terminalSize()

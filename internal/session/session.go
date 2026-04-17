@@ -490,7 +490,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			if r.isLocalActive() {
 				if local := r.activeLocalSession(); local != nil {
-					r.takeControlLocal(local, stdout, stdin)
+					r.takeControlLocal(local)
 				}
 			}
 			filtered := r.filterOuterOSC(buf[:n])
@@ -727,24 +727,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				if cols <= 0 || rows <= 0 {
 					continue
 				}
-				if r.isLocalActive() {
-					r.opts.Cols, r.opts.Rows = cols, rows
-					activeID, _ := r.activeSession()
-					if local := r.activeLocalSession(); local != nil {
-						if snap, err := local.Resize(cols, rows); err == nil && local.publisher != nil {
-							local.publisher.Resize(cols, rows, snap)
-						}
-					}
-					if r.scrollbackActiveFor(activeID) {
-						r.renderScrollback(stdout, stdin)
-					}
+				r.opts.Cols, r.opts.Rows = cols, rows
+				activeID, _ := r.activeSession()
+				if r.scrollbackActiveFor(activeID) {
+					r.renderScrollback(stdout, stdin)
 					continue
 				}
-				if r.remoteSessions != nil {
-					activeID, _ := r.activeSession()
-					_ = r.remoteSessions.SendResize(sigCtx, activeID, cols, rows)
-					r.remoteSessions.Render(activeID)
-				}
+				r.forceRedraw(stdout)
 			}
 		}
 	}()
@@ -2853,7 +2842,7 @@ func (r *Runner) activateLocalSession(sessionID string, stdout, stdin *os.File) 
 	} else {
 		r.updateTabs(nil)
 	}
-	r.takeControlLocal(local, stdout, stdin)
+	r.takeControlLocal(local)
 	r.forceRedraw(stdout)
 	r.stdoutMu.Lock()
 	topOverlayVisible := r.renderCache.TopOverlayVisible()
@@ -2892,10 +2881,6 @@ func (r *Runner) activateRemote(ctx context.Context, sessionID string, stdout, s
 	r.viewMu.Unlock()
 	r.updateTabs(r.remoteSessions.Sessions())
 	r.remoteSessions.RenderClear(sessionID)
-	cols, rows := termSizeAny(stdout, stdin)
-	if cols > 0 && rows > 0 {
-		_ = r.remoteSessions.SendResize(ctx, sessionID, cols, rows)
-	}
 	r.refreshTabBar(stdout)
 	// Force an immediate redraw on tab switch so stale overlays from the previous tab
 	// do not linger until the next input/frame event.
@@ -2903,7 +2888,7 @@ func (r *Runner) activateRemote(ctx context.Context, sessionID string, stdout, s
 	return nil
 }
 
-func (r *Runner) takeControlLocal(local *localSession, stdout, stdin *os.File) {
+func (r *Runner) takeControlLocal(local *localSession) {
 	if local == nil {
 		return
 	}
@@ -2911,22 +2896,6 @@ func (r *Runner) takeControlLocal(local *localSession, stdout, stdin *os.File) {
 		r.logger.Trace("session.local.take_control", "session", local.ID())
 	}
 	local.takeControl()
-	cols, rows := termSizeAny(stdout, stdin)
-	if cols <= 0 || rows <= 0 {
-		return
-	}
-	curCols, curRows := local.Size()
-	if cols == curCols && rows == curRows {
-		return
-	}
-	r.opts.Cols, r.opts.Rows = cols, rows
-	if snap, err := local.Resize(cols, rows); err == nil {
-		if local.publisher != nil {
-			local.publisher.Resize(cols, rows, snap)
-		}
-	} else if r.logger != nil {
-		r.logger.Debug("session.local.resize.failed", "err", err, "session", local.ID(), "cols", cols, "rows", rows)
-	}
 }
 
 func termSizeAny(files ...*os.File) (int, int) {

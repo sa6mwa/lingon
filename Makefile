@@ -15,7 +15,7 @@ LINGON_SEMVER ?= $(shell $(GO) run -buildvcs=true ./cmd/lingon version --semver)
 
 GOFLAGS ?=
 BUILD_FLAGS ?= -trimpath
-LD_FLAGS ?= -s -w
+LD_FLAGS ?=
 TEST_LOG ?= test.log
 
 ANDROID_DIR ?= android
