@@ -438,7 +438,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					return
 				}
 				if r.remoteSessions.IsDisabled(activeID) {
-					r.remoteSessions.RenderDisabled(activeID, stdout)
+					r.remoteSessions.RenderDisabled(activeID, r.remoteStdout(stdout))
 					return
 				}
 				r.remoteSessions.Render(activeID)
@@ -788,7 +788,7 @@ func (r *Runner) forceRedrawWithMode(stdout *os.File, forceFull bool) {
 		if r.remoteSessions != nil {
 			activeID, _ := r.activeSession()
 			if r.remoteSessions.IsDisabled(activeID) {
-				r.remoteSessions.RenderDisabled(activeID, stdout)
+				r.remoteSessions.RenderDisabled(activeID, r.remoteStdout(stdout))
 			} else {
 				r.remoteSessions.Render(activeID)
 			}
@@ -1138,6 +1138,10 @@ func (r *Runner) stdout() *os.File {
 		return r.opts.Stdout
 	}
 	return os.Stdout
+}
+
+func (r *Runner) remoteStdout(stdout *os.File) io.Writer {
+	return terminal.NewLockedWriter(stdout, &r.stdoutMu)
 }
 
 func termSize(file *os.File) (int, int) {
@@ -2871,12 +2875,12 @@ func (r *Runner) activateRemote(ctx context.Context, sessionID string, stdout, s
 	if r.remoteSessions.IsDisabled(sessionID) {
 		r.setActiveSession(sessionID, false)
 		r.updateTabs(r.remoteSessions.Sessions())
-		r.remoteSessions.Enable(ctx, sessionID, stdout)
-		r.remoteSessions.RenderDisabled(sessionID, stdout)
+		r.remoteSessions.Enable(ctx, sessionID, r.remoteStdout(stdout))
+		r.remoteSessions.RenderDisabled(sessionID, r.remoteStdout(stdout))
 		r.refreshTabBar(stdout)
 		return nil
 	}
-	_, err := r.remoteSessions.Show(ctx, sessionID, stdout)
+	_, err := r.remoteSessions.Show(ctx, sessionID, r.remoteStdout(stdout))
 	if err != nil {
 		return err
 	}

@@ -227,6 +227,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	}})
 	stdin := m.stdinReader()
 	stdout := m.stdoutWriter()
+	renderStdout := terminal.NewLockedWriter(stdout, nil)
 	termSize := m.TermSize
 	ownsStdin := m.Stdin != nil
 	defer restoreCursor(m.Clock, stdout)
@@ -896,8 +897,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		client.compositor = ui
 		if visible {
-			client.Stdout = stdout
-			client.SetStdout(stdout)
+			client.Stdout = renderStdout
+			client.SetStdout(renderStdout)
 		} else {
 			client.Stdout = io.Discard
 			client.SetStdout(io.Discard)
@@ -1218,7 +1219,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 			view.visible = true
 			view.hiddenAt = time.Time{}
-			view.client.SetStdout(stdout)
+			view.client.SetStdout(renderStdout)
 			if reconnect && view.cancel != nil {
 				reconnectAt := view.reconnectAt
 				reconnectGen := view.reconnectGen

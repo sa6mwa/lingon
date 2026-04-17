@@ -2,6 +2,7 @@ package attach_test
 
 import (
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -66,25 +67,26 @@ func TestAttachDisconnectModalDoesNotBlinkOnTabSwitchWhenServerStops(t *testing.
 
 	h.Advance(300 * time.Millisecond)
 	if sawDisconnectModal {
-		assertNoBlink(t, attachSess, "Not connected", 2*time.Second, 200*time.Millisecond)
+		assertNoDisconnectOverlayBlink(t, attachSess, 2*time.Second, 200*time.Millisecond)
 	}
 	_ = attachSessionUsable(t, attachSess)
 }
 
-func assertNoBlink(t *testing.T, sess *ptytest.PTYSession, needle string, duration, interval time.Duration) {
+func assertNoDisconnectOverlayBlink(t *testing.T, sess *ptytest.PTYSession, duration, interval time.Duration) {
 	t.Helper()
 	clk := sess.Clock()
 	deadline := ptytest.Now(clk).Add(duration)
-	seenOn := false
-	seenOff := false
+	seenOverlay := false
+	seenUnderlying := false
 	for ptytest.Now(clk).Before(deadline) {
-		if sess.Screen().Contains(needle) {
-			seenOn = true
+		row := sess.Screen().Row(0)
+		if strings.Contains(row, "Not connected") || strings.Contains(row, "Waiting for sessions") || strings.Contains(row, "no sessions available") {
+			seenOverlay = true
 		} else {
-			seenOff = true
+			seenUnderlying = true
 		}
-		if seenOn && seenOff {
-			t.Fatalf("disconnect modal blinked while switching tabs")
+		if seenOverlay && seenUnderlying {
+			t.Fatalf("disconnect overlay blinked while switching tabs; row=%q", row)
 		}
 		ptytest.Advance(clk, interval)
 	}
