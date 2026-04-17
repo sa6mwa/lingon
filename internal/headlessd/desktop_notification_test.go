@@ -2,6 +2,7 @@ package headlessd
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"pkt.systems/lingon/internal/desktopnotify"
@@ -9,12 +10,21 @@ import (
 )
 
 type recordingNotifier struct {
+	mu       sync.Mutex
 	requests []desktopnotify.Request
 }
 
 func (n *recordingNotifier) Notify(_ context.Context, req desktopnotify.Request) error {
+	n.mu.Lock()
 	n.requests = append(n.requests, req)
+	n.mu.Unlock()
 	return nil
+}
+
+func (n *recordingNotifier) count() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.requests)
 }
 
 func TestDaemonNotifyDesktopForInactivity(t *testing.T) {

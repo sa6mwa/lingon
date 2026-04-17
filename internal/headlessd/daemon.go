@@ -109,10 +109,11 @@ type wsClient struct {
 }
 
 type internalWallEvent struct {
-	SourceSessionID string `json:"source_session_id"`
-	Sender          string `json:"sender"`
-	Message         string `json:"message"`
-	TimeoutSeconds  uint32 `json:"timeout_seconds"`
+	SourceSessionID string              `json:"source_session_id"`
+	Sender          string              `json:"sender"`
+	Message         string              `json:"message"`
+	TimeoutSeconds  uint32              `json:"timeout_seconds"`
+	Kind            protocolpb.WallKind `json:"kind"`
 }
 
 // New constructs a daemon.
@@ -265,6 +266,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		Trace:                       d.opts.Trace,
 		Clock:                       d.clock,
 		DisableDesktopNotifications: d.opts.DisableDesktopNotifications,
+		DesktopNotifier:             d.desktopNotifier,
 		OnPublishFrame:              d.handlePublishedFrame,
 		OnPublishStatus:             d.handlePublishStatus,
 		OnPublishWall:               d.handlePublishWall,
@@ -777,6 +779,7 @@ func (d *Daemon) handleInternalWall(w http.ResponseWriter, r *http.Request) {
 		Sender:          strings.TrimSpace(evt.Sender),
 		Message:         strings.TrimSpace(evt.Message),
 		TimeoutSeconds:  evt.TimeoutSeconds,
+		Kind:            evt.Kind,
 		SourceSessionId: strings.TrimSpace(evt.SourceSessionID),
 	}
 	if wall.Message == "" {
@@ -828,6 +831,7 @@ func (d *Daemon) broadcastWallToPeers(wall *protocolpb.Wall) {
 			Sender:          strings.TrimSpace(wall.GetSender()),
 			Message:         strings.TrimSpace(wall.GetMessage()),
 			TimeoutSeconds:  wall.GetTimeoutSeconds(),
+			Kind:            wall.GetKind(),
 		}
 		_ = postInternalWallEvent(socketPath, evt)
 	}
@@ -1192,7 +1196,6 @@ func (d *Daemon) monitorLocalWallInactivity(ctx context.Context) {
 			Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
 			SourceSessionId: d.sessionID,
 		}
-		d.notifyDesktop(wall)
 		d.routeWallEvent(wall, true)
 		d.forwardWallToRelayAsync(wall)
 	}

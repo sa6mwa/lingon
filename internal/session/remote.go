@@ -16,6 +16,7 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/netgate"
@@ -65,47 +66,51 @@ type remoteView struct {
 }
 
 type remoteOptions struct {
-	Endpoint        string
-	Token           string
-	TokenRefresher  func(context.Context) (string, error)
-	HostnameOnly    bool
-	LocalID         string
-	LocalName       string
-	TLSDir          string
-	Insecure        bool
-	Theme           string
-	Logger          pslog.Logger
-	Compositor      *mvu.Runtime
-	TermSize        func() (int, int)
-	Clock           clock.Clock
-	InactiveTTL     time.Duration
-	RefreshInterval time.Duration
-	Gate            *netgate.Gate
-	OnSessions      func([]remoteSessionInfo)
-	OnViewClosed    func(string, error)
-	OnOverlayChange func()
+	DisableDesktopNotifications bool
+	DesktopNotifier             desktopnotify.Notifier
+	Endpoint                    string
+	Token                       string
+	TokenRefresher              func(context.Context) (string, error)
+	HostnameOnly                bool
+	LocalID                     string
+	LocalName                   string
+	TLSDir                      string
+	Insecure                    bool
+	Theme                       string
+	Logger                      pslog.Logger
+	Compositor                  *mvu.Runtime
+	TermSize                    func() (int, int)
+	Clock                       clock.Clock
+	InactiveTTL                 time.Duration
+	RefreshInterval             time.Duration
+	Gate                        *netgate.Gate
+	OnSessions                  func([]remoteSessionInfo)
+	OnViewClosed                func(string, error)
+	OnOverlayChange             func()
 }
 
 type remoteManager struct {
-	endpoint        string
-	endpointLabel   string
-	token           string
-	tokenRefresher  func(context.Context) (string, error)
-	localID         string
-	localName       string
-	tlsDir          string
-	insecure        bool
-	logger          pslog.Logger
-	compositor      *mvu.Runtime
-	themeName       string
-	termSize        func() (int, int)
-	clock           clock.Clock
-	inactiveTTL     time.Duration
-	refreshInterval time.Duration
-	onSessions      func([]remoteSessionInfo)
-	onViewClosed    func(string, error)
-	onOverlayChange func()
-	gate            *netgate.Gate
+	endpoint                    string
+	endpointLabel               string
+	token                       string
+	tokenRefresher              func(context.Context) (string, error)
+	localID                     string
+	localName                   string
+	tlsDir                      string
+	insecure                    bool
+	logger                      pslog.Logger
+	compositor                  *mvu.Runtime
+	themeName                   string
+	disableDesktopNotifications bool
+	desktopNotifier             desktopnotify.Notifier
+	termSize                    func() (int, int)
+	clock                       clock.Clock
+	inactiveTTL                 time.Duration
+	refreshInterval             time.Duration
+	onSessions                  func([]remoteSessionInfo)
+	onViewClosed                func(string, error)
+	onOverlayChange             func()
+	gate                        *netgate.Gate
 
 	mu           sync.Mutex
 	refreshMu    sync.Mutex
@@ -150,28 +155,30 @@ func newRemoteManager(opts remoteOptions) *remoteManager {
 		Theme:    theme.TUI(themeName),
 	}})
 	return &remoteManager{
-		endpoint:        opts.Endpoint,
-		endpointLabel:   config.EndpointDisplay(opts.Endpoint, opts.HostnameOnly),
-		token:           opts.Token,
-		tokenRefresher:  opts.TokenRefresher,
-		localID:         opts.LocalID,
-		localName:       opts.LocalName,
-		tlsDir:          opts.TLSDir,
-		insecure:        opts.Insecure,
-		logger:          logger,
-		compositor:      compositor,
-		themeName:       themeName,
-		termSize:        opts.TermSize,
-		clock:           clk,
-		inactiveTTL:     inactive,
-		refreshInterval: refresh,
-		gate:            opts.Gate,
-		onSessions:      opts.OnSessions,
-		onViewClosed:    opts.OnViewClosed,
-		onOverlayChange: opts.OnOverlayChange,
-		views:           make(map[string]*remoteView),
-		retained:        make(map[string]time.Time),
-		disabled:        make(map[string]bool),
+		endpoint:                    opts.Endpoint,
+		endpointLabel:               config.EndpointDisplay(opts.Endpoint, opts.HostnameOnly),
+		token:                       opts.Token,
+		tokenRefresher:              opts.TokenRefresher,
+		localID:                     opts.LocalID,
+		localName:                   opts.LocalName,
+		tlsDir:                      opts.TLSDir,
+		insecure:                    opts.Insecure,
+		logger:                      logger,
+		compositor:                  compositor,
+		themeName:                   themeName,
+		disableDesktopNotifications: opts.DisableDesktopNotifications,
+		desktopNotifier:             opts.DesktopNotifier,
+		termSize:                    opts.TermSize,
+		clock:                       clk,
+		inactiveTTL:                 inactive,
+		refreshInterval:             refresh,
+		gate:                        opts.Gate,
+		onSessions:                  opts.OnSessions,
+		onViewClosed:                opts.OnViewClosed,
+		onOverlayChange:             opts.OnOverlayChange,
+		views:                       make(map[string]*remoteView),
+		retained:                    make(map[string]time.Time),
+		disabled:                    make(map[string]bool),
 	}
 }
 
@@ -714,16 +721,18 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 			tokenRefresher = m.refreshTokenErr
 		}
 		client := &attach.Client{
-			Endpoint:       m.endpoint,
-			SessionID:      session.ID,
-			AccessToken:    m.token,
-			RequestControl: true,
-			TLSDir:         m.tlsDir,
-			TermSize:       m.termSize,
-			Theme:          m.themeName,
-			Logger:         m.logger,
-			TokenRefresher: tokenRefresher,
-			Clock:          m.clock,
+			Endpoint:                    m.endpoint,
+			SessionID:                   session.ID,
+			AccessToken:                 m.token,
+			RequestControl:              true,
+			DisableDesktopNotifications: m.disableDesktopNotifications,
+			DesktopNotifier:             m.desktopNotifier,
+			TLSDir:                      m.tlsDir,
+			TermSize:                    m.termSize,
+			Theme:                       m.themeName,
+			Logger:                      m.logger,
+			TokenRefresher:              tokenRefresher,
+			Clock:                       m.clock,
 		}
 		if seedFrom != nil {
 			client.SeedFrom(seedFrom)

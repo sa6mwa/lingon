@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -45,6 +46,14 @@ func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
 	}()
 
 	waitUntil(t, 8*time.Second, func() bool {
+		select {
+		case err := <-runErr:
+			if err != nil && err != context.Canceled {
+				t.Fatalf("daemon run: %v", err)
+			}
+			return false
+		default:
+		}
 		return headless.SocketExists(socketPath)
 	})
 
@@ -833,4 +842,170 @@ func localWallState(d *Daemon, fn func(enabled bool, after time.Duration, armed 
 	d.wallMu.Lock()
 	defer d.wallMu.Unlock()
 	return fn(d.wallEnabled, d.wallAfter, d.wallArmed, d.wallLastActivity)
+}
+
+func TestDaemonLocalWallInactivitySendsOneDesktopNotification(t *testing.T) {
+	cfgDir, err := os.MkdirTemp("", "hd-local-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cfgDir) })
+	sessionID := "hdlocal"
+	socketPath, err := headless.SocketPath(cfgDir, sessionID)
+	if err != nil {
+		t.Fatalf("SocketPath: %v", err)
+	}
+
+	notifier := &recordingNotifier{}
+	clk := clock.NewMock()
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	d := New(Options{
+		ConfigDir:               cfgDir,
+		SessionID:               sessionID,
+		Publish:                 false,
+		Clock:                   clk,
+		WallInactiveAfterLevels: []time.Duration{2 * time.Second},
+		DesktopNotifier:         notifier,
+		Logger:                  pslog.NoopLogger(),
+	})
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- d.Run(runCtx)
+	}()
+
+	waitUntil(t, 8*time.Second, func() bool {
+		return headless.SocketExists(socketPath)
+	})
+
+	if err := sendHeadlessCommand(context.Background(), socketPath, sessionID, protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY); err != nil {
+		t.Fatalf("send command enable local inactivity wall: %v", err)
+	}
+	waitUntil(t, 2*time.Second, func() bool {
+		return localWallState(d, func(enabled bool, after time.Duration, armed bool, _ time.Time) bool {
+			return enabled && armed && after == 2*time.Second
+		})
+	})
+
+	clk.Add(2500 * time.Millisecond)
+	waitUntil(t, 2*time.Second, func() bool {
+		return notifier.count() >= 1
+	})
+	if got := notifier.count(); got != 1 {
+		t.Fatalf("expected one desktop notification for local inactivity, got %d", got)
+	}
+
+	cancelRun()
+	select {
+	case err := <-runErr:
+		if err != nil && err != context.Canceled {
+			t.Fatalf("daemon run: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("daemon did not stop")
+	}
+}
+
+func TestDaemonForwardedInternalWallPreservesKindForAttachClients(t *testing.T) {
+	cfgDir, err := os.MkdirTemp("", "hd-kind-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cfgDir) })
+	sessionID := "hdkind"
+	socketPath, err := headless.SocketPath(cfgDir, sessionID)
+	if err != nil {
+		t.Fatalf("SocketPath: %v", err)
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	d := New(Options{
+		ConfigDir: cfgDir,
+		SessionID: sessionID,
+		Publish:   false,
+		Logger:    pslog.NoopLogger(),
+	})
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- d.Run(runCtx)
+	}()
+
+	waitUntil(t, 8*time.Second, func() bool {
+		select {
+		case err := <-runErr:
+			if err != nil && err != context.Canceled {
+				t.Fatalf("daemon run: %v", err)
+			}
+			return false
+		default:
+		}
+		return headless.SocketExists(socketPath)
+	})
+
+	var gotKind protocolpb.WallKind
+	var gotMessage string
+	attachClient := &attach.Client{
+		Endpoint:       "local://headless",
+		SessionID:      sessionID,
+		UnixSocket:     socketPath,
+		RequestControl: true,
+		Stdout:         io.Discard,
+		Stderr:         io.Discard,
+		NoHostTimeout:  8 * time.Second,
+		Logger:         pslog.NoopLogger(),
+		OnWall: func(wall *protocolpb.Wall) {
+			if wall == nil {
+				return
+			}
+			gotKind = wall.GetKind()
+			gotMessage = wall.GetMessage()
+		},
+	}
+	ready := make(chan struct{})
+	attachClient.OnReady = func() {
+		select {
+		case <-ready:
+		default:
+			close(ready)
+		}
+	}
+	attachCtx, cancelAttach := context.WithCancel(context.Background())
+	attachErr := make(chan error, 1)
+	go func() { attachErr <- attachClient.RunDetached(attachCtx) }()
+	select {
+	case <-ready:
+	case err := <-attachErr:
+		t.Fatalf("attach exited early: %v", err)
+	case <-time.After(8 * time.Second):
+		t.Fatalf("attach did not become ready")
+	}
+
+	if err := postInternalWallEvent(socketPath, internalWallEvent{
+		SourceSessionID: "peer-session",
+		Sender:          "peer-session",
+		Message:         "peer-session inactive",
+		TimeoutSeconds:  5,
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+	}); err != nil {
+		t.Fatalf("postInternalWallEvent: %v", err)
+	}
+	waitUntil(t, 2*time.Second, func() bool {
+		return gotKind == protocolpb.WallKind_WALL_KIND_INACTIVITY && gotMessage == "peer-session inactive"
+	})
+
+	cancelAttach()
+	select {
+	case <-attachErr:
+	case <-time.After(2 * time.Second):
+	}
+	cancelRun()
+	select {
+	case err := <-runErr:
+		if err != nil && err != context.Canceled {
+			t.Fatalf("daemon run: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("daemon did not stop")
+	}
 }
