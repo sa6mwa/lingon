@@ -316,7 +316,7 @@ func TestRenderHostSuppressTabsKeepsBaseRowWhenBannerHidden(t *testing.T) {
 	}
 }
 
-func TestRenderHostConnectionBannerOwnsTopRow(t *testing.T) {
+func TestRenderHostConnectionBannerPreservesPromptLeftOfBadge(t *testing.T) {
 	const cols, rows = 80, 8
 	snap := makeSnapshot(cols, rows, 0, 0)
 	setRow(snap, 0, "PROMPT> should stay visible")
@@ -337,8 +337,8 @@ func TestRenderHostConnectionBannerOwnsTopRow(t *testing.T) {
 		t.Fatalf("render host banner: %v", err)
 	}
 	row := renderRow(t, out.Bytes, cols, rows, 0)
-	if strings.Contains(row, "PROMPT>") {
-		t.Fatalf("expected host banner to own row 1 without prompt bleed, got %q", row)
+	if !strings.Contains(row, "PROMPT>") {
+		t.Fatalf("expected prompt to remain visible with host banner badge, got %q", row)
 	}
 	if !strings.Contains(row, "connection lost") {
 		t.Fatalf("expected banner text on top row, got %q", row)
@@ -578,8 +578,8 @@ func TestRenderHostConnectionBannerClearsStaleTopRowOnTransition(t *testing.T) {
 	if strings.Contains(row0, "STALE_TOP_ROW_TOKEN_HOST") {
 		t.Fatalf("expected stale top-row token cleared on transition, got %q", row0)
 	}
-	if strings.Contains(row0, "NEW_TOP_ROW_TOKEN_HOST") {
-		t.Fatalf("expected base top-row token hidden while reconnect banner owns row 1, got %q", row0)
+	if !strings.Contains(row0, "NEW_TOP_ROW_TOKEN_HOST") {
+		t.Fatalf("expected current base top-row token preserved with banner badge, got %q", row0)
 	}
 	if !strings.Contains(row0, "connection lost") || !strings.Contains(row0, "reconnecting") {
 		t.Fatalf("expected reconnect banner on top row, got %q", row0)

@@ -26,7 +26,7 @@ done
 	return scriptPath
 }
 
-func TestReconnectBannerOwnsRowWithoutUnderlyingTopRowBleed(t *testing.T) {
+func TestReconnectBannerPreservesUnderlyingTopRowWhileShowingReconnectStatus(t *testing.T) {
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "row1-own-reconnect",
@@ -46,8 +46,8 @@ func TestReconnectBannerOwnsRowWithoutUnderlyingTopRowBleed(t *testing.T) {
 		if !strings.Contains(row, "connection lost") && !strings.Contains(row, "reconnecting") {
 			return fmt.Errorf("expected reconnect banner on row 1, got %q", row)
 		}
-		if strings.Contains(row, "170223") || strings.Contains(row, "server exited unexpectedly") {
-			return fmt.Errorf("expected reconnect banner to own row 1 without base-row bleed, got %q", row)
+		if !strings.Contains(row, "170223") || !strings.Contains(row, "server exited unexpectedly") {
+			return fmt.Errorf("expected underlying row 1 content to remain visible beside reconnect status, got %q", row)
 		}
 		return nil
 	})

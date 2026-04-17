@@ -263,7 +263,7 @@ func TestOnlineReconnectTypingDuringCountdownDoesNotDuplicatePromptRows(t *testi
 	}
 }
 
-func TestOnlineReconnectBannerOwnsRowOne(t *testing.T) {
+func TestOnlineReconnectBannerPreservesPromptOnRowOne(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
 
 	h := newHarness(t)
@@ -301,8 +301,8 @@ func TestOnlineReconnectBannerOwnsRowOne(t *testing.T) {
 		if reconnectIdx < 0 {
 			return fmt.Errorf("expected reconnect banner on row 1, got %q", row)
 		}
-		if strings.Contains(row, "PROMPT>") {
-			return fmt.Errorf("expected reconnect banner to own row 1 without prompt bleed, got %q", row)
+		if !strings.Contains(row, "PROMPT>") {
+			return fmt.Errorf("expected prompt text preserved on row 1 while reconnect banner visible, got %q", row)
 		}
 		return nil
 	})
