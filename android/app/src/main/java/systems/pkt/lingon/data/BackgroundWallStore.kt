@@ -15,7 +15,7 @@ class BackgroundWallStore(
     private val scope: CoroutineScope,
 ) {
     val enabledFlow: Flow<Boolean> = dataStore.data.map { prefs ->
-        prefs[enabledKey] ?: false
+        prefs[enabledKey] ?: true
     }
 
     fun setEnabled(value: Boolean) {

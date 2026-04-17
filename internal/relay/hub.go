@@ -387,8 +387,10 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 		return fmt.Errorf("no host connected")
 	}
 	if frame.GetHello() != nil {
-		lastSeq := frame.GetHello().GetLastSeq()
+		hello := frame.GetHello()
+		lastSeq := hello.GetLastSeq()
 		if ok, replay := h.replaySinceLocked(state, lastSeq); ok {
+			host := state.host
 			state.replayMu.Lock()
 			h.mu.Unlock()
 			defer state.replayMu.Unlock()
@@ -398,6 +400,22 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 						h.logger.Debug("relay.client.replay.failed", "err", err)
 					}
 					return nil
+				}
+			}
+			if host != nil {
+				cols := hello.GetCols()
+				rows := hello.GetRows()
+				if cols > 0 && rows > 0 {
+					resize := &protocolpb.Frame{
+						SessionId: conn.SessionID(),
+						Payload: &protocolpb.Frame_Resize{Resize: &protocolpb.Resize{
+							Cols: cols,
+							Rows: rows,
+						}},
+					}
+					if err := host.Send(ctx, resize); err != nil && !isExpectedSendError(err) {
+						h.logger.Debug("relay.host.resize.forward.failed", "err", err)
+					}
 				}
 			}
 			return nil

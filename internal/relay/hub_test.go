@@ -317,8 +317,11 @@ func TestHubReplaysMissingFramesToReconnectingClient(t *testing.T) {
 		t.Fatalf("HandleClientFrame(hello): %v", err)
 	}
 
-	if len(host.sent) != 0 {
-		t.Fatalf("expected hello replay path to skip forwarding to host; sent=%d", len(host.sent))
+	if len(host.sent) != 1 {
+		t.Fatalf("expected replay reconnect to forward one resize to host, got %d frames", len(host.sent))
+	}
+	if got := host.sent[0].GetResize(); got == nil || got.Cols != 80 || got.Rows != 24 {
+		t.Fatalf("forwarded resize = %+v, want cols=80 rows=24", got)
 	}
 	if len(client.sent) != 1 {
 		t.Fatalf("expected 1 replay frame, got %d", len(client.sent))
