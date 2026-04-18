@@ -875,6 +875,16 @@ func (m *remoteManager) ScrollbackPage(sessionID string, delta int, viewRows int
 	m.logViewState("scrollback_page", view, nil)
 }
 
+func (m *remoteManager) ScrollbackPanX(sessionID string, delta int) bool {
+	m.mu.Lock()
+	view := m.views[sessionID]
+	m.mu.Unlock()
+	if view != nil && view.client != nil {
+		return view.client.ScrollbackPanX(delta)
+	}
+	return false
+}
+
 func (m *remoteManager) ScrollbackTop(sessionID string, viewRows int) {
 	m.mu.Lock()
 	view := m.views[sessionID]

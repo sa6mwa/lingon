@@ -70,7 +70,7 @@ func TestBuildScrollbackViewFromProtoLiveOnly(t *testing.T) {
 	live.Cursor = &protocolpb.Cursor{X: 2, Y: 2}
 	live.CursorVisible = true
 
-	out := BuildScrollbackViewFromProto(8, 3, nil, live, 0)
+	out := BuildScrollbackViewFromProto(8, 3, nil, live, 0, 0)
 	if out == nil {
 		t.Fatalf("expected output snapshot")
 	}
@@ -98,7 +98,7 @@ func TestBuildScrollbackViewFromProtoWithOffsetKeepsAnchoredCursorVisible(t *tes
 		{Runes: []uint32{'s', '1'}},
 		{Runes: []uint32{'s', '2'}},
 	}
-	out := BuildScrollbackViewFromProto(8, 2, scrollback, live, 2)
+	out := BuildScrollbackViewFromProto(8, 2, scrollback, live, 2, 0)
 	if out == nil {
 		t.Fatalf("expected output snapshot")
 	}
@@ -124,8 +124,8 @@ func TestBuildScrollbackViewFromProtoOffsetKeepsCursorAnchorStable(t *testing.T)
 		{Runes: []uint32{'s', '1'}},
 		{Runes: []uint32{'s', '2'}},
 	}
-	base := BuildScrollbackViewFromProto(8, 4, scrollback, live, 0)
-	older := BuildScrollbackViewFromProto(8, 4, scrollback, live, 1)
+	base := BuildScrollbackViewFromProto(8, 4, scrollback, live, 0, 0)
+	older := BuildScrollbackViewFromProto(8, 4, scrollback, live, 1, 0)
 	if base.Cursor == nil || older.Cursor == nil {
 		t.Fatalf("expected cursor visible in both views")
 	}
@@ -143,7 +143,7 @@ func TestBuildScrollbackViewFromProtoOffsetKeepsCursorAnchorStable(t *testing.T)
 func TestBuildScrollbackViewFromProtoDefaultsToLiveSize(t *testing.T) {
 	live := makeLiveSnapshot(6, 4)
 	writeSnapshotRow(live, 3, "last")
-	out := BuildScrollbackViewFromProto(0, 0, nil, live, 0)
+	out := BuildScrollbackViewFromProto(0, 0, nil, live, 0, 0)
 	if out == nil {
 		t.Fatalf("expected output snapshot")
 	}
@@ -174,7 +174,7 @@ func TestBuildScrollbackViewFromTerminalRows(t *testing.T) {
 		},
 	}
 
-	out := BuildScrollbackViewFromTerminal(6, 3, rows, live, 0)
+	out := BuildScrollbackViewFromTerminal(6, 3, rows, live, 0, 0)
 	if out == nil {
 		t.Fatalf("expected output snapshot")
 	}
@@ -203,7 +203,7 @@ func TestBuildScrollbackViewFromTerminalCursorMapping(t *testing.T) {
 		{Cells: []terminal.Cell{{Rune: 's'}, {Rune: '0'}}},
 		{Cells: []terminal.Cell{{Rune: 's'}, {Rune: '1'}}},
 	}
-	out := BuildScrollbackViewFromTerminal(8, 3, scrollback, live, 0)
+	out := BuildScrollbackViewFromTerminal(8, 3, scrollback, live, 0, 0)
 	if out.Cursor == nil {
 		t.Fatalf("expected cursor in output when offset == 0")
 	}
@@ -211,9 +211,18 @@ func TestBuildScrollbackViewFromTerminalCursorMapping(t *testing.T) {
 		t.Fatalf("expected anchored visible cursor at 0,0 when offset==0, got %+v visible=%v", out.Cursor, out.CursorVisible)
 	}
 
-	out = BuildScrollbackViewFromTerminal(8, 3, scrollback, live, 1)
+	out = BuildScrollbackViewFromTerminal(8, 3, scrollback, live, 1, 0)
 	if out.Cursor == nil || out.Cursor.X != 0 || out.Cursor.Y != 0 || !out.CursorVisible {
 		t.Fatalf("expected anchored visible cursor at 0,0 when offset==1, got %+v visible=%v", out.Cursor, out.CursorVisible)
+	}
+}
+
+func TestBuildScrollbackViewFromProtoSupportsHorizontalPan(t *testing.T) {
+	live := makeLiveSnapshot(12, 1)
+	writeSnapshotRow(live, 0, "0123456789ab")
+	out := BuildScrollbackViewFromProto(4, 1, nil, live, 0, 6)
+	if got := rowStringFromSnapshot(out, 0); got != "6789" {
+		t.Fatalf("expected horizontally panned live row, got %q", got)
 	}
 }
 
@@ -232,7 +241,7 @@ func TestBuildScrollbackViewFromTerminalNormalizesTrailingStyledSpaces(t *testin
 		},
 	}
 
-	out := BuildScrollbackViewFromTerminal(6, 1, rows, live, 1)
+	out := BuildScrollbackViewFromTerminal(6, 1, rows, live, 1, 0)
 	if got := rowStringFromSnapshot(out, 0); got != "a bc  " {
 		t.Fatalf("expected scrollback row content preserved, got %q", got)
 	}
@@ -262,7 +271,7 @@ func TestBuildScrollbackViewFromTerminalNormalizesTrailingStyledNULCells(t *test
 		},
 	}
 
-	out := BuildScrollbackViewFromTerminal(6, 1, rows, live, 1)
+	out := BuildScrollbackViewFromTerminal(6, 1, rows, live, 1, 0)
 	if got := rowStringFromSnapshot(out, 0); got != "a b   " {
 		t.Fatalf("expected scrollback row content preserved, got %q", got)
 	}
@@ -302,7 +311,7 @@ func TestBuildScrollbackViewFromProtoNormalizesTrailingStyledSpaces(t *testing.T
 		},
 	}
 
-	out := BuildScrollbackViewFromProto(6, 1, rows, live, 1)
+	out := BuildScrollbackViewFromProto(6, 1, rows, live, 1, 0)
 	if got := rowStringFromSnapshot(out, 0); got != "a bc  " {
 		t.Fatalf("expected scrollback row content preserved, got %q", got)
 	}
@@ -342,7 +351,7 @@ func TestBuildScrollbackViewFromProtoNormalizesTrailingStyledNULCells(t *testing
 		},
 	}
 
-	out := BuildScrollbackViewFromProto(6, 1, rows, live, 1)
+	out := BuildScrollbackViewFromProto(6, 1, rows, live, 1, 0)
 	if got := rowStringFromSnapshot(out, 0); got != "a b   " {
 		t.Fatalf("expected scrollback row content preserved, got %q", got)
 	}
@@ -358,7 +367,7 @@ func TestBuildScrollbackViewFromProtoNormalizesTrailingStyledNULCells(t *testing
 }
 
 func TestBuildScrollbackViewHandlesNilLive(t *testing.T) {
-	out := BuildScrollbackViewFromProto(10, 4, nil, nil, 0)
+	out := BuildScrollbackViewFromProto(10, 4, nil, nil, 0, 0)
 	if out == nil {
 		t.Fatalf("expected empty snapshot")
 	}

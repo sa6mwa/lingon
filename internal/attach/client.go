@@ -33,6 +33,7 @@ import (
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/retryafter"
 	"pkt.systems/lingon/internal/terminal"
@@ -960,14 +961,38 @@ func (c *Client) handleScrollback(scrollback *protocolpb.Scrollback) {
 		viewRows = config.DefaultTerminalRows
 	}
 	totalRows := c.scrollbackBuffer.Len() + c.renderCache.SnapshotRows()
-	c.scrollbackView.Normalize(totalRows, viewRows)
+	c.scrollbackView.Normalize(totalRows, viewRows, protoScrollbackContentWidthLocked(c), c.scrollbackViewCols())
 	c.scrollbackMu.Unlock()
 }
 
 func (c *Client) setScrollbackActive(active bool) {
 	c.scrollbackMu.Lock()
-	c.scrollbackView.SetActive(active)
-	c.scrollbackMu.Unlock()
+	defer c.scrollbackMu.Unlock()
+	if !active {
+		c.scrollbackView.SetActive(false)
+		return
+	}
+	snap := c.snapshotOrBlank()
+	viewCols, viewRows := c.terminalSize()
+	if viewCols <= 0 {
+		viewCols = int(snap.Cols)
+	}
+	if viewRows <= 0 {
+		viewRows = int(snap.Rows)
+	}
+	totalRows := int(snap.Rows)
+	scrollRows := []*protocolpb.ScrollbackRow(nil)
+	if c.scrollbackBuffer != nil {
+		scrollRows = c.scrollbackBuffer.Rows()
+		totalRows += len(scrollRows)
+	}
+	contentCols := protoScrollbackContentWidth(scrollRows, snap)
+	colOffset, liveOriginRow := render.ViewportOriginForSnapshot(snap, viewCols, viewRows)
+	rowOffset := int(snap.Rows) - viewRows - liveOriginRow
+	if rowOffset < 0 {
+		rowOffset = 0
+	}
+	c.scrollbackView.EnterAt(totalRows, viewRows, rowOffset, contentCols, viewCols, colOffset)
 }
 
 func (c *Client) scrollbackPage(delta int, stepRows int) bool {
@@ -977,11 +1002,26 @@ func (c *Client) scrollbackPage(delta int, stepRows int) bool {
 	if viewRows <= 0 {
 		return false
 	}
-	if c.scrollbackBuffer == nil {
-		return false
+	totalRows := c.renderCache.SnapshotRows()
+	if c.scrollbackBuffer != nil {
+		totalRows += c.scrollbackBuffer.Len()
 	}
-	totalRows := c.scrollbackBuffer.Len() + c.renderCache.SnapshotRows()
+	c.scrollbackView.Normalize(totalRows, viewRows, protoScrollbackContentWidthLocked(c), c.scrollbackViewCols())
 	return c.scrollbackView.Page(totalRows, viewRows, delta, stepRows)
+}
+
+func (c *Client) scrollbackPanX(delta int) bool {
+	c.scrollbackMu.Lock()
+	defer c.scrollbackMu.Unlock()
+	totalRows := c.renderCache.SnapshotRows()
+	if c.scrollbackBuffer != nil {
+		totalRows += c.scrollbackBuffer.Len()
+	}
+	viewRows := c.scrollbackViewRows()
+	viewCols := c.scrollbackViewCols()
+	contentCols := protoScrollbackContentWidthLocked(c)
+	c.scrollbackView.Normalize(totalRows, viewRows, contentCols, viewCols)
+	return c.scrollbackView.PanX(contentCols, viewCols, delta)
 }
 
 // ReadErr returns the first websocket read error, if any.
@@ -1140,14 +1180,16 @@ func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 		scrollRows = c.scrollbackBuffer.Rows()
 	}
 	totalRows := len(scrollRows) + int(snap.Rows)
-	c.scrollbackView.Normalize(totalRows, rows)
+	contentCols := protoScrollbackContentWidth(scrollRows, snap)
+	c.scrollbackView.Normalize(totalRows, rows, contentCols, cols)
 	scrollOffset := c.scrollbackView.Offset()
+	scrollCol := c.scrollbackView.Column()
 	scrollActive := c.scrollbackView.Active()
 	scrollbackVisible := c.scrollbackView.Visible()
 	c.scrollbackMu.Unlock()
 	viewSnap := snap
 	if scrollActive || scrollOffset > 0 {
-		viewSnap = mvu.BuildScrollbackViewFromProto(cols, rows, scrollRows, snap, scrollOffset)
+		viewSnap = mvu.BuildScrollbackViewFromProto(cols, rows, scrollRows, snap, scrollOffset, scrollCol)
 	}
 	compositor := c.ensureCompositor()
 	if scrollbackVisible {
@@ -1229,14 +1271,38 @@ func (c *Client) ScrollbackPage(delta int, viewRows int) bool {
 	return c.scrollbackPage(delta, viewRows)
 }
 
+// ScrollbackPanX adjusts horizontal pan in scrollback mode.
+func (c *Client) ScrollbackPanX(delta int) bool {
+	return c.scrollbackPanX(delta)
+}
+
 // ScrollbackTop jumps to the start of the scrollback buffer.
 func (c *Client) ScrollbackTop(viewRows int) {
-	c.scrollbackJump(maxScrollbackOffset(c, viewRows))
+	c.scrollbackMu.Lock()
+	defer c.scrollbackMu.Unlock()
+	totalRows := c.renderCache.SnapshotRows()
+	if c.scrollbackBuffer != nil {
+		totalRows += c.scrollbackBuffer.Len()
+	}
+	contentCols := protoScrollbackContentWidthLocked(c)
+	viewCols := c.scrollbackViewCols()
+	if viewRows <= 0 {
+		viewRows = c.scrollbackViewRows()
+	}
+	c.scrollbackView.Normalize(totalRows, viewRows, contentCols, viewCols)
+	c.scrollbackView.Top(totalRows, viewRows)
 }
 
 // ScrollbackBottom jumps back to the live view position.
 func (c *Client) ScrollbackBottom() {
-	c.scrollbackJump(0)
+	c.scrollbackMu.Lock()
+	defer c.scrollbackMu.Unlock()
+	totalRows := c.renderCache.SnapshotRows()
+	if c.scrollbackBuffer != nil {
+		totalRows += c.scrollbackBuffer.Len()
+	}
+	c.scrollbackView.Normalize(totalRows, c.scrollbackViewRows(), protoScrollbackContentWidthLocked(c), c.scrollbackViewCols())
+	c.scrollbackView.Bottom()
 }
 
 // ScrollbackReset exits scrollback mode and returns to live view.
@@ -1259,15 +1325,15 @@ func (c *Client) ScrollbackOffset() int {
 	return c.scrollbackView.Offset()
 }
 
-func (c *Client) scrollbackJump(offset int) {
-	c.scrollbackMu.Lock()
-	defer c.scrollbackMu.Unlock()
-	if c.scrollbackBuffer == nil {
-		c.scrollbackView.SetOffset(c.renderCache.SnapshotRows(), c.scrollbackViewRows(), offset)
-		return
+func (c *Client) scrollbackViewCols() int {
+	cols, _ := c.terminalSize()
+	if cols > 0 {
+		return cols
 	}
-	totalRows := c.scrollbackBuffer.Len() + c.renderCache.SnapshotRows()
-	c.scrollbackView.SetOffset(totalRows, c.scrollbackViewRows(), offset)
+	if c.lastSnapshot != nil && c.lastSnapshot.Cols > 0 {
+		return int(c.lastSnapshot.Cols)
+	}
+	return config.DefaultTerminalCols
 }
 
 func (c *Client) scrollbackViewRows() int {
@@ -1281,29 +1347,30 @@ func (c *Client) scrollbackViewRows() int {
 	return config.DefaultTerminalRows
 }
 
-func maxScrollbackOffset(c *Client, viewRows int) int {
-	c.scrollbackMu.RLock()
-	defer c.scrollbackMu.RUnlock()
-	return maxScrollbackOffsetLocked(c, viewRows)
+func protoScrollbackContentWidth(scrollRows []*protocolpb.ScrollbackRow, snap *protocolpb.Snapshot) int {
+	width := 0
+	if snap != nil {
+		width = int(snap.Cols)
+	}
+	for _, row := range scrollRows {
+		if row == nil {
+			continue
+		}
+		for _, candidate := range []int{len(row.Runes), len(row.Modes), len(row.Fg), len(row.Bg), len(row.Graphemes)} {
+			if candidate > width {
+				width = candidate
+			}
+		}
+	}
+	return width
 }
 
-func maxScrollbackOffsetLocked(c *Client, viewRows int) int {
-	rows := viewRows
-	if rows <= 0 {
-		rows = c.renderCache.SnapshotRows()
-	}
-	if rows <= 0 {
-		rows = config.DefaultTerminalRows
-	}
-	totalRows := c.renderCache.SnapshotRows()
+func protoScrollbackContentWidthLocked(c *Client) int {
+	var rows []*protocolpb.ScrollbackRow
 	if c.scrollbackBuffer != nil {
-		totalRows += c.scrollbackBuffer.Len()
+		rows = c.scrollbackBuffer.Rows()
 	}
-	maxOffset := totalRows - rows
-	if maxOffset < 0 {
-		return 0
-	}
-	return maxOffset
+	return protoScrollbackContentWidth(rows, c.lastSnapshot)
 }
 
 // RenderDisabled redraws the terminal in a dimmed style for deactivated views.
@@ -1946,13 +2013,21 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 						changed = c.scrollbackPage(1, 1)
 					case scrollLineDown:
 						changed = c.scrollbackPage(-1, 1)
-					case scrollFiveUp:
-						changed = c.scrollbackPage(1, 5)
-					case scrollFiveDown:
-						changed = c.scrollbackPage(-1, 5)
-					case scrollTop:
-						c.ScrollbackTop(rows)
-						changed = true
+						case scrollFiveUp:
+							changed = c.scrollbackPage(1, 5)
+						case scrollFiveDown:
+							changed = c.scrollbackPage(-1, 5)
+						case scrollLeft:
+							changed = c.scrollbackPanX(-1)
+						case scrollRight:
+							changed = c.scrollbackPanX(1)
+						case scrollFarLeft:
+							changed = c.scrollbackPanX(-5)
+						case scrollFarRight:
+							changed = c.scrollbackPanX(5)
+						case scrollTop:
+							c.ScrollbackTop(rows)
+							changed = true
 					case scrollBottom:
 						c.ScrollbackBottom()
 						changed = true

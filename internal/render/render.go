@@ -80,8 +80,8 @@ func SnapshotViewportDelta(w io.Writer, prev, snap *protocolpb.Snapshot, viewCol
 		prevCursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
-	px0, py0 := viewportOrigin(cols, rows, viewCols, viewRows, prevCursorX, prevCursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	px0, py0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, prevCursorX, prevCursorY)
 	if x0 != px0 || y0 != py0 {
 		return SnapshotViewportNoClear(w, snap, viewCols, viewRows)
 	}
@@ -191,8 +191,8 @@ func SnapshotViewportDeltaSkipTopRow(w io.Writer, prev, snap *protocolpb.Snapsho
 		prevCursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
-	px0, py0 := viewportOrigin(cols, rows, viewCols, viewRows, prevCursorX, prevCursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	px0, py0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, prevCursorX, prevCursorY)
 	if x0 != px0 || y0 != py0 {
 		return SnapshotViewportNoClearSkipTopRow(w, snap, viewCols, viewRows)
 	}
@@ -291,7 +291,7 @@ func SnapshotViewport(w io.Writer, snap *protocolpb.Snapshot, viewCols, viewRows
 		cursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 
 	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
 	if _, err := io.WriteString(w, ansiReset); err != nil {
@@ -368,7 +368,7 @@ func ViewportRow(snap *protocolpb.Snapshot, viewRow, viewCols, viewRows int) (st
 	if cursorY >= rows {
 		cursorY = rows - 1
 	}
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 	row := y0 + (viewRow - 1)
 	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
 	return buildRow(snap, row, x0, viewCols, cols, rows, defaultAttr), true
@@ -416,7 +416,7 @@ func SnapshotViewportSkipTopRow(w io.Writer, snap *protocolpb.Snapshot, viewCols
 		cursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 
 	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
 	if _, err := io.WriteString(w, ansiReset); err != nil {
@@ -498,7 +498,7 @@ func SnapshotViewportNoClear(w io.Writer, snap *protocolpb.Snapshot, viewCols, v
 		cursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 
 	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
 	if _, err := io.WriteString(w, ansiReset); err != nil {
@@ -581,7 +581,7 @@ func SnapshotViewportNoClearSkipTopRow(w io.Writer, snap *protocolpb.Snapshot, v
 		cursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 
 	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
 	if _, err := io.WriteString(w, ansiReset); err != nil {
@@ -664,7 +664,7 @@ func SnapshotViewportNoClearMaskTopRow(w io.Writer, snap *protocolpb.Snapshot, v
 		cursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 
 	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
 	if _, err := io.WriteString(w, ansiReset); err != nil {
@@ -754,8 +754,8 @@ func SnapshotViewportDeltaMaskTopRow(w io.Writer, prev, snap *protocolpb.Snapsho
 		prevCursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
-	px0, py0 := viewportOrigin(cols, rows, viewCols, viewRows, prevCursorX, prevCursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	px0, py0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, prevCursorX, prevCursorY)
 	if x0 != px0 || y0 != py0 {
 		return SnapshotViewportNoClearMaskTopRow(w, snap, viewCols, viewRows)
 	}
@@ -839,7 +839,7 @@ func SnapshotViewportDim(w io.Writer, snap *protocolpb.Snapshot, viewCols, viewR
 		cursorY = rows - 1
 	}
 
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 	dimOn := "\x1b[2m\x1b[90m"
 	dimOff := ansiReset
 
@@ -1396,7 +1396,7 @@ func ViewportCursor(snap *protocolpb.Snapshot, viewCols, viewRows int) (row, col
 	if cursorY >= rows {
 		cursorY = rows - 1
 	}
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 	if cursorX < x0 || cursorX >= x0+viewCols || cursorY < y0 || cursorY >= y0+viewRows {
 		return 0, 0, false
 	}
@@ -1431,14 +1431,17 @@ func ViewportCursorPosition(snap *protocolpb.Snapshot, viewCols, viewRows int) (
 	if cursorY >= rows {
 		cursorY = rows - 1
 	}
-	x0, y0 := viewportOrigin(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 	if cursorX < x0 || cursorX >= x0+viewCols || cursorY < y0 || cursorY >= y0+viewRows {
 		return 0, 0, false
 	}
 	return cursorY - y0 + 1, cursorX - x0 + 1, true
 }
 
-func viewportOrigin(cw, ch, vw, vh, cursorX, cursorY int) (int, int) {
+// ViewportOriginForCursor resolves the viewport origin that keeps the cursor
+// visible while preferring bottom-left alignment when the snapshot is larger
+// than the viewport.
+func ViewportOriginForCursor(cw, ch, vw, vh, cursorX, cursorY int) (int, int) {
 	x0 := 0
 	y0 := 0
 
@@ -1467,4 +1470,38 @@ func viewportOrigin(cw, ch, vw, vh, cursorX, cursorY int) (int, int) {
 		y0 = 0
 	}
 	return x0, y0
+}
+
+// ViewportOriginForSnapshot resolves the current live viewport origin for the
+// snapshot and viewport dimensions using the snapshot cursor.
+func ViewportOriginForSnapshot(snap *protocolpb.Snapshot, viewCols, viewRows int) (int, int) {
+	if snap == nil {
+		return 0, 0
+	}
+	cols := int(snap.Cols)
+	rows := int(snap.Rows)
+	if cols <= 0 || rows <= 0 {
+		return 0, 0
+	}
+	if viewCols <= 0 {
+		viewCols = cols
+	}
+	if viewRows <= 0 {
+		viewRows = rows
+	}
+	cursorX := int(snap.Cursor.GetX())
+	cursorY := int(snap.Cursor.GetY())
+	if cursorX < 0 {
+		cursorX = 0
+	}
+	if cursorY < 0 {
+		cursorY = 0
+	}
+	if cursorX >= cols {
+		cursorX = cols - 1
+	}
+	if cursorY >= rows {
+		cursorY = rows - 1
+	}
+	return ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 }

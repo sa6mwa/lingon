@@ -28,6 +28,7 @@ import (
 	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
@@ -692,6 +693,14 @@ func (r *Runner) Run(ctx context.Context) error {
 							r.scrollbackPage(1, 5, stdout, stdin)
 						case scrollFiveDown:
 							r.scrollbackPage(-1, 5, stdout, stdin)
+						case scrollLeft:
+							r.scrollbackPanX(-1, stdout, stdin)
+						case scrollRight:
+							r.scrollbackPanX(1, stdout, stdin)
+						case scrollFarLeft:
+							r.scrollbackPanX(-5, stdout, stdin)
+						case scrollFarRight:
+							r.scrollbackPanX(5, stdout, stdin)
 						case scrollTop:
 							r.scrollbackTop(rows, stdout, stdin)
 						case scrollBottom:
@@ -728,7 +737,10 @@ func (r *Runner) Run(ctx context.Context) error {
 					continue
 				}
 				r.opts.Cols, r.opts.Rows = cols, rows
-				activeID, _ := r.activeSession()
+				activeID, activeLocal := r.activeSession()
+				if activeLocal {
+					r.resizeLocalSession(r.localSession(activeID), cols, rows)
+				}
 				if r.scrollbackActiveFor(activeID) {
 					r.renderScrollback(stdout, stdin)
 					continue
@@ -808,8 +820,9 @@ func (r *Runner) forceRedrawWithMode(stdout *os.File, forceFull bool) {
 }
 
 func (r *Runner) enterScrollback(sessionID string, stdout, stdin *os.File) {
+	totalRows, contentCols, cols, rows, rowOffset, colOffset := r.currentScrollbackAnchor(sessionID, stdout, stdin)
 	r.scrollbackMu.Lock()
-	r.scrollbackView.Enter()
+	r.scrollbackView.EnterAt(totalRows, rows, rowOffset, contentCols, cols, colOffset)
 	r.scrollbackSession = sessionID
 	r.scrollbackMu.Unlock()
 
@@ -818,6 +831,69 @@ func (r *Runner) enterScrollback(sessionID string, stdout, stdin *os.File) {
 		return
 	}
 	r.renderScrollback(stdout, stdin)
+}
+
+func (r *Runner) currentScrollbackAnchor(sessionID string, stdout, stdin *os.File) (totalRows, contentCols, viewCols, viewRows, rowOffset, colOffset int) {
+	viewCols = colsForViewport(stdout, stdin, nil)
+	viewRows = rowsForViewport(stdout, stdin, nil)
+	if activeID, isLocal := r.activeSession(); activeID == sessionID && !isLocal && r.remoteSessions != nil {
+		return 0, viewCols, viewCols, viewRows, 0, 0
+	}
+	local := r.localSession(sessionID)
+	if local == nil {
+		return 0, viewCols, viewCols, viewRows, 0, 0
+	}
+	snap := local.Snapshot()
+	if snap == nil {
+		return 0, viewCols, viewCols, viewRows, 0, 0
+	}
+	if viewCols <= 0 {
+		viewCols = int(snap.Cols)
+	}
+	if viewRows <= 0 {
+		viewRows = int(snap.Rows)
+	}
+	scrollback := local.scrollbackSnapshot()
+	totalRows = len(scrollback) + int(snap.Rows)
+	contentCols = scrollbackContentWidthTerminal(scrollback, snap)
+	if contentCols <= 0 {
+		contentCols = int(snap.Cols)
+	}
+	colOffset, liveOriginRow := render.ViewportOriginForSnapshot(snap, viewCols, viewRows)
+	rowOffset = int(snap.Rows) - viewRows - liveOriginRow
+	if rowOffset < 0 {
+		rowOffset = 0
+	}
+	return totalRows, contentCols, viewCols, viewRows, rowOffset, colOffset
+}
+
+func colsForViewport(stdout, stdin *os.File, snap *protocolpb.Snapshot) int {
+	cols, _ := termSizeAny(stdout, stdin)
+	if cols <= 0 && snap != nil {
+		cols = int(snap.Cols)
+	}
+	return cols
+}
+
+func rowsForViewport(stdout, stdin *os.File, snap *protocolpb.Snapshot) int {
+	_, rows := termSizeAny(stdout, stdin)
+	if rows <= 0 && snap != nil {
+		rows = int(snap.Rows)
+	}
+	return rows
+}
+
+func scrollbackContentWidthTerminal(scrollback []terminal.ScrollbackRow, snap *protocolpb.Snapshot) int {
+	width := 0
+	if snap != nil {
+		width = int(snap.Cols)
+	}
+	for _, row := range scrollback {
+		if len(row.Cells) > width {
+			width = len(row.Cells)
+		}
+	}
+	return width
 }
 
 func (r *Runner) exitScrollback(stdout, stdin *os.File) {
@@ -868,8 +944,45 @@ func (r *Runner) scrollbackPage(delta int, stepRows int, stdout, stdin *os.File)
 		stepRows = rows
 	}
 	totalRows := len(scrollback) + int(snap.Rows)
+	contentCols := scrollbackContentWidthTerminal(scrollback, snap)
 	r.scrollbackMu.Lock()
+	r.scrollbackView.Normalize(totalRows, rows, contentCols, colsForViewport(stdout, stdin, snap))
 	changed := r.scrollbackView.Page(totalRows, rows, delta, stepRows)
+	r.scrollbackMu.Unlock()
+	if !changed {
+		return
+	}
+	r.renderScrollback(stdout, stdin)
+}
+
+func (r *Runner) scrollbackPanX(delta int, stdout, stdin *os.File) {
+	sessionID, isLocal := r.activeSession()
+	if sessionID == "" {
+		return
+	}
+	if !isLocal {
+		if r.remoteSessions != nil {
+			if r.remoteSessions.ScrollbackPanX(sessionID, delta) {
+				r.remoteSessions.Render(sessionID)
+			}
+		}
+		return
+	}
+	local := r.localSession(sessionID)
+	if local == nil {
+		return
+	}
+	snap := local.Snapshot()
+	if snap == nil {
+		return
+	}
+	scrollback := local.scrollbackSnapshot()
+	cols := colsForViewport(stdout, stdin, snap)
+	contentCols := scrollbackContentWidthTerminal(scrollback, snap)
+	totalRows := len(scrollback) + int(snap.Rows)
+	r.scrollbackMu.Lock()
+	r.scrollbackView.Normalize(totalRows, rowsForViewport(stdout, stdin, snap), contentCols, cols)
+	changed := r.scrollbackView.PanX(contentCols, cols, delta)
 	r.scrollbackMu.Unlock()
 	if !changed {
 		return
@@ -905,7 +1018,9 @@ func (r *Runner) scrollbackTop(viewRows int, stdout, stdin *os.File) {
 		return
 	}
 	totalRows := len(scrollback) + int(snap.Rows)
+	contentCols := scrollbackContentWidthTerminal(scrollback, snap)
 	r.scrollbackMu.Lock()
+	r.scrollbackView.Normalize(totalRows, viewRows, contentCols, colsForViewport(stdout, stdin, snap))
 	r.scrollbackView.Top(totalRows, viewRows)
 	r.scrollbackMu.Unlock()
 	r.renderScrollback(stdout, stdin)
@@ -938,6 +1053,7 @@ func (r *Runner) renderScrollback(stdout, stdin *os.File) {
 	r.scrollbackMu.Lock()
 	active := r.scrollbackView.Active() && r.scrollbackSession == sessionID
 	offset := r.scrollbackView.Offset()
+	colOffset := r.scrollbackView.Column()
 	r.scrollbackMu.Unlock()
 	if !active {
 		return
@@ -964,7 +1080,7 @@ func (r *Runner) renderScrollback(stdout, stdin *os.File) {
 	}
 	percent := r.scrollbackView.Percent(len(scrollback)+int(snap.Rows), rows)
 	r.runtime().ApplyAction(mvu.ScrollbackPercentAction{Visible: true, Percent: percent})
-	viewSnap := mvu.BuildScrollbackViewFromTerminal(cols, rows, scrollback, snap, offset)
+	viewSnap := mvu.BuildScrollbackViewFromTerminal(cols, rows, scrollback, snap, offset, colOffset)
 	ctx := r.runCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -2896,6 +3012,23 @@ func (r *Runner) takeControlLocal(local *localSession) {
 		r.logger.Trace("session.local.take_control", "session", local.ID())
 	}
 	local.takeControl()
+	r.resizeLocalSession(local, r.opts.Cols, r.opts.Rows)
+}
+
+func (r *Runner) resizeLocalSession(local *localSession, cols, rows int) {
+	if local == nil || cols <= 0 || rows <= 0 {
+		return
+	}
+	snap, err := local.Resize(cols, rows)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Debug("session.local.resize.failed", "err", err, "session", local.ID(), "cols", cols, "rows", rows)
+		}
+		return
+	}
+	if local.publisher != nil {
+		local.publisher.Resize(cols, rows, snap)
+	}
 }
 
 func termSizeAny(files ...*os.File) (int, int) {
