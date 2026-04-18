@@ -33,7 +33,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var frameSeq: Long = Long.MIN_VALUE
     private var hostCols: Int = 0
     private var hostRows: Int = 0
-    private var fitToViewWidth: Boolean = true
+    private var fitToViewWidth: Boolean = false
     private var viewCols: Int = 0
     private var viewRows: Int = 0
     private var zoomFactor: Float = DefaultTerminalZoom
@@ -311,7 +311,6 @@ class TerminalGridView @JvmOverloads constructor(
         cameraOffsetXPx = state.cameraOffsetXPx
         val totalRows = snapshot?.rows ?: 0
         cameraOffsetYPx = if (TerminalViewportPolicy.shouldSnapToLiveBottom(
-                fitToViewWidth = fitToViewWidth,
                 zoomFactor = zoomFactor,
                 scrollbackOffsetRows = scrollbackOffsetRows,
             )
@@ -393,15 +392,14 @@ class TerminalGridView @JvmOverloads constructor(
         val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
         val maxOffsetXPx = max(0f, (cols * scaledW) - width.toFloat())
         val maxOffsetYPx = max(0f, (rows * scaledH) - height.toFloat())
-        val zoomed = zoomFactor > DefaultTerminalZoom + zoomEpsilon
-        if (isLoading || !zoomed || scrollbackOffsetRows > 0) {
+        if (isLoading || scrollbackOffsetRows > 0) {
             cursorFollowAfterInput = false
         }
         if (snap.cursorVisible) {
             val cursorX = snap.cursorX.coerceIn(0, cols - 1)
             val cursorY = snap.cursorY.coerceIn(0, rows - 1)
             val cursorMoved = cursorX != lastCursorX || cursorY != lastCursorY
-            if (!isLoading && cursorMoved && zoomed && scrollbackOffsetRows <= 0) {
+            if (!isLoading && cursorMoved && scrollbackOffsetRows <= 0) {
                 cursorFollowAfterInput = true
             }
             lastCursorX = cursorX
@@ -413,7 +411,6 @@ class TerminalGridView @JvmOverloads constructor(
         }
         if (snap.cursorVisible && cursorFollowAfterInput) {
             val adjustedX = TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
-                zoomFactor = zoomFactor,
                 panActive = panActive,
                 scrollbackOffsetRows = scrollbackOffsetRows,
                 cameraOffsetXPx = cameraOffsetXPx,
@@ -437,8 +434,6 @@ class TerminalGridView @JvmOverloads constructor(
         val startRow = if (isLoading) {
             panOffsetRows.coerceIn(0, maxOffsetRows)
         } else if (TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = imeVisible,
-                fitToViewWidth = fitToViewWidth,
                 zoomFactor = zoomFactor,
                 panOffsetCols = panOffsetCols.coerceAtLeast(0),
                 panOffsetRows = panOffsetRows.coerceAtLeast(0),
@@ -691,7 +686,6 @@ class TerminalGridView @JvmOverloads constructor(
         val snap = snapshot
         if (snap != null && lastViewportHeightPx > 0 && lastViewportHeightPx != heightPx) {
             cameraOffsetYPx = if (TerminalViewportPolicy.shouldSnapToLiveBottom(
-                    fitToViewWidth = fitToViewWidth,
                     zoomFactor = zoomFactor,
                     scrollbackOffsetRows = scrollbackOffsetRows,
                 )

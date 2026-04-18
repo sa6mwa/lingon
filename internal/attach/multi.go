@@ -9,10 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -55,15 +53,18 @@ type MultiClient struct {
 	AllowOfflineToggle bool
 	// SessionEvents triggers immediate session-list refreshes.
 	// Intended for local transports to avoid long polling intervals.
-	SessionEvents   <-chan struct{}
-	Stdin           io.Reader
-	Stdout          io.Writer
-	Stderr          io.Writer
-	TermSize        func() (int, int)
-	ResizeEvents    <-chan struct{}
-	Logger          pslog.Logger
-	Theme           string
-	DesktopNotifier desktopnotify.Notifier
+	SessionEvents <-chan struct{}
+	Stdin         io.Reader
+	Stdout        io.Writer
+	Stderr        io.Writer
+	TermSize      func() (int, int)
+	ResizeEvents  <-chan struct{}
+	// DisableSignalResize suppresses process-global SIGWINCH handling and relies
+	// only on explicit ResizeEvents.
+	DisableSignalResize bool
+	Logger              pslog.Logger
+	Theme               string
+	DesktopNotifier     desktopnotify.Notifier
 	// AuthFile is the path to the auth state file used for refresh.
 	AuthFile string
 	// TokenRefresher returns a fresh access token when the current one is invalid.
@@ -2048,9 +2049,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 }
 
 func (m *MultiClient) handleResize(ctx context.Context, mu *sync.Mutex, views *map[string]*sessionView, activeID func() string) {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	defer signal.Stop(ch)
+	ch, stop := subscribeResizeSignals(m.DisableSignalResize)
+	defer stop()
 	resizeEvents := m.ResizeEvents
 
 	for {

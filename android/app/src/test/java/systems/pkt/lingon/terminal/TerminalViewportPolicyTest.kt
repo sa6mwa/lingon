@@ -61,11 +61,10 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `zoomed cursor follow pans horizontally to keep typing visible`() {
+    fun `cursor follow pans horizontally to keep typing visible`() {
         assertEquals(
             0f,
             TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
-                zoomFactor = DefaultTerminalZoom + 0.5f,
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 0f,
@@ -79,7 +78,6 @@ class TerminalViewportPolicyTest {
         assertEquals(
             110f,
             TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
-                zoomFactor = DefaultTerminalZoom + 0.5f,
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 0f,
@@ -93,7 +91,6 @@ class TerminalViewportPolicyTest {
         assertEquals(
             50f,
             TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
-                zoomFactor = DefaultTerminalZoom + 0.5f,
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 100f,
@@ -107,25 +104,10 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `horizontal cursor follow is disabled outside live zoomed typing mode`() {
+    fun `horizontal cursor follow is disabled while panning or in scrollback`() {
         assertEquals(
             42f,
             TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
-                zoomFactor = DefaultTerminalZoom,
-                panActive = false,
-                scrollbackOffsetRows = 0,
-                cameraOffsetXPx = 42f,
-                scaledCellWidthPx = 10f,
-                viewportWidthPx = 100,
-                totalCols = 30,
-                cursorX = 25,
-            ),
-            0.001f,
-        )
-        assertEquals(
-            42f,
-            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
-                zoomFactor = DefaultTerminalZoom + 0.5f,
                 panActive = true,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 42f,
@@ -139,7 +121,6 @@ class TerminalViewportPolicyTest {
         assertEquals(
             42f,
             TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
-                zoomFactor = DefaultTerminalZoom + 0.5f,
                 panActive = false,
                 scrollbackOffsetRows = 3,
                 cameraOffsetXPx = 42f,
@@ -156,30 +137,6 @@ class TerminalViewportPolicyTest {
     fun `auto follow disabled when not eligible`() {
         assertFalse(
             TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = false,
-                fitToViewWidth = true,
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
-            ),
-        )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = true,
-                fitToViewWidth = false,
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
-            ),
-        )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = true,
-                fitToViewWidth = true,
                 zoomFactor = DefaultTerminalZoom + 0.1f,
                 panOffsetCols = 0,
                 panOffsetRows = 0,
@@ -189,8 +146,6 @@ class TerminalViewportPolicyTest {
         )
         assertFalse(
             TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = true,
-                fitToViewWidth = true,
                 zoomFactor = DefaultTerminalZoom,
                 panOffsetCols = 1,
                 panOffsetRows = 0,
@@ -200,8 +155,6 @@ class TerminalViewportPolicyTest {
         )
         assertFalse(
             TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = true,
-                fitToViewWidth = true,
                 zoomFactor = DefaultTerminalZoom,
                 panOffsetCols = 0,
                 panOffsetRows = 1,
@@ -211,8 +164,6 @@ class TerminalViewportPolicyTest {
         )
         assertFalse(
             TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = true,
-                fitToViewWidth = true,
                 zoomFactor = DefaultTerminalZoom,
                 panOffsetCols = 0,
                 panOffsetRows = 0,
@@ -223,11 +174,9 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `auto follow enabled in normal ime constrained mode`() {
+    fun `auto follow enabled in live camera mode at default zoom`() {
         assertTrue(
             TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = true,
-                fitToViewWidth = true,
                 zoomFactor = DefaultTerminalZoom,
                 panOffsetCols = 0,
                 panOffsetRows = 0,

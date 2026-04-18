@@ -221,9 +221,6 @@ fun TerminalScreen(
                         onReload = { viewModel.manualRefresh() },
                         onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
                         onShowCertificates = { viewModel.showCertificates(true) },
-                        resizeHostEnabled = state.resizeHostEnabled,
-                        resizeHostAvailable = state.hasControl,
-                        onToggleResizeHost = { enabled -> viewModel.setResizeHostEnabled(enabled) },
                         backgroundWallEnabled = state.backgroundWallEnabled,
                         onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
                         onLogout = { viewModel.logout() },
@@ -245,7 +242,7 @@ fun TerminalScreen(
                     terminalGridView = terminalGridView,
                     onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
-                    fitToViewWidth = true,
+                    fitToViewWidth = false,
                     screenPadding = screenPadding,
                     isCompact = isCompact,
                     isLandscape = true,
@@ -290,9 +287,6 @@ fun TerminalScreen(
                     onReload = { viewModel.manualRefresh() },
                     onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
                     onShowCertificates = { viewModel.showCertificates(true) },
-                    resizeHostEnabled = state.resizeHostEnabled,
-                    resizeHostAvailable = state.hasControl,
-                    onToggleResizeHost = { enabled -> viewModel.setResizeHostEnabled(enabled) },
                     backgroundWallEnabled = state.backgroundWallEnabled,
                     onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
                     onLogout = { viewModel.logout() },
@@ -321,7 +315,7 @@ fun TerminalScreen(
                     terminalGridView = terminalGridView,
                     onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
-                    fitToViewWidth = true,
+                    fitToViewWidth = false,
                     screenPadding = screenPadding,
                     isCompact = isCompact,
                     isLandscape = false,
@@ -569,7 +563,6 @@ private fun TerminalPanel(
                     )
                     view.setOnViewSizeChanged { cols, rows ->
                         if (cols <= 0 || rows <= 0) return@setOnViewSizeChanged
-                        if (state.resizeHostEnabled && imeVisible) return@setOnViewSizeChanged
                         viewModel.updateTerminalSize(cols, rows)
                     }
                 },

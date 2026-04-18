@@ -84,9 +84,27 @@ linters:
 ## Regression discipline (mandatory)
 - Every user-reported bug must be converted into a failing regression test before the fix is merged.
 - For TUI/attach/headless flows, regressions must be real PTY integration tests (`ptytest`) that drive actual keypresses and assert observable screen/state outcomes.
+- For Android app behavior, prefer instrumentation or end-to-end verification when the bug is visible at the UI, notification, lifecycle, or relay boundary.
 - For timing-sensitive behavior, tests must use injected `clock.Clock` and explicitly advance mock time; do not rely on wall-clock sleeps or polling loops as proof of correctness.
 - A bug is not marked resolved until:
   - the new regression test fails before the fix,
   - passes after the fix,
   - and relevant existing suites still pass.
 - If a report contains multiple failure modes, add one explicit assertion per failure mode (or separate tests) so coverage is auditable.
+
+## Bug tracking and post-fix verification (mandatory)
+- Track active user-reported bugs in [BUG_TRACKER.md](BUG_TRACKER.md).
+- Add or update the tracker entry before or during investigation; do not rely on thread memory alone.
+- A bug fix is not considered trustworthy just because code was written.
+- After implementing a fix, perform an explicit review of the changed code paths and confirm they actually enforce the intended behavior.
+- Record verification evidence in the tracker entry:
+  - concrete repro steps,
+  - regression coverage added,
+  - tests or end-to-end checks run,
+  - any remaining gaps or blocked verification.
+- Use these tracker statuses consistently:
+  - `open`
+  - `in_progress`
+  - `needs_verification`
+  - `resolved`
+  - `blocked`

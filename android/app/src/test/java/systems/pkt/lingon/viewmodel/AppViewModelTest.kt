@@ -170,6 +170,33 @@ class AppViewModelTest {
     }
 
     @Test
+    fun updateTerminalSize_neverSendsResizeFrames() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                activeSessionId = "host-1",
+                hasControl = true,
+                resizeHostEnabled = true,
+                connectionState = ConnectionState.Connected,
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+
+        viewModel.setResizeHostEnabledForTesting(true)
+        viewModel.updateTerminalSize(132, 41)
+        advanceUntilIdle()
+
+        assertEquals(0, wsClient.resizeCount)
+        assertFalse(viewModel.state.value.resizeHostEnabled)
+    }
+
+    @Test
     fun selectSessionDoesNotInheritViewportResetTokenWhenSwitchingTabs() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
@@ -1843,6 +1870,7 @@ private class FakeWsClient(
     var lastConnectOptions: ConnectOptions? = null
     var lastSentBytes: ByteArray? = null
     var lastSentCommand: CommandKind? = null
+    var resizeCount: Int = 0
     var closeCount: Int = 0
     private var pendingConnect: ((WebSocket) -> Unit)? = null
     val fakeSocket: WebSocket = object : WebSocket {
@@ -1886,7 +1914,7 @@ private class FakeWsClient(
     }
 
     override fun sendResize(webSocket: WebSocket, cols: Int, rows: Int) {
-        // no-op
+        resizeCount += 1
     }
 
     override fun sendCommand(webSocket: WebSocket, kind: CommandKind) {

@@ -55,9 +55,6 @@ fun TopBar(
     onReload: () -> Unit,
     onShowShareToken: () -> Unit,
     onShowCertificates: () -> Unit,
-    resizeHostEnabled: Boolean,
-    resizeHostAvailable: Boolean,
-    onToggleResizeHost: (Boolean) -> Unit,
     backgroundWallEnabled: Boolean,
     onToggleBackgroundWall: (Boolean) -> Unit,
     onLogout: () -> Unit,
@@ -143,32 +140,6 @@ fun TopBar(
                             onDismissMenu()
                         },
                         modifier = Modifier.testTag(TestTags.CertificatesButton),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Resize host terminal") },
-                        onClick = {
-                            if (resizeHostAvailable) {
-                                onToggleResizeHost(!resizeHostEnabled)
-                                onDismissMenu()
-                            }
-                        },
-                        trailingIcon = {
-                            Switch(
-                                checked = resizeHostEnabled,
-                                onCheckedChange = if (resizeHostAvailable) {
-                                    { checked ->
-                                        onToggleResizeHost(checked)
-                                        onDismissMenu()
-                                    }
-                                } else {
-                                    null
-                                },
-                                enabled = resizeHostAvailable,
-                                modifier = Modifier.testTag(TestTags.ResizeHostToggle),
-                            )
-                        },
-                        enabled = resizeHostAvailable,
-                        modifier = Modifier.testTag(TestTags.ResizeHostMenuItem),
                     )
                     DropdownMenuItem(
                         text = { Text("Background wall notifications") },

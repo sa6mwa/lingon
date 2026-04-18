@@ -151,12 +151,20 @@ func TestAttachBurstEnterKeepsConsecutiveBashPromptNumbers(t *testing.T) {
 	}
 
 	h := newHarness(t)
-	host := h.StartHost(ptytest.HostOptions{
+	var ptyOut bytes.Buffer
+	host := startHostWithPTYRead(t, h, session.Options{
+		Endpoint:    h.Endpoint(),
+		Token:       h.AccessToken(),
+		AuthFile:    h.AuthFile(),
 		SessionID:   "prompt-burst-attach-host",
 		SessionName: "prompt-burst-attach-host",
 		Shell:       countingPromptBash(t),
 		Cols:        40,
 		Rows:        8,
+		Publish:     true,
+		OnPTYRead: func(data []byte) {
+			_, _ = ptyOut.Write(data)
+		},
 	})
 	t.Cleanup(host.Cancel)
 
@@ -179,11 +187,11 @@ func TestAttachBurstEnterKeepsConsecutiveBashPromptNumbers(t *testing.T) {
 	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
 		hostNums := promptNumbersFromScreen(host.Screen().String())
 		if len(hostNums) == 0 || hostNums[len(hostNums)-1] != 25 {
-			return fmt.Errorf("expected host to advance to prompt 25, got %v\nhost:\n%s", hostNums, host.Screen().String())
+			return fmt.Errorf("expected host to advance to prompt 25, got %v\npty=%q\nhost:\n%s", hostNums, ptyOut.String(), host.Screen().String())
 		}
 		attachNums := promptNumbersFromScreen(attach.Screen().String())
 		if len(attachNums) == 0 || attachNums[len(attachNums)-1] != 25 {
-			return fmt.Errorf("expected attach to advance to prompt 25, got %v\nattach:\n%s", attachNums, attach.Screen().String())
+			return fmt.Errorf("expected attach to advance to prompt 25, got %v\npty=%q\nattach:\n%s", attachNums, ptyOut.String(), attach.Screen().String())
 		}
 		return nil
 	})

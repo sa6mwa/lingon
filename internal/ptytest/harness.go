@@ -541,6 +541,7 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		DesktopNotifier:             desktopNotifier,
 		Trace:                       h.trace,
 		ResizeEvents:                resizeCh,
+		DisableSignalResize:         true,
 	})
 
 	go func() {
@@ -656,6 +657,7 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 		Stderr:                      io.Discard,
 		TermSize:                    size.Size,
 		ResizeEvents:                resizeCh,
+		DisableSignalResize:         true,
 		Clock:                       clk,
 		NoHostTimeout:               opts.NoHostTimeout,
 	}
@@ -785,6 +787,7 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 		Stderr:                      io.Discard,
 		TermSize:                    size.Size,
 		ResizeEvents:                resizeCh,
+		DisableSignalResize:         true,
 		AuthFile:                    opts.AuthFile,
 		AllowOfflineToggle:          opts.AllowOfflineToggle,
 		SessionSource:               opts.SessionSource,

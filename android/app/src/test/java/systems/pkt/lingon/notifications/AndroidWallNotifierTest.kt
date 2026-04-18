@@ -19,4 +19,12 @@ class AndroidWallNotifierTest {
             formatWallContent("alice@10.0.0.1", "build-host", "hello operators"),
         )
     }
+
+    @Test
+    fun formatWallBodyReturnsTrimmedMessageOnly() {
+        assertEquals(
+            "hello operators",
+            formatWallBody("  hello operators  "),
+        )
+    }
 }

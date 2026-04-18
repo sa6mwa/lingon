@@ -3,6 +3,7 @@ package session_test
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,6 +189,61 @@ func TestLocalTabActivationResizesLocalPTYToCurrentViewport(t *testing.T) {
 	}
 }
 
+func TestAttachControlResizeDoesNotResizeNonHeadlessHostPTY(t *testing.T) {
+	t.Setenv("PS1", "PROMPT> ")
+
+	shell := "/bin/sh"
+	if _, err := os.Stat("/bin/bash"); err == nil {
+		shell = "/bin/bash"
+	}
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-no-resize-host",
+		SessionName: "attach-no-resize-host",
+		Shell:       shell,
+		Cols:        120,
+		Rows:        40,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 1, 5*time.Second)
+	host.Send("echo HOST_READY\n")
+	waitForRawContains(t, host, "HOST_READY", 2*time.Second, 50*time.Millisecond, "expected host readiness marker")
+
+	attach := h.StartAttach(ptytest.AttachOptions{
+		SessionID:      "attach-no-resize-host",
+		RequestControl: true,
+		Cols:           80,
+		Rows:           24,
+	})
+	t.Cleanup(attach.Cancel)
+
+	attach.Send("printf 'ATTACH_CONTROL_READY\\n'\n")
+	if !screenContainsWithin(host, "ATTACH_CONTROL_READY", 3*time.Second) {
+		t.Fatalf("expected attach input to reach host")
+	}
+
+	attach.Send("printf 'SIZE1='; stty size; echo ' SIZE1_DONE'\n")
+	if !screenContainsWithin(host, "SIZE1_DONE", 2*time.Second) {
+		t.Fatalf("expected initial attach size marker on host")
+	}
+	if !screenContainsWithin(host, "SIZE1=40 120", 2*time.Second) {
+		t.Fatalf("expected attach control acquisition to preserve non-headless host PTY size, got:\n%s", host.Screen().String())
+	}
+
+	attach.Resize(100, 30)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	attach.Send("printf 'SIZE2='; stty size; echo ' SIZE2_DONE'\n")
+	if !screenContainsWithin(host, "SIZE2_DONE", 2*time.Second) {
+		t.Fatalf("expected post-resize attach size marker on host")
+	}
+	if !screenContainsWithin(host, "SIZE2=40 120", 2*time.Second) {
+		t.Fatalf("expected attach resize to preserve non-headless host PTY size, got:\n%s", host.Screen().String())
+	}
+}
+
 func TestHostResizePreservesWideContentAcrossShrinkAndExpand(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
 	shell := scrollbackShell(t)
@@ -275,6 +331,62 @@ func TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow(t *test
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
 		if !host.Screen().Contains("RIGHT-END") {
 			return ptytest.FormatRowDiff("host", 1, host.Screen().Row(1))
+		}
+		return nil
+	})
+}
+
+func TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput(t *testing.T) {
+	t.Setenv("PS1", "PROMPT> ")
+
+	shell := scrollbackShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-post-shrink-scrollback",
+		SessionName: "viewport-preserve-post-shrink-scrollback",
+		Shell:       shell,
+		Cols:        60,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForHost(t, h, "viewport-preserve-post-shrink-scrollback", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
+
+	host.Send("printf 'LEFT-1234567890-MID-abcdefghij-RIGHT-END\\n'\n")
+	waitForStableSeededHostOutput(t, host, "RIGHT-END", 3*time.Second)
+
+	host.Resize(20, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	host.Send("emit-lines FILL 2 20\n")
+	waitForStableSeededHostOutput(t, host, "FILL-20", 3*time.Second)
+
+	host.SendBytes([]byte{0x0c, '['})
+	advanceTestClock(h.Clock(), 120*time.Millisecond)
+	host.SendBytes([]byte("g"))
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	if !host.Screen().Contains("LEFT-") {
+		t.Fatalf("expected left edge of preserved pre-shrink row after entering scrollback, got:\n%s", host.Screen().String())
+	}
+	if host.Screen().Contains("RIGHT-END") {
+		t.Fatalf("expected right edge hidden before horizontal pan, got:\n%s", host.Screen().String())
+	}
+
+	for i := 0; i < 6; i++ {
+		host.SendBytes([]byte("L"))
+		advanceTestClock(h.Clock(), 40*time.Millisecond)
+	}
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		row := host.Screen().Row(1)
+		if !strings.Contains(row, "RIGHT-END") {
+			return fmt.Errorf("expected preserved pre-shrink right edge after horizontal pan, row=%q\nscreen:\n%s", row, host.Screen().String())
+		}
+		if strings.Contains(row, "FILL-") {
+			return fmt.Errorf("expected preserved pre-shrink row without post-shrink filler garbling, row=%q\nscreen:\n%s", row, host.Screen().String())
 		}
 		return nil
 	})

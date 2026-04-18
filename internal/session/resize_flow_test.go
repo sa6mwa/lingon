@@ -178,15 +178,16 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 	out := &lockedBuffer{}
 	size := &sizeProvider{cols: 80, rows: 24}
 	attachClient := &attach.Client{
-		Endpoint:       endpoint,
-		SessionID:      "session_test",
-		AccessToken:    access.Token,
-		RequestControl: false,
-		ClientID:       "attach1",
-		Stdin:          strings.NewReader(""),
-		Stdout:         out,
-		Stderr:         io.Discard,
-		TermSize:       size.Size,
+		Endpoint:            endpoint,
+		SessionID:           "session_test",
+		AccessToken:         access.Token,
+		RequestControl:      false,
+		ClientID:            "attach1",
+		Stdin:               strings.NewReader(""),
+		Stdout:              out,
+		Stderr:              io.Discard,
+		TermSize:            size.Size,
+		DisableSignalResize: true,
 	}
 	attachCtx, attachCancel := context.WithCancel(context.Background())
 	t.Cleanup(attachCancel)

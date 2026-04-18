@@ -28,8 +28,8 @@ import (
 	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
-	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/relayclient"
+	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/trace"
@@ -77,6 +77,9 @@ type Options struct {
 	OnSnapshot                   func(terminal.Snapshot)
 	Trace                        *trace.Writer
 	ResizeEvents                 <-chan struct{}
+	// DisableSignalResize suppresses process-global SIGWINCH handling and relies
+	// only on explicit ResizeEvents.
+	DisableSignalResize bool
 }
 
 // PublishStatusKind identifies host publish connectivity transitions.
@@ -117,6 +120,10 @@ type StatusUpdate struct {
 	Message   string
 	Duration  time.Duration
 }
+
+var (
+	lineInputPace = 50 * time.Millisecond
+)
 
 // WallInactivityToggleResult describes post-toggle wall inactivity state.
 type WallInactivityToggleResult struct {
@@ -369,9 +376,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer stopSignals()
 	r.runCtx = sigCtx
 
-	sigwinch := make(chan os.Signal, 1)
-	signal.Notify(sigwinch, syscall.SIGWINCH)
-	defer signal.Stop(sigwinch)
+	sigwinch, stopResizeSignals := subscribeResizeSignals(r.opts.DisableSignalResize)
+	defer stopResizeSignals()
 	resizeEvents := r.opts.ResizeEvents
 	if r.opts.Stdin != nil {
 		go func() {
@@ -727,7 +733,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					remainder := filtered[i+1:]
 					r.addInputPrefill(remainder)
 					if inputAllLines(remainder) {
-						r.clock.Sleep(20 * time.Millisecond)
+						r.clock.Sleep(lineInputPace)
 					}
 					break
 				}
@@ -1951,15 +1957,11 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			r.HandleSessionCommand(session.ctx, session.ID(), kind)
 		}
 		publisher.OnResize = func(cols, rows int) {
-			if cols <= 0 || rows <= 0 {
-				return
-			}
-			if session.holder() == host.HostControlID {
-				return
-			}
-			if _, err := session.Resize(cols, rows); err != nil {
-				return
-			}
+			// Non-headless local host sessions treat remote client terminal sizes
+			// purely as viewer viewport hints. They must never accept relay-driven
+			// PTY resizes from Android/attach clients.
+			_ = cols
+			_ = rows
 		}
 		publisher.OnControl = func(holderID string) {
 			if holderID == "" {
@@ -2369,7 +2371,7 @@ func (r *Runner) handleRemoteInput(session *localSession, data []byte, debug boo
 		}
 		return
 	}
-	if _, err := session.writePTY(data); err != nil {
+	if err := session.enqueueRemoteInput(data); err != nil {
 		if r.logger != nil {
 			r.logger.Debug("session.remote.input.write.failed", "err", err, "session", session.ID())
 		}

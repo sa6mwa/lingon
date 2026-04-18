@@ -248,6 +248,7 @@ func runAttachScenario(t *testing.T, sharedConfig bool) {
 		TermSize: func() (int, int) {
 			return 80, 24
 		},
+		DisableSignalResize: true,
 	}
 
 	attachCtx, attachCancel := context.WithCancel(context.Background())

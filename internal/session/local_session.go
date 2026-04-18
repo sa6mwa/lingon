@@ -51,6 +51,10 @@ type localSession struct {
 
 	snapMu   sync.RWMutex
 	snapshot *protocolpb.Snapshot
+	preserved *protocolpb.Snapshot
+	scrollMu sync.RWMutex
+	scroll   []terminal.ScrollbackRow
+	pending  []terminal.ScrollbackRow
 
 	holderMu sync.Mutex
 	holderID string
@@ -88,11 +92,15 @@ type localSession struct {
 
 	recentInputMu sync.Mutex
 	recentInput   []byte
+
+	remoteInputCh chan []byte
+	outputNotify  chan struct{}
 }
 
 var errPTYNotReady = errors.New("pty not initialized")
 
 const recentInputLimit = 512
+const remoteLineOutputTimeout = 40 * time.Millisecond
 
 func (s *localSession) recordRecentInput(data []byte) {
 	if len(data) == 0 {
@@ -121,6 +129,45 @@ func (s *localSession) recentInputSnapshot() []byte {
 	out := make([]byte, len(s.recentInput))
 	copy(out, s.recentInput)
 	return out
+}
+
+func (s *localSession) resetOutputNotify() {
+	if s == nil || s.outputNotify == nil {
+		return
+	}
+	for {
+		select {
+		case <-s.outputNotify:
+		default:
+			return
+		}
+	}
+}
+
+func (s *localSession) notifyOutput() {
+	if s == nil || s.outputNotify == nil {
+		return
+	}
+	select {
+	case s.outputNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (s *localSession) waitForOutputWall(timeout time.Duration) bool {
+	if s == nil || s.outputNotify == nil || timeout <= 0 {
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-s.ctx.Done():
+		return false
+	case <-timer.C:
+		return false
+	case <-s.outputNotify:
+		return true
+	}
 }
 
 func (s *localSession) emuAltScreenActive() (bool, bool) {
@@ -292,6 +339,8 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 		onExit:          opts.OnExit,
 		cursorQuery:     opts.CursorQuery,
 		trace:           opts.Trace,
+		remoteInputCh:   make(chan []byte, 256),
+		outputNotify:    make(chan struct{}, 1),
 	}
 	if opts.Cols > 0 && opts.Rows > 0 {
 		session.snapshot = &protocolpb.Snapshot{
@@ -301,8 +350,10 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 			Cursor:        &protocolpb.Cursor{X: 0, Y: 0},
 			CursorVisible: true,
 		}
+		session.preserved = cloneSnapshot(session.snapshot)
 	}
 	session.setOscDefaults(opts.DefaultFg, opts.DefaultBg, opts.DefaultCursor)
+	go session.runRemoteInput()
 	return session
 }
 
@@ -323,12 +374,116 @@ func (s *localSession) SetPublisher(p *host.Publisher) {
 }
 
 func (s *localSession) scrollbackSnapshot() []terminal.ScrollbackRow {
-	s.emuMu.Lock()
-	defer s.emuMu.Unlock()
-	if scrollback, ok := s.emulator.(*emu.Emulator); ok {
-		return scrollback.ScrollbackSnapshot()
+	s.scrollMu.RLock()
+	defer s.scrollMu.RUnlock()
+	if len(s.scroll) == 0 {
+		return nil
 	}
-	return nil
+	out := make([]terminal.ScrollbackRow, len(s.scroll))
+	for i, row := range s.scroll {
+		cells := make([]terminal.Cell, len(row.Cells))
+		copy(cells, row.Cells)
+		out[i] = terminal.ScrollbackRow{Cols: row.Cols, Cells: cells}
+	}
+	return out
+}
+
+func (s *localSession) appendScrollback(rows []terminal.ScrollbackRow) []terminal.ScrollbackRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	s.scrollMu.Lock()
+	defer s.scrollMu.Unlock()
+	appended := make([]terminal.ScrollbackRow, len(rows))
+	for i, row := range rows {
+		cells := make([]terminal.Cell, len(row.Cells))
+		copy(cells, row.Cells)
+		appended[i] = terminal.ScrollbackRow{Cols: row.Cols, Cells: cells}
+	}
+	s.scroll = append(s.scroll, appended...)
+	if s.scrollbackLines > 0 && len(s.scroll) > s.scrollbackLines {
+		extra := len(s.scroll) - s.scrollbackLines
+		s.scroll = append([]terminal.ScrollbackRow(nil), s.scroll[extra:]...)
+	}
+	return appended
+}
+
+func cloneScrollbackRows(rows []terminal.ScrollbackRow) []terminal.ScrollbackRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]terminal.ScrollbackRow, len(rows))
+	for i, row := range rows {
+		cells := make([]terminal.Cell, len(row.Cells))
+		copy(cells, row.Cells)
+		out[i] = terminal.ScrollbackRow{Cols: row.Cols, Cells: cells}
+	}
+	return out
+}
+
+func snapshotToScrollbackRows(snap *protocolpb.Snapshot) []terminal.ScrollbackRow {
+	if snap == nil {
+		return nil
+	}
+	cols := int(snap.GetCols())
+	rows := int(snap.GetRows())
+	if cols <= 0 || rows <= 0 {
+		return nil
+	}
+	out := make([]terminal.ScrollbackRow, 0, rows)
+	for y := 0; y < rows; y++ {
+		cells := make([]terminal.Cell, cols)
+		rowStart := y * cols
+		for x := 0; x < cols; x++ {
+			idx := rowStart + x
+			cell := terminal.Cell{}
+			if idx < len(snap.Runes) {
+				cell.Rune = rune(snap.Runes[idx])
+			}
+			if idx < len(snap.Modes) {
+				cell.Mode = int16(snap.Modes[idx])
+			}
+			if idx < len(snap.Fg) {
+				cell.FG = snap.Fg[idx]
+			}
+			if idx < len(snap.Bg) {
+				cell.BG = snap.Bg[idx]
+			}
+			if idx < len(snap.Graphemes) {
+				cell.Grapheme = snap.Graphemes[idx]
+			}
+			cells[x] = cell
+		}
+		out = append(out, terminal.ScrollbackRow{Cols: cols, Cells: cells})
+	}
+	return out
+}
+
+func (s *localSession) setPendingPreservedScrollbackFromSnapshot(snap *protocolpb.Snapshot) {
+	rows := snapshotToScrollbackRows(snap)
+	s.scrollMu.Lock()
+	s.pending = rows
+	s.scrollMu.Unlock()
+}
+
+func (s *localSession) drainScrollbackRows(drained []terminal.ScrollbackRow) []terminal.ScrollbackRow {
+	if len(drained) == 0 {
+		return nil
+	}
+	s.scrollMu.Lock()
+	defer s.scrollMu.Unlock()
+	if len(s.pending) == 0 {
+		return cloneScrollbackRows(drained)
+	}
+	replace := len(drained)
+	if replace > len(s.pending) {
+		replace = len(s.pending)
+	}
+	out := make([]terminal.ScrollbackRow, 0, len(drained))
+	out = append(out, cloneScrollbackRows(s.pending[:replace])...)
+	out = append(out, cloneScrollbackRows(drained[replace:])...)
+	s.pending = append([]terminal.ScrollbackRow(nil), s.pending[replace:]...)
+	return out
 }
 
 func (s *localSession) SetLastActive(t time.Time) {
@@ -362,6 +517,12 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	s.emuMu.Lock()
 	prevCols := s.cols
 	prevRows := s.rows
+	prevSnap := cloneSnapshot(s.Snapshot())
+	prevPreserved := cloneSnapshot(func() *protocolpb.Snapshot {
+		s.snapMu.RLock()
+		defer s.snapMu.RUnlock()
+		return s.preserved
+	}())
 	s.cols = cols
 	s.rows = rows
 	err := s.resizePTY(cols, rows)
@@ -386,13 +547,24 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	if snapErr != nil {
 		return nil, snapErr
 	}
+	if (cols < prevCols || rows < prevRows) && prevSnap != nil {
+		s.setPendingPreservedScrollbackFromSnapshot(prevSnap)
+		s.appendScrollback(hiddenRowsFromSnapshot(prevSnap, rows))
+		s.snapMu.Lock()
+		s.preserved = prevPreserved
+		s.snapshot = cropSnapshotToSize(prevSnap, cols, rows)
+		snap := s.snapshot
+		s.snapMu.Unlock()
+		return snap, nil
+	}
 	snap := s.storeResizedSnapshot(protocol.SnapshotToProto(rawSnap), prevCols, prevRows)
 	return snap, nil
 }
 
 func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
 	s.snapMu.Lock()
-	s.snapshot = mergePreservedSnapshot(s.snapshot, snap, int(snap.GetCols()), int(snap.GetRows()))
+	s.preserved = mergePreservedSnapshot(s.preserved, snap, int(snap.GetCols()), int(snap.GetRows()))
+	s.snapshot = cropSnapshotToSize(s.preserved, int(snap.GetCols()), int(snap.GetRows()))
 	stored := s.snapshot
 	s.snapMu.Unlock()
 	return stored
@@ -408,7 +580,8 @@ func (s *localSession) storeResizedSnapshot(snap *protocolpb.Snapshot, prevCols,
 		overlayRows = prevRows
 	}
 	s.snapMu.Lock()
-	s.snapshot = mergePreservedSnapshot(s.snapshot, snap, overlayCols, overlayRows)
+	s.preserved = mergePreservedSnapshot(s.preserved, snap, overlayCols, overlayRows)
+	s.snapshot = cropSnapshotToSize(s.preserved, int(snap.GetCols()), int(snap.GetRows()))
 	stored := s.snapshot
 	s.snapMu.Unlock()
 	return stored
@@ -658,6 +831,52 @@ func (s *localSession) applyVEOF(holderID string) {
 	_ = setVEOF(ttyFile, target)
 }
 
+func (s *localSession) enqueueRemoteInput(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	payload := append([]byte(nil), data...)
+	select {
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case s.remoteInputCh <- payload:
+		return nil
+	}
+}
+
+func (s *localSession) runRemoteInput() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case data := <-s.remoteInputCh:
+			s.processRemoteInput(data)
+		}
+	}
+}
+
+func (s *localSession) processRemoteInput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	if !inputAllLines(data) {
+		if _, err := s.writePTY(data); err != nil && s.logger != nil && !errors.Is(err, errPTYNotReady) && !errors.Is(err, context.Canceled) {
+			s.logger.Debug("session.remote.input.write.failed", "err", err, "session", s.id)
+		}
+		return
+	}
+	for _, b := range data {
+		s.resetOutputNotify()
+		if _, err := s.writePTY([]byte{b}); err != nil {
+			if s.logger != nil && !errors.Is(err, errPTYNotReady) && !errors.Is(err, context.Canceled) {
+				s.logger.Debug("session.remote.input.write.failed", "err", err, "session", s.id)
+			}
+			return
+		}
+		s.waitForOutputWall(remoteLineOutputTimeout)
+	}
+}
+
 func (s *localSession) closePTY() {
 	s.ptyMu.Lock()
 	ptyFile := s.pty
@@ -838,9 +1057,11 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				s.onSnapshot(rawSnap)
 			}
 			snap := s.storeSnapshot(protocol.SnapshotToProto(rawSnap))
+			scrollRows = s.appendScrollback(s.drainScrollbackRows(scrollRows))
 			if s.onOutput != nil {
 				s.onOutput(s.id, filtered, snap)
 			}
+			s.notifyOutput()
 			if s.publisher != nil {
 				if len(scrollRows) > 0 {
 					s.publisher.PublishScrollback(scrollRows, int(snap.Cols), false)
@@ -898,6 +1119,20 @@ func mergePreservedSnapshot(prev, current *protocolpb.Snapshot, overlayCols, ove
 	return out
 }
 
+func hiddenRowsFromSnapshot(snap *protocolpb.Snapshot, visibleRows int) []terminal.ScrollbackRow {
+	rows := snapshotToScrollbackRows(snap)
+	if len(rows) == 0 {
+		return nil
+	}
+	if visibleRows < 0 {
+		visibleRows = 0
+	}
+	if visibleRows >= len(rows) {
+		return nil
+	}
+	return cloneScrollbackRows(rows[visibleRows:])
+}
+
 func cloneSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
 	if snap == nil {
 		return nil
@@ -917,6 +1152,41 @@ func cloneSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
 	if snap.Cursor != nil {
 		out.Cursor = &protocolpb.Cursor{X: snap.Cursor.GetX(), Y: snap.Cursor.GetY()}
 	}
+	return out
+}
+
+func cropSnapshotToSize(snap *protocolpb.Snapshot, cols, rows int) *protocolpb.Snapshot {
+	if snap == nil {
+		return nil
+	}
+	if cols <= 0 {
+		cols = int(snap.GetCols())
+	}
+	if rows <= 0 {
+		rows = int(snap.GetRows())
+	}
+	out := blankSnapshot(cols, rows)
+	out.Mode = snap.GetMode()
+	out.Title = snap.GetTitle()
+	out.CursorVisible = snap.GetCursorVisible()
+	if snap.Cursor != nil {
+		cursorX := int(snap.Cursor.GetX())
+		cursorY := int(snap.Cursor.GetY())
+		if cols > 0 && cursorX >= cols {
+			cursorX = cols - 1
+		}
+		if rows > 0 && cursorY >= rows {
+			cursorY = rows - 1
+		}
+		if cursorX < 0 {
+			cursorX = 0
+		}
+		if cursorY < 0 {
+			cursorY = 0
+		}
+		out.Cursor = &protocolpb.Cursor{X: uint32(cursorX), Y: uint32(cursorY)}
+	}
+	copySnapshotRegion(out, snap, cols, rows)
 	return out
 }
 

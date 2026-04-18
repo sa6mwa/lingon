@@ -45,14 +45,15 @@ func TestDaemonInternalWallPreservesSourceSessionID(t *testing.T) {
 	wallFrames := make(chan routedWall, 8)
 
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnFrame: func(frame *protocolpb.Frame) {
 			if frame == nil || frame.GetWall() == nil {
 				return

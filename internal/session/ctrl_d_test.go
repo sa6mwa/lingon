@@ -151,15 +151,16 @@ func TestAttachCtrlDDoesNotExitHost(t *testing.T) {
 
 	size := &sizeProvider{cols: 80, rows: 24}
 	attachClient := &attach.Client{
-		Endpoint:       endpoint,
-		SessionID:      "session_ctrl_d",
-		AccessToken:    access.Token,
-		RequestControl: true,
-		ClientID:       "attach1",
-		Stdin:          attachIn,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		TermSize:       size.Size,
+		Endpoint:            endpoint,
+		SessionID:           "session_ctrl_d",
+		AccessToken:         access.Token,
+		RequestControl:      true,
+		ClientID:            "attach1",
+		Stdin:               attachIn,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		TermSize:            size.Size,
+		DisableSignalResize: true,
 	}
 	attachCtx, attachCancel := context.WithCancel(context.Background())
 	t.Cleanup(attachCancel)

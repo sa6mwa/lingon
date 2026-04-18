@@ -26,8 +26,9 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
         }
         ensureChannel()
         val body = notification.message.trim()
-        val title = "Broadcast"
-        val content = formatWallContent(notification.sender, notification.sourceSessionName, body)
+        val source = formatWallSource(notification.sender, notification.sourceSessionName)
+        val title = source.ifBlank { "Broadcast" }
+        val content = formatWallBody(body)
         val launchIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -86,9 +87,11 @@ internal fun formatWallSource(sender: String, sourceSessionName: String): String
     return "$cleanSender#$cleanSession"
 }
 
+internal fun formatWallBody(message: String): String = message.trim()
+
 internal fun formatWallContent(sender: String, sourceSessionName: String, message: String): String {
     val source = formatWallSource(sender, sourceSessionName)
-    val body = message.trim()
+    val body = formatWallBody(message)
     if (source.isNotEmpty() && body.isNotEmpty()) return "$source: $body"
     if (source.isNotEmpty()) return source
     return body

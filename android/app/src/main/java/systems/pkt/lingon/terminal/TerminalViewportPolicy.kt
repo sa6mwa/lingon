@@ -17,15 +17,12 @@ internal object TerminalViewportPolicy {
     }
 
     fun shouldAutoFollowCursor(
-        imeVisible: Boolean,
-        fitToViewWidth: Boolean,
         zoomFactor: Float,
         panOffsetCols: Int,
         panOffsetRows: Int,
         totalRows: Int,
         visibleRows: Int,
     ): Boolean {
-        if (!imeVisible || !fitToViewWidth) return false
         if (zoomFactor > DefaultTerminalZoom + zoomEpsilon) return false
         if (panOffsetCols != 0 || panOffsetRows != 0) return false
         if (totalRows <= 0 || visibleRows <= 0) return false
@@ -48,7 +45,6 @@ internal object TerminalViewportPolicy {
     }
 
     fun autoFollowCursorCameraOffsetX(
-        zoomFactor: Float,
         panActive: Boolean,
         scrollbackOffsetRows: Int,
         cameraOffsetXPx: Float,
@@ -57,7 +53,6 @@ internal object TerminalViewportPolicy {
         totalCols: Int,
         cursorX: Int,
     ): Float {
-        if (zoomFactor <= DefaultTerminalZoom + zoomEpsilon) return cameraOffsetXPx
         if (panActive) return cameraOffsetXPx
         if (scrollbackOffsetRows > 0) return cameraOffsetXPx
         if (scaledCellWidthPx <= 0f || viewportWidthPx <= 0 || totalCols <= 0) return cameraOffsetXPx
@@ -108,11 +103,9 @@ internal object TerminalViewportPolicy {
     }
 
     fun shouldSnapToLiveBottom(
-        fitToViewWidth: Boolean,
         zoomFactor: Float,
         scrollbackOffsetRows: Int,
     ): Boolean {
-        if (!fitToViewWidth) return false
         if (zoomFactor > DefaultTerminalZoom + zoomEpsilon) return false
         if (scrollbackOffsetRows > 0) return false
         return true

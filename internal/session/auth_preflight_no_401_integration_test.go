@@ -164,16 +164,17 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 
 	size := func() (int, int) { return 80, 24 }
 	multi := &attach.MultiClient{
-		Endpoint:        endpoint,
-		SessionID:       sessionID,
-		AccessToken:     access.Token,
-		AuthFile:        authPath,
-		RequestControl:  true,
-		Stdin:           attachInR,
-		Stdout:          attachOutW,
-		Stderr:          io.Discard,
-		TermSize:        size,
-		RefreshInterval: 200 * time.Millisecond,
+		Endpoint:            endpoint,
+		SessionID:           sessionID,
+		AccessToken:         access.Token,
+		AuthFile:            authPath,
+		RequestControl:      true,
+		Stdin:               attachInR,
+		Stdout:              attachOutW,
+		Stderr:              io.Discard,
+		TermSize:            size,
+		DisableSignalResize: true,
+		RefreshInterval:     200 * time.Millisecond,
 		BackoffPolicy: backoff.Policy{
 			Base:   50 * time.Millisecond,
 			Factor: 1.5,

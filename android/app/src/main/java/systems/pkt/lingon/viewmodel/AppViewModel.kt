@@ -105,10 +105,9 @@ class AppViewModel(
             }
         }
         viewModelScope.launch {
-            repository.resizeHostFlow.collectLatest { enabled ->
+            repository.resizeHostFlow.collectLatest { _ ->
                 if (resizeHostOverride != null) return@collectLatest
-                _state.update { it.copy(resizeHostEnabled = enabled) }
-                maybeSendResize(_state.value)
+                _state.update { it.copy(resizeHostEnabled = false) }
             }
         }
         viewModelScope.launch {
@@ -193,9 +192,8 @@ class AppViewModel(
     }
 
     fun setResizeHostEnabled(enabled: Boolean) {
-        repository.setResizeHostEnabled(enabled)
-        _state.update { it.copy(resizeHostEnabled = enabled) }
-        maybeSendResize(_state.value)
+        repository.setResizeHostEnabled(false)
+        _state.update { it.copy(resizeHostEnabled = false) }
     }
 
     fun setBackgroundWallEnabled(enabled: Boolean) {
@@ -307,8 +305,7 @@ class AppViewModel(
     @VisibleForTesting
     internal fun setResizeHostEnabledForTesting(value: Boolean) {
         resizeHostOverride = value
-        _state.update { it.copy(resizeHostEnabled = value) }
-        maybeSendResize(_state.value)
+        _state.update { it.copy(resizeHostEnabled = false) }
     }
 
     fun setCertificateError(message: String?) {
@@ -623,7 +620,6 @@ class AppViewModel(
         val current = _state.value
         if (current.terminalCols == cols && current.terminalRows == rows) return
         _state.update { it.copy(terminalCols = cols, terminalRows = rows) }
-        maybeSendResize(_state.value)
     }
 
     fun adjustScrollback(deltaRows: Int) {
@@ -1221,7 +1217,6 @@ class AppViewModel(
                         }
                         clearStatus()
                         syncWallPollingSchedule()
-                        maybeSendResize(_state.value)
                     }
                     frame.hasSnapshot() -> {
                         forceFullSnapshotOnNextConnect = false
@@ -1298,7 +1293,6 @@ class AppViewModel(
                                 lastFrameError = null,
                             )
                         }
-                        maybeSendResize(_state.value)
                     }
                     frame.hasOut() -> {
                         if (isLoggable("lingon-term", Log.DEBUG)) {
@@ -1915,17 +1909,6 @@ class AppViewModel(
                 else -> state
             }
         }
-    }
-
-    private fun maybeSendResize(state: UiState) {
-        if (!state.resizeHostEnabled || !state.hasControl) return
-        if (state.connectionState != ConnectionState.Connected) return
-        val cols = state.terminalCols
-        val rows = state.terminalRows
-        if (cols <= 0 || rows <= 0) return
-        val webSocket = ws
-        if (!socketOpen || webSocket == null) return
-        wsClient.sendResize(webSocket, cols, rows)
     }
 
     private fun setBusy(value: Boolean) {

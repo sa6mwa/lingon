@@ -1,13 +1,15 @@
 package systems.pkt.lingon
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationManager
 import android.service.notification.StatusBarNotification
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.ParcelFileDescriptor
 import android.view.KeyEvent
 import androidx.test.rule.GrantPermissionRule
-import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -370,13 +372,22 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val render = waitForTerminalRenderInfo()
+            ?: throw AssertionError("terminal view did not render visible output")
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
+        assertEquals(testConfig.hostCols, info.cols)
+        assertEquals(testConfig.hostRows, info.rows)
         if (info.viewCols <= 0 || info.viewRows <= 0) {
             throw AssertionError(
                 "terminal viewport was not measured: cols=${info.viewCols} rows=${info.viewRows}",
             )
         }
+        assertTrue(
+            "expected Android terminal to act as a camera over the host width " +
+                "(viewCols=${info.viewCols}, hostCols=${info.cols}, ink=${render.inkLeft},${render.inkTop}..${render.inkRight},${render.inkBottom})",
+            info.viewCols in 1 until info.cols,
+        )
     }
 
     @Test
@@ -386,37 +397,41 @@ class EndToEndTest {
         setResizeHostEnabled(false)
 
         attachViaShareToken(token)
+        val render = waitForTerminalRenderInfo()
+            ?: throw AssertionError("terminal view did not render visible output")
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
+        assertEquals(testConfig.hostCols, info.cols)
+        assertEquals(testConfig.hostRows, info.rows)
         if (info.viewCols <= 0 || info.viewRows <= 0) {
             throw AssertionError(
                 "terminal viewport was not measured: cols=${info.viewCols} rows=${info.viewRows}",
             )
         }
+        assertTrue(
+            "expected Android terminal to keep the share-token host width authoritative while the viewport stays narrower " +
+                "(viewCols=${info.viewCols}, hostCols=${info.cols}, ink=${render.inkLeft},${render.inkTop}..${render.inkRight},${render.inkBottom})",
+            info.viewCols in 1 until info.cols,
+        )
     }
 
     @Test
-    fun resize_toggle_does_not_block_input_without_control() {
+    fun resize_menu_absent_and_input_remains_blocked_without_control() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         setResizeHostEnabled(false)
 
         loginWithConfiguredUser()
-        waitUntilNoError(5_000) {
-            val info = readTerminalDebugInfo()
-            info != null && info.hasControl
-        }
         openMenu()
-        waitUntilNoError(5_000) { isNodeEnabled(TestTags.ResizeHostToggle) }
-        composeRule.onNodeWithTag(TestTags.ResizeHostToggle, useUnmergedTree = true).performClick()
+        composeRule.onAllNodesWithTag(TestTags.ResizeHostMenuItem, useUnmergedTree = true).assertCountEquals(0)
         composeRule.runOnIdle {
             appViewModel().setHasControlForTesting(false)
         }
-        assertTerminalResponsive(requireControl = false)
+        assertTerminalInputBlocked()
     }
 
     @Test
-    fun resize_setting_on_resizes_host_when_in_control() {
+    fun resize_setting_override_still_does_not_resize_host_when_in_control() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         setResizeHostEnabled(false)
@@ -434,15 +449,11 @@ class EndToEndTest {
                 appViewModel().updateTerminalSize(state.terminalCols, state.terminalRows)
             }
         }
-        waitUntilNoError(5_000) {
-            val info = readTerminalDebugInfo()
-            info != null && info.resizeEnabled
-        }
-        // Reset host size so later tests see the expected baseline rows/cols.
-        composeRule.runOnIdle {
-            appViewModel().updateTerminalSize(testConfig.hostCols, testConfig.hostRows)
-        }
-        setResizeHostEnabled(false)
+        val info = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info")
+        assertEquals(testConfig.hostCols, info.cols)
+        assertEquals(testConfig.hostRows, info.rows)
+        assertFalse(info.resizeEnabled)
     }
 
     @Test
@@ -457,7 +468,7 @@ class EndToEndTest {
             info != null && !info.hasControl
         }
         openMenu()
-        composeRule.onNodeWithTag(TestTags.ResizeHostMenuItem).assertIsNotEnabled()
+        composeRule.onAllNodesWithTag(TestTags.ResizeHostMenuItem, useUnmergedTree = true).assertCountEquals(0)
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
         assertTrue("view cols=${info.viewCols}", info.viewCols > 0)
@@ -847,6 +858,22 @@ class EndToEndTest {
         waitUntilNoError(15_000L) {
             activeNotifications().any { it.notification.channelId == "lingon_wall" }
         }
+        val wallNotification = activeNotifications()
+            .firstOrNull { it.notification.channelId == "lingon_wall" }
+            ?: throw AssertionError("missing lingon_wall notification")
+        val title = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        val text = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
+        assertTrue("notification title missing session label: $title", title.endsWith("#${activeSessionId()}"))
+        assertEquals("${activeSessionId()} inactive", text)
         resumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
     }
@@ -1399,6 +1426,64 @@ class EndToEndTest {
         waitUntilNoError(timeoutMs) {
             val info = readTerminalDebugInfo()
             if (info != null && predicate(info)) {
+                match = info
+                true
+            } else {
+                false
+            }
+        }
+        return match
+    }
+
+    private fun readTerminalRenderInfo(): TerminalRenderInfo? {
+        var info: TerminalRenderInfo? = null
+        composeRule.runOnIdle {
+            val terminalView = findTerminalView() as? systems.pkt.lingon.terminal.TerminalGridView
+                ?: return@runOnIdle
+            val width = terminalView.width
+            val height = terminalView.height
+            if (width <= 0 || height <= 0) return@runOnIdle
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            try {
+                terminalView.draw(Canvas(bitmap))
+                val bgColor = bitmap.getPixel((width - 1).coerceAtLeast(0), (height - 1).coerceAtLeast(0))
+                var left = width
+                var top = height
+                var right = -1
+                var bottom = -1
+                for (y in 0 until height) {
+                    for (x in 0 until width) {
+                        if (bitmap.getPixel(x, y) == bgColor) continue
+                        if (x < left) left = x
+                        if (y < top) top = y
+                        if (x > right) right = x
+                        if (y > bottom) bottom = y
+                    }
+                }
+                info = if (right >= left && bottom >= top) {
+                    TerminalRenderInfo(
+                        widthPx = width,
+                        heightPx = height,
+                        inkLeft = left,
+                        inkTop = top,
+                        inkRight = right,
+                        inkBottom = bottom,
+                    )
+                } else {
+                    null
+                }
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        return info
+    }
+
+    private fun waitForTerminalRenderInfo(timeoutMs: Long = SHORT_UI_TIMEOUT_MS): TerminalRenderInfo? {
+        var match: TerminalRenderInfo? = null
+        waitUntilNoError(timeoutMs) {
+            val info = readTerminalRenderInfo()
+            if (info != null) {
                 match = info
                 true
             } else {
@@ -2101,5 +2186,14 @@ class EndToEndTest {
         val visibleStartRow: Int,
         val visibleEndRowExclusive: Int,
         val zoomFactor: Float,
+    )
+
+    data class TerminalRenderInfo(
+        val widthPx: Int,
+        val heightPx: Int,
+        val inkLeft: Int,
+        val inkTop: Int,
+        val inkRight: Int,
+        val inkBottom: Int,
     )
 }

@@ -33,8 +33,8 @@ import (
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/protocolpb"
-	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/relayclient"
+	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/retryafter"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
@@ -76,6 +76,9 @@ type Client struct {
 	// DisableResizePropagation treats the terminal as a camera onto the remote
 	// session and suppresses resize frames from local viewport changes.
 	DisableResizePropagation bool
+	// DisableSignalResize suppresses process-global SIGWINCH handling and relies
+	// only on explicit ResizeEvents.
+	DisableSignalResize bool
 	// Clock controls time for timers and ping loops.
 	Clock clock.Clock
 	// NoHostTimeout controls how long to wait for the first snapshot before failing.
@@ -1984,29 +1987,28 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				}
 				return true
 			}
-				if len(out) > 0 {
-					if c.isViewOnly() {
-						c.showViewOnlyBanner(c.viewOnlyMessage())
-						pending = pending[:0]
-						return true
+			if len(out) > 0 {
+				if c.isViewOnly() {
+					c.showViewOnlyBanner(c.viewOnlyMessage())
+					pending = pending[:0]
+					return true
 				}
-					if len(out) == 1 && out[0] == 0x0c {
-						c.PrepareForCtrlLClear()
-					}
-					pending = append(pending, out...)
-					if inputEndsLineAttach(out) {
-						if !flushPending() {
-							return false
-						}
+				if len(out) == 1 && out[0] == 0x0c {
+					c.PrepareForCtrlLClear()
+				}
+				pending = append(pending, out...)
+				if inputEndsLineAttach(out) {
+					if !flushPending() {
+						return false
 					}
 				}
+			}
 			return true
 		}
-			filtered := make([]byte, 0, 8)
-			stopInput := false
-			for _, b := range data {
-				if c.ScrollbackActive() {
-					cmd := scrollState.feed(b)
+		filtered := make([]byte, 0, 8)
+		for _, b := range data {
+			if c.ScrollbackActive() {
+				cmd := scrollState.feed(b)
 				if cmd == scrollExit {
 					c.setScrollbackActive(false)
 					c.renderCurrent()
@@ -2028,21 +2030,21 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 						changed = c.scrollbackPage(1, 1)
 					case scrollLineDown:
 						changed = c.scrollbackPage(-1, 1)
-						case scrollFiveUp:
-							changed = c.scrollbackPage(1, 5)
-						case scrollFiveDown:
-							changed = c.scrollbackPage(-1, 5)
-						case scrollLeft:
-							changed = c.scrollbackPanX(-1)
-						case scrollRight:
-							changed = c.scrollbackPanX(1)
-						case scrollFarLeft:
-							changed = c.scrollbackPanX(-5)
-						case scrollFarRight:
-							changed = c.scrollbackPanX(5)
-						case scrollTop:
-							c.ScrollbackTop(rows)
-							changed = true
+					case scrollFiveUp:
+						changed = c.scrollbackPage(1, 5)
+					case scrollFiveDown:
+						changed = c.scrollbackPage(-1, 5)
+					case scrollLeft:
+						changed = c.scrollbackPanX(-1)
+					case scrollRight:
+						changed = c.scrollbackPanX(1)
+					case scrollFarLeft:
+						changed = c.scrollbackPanX(-5)
+					case scrollFarRight:
+						changed = c.scrollbackPanX(5)
+					case scrollTop:
+						c.ScrollbackTop(rows)
+						changed = true
 					case scrollBottom:
 						c.ScrollbackBottom()
 						changed = true
@@ -2058,25 +2060,13 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				continue
 			}
 			filtered = filterMouseByte(&mouseFilter, b, filtered)
-				for i, fb := range filtered {
-					if !processNormalByte(fb) {
-						return
-					}
-					if isLineByteAttach(fb) && i+1 < len(filtered) {
-						remainder := filtered[i+1:]
-						prefill = append(prefill, remainder...)
-						if inputAllLinesAttach(remainder) {
-							c.clock().Sleep(20 * time.Millisecond)
-						}
-						stopInput = true
-						break
-					}
-				}
-				filtered = filtered[:0]
-				if stopInput {
-					break
+			for _, fb := range filtered {
+				if !processNormalByte(fb) {
+					return
 				}
 			}
+			filtered = filtered[:0]
+		}
 		if !flushPending() {
 			return
 		}
@@ -2089,22 +2079,6 @@ func inputEndsLineAttach(data []byte) bool {
 	}
 	last := data[len(data)-1]
 	return last == '\r' || last == '\n'
-}
-
-func inputAllLinesAttach(data []byte) bool {
-	if len(data) == 0 {
-		return false
-	}
-	for _, b := range data {
-		if b != '\r' && b != '\n' {
-			return false
-		}
-	}
-	return true
-}
-
-func isLineByteAttach(b byte) bool {
-	return b == '\r' || b == '\n'
 }
 
 func writeAll(clk clock.Clock, w io.Writer, data []byte) error {
@@ -2275,9 +2249,8 @@ func shouldReportCloseReason(reason string) bool {
 }
 
 func (c *Client) handleResize(ctx context.Context, ws *websocket.Conn) {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	defer signal.Stop(ch)
+	ch, stop := subscribeResizeSignals(c.DisableSignalResize)
+	defer stop()
 	resizeEvents := c.ResizeEvents
 
 	for {

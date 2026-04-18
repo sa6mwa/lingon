@@ -59,14 +59,15 @@ func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
 
 	var out bytes.Buffer
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         &out,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              &out,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 	}
 	ready := make(chan struct{})
 	attachClient.OnReady = func() {
@@ -272,14 +273,15 @@ func TestDaemonReplaysPublishStatusToNewAttachClient(t *testing.T) {
 
 	var out bytes.Buffer
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         &out,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              &out,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 	}
 	ready := make(chan struct{})
 	attachClient.OnReady = func() {
@@ -353,14 +355,15 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	var out bytes.Buffer
 	var wallCount atomic.Int32
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         &out,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              &out,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnWall: func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
@@ -521,14 +524,15 @@ func TestDaemonModeSwitchDisablesLocalAndRelayWallInactivity(t *testing.T) {
 
 	var wallCount atomic.Int32
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnWall: func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
@@ -700,14 +704,15 @@ func TestDaemonOfflineInactivityWallPropagatesToRelay(t *testing.T) {
 
 	var localWallCount atomic.Int32
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnWall: func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
@@ -771,14 +776,15 @@ func TestDaemonOfflineInactivityWallPropagatesToRelay(t *testing.T) {
 
 func sendHeadlessCommand(ctx context.Context, socketPath, sessionID string, kind protocolpb.CommandKind) error {
 	client := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  5 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       5 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -946,14 +952,15 @@ func TestDaemonForwardedInternalWallPreservesKindForAttachClients(t *testing.T) 
 	var gotKind protocolpb.WallKind
 	var gotMessage string
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnWall: func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
