@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -138,6 +137,7 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 	ptyOut := &lockedBuffer{}
 	frameOut := &lockedBuffer{}
 	snapOut := &lockedBuffer{}
+	resizeCh := make(chan struct{}, 1)
 	runner := New(Options{
 		Endpoint:   endpoint,
 		Token:      access.Token,
@@ -163,6 +163,7 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 				_, _ = snapOut.Write([]byte("two"))
 			}
 		},
+		ResizeEvents: resizeCh,
 	})
 
 	runErr := make(chan error, 1)
@@ -196,7 +197,10 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 	_ = pty.Setsize(stdoutMaster, &pty.Winsize{Cols: 100, Rows: 30})
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
+	select {
+	case resizeCh <- struct{}{}:
+	default:
+	}
 
 	if !waitForOutput(t, out, "two") {
 		t.Fatalf("attach missing 'two'; attach=%q pty=%q frames=%q snaps=%q", out.String(), ptyOut.String(), frameOut.String(), snapOut.String())

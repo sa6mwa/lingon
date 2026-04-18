@@ -360,6 +360,8 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 		return nil, fmt.Errorf("invalid size")
 	}
 	s.emuMu.Lock()
+	prevCols := s.cols
+	prevRows := s.rows
 	s.cols = cols
 	s.rows = rows
 	err := s.resizePTY(cols, rows)
@@ -384,15 +386,32 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	if snapErr != nil {
 		return nil, snapErr
 	}
-	snap := protocol.SnapshotToProto(rawSnap)
-	s.storeSnapshot(snap)
+	snap := s.storeResizedSnapshot(protocol.SnapshotToProto(rawSnap), prevCols, prevRows)
 	return snap, nil
 }
 
-func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot) {
+func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
 	s.snapMu.Lock()
-	s.snapshot = snap
+	s.snapshot = mergePreservedSnapshot(s.snapshot, snap, int(snap.GetCols()), int(snap.GetRows()))
+	stored := s.snapshot
 	s.snapMu.Unlock()
+	return stored
+}
+
+func (s *localSession) storeResizedSnapshot(snap *protocolpb.Snapshot, prevCols, prevRows int) *protocolpb.Snapshot {
+	overlayCols := int(snap.GetCols())
+	overlayRows := int(snap.GetRows())
+	if prevCols > 0 && overlayCols > prevCols {
+		overlayCols = prevCols
+	}
+	if prevRows > 0 && overlayRows > prevRows {
+		overlayRows = prevRows
+	}
+	s.snapMu.Lock()
+	s.snapshot = mergePreservedSnapshot(s.snapshot, snap, overlayCols, overlayRows)
+	stored := s.snapshot
+	s.snapMu.Unlock()
+	return stored
 }
 
 func (s *localSession) RespawnEnabled() bool {
@@ -818,8 +837,7 @@ func (s *localSession) runOnce(ctx context.Context) error {
 			if s.onSnapshot != nil {
 				s.onSnapshot(rawSnap)
 			}
-			snap := protocol.SnapshotToProto(rawSnap)
-			s.storeSnapshot(snap)
+			snap := s.storeSnapshot(protocol.SnapshotToProto(rawSnap))
 			if s.onOutput != nil {
 				s.onOutput(s.id, filtered, snap)
 			}
@@ -846,6 +864,143 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func mergePreservedSnapshot(prev, current *protocolpb.Snapshot, overlayCols, overlayRows int) *protocolpb.Snapshot {
+	if current == nil {
+		return cloneSnapshot(prev)
+	}
+	if prev == nil {
+		return cloneSnapshot(current)
+	}
+	prevAlt := prev.GetMode()&terminal.SnapshotModeAltScreen != 0
+	currAlt := current.GetMode()&terminal.SnapshotModeAltScreen != 0
+	if prevAlt != currAlt {
+		return cloneSnapshot(current)
+	}
+
+	prevCols := int(prev.GetCols())
+	prevRows := int(prev.GetRows())
+	currCols := int(current.GetCols())
+	currRows := int(current.GetRows())
+	outCols := maxInt(prevCols, currCols)
+	outRows := maxInt(prevRows, currRows)
+	out := blankSnapshot(outCols, outRows)
+	out.Mode = current.GetMode()
+	out.Title = current.GetTitle()
+	out.CursorVisible = current.GetCursorVisible()
+	if current.Cursor != nil {
+		out.Cursor = &protocolpb.Cursor{X: current.Cursor.GetX(), Y: current.Cursor.GetY()}
+	}
+
+	copySnapshotRegion(out, prev, int(prev.GetCols()), int(prev.GetRows()))
+	copySnapshotRegion(out, current, overlayCols, overlayRows)
+	return out
+}
+
+func cloneSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
+	if snap == nil {
+		return nil
+	}
+	out := &protocolpb.Snapshot{
+		Cols:          snap.GetCols(),
+		Rows:          snap.GetRows(),
+		Runes:         append([]uint32(nil), snap.GetRunes()...),
+		Modes:         append([]int32(nil), snap.GetModes()...),
+		Fg:            append([]uint32(nil), snap.GetFg()...),
+		Bg:            append([]uint32(nil), snap.GetBg()...),
+		CursorVisible: snap.GetCursorVisible(),
+		Mode:          snap.GetMode(),
+		Title:         snap.GetTitle(),
+		Graphemes:     append([]string(nil), snap.GetGraphemes()...),
+	}
+	if snap.Cursor != nil {
+		out.Cursor = &protocolpb.Cursor{X: snap.Cursor.GetX(), Y: snap.Cursor.GetY()}
+	}
+	return out
+}
+
+func blankSnapshot(cols, rows int) *protocolpb.Snapshot {
+	if cols <= 0 {
+		cols = 1
+	}
+	if rows <= 0 {
+		rows = 1
+	}
+	size := cols * rows
+	return &protocolpb.Snapshot{
+		Cols:  uint32(cols),
+		Rows:  uint32(rows),
+		Runes: make([]uint32, size),
+		Modes: make([]int32, size),
+		Fg:    make([]uint32, size),
+		Bg:    make([]uint32, size),
+	}
+}
+
+func copySnapshotRegion(dst, src *protocolpb.Snapshot, limitCols, limitRows int) {
+	if dst == nil || src == nil {
+		return
+	}
+	dstCols := int(dst.GetCols())
+	dstRows := int(dst.GetRows())
+	srcCols := int(src.GetCols())
+	srcRows := int(src.GetRows())
+	rows := minInt(dstRows, srcRows)
+	cols := minInt(dstCols, srcCols)
+	if limitRows > 0 && rows > limitRows {
+		rows = limitRows
+	}
+	if limitCols > 0 && cols > limitCols {
+		cols = limitCols
+	}
+	if rows <= 0 || cols <= 0 {
+		return
+	}
+	if len(src.GetGraphemes()) > 0 && len(dst.Graphemes) == 0 {
+		dst.Graphemes = make([]string, dstCols*dstRows)
+	}
+	for y := 0; y < rows; y++ {
+		srcRow := y * srcCols
+		dstRow := y * dstCols
+		for x := 0; x < cols; x++ {
+			srcIdx := srcRow + x
+			dstIdx := dstRow + x
+			if srcIdx < len(src.Runes) {
+				dst.Runes[dstIdx] = src.Runes[srcIdx]
+			}
+			if srcIdx < len(src.Modes) {
+				dst.Modes[dstIdx] = src.Modes[srcIdx]
+			}
+			if srcIdx < len(src.Fg) {
+				dst.Fg[dstIdx] = src.Fg[srcIdx]
+			}
+			if srcIdx < len(src.Bg) {
+				dst.Bg[dstIdx] = src.Bg[srcIdx]
+			}
+			if len(dst.Graphemes) > 0 {
+				if srcIdx < len(src.Graphemes) {
+					dst.Graphemes[dstIdx] = src.Graphemes[srcIdx]
+				} else {
+					dst.Graphemes[dstIdx] = ""
+				}
+			}
+		}
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snapshot) {

@@ -3,7 +3,6 @@ package attach_test
 import (
 	"fmt"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -154,7 +153,6 @@ func TestAttachResizeDoesNotClearScreen(t *testing.T) {
 
 	assertNoClearScreenAfterAction(t, attach, 1200*time.Millisecond, func() {
 		attach.Resize(100, 30)
-		_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 	})
 }
 

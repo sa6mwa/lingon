@@ -5,7 +5,6 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-	"syscall"
 	"testing"
 	"time"
 
@@ -62,7 +61,6 @@ func TestHostResizePreservesScrollbackHistory(t *testing.T) {
 	}
 
 	host.Resize(64, 14)
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 	advanceTestClock(h.Clock(), 150*time.Millisecond)
 
 	host.SendBytes([]byte{0x1b, '[', 'F'}) // End
@@ -125,7 +123,7 @@ func TestHostScrollbackResizeRepaintsIndicatorWithoutInput(t *testing.T) {
 	})
 
 	host.Resize(60, 24)
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
+	advanceTestClock(h.Clock(), 150*time.Millisecond)
 
 	waitForStableTopRow(t, host, 1200*time.Millisecond, 50*time.Millisecond, 3, func(row string) error {
 		_, ok := scrollbackPercent(row)

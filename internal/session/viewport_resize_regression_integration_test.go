@@ -1,8 +1,8 @@
 package session_test
 
 import (
+	"fmt"
 	"os"
-	"syscall"
 	"testing"
 	"time"
 
@@ -41,7 +41,6 @@ func TestHostSIGWINCHResizesLocalPTY(t *testing.T) {
 	}
 
 	host.Resize(80, 24)
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 	advanceTestClock(host.Clock(), 200*time.Millisecond)
 
 	host.Send("stty size; echo LOCAL_SIZE_AFTER_DONE\n")
@@ -166,7 +165,6 @@ func TestLocalTabActivationResizesLocalPTYToCurrentViewport(t *testing.T) {
 	}
 
 	hostB.Resize(100, 30)
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 	advanceTestClock(hostB.Clock(), 200*time.Millisecond)
 
 	hostB.Send("stty size; echo REMOTE_VIEWER_SIZE_DONE\n")
@@ -188,4 +186,153 @@ func TestLocalTabActivationResizesLocalPTYToCurrentViewport(t *testing.T) {
 	if !screenContainsWithin(hostB, "30 100", 2*time.Second) {
 		t.Fatalf("expected local tab to adopt current viewport size on return, got:\n%s", hostB.Screen().String())
 	}
+}
+
+func TestHostResizePreservesWideContentAcrossShrinkAndExpand(t *testing.T) {
+	t.Setenv("PS1", "PROMPT> ")
+	shell := scrollbackShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-wide-content",
+		SessionName: "viewport-preserve-wide-content",
+		Shell:       shell,
+		Cols:        60,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForHost(t, h, "viewport-preserve-wide-content", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
+
+	host.Send("printf 'LEFT-1234567890-MID-abcdefghij-RIGHT-END\\n'\n")
+	waitForStableSeededHostOutput(t, host, "RIGHT-END", 3*time.Second)
+
+	host.Resize(20, 12)
+	advanceTestClock(host.Clock(), 200*time.Millisecond)
+
+	if !host.Screen().Contains("LEFT-") {
+		t.Fatalf("expected shrink to preserve visible left edge, got:\n%s", host.Screen().String())
+	}
+	if host.Screen().Contains("RIGHT-END") {
+		t.Fatalf("expected shrink to hide right edge in narrow viewport, got:\n%s", host.Screen().String())
+	}
+
+	host.Resize(60, 12)
+	advanceTestClock(host.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("RIGHT-END") {
+			return fmt.Errorf("expected restored wide content after enlarging viewport, got:\n%s", host.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow(t *testing.T) {
+	t.Setenv("PS1", "PROMPT> ")
+
+	shell := scrollbackShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-wide-scrollback",
+		SessionName: "viewport-preserve-wide-scrollback",
+		Shell:       shell,
+		Cols:        60,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForHost(t, h, "viewport-preserve-wide-scrollback", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
+
+	host.Send("printf 'LEFT-1234567890-MID-abcdefghij-RIGHT-END\\n'\n")
+	waitForStableSeededHostOutput(t, host, "RIGHT-END", 3*time.Second)
+	host.Send("emit-lines FILL 2 20\n")
+	waitForStableSeededHostOutput(t, host, "FILL-20", 3*time.Second)
+
+	host.Resize(20, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	host.SendBytes([]byte{0x0c, '['})
+	advanceTestClock(h.Clock(), 120*time.Millisecond)
+	host.SendBytes([]byte("g"))
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	if !host.Screen().Contains("LEFT-") {
+		t.Fatalf("expected left edge of preserved row after entering scrollback, got:\n%s", host.Screen().String())
+	}
+	if host.Screen().Contains("RIGHT-END") {
+		t.Fatalf("expected right edge hidden before horizontal pan, got:\n%s", host.Screen().String())
+	}
+
+	for i := 0; i < 6; i++ {
+		host.SendBytes([]byte("L"))
+		advanceTestClock(h.Clock(), 40*time.Millisecond)
+	}
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("RIGHT-END") {
+			return ptytest.FormatRowDiff("host", 1, host.Screen().Row(1))
+		}
+		return nil
+	})
+}
+
+func TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand(t *testing.T) {
+	t.Setenv("PS1", "PROMPT> ")
+	shell := scrollbackShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-lower-content",
+		SessionName: "viewport-preserve-lower-content",
+		Shell:       shell,
+		Cols:        40,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForHost(t, h, "viewport-preserve-lower-content", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
+
+	host.Send("emit-lines KEEP 1 12\n")
+	waitForStableSeededHostOutput(t, host, "KEEP-12", 3*time.Second)
+
+	host.Resize(40, 6)
+	advanceTestClock(host.Clock(), 200*time.Millisecond)
+
+	if host.Screen().Contains("KEEP-12") {
+		t.Fatalf("expected shrink to hide lower viewport rows, got:\n%s", host.Screen().String())
+	}
+
+	host.Resize(40, 12)
+	advanceTestClock(host.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("KEEP-12") {
+			return fmt.Errorf("expected restored lower viewport content after enlarging viewport, got:\n%s", host.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(40, 6)
+	advanceTestClock(host.Clock(), 200*time.Millisecond)
+	host.SendBytes([]byte{0x0c, '['})
+	advanceTestClock(h.Clock(), 120*time.Millisecond)
+	host.SendBytes([]byte("g"))
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	for i := 0; i < 3; i++ {
+		host.SendBytes([]byte{0x1b, '[', '6', '~'}) // PgDn
+		advanceTestClock(h.Clock(), 60*time.Millisecond)
+	}
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("KEEP-12") {
+			return fmt.Errorf("expected preserved lower viewport content to remain reachable in scrollback, got:\n%s", host.Screen().String())
+		}
+		return nil
+	})
 }

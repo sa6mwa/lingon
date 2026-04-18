@@ -1,7 +1,6 @@
 package session_test
 
 import (
-	"syscall"
 	"testing"
 	"time"
 
@@ -31,7 +30,6 @@ func TestHostScrollbackHorizontalPanAndHomeReset(t *testing.T) {
 	waitForStableSeededHostOutput(t, host, "FILL-20", 3*time.Second)
 
 	host.Resize(20, 12)
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 	advanceTestClock(h.Clock(), 150*time.Millisecond)
 
 	host.SendBytes([]byte{0x0c, '['})

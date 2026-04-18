@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -172,7 +171,6 @@ func TestHostResizeDoesNotClearScreen(t *testing.T) {
 
 	assertNoClearScreenAfterAction(t, host, 1200*time.Millisecond, func() {
 		host.Resize(100, 30)
-		_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 	})
 }
 

@@ -76,6 +76,7 @@ type Options struct {
 	ToggleWallInactivityFallback func(context.Context, string) (WallInactivityToggleResult, error)
 	OnSnapshot                   func(terminal.Snapshot)
 	Trace                        *trace.Writer
+	ResizeEvents                 <-chan struct{}
 }
 
 // PublishStatusKind identifies host publish connectivity transitions.
@@ -371,6 +372,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	sigwinch := make(chan os.Signal, 1)
 	signal.Notify(sigwinch, syscall.SIGWINCH)
 	defer signal.Stop(sigwinch)
+	resizeEvents := r.opts.ResizeEvents
 	if r.opts.Stdin != nil {
 		go func() {
 			<-sigCtx.Done()
@@ -732,6 +734,21 @@ func (r *Runner) Run(ctx context.Context) error {
 			case <-sigCtx.Done():
 				return
 			case <-sigwinch:
+				cols, rows := termSizeAny(stdout, stdin)
+				if cols <= 0 || rows <= 0 {
+					continue
+				}
+				r.opts.Cols, r.opts.Rows = cols, rows
+				activeID, activeLocal := r.activeSession()
+				if activeLocal {
+					r.resizeLocalSession(r.localSession(activeID), cols, rows)
+				}
+				if r.scrollbackActiveFor(activeID) {
+					r.renderScrollback(stdout, stdin)
+					continue
+				}
+				r.forceRedraw(stdout)
+			case <-resizeEvents:
 				cols, rows := termSizeAny(stdout, stdin)
 				if cols <= 0 || rows <= 0 {
 					continue

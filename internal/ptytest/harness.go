@@ -522,6 +522,7 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		authFile = h.authPath
 	}
 	disableDesktopNotifications, desktopNotifier := effectiveHostDesktopNotificationConfig(opts)
+	resizeCh := make(chan struct{}, 1)
 	runner := session.New(session.Options{
 		Endpoint:                    h.endpoint,
 		Token:                       token,
@@ -539,6 +540,7 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		DisableDesktopNotifications: disableDesktopNotifications,
 		DesktopNotifier:             desktopNotifier,
 		Trace:                       h.trace,
+		ResizeEvents:                resizeCh,
 	})
 
 	go func() {
@@ -548,6 +550,12 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 	sess.cleanup = func() {
 		_ = master.Close()
 		_ = slave.Close()
+	}
+	sess.onResize = func() {
+		select {
+		case resizeCh <- struct{}{}:
+		default:
+		}
 	}
 
 	return sess
@@ -615,6 +623,7 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 	sess.clock = clk
 	size := &sizeProvider{cols: opts.Cols, rows: opts.Rows}
 	sess.size = size
+	resizeCh := make(chan struct{}, 1)
 
 	clientID := opts.ClientID
 	if clientID == "" {
@@ -646,6 +655,7 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 		Stdout:                      slave,
 		Stderr:                      io.Discard,
 		TermSize:                    size.Size,
+		ResizeEvents:                resizeCh,
 		Clock:                       clk,
 		NoHostTimeout:               opts.NoHostTimeout,
 	}
@@ -665,6 +675,12 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 		}
 		_ = master.Close()
 		_ = slave.Close()
+	}
+	sess.onResize = func() {
+		select {
+		case resizeCh <- struct{}{}:
+		default:
+		}
 	}
 
 	return sess
@@ -741,6 +757,7 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 	sess.clock = clk
 	size := &sizeProvider{cols: opts.Cols, rows: opts.Rows}
 	sess.size = size
+	resizeCh := make(chan struct{}, 1)
 
 	token := opts.AccessToken
 	if token == "" {
@@ -767,6 +784,7 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 		Stdout:                      slave,
 		Stderr:                      io.Discard,
 		TermSize:                    size.Size,
+		ResizeEvents:                resizeCh,
 		AuthFile:                    opts.AuthFile,
 		AllowOfflineToggle:          opts.AllowOfflineToggle,
 		SessionSource:               opts.SessionSource,
@@ -794,6 +812,12 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 	sess.cleanup = func() {
 		_ = master.Close()
 		_ = slave.Close()
+	}
+	sess.onResize = func() {
+		select {
+		case resizeCh <- struct{}{}:
+		default:
+		}
 	}
 
 	return sess

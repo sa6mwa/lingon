@@ -60,6 +60,7 @@ type MultiClient struct {
 	Stdout          io.Writer
 	Stderr          io.Writer
 	TermSize        func() (int, int)
+	ResizeEvents    <-chan struct{}
 	Logger          pslog.Logger
 	Theme           string
 	DesktopNotifier desktopnotify.Notifier
@@ -2050,12 +2051,14 @@ func (m *MultiClient) handleResize(ctx context.Context, mu *sync.Mutex, views *m
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGWINCH)
 	defer signal.Stop(ch)
+	resizeEvents := m.ResizeEvents
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ch:
+		case <-resizeEvents:
 		}
 		id := activeID()
 		mu.Lock()

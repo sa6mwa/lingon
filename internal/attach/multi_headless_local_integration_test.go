@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1587,7 +1586,6 @@ func TestMultiAttachHeadlessResizePropagatesToPTY(t *testing.T) {
 	})
 
 	attachSess.Resize(110, 35)
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 	attachSess.Send("printf '__SIZE__%s\\n' \"$(stty size)\"\n")
 	attachSess.Eventually(8*time.Second, 120*time.Millisecond, func(screen ptytest.Screen) error {
 		if !screen.Contains("__SIZE__35 110") {

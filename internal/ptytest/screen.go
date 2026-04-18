@@ -104,6 +104,8 @@ type PTYSession struct {
 	lastReadErr error
 
 	clock clock.Clock
+
+	onResize func()
 }
 
 func newPTYSession(t *testing.T, master, slave *os.File, emu terminal.Emulator) *PTYSession {
@@ -277,6 +279,9 @@ func (s *PTYSession) Resize(cols, rows int) {
 	s.mu.Unlock()
 	if s.size != nil {
 		s.size.Set(cols, rows)
+	}
+	if s.onResize != nil {
+		s.onResize()
 	}
 }
 

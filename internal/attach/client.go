@@ -72,6 +72,7 @@ type Client struct {
 	Stdout                      io.Writer
 	Stderr                      io.Writer
 	TermSize                    func() (int, int)
+	ResizeEvents                <-chan struct{}
 	// DisableResizePropagation treats the terminal as a camera onto the remote
 	// session and suppresses resize frames from local viewport changes.
 	DisableResizePropagation bool
@@ -2226,12 +2227,22 @@ func (c *Client) handleResize(ctx context.Context, ws *websocket.Conn) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGWINCH)
 	defer signal.Stop(ch)
+	resizeEvents := c.ResizeEvents
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ch:
+			cols, rows := c.terminalSize()
+			if snap := c.getSnapshot(); snap != nil {
+				c.renderSnapshot(snap)
+			}
+			if !c.DisableResizePropagation && c.isController() {
+				frame := &protocolpb.Frame{Payload: &protocolpb.Frame_Resize{Resize: &protocolpb.Resize{Cols: uint32(cols), Rows: uint32(rows)}}}
+				_ = c.writeFrame(ctx, ws, frame)
+			}
+		case <-resizeEvents:
 			cols, rows := c.terminalSize()
 			if snap := c.getSnapshot(); snap != nil {
 				c.renderSnapshot(snap)
