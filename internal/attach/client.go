@@ -1856,6 +1856,7 @@ func (c *Client) idleFor() time.Duration {
 func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 	reader := bufio.NewReader(c.stdinReader())
 	buf := make([]byte, 1024)
+	prefill := make([]byte, 0, 1024)
 	var prefix control.Prefix
 	pending := make([]byte, 0, 2048)
 	var scrollState scrollInputState
@@ -1866,12 +1867,19 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 			return
 		default:
 		}
-		n, err := reader.Read(buf)
-		if err != nil {
-			if err != io.EOF {
-				c.Logger.Debug("attach.stdin.read.failed", "err", err)
+		n := 0
+		if len(prefill) > 0 {
+			n = copy(buf, prefill)
+			prefill = prefill[n:]
+		} else {
+			var err error
+			n, err = reader.Read(buf)
+			if err != nil {
+				if err != io.EOF {
+					c.Logger.Debug("attach.stdin.read.failed", "err", err)
+				}
+				return
 			}
-			return
 		}
 		if n == 0 {
 			continue
@@ -1976,23 +1984,29 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				}
 				return true
 			}
-			if len(out) > 0 {
-				if c.isViewOnly() {
-					c.showViewOnlyBanner(c.viewOnlyMessage())
-					pending = pending[:0]
-					return true
+				if len(out) > 0 {
+					if c.isViewOnly() {
+						c.showViewOnlyBanner(c.viewOnlyMessage())
+						pending = pending[:0]
+						return true
 				}
-				if len(out) == 1 && out[0] == 0x0c {
-					c.PrepareForCtrlLClear()
+					if len(out) == 1 && out[0] == 0x0c {
+						c.PrepareForCtrlLClear()
+					}
+					pending = append(pending, out...)
+					if inputEndsLineAttach(out) {
+						if !flushPending() {
+							return false
+						}
+					}
 				}
-				pending = append(pending, out...)
-			}
 			return true
 		}
-		filtered := make([]byte, 0, 8)
-		for _, b := range data {
-			if c.ScrollbackActive() {
-				cmd := scrollState.feed(b)
+			filtered := make([]byte, 0, 8)
+			stopInput := false
+			for _, b := range data {
+				if c.ScrollbackActive() {
+					cmd := scrollState.feed(b)
 				if cmd == scrollExit {
 					c.setScrollbackActive(false)
 					c.renderCurrent()
@@ -2044,16 +2058,53 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				continue
 			}
 			filtered = filterMouseByte(&mouseFilter, b, filtered)
-			for _, fb := range filtered {
-				if !processNormalByte(fb) {
-					return
+				for i, fb := range filtered {
+					if !processNormalByte(fb) {
+						return
+					}
+					if isLineByteAttach(fb) && i+1 < len(filtered) {
+						remainder := filtered[i+1:]
+						prefill = append(prefill, remainder...)
+						if inputAllLinesAttach(remainder) {
+							c.clock().Sleep(20 * time.Millisecond)
+						}
+						stopInput = true
+						break
+					}
+				}
+				filtered = filtered[:0]
+				if stopInput {
+					break
 				}
 			}
-		}
 		if !flushPending() {
 			return
 		}
 	}
+}
+
+func inputEndsLineAttach(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	last := data[len(data)-1]
+	return last == '\r' || last == '\n'
+}
+
+func inputAllLinesAttach(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	for _, b := range data {
+		if b != '\r' && b != '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+func isLineByteAttach(b byte) bool {
+	return b == '\r' || b == '\n'
 }
 
 func writeAll(clk clock.Clock, w io.Writer, data []byte) error {

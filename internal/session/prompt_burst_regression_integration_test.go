@@ -145,10 +145,59 @@ func TestHostBurstEnterKeepsConsecutiveBashPromptNumbers(t *testing.T) {
 	})
 }
 
+func TestAttachBurstEnterKeepsConsecutiveBashPromptNumbers(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "prompt-burst-attach-host",
+		SessionName: "prompt-burst-attach-host",
+		Shell:       countingPromptBash(t),
+		Cols:        40,
+		Rows:        8,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForHost(t, h, "prompt-burst-attach-host", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	waitForPromptNumber(t, host, 1, 3*time.Second)
+
+	attach := h.StartAttach(ptytest.AttachOptions{
+		SessionID:      "prompt-burst-attach-host",
+		RequestControl: true,
+		Cols:           40,
+		Rows:           8,
+	})
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptNumber(t, attach, 1, 3*time.Second)
+
+	attach.SendBytes([]byte(strings.Repeat("\n", 24)))
+
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		hostNums := promptNumbersFromScreen(host.Screen().String())
+		if len(hostNums) == 0 || hostNums[len(hostNums)-1] != 25 {
+			return fmt.Errorf("expected host to advance to prompt 25, got %v\nhost:\n%s", hostNums, host.Screen().String())
+		}
+		attachNums := promptNumbersFromScreen(attach.Screen().String())
+		if len(attachNums) == 0 || attachNums[len(attachNums)-1] != 25 {
+			return fmt.Errorf("expected attach to advance to prompt 25, got %v\nattach:\n%s", attachNums, attach.Screen().String())
+		}
+		return nil
+	})
+}
+
 func waitForHostPromptNumber(t *testing.T, host *ptytest.PTYSession, want int, timeout time.Duration) {
 	t.Helper()
-	eventuallyWithClock(t, host.Clock(), timeout, 50*time.Millisecond, func() error {
-		nums := promptNumbersFromScreen(host.Screen().String())
+	waitForPromptNumber(t, host, want, timeout)
+}
+
+func waitForPromptNumber(t *testing.T, sess *ptytest.PTYSession, want int, timeout time.Duration) {
+	t.Helper()
+	eventuallyWithClock(t, sess.Clock(), timeout, 50*time.Millisecond, func() error {
+		nums := promptNumbersFromScreen(sess.Screen().String())
 		if len(nums) == 0 {
 			return fmt.Errorf("waiting for numbered prompt")
 		}

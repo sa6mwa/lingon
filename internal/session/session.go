@@ -723,7 +723,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				if !processNormalByte(b) {
 					return
 				}
-				if isLocalActiveByte(activeID, b, r) && i+1 < len(filtered) {
+				if isActiveSessionLineByte(activeID, b, r) && i+1 < len(filtered) {
 					remainder := filtered[i+1:]
 					r.addInputPrefill(remainder)
 					if inputAllLines(remainder) {
@@ -808,12 +808,12 @@ func inputAllLines(data []byte) bool {
 	return true
 }
 
-func isLocalActiveByte(activeID string, b byte, r *Runner) bool {
+func isActiveSessionLineByte(activeID string, b byte, r *Runner) bool {
 	if b != '\r' && b != '\n' {
 		return false
 	}
-	currentID, activeLocal := r.activeSession()
-	return activeLocal && currentID == activeID
+	currentID, _ := r.activeSession()
+	return currentID == activeID
 }
 
 func (r *Runner) makeRaw(file *os.File) error {
