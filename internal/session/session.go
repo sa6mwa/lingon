@@ -662,10 +662,15 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				if len(out) > 0 {
 					pending = append(pending, out...)
+					if activeLocal && inputEndsLine(out) {
+						if !flushPending() {
+							return false
+						}
+					}
 				}
 				return true
 			}
-			for _, b := range filtered {
+			for i, b := range filtered {
 				activeID, _ := r.activeSession()
 				if r.scrollbackActiveFor(activeID) {
 					cmd := scrollState.feed(b)
@@ -717,6 +722,14 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				if !processNormalByte(b) {
 					return
+				}
+				if isLocalActiveByte(activeID, b, r) && i+1 < len(filtered) {
+					remainder := filtered[i+1:]
+					r.addInputPrefill(remainder)
+					if inputAllLines(remainder) {
+						r.clock.Sleep(20 * time.Millisecond)
+					}
+					break
 				}
 			}
 			if !flushPending() {
@@ -773,6 +786,34 @@ func (r *Runner) Run(ctx context.Context) error {
 	wg.Wait()
 	r.clearOverlays(stdout, stdin)
 	return nil
+}
+
+func inputEndsLine(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	last := data[len(data)-1]
+	return last == '\r' || last == '\n'
+}
+
+func inputAllLines(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	for _, b := range data {
+		if b != '\r' && b != '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+func isLocalActiveByte(activeID string, b byte, r *Runner) bool {
+	if b != '\r' && b != '\n' {
+		return false
+	}
+	currentID, activeLocal := r.activeSession()
+	return activeLocal && currentID == activeID
 }
 
 func (r *Runner) makeRaw(file *os.File) error {
@@ -2618,7 +2659,11 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 			r.opts.DesktopNotifier = desktopnotify.New()
 		}
 		if r.opts.DesktopNotifier != nil {
-			_ = r.opts.DesktopNotifier.Notify(r.runCtx, desktopnotify.Request{
+			notifyCtx := r.runCtx
+			if notifyCtx == nil {
+				notifyCtx = context.Background()
+			}
+			_ = r.opts.DesktopNotifier.Notify(notifyCtx, desktopnotify.Request{
 				Title: label,
 				Body:  "inactive",
 			})
