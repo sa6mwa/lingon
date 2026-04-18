@@ -491,7 +491,6 @@ exec "%s" -i
 		return scriptPath, nil
 	}
 	content := fmt.Sprintf(`#!/bin/sh
-stty raw -echo </dev/tty 2>/dev/null || stty raw -echo </dev/stdin 2>/dev/null || true
 exec "%s" -host-echo -host-id "%s"
 `, harnessPath, id)
 	if err := os.WriteFile(scriptPath, []byte(content), 0o700); err != nil {

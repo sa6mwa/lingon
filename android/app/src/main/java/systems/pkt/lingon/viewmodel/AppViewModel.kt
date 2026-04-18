@@ -90,6 +90,7 @@ class AppViewModel(
     private var nextPanResetToken = 0
     private var lastForegroundRecoveryAtMs: Long = 0
     private var pendingWallInactivitySessionId: String? = null
+    private var pendingBackgroundWallEnabled: Boolean? = null
     private var transientStatusJob: Job? = null
 
     init {
@@ -112,6 +113,13 @@ class AppViewModel(
         }
         viewModelScope.launch {
             repository.backgroundWallEnabledFlow.collectLatest { enabled ->
+                val pending = pendingBackgroundWallEnabled
+                if (pending != null && enabled != pending) {
+                    return@collectLatest
+                }
+                if (pending != null && enabled == pending) {
+                    pendingBackgroundWallEnabled = null
+                }
                 _state.update { it.copy(backgroundWallEnabled = enabled) }
                 syncWallPollingSchedule()
             }
@@ -191,6 +199,7 @@ class AppViewModel(
     }
 
     fun setBackgroundWallEnabled(enabled: Boolean) {
+        pendingBackgroundWallEnabled = enabled
         repository.setBackgroundWallEnabled(enabled)
         _state.update { it.copy(backgroundWallEnabled = enabled) }
         syncWallPollingSchedule()
@@ -662,6 +671,8 @@ class AppViewModel(
         zoomLoadJobs.clear()
         zoomPersistJobs.clear()
         sessionViewStates.clear()
+        sessionWallInactivityStates.clear()
+        pendingWallInactivitySessionId = null
         nextPanResetToken = 0
     }
 
@@ -1441,9 +1452,12 @@ class AppViewModel(
                             )
                         }
                         if (msg.contains("no host", ignoreCase = true)) {
-                            _state.update { it.copy(connectionState = ConnectionState.Waiting) }
                             setStatus("waiting for host", StatusLevel.Warn)
-                            scheduleReconnect("waiting for host", statusPrefix = "waiting for host, retrying in")
+                            scheduleReconnect(
+                                "waiting for host",
+                                statusPrefix = "waiting for host, retrying in",
+                                reconnectState = ConnectionState.Waiting,
+                            )
                             syncCurrentSessionCache()
                             return
                         }
@@ -1566,19 +1580,24 @@ class AppViewModel(
         }
     }
 
-    private fun scheduleReconnect(reason: String?, retryAfterSeconds: Int? = null, statusPrefix: String? = null) {
+    private fun scheduleReconnect(
+        reason: String?,
+        retryAfterSeconds: Int? = null,
+        statusPrefix: String? = null,
+        reconnectState: ConnectionState = ConnectionState.Disconnected,
+    ) {
         if (suppressReconnect) return
-        if (reconnectJob?.isActive == true) return
         ws = null
         socketOpen = false
         _state.update {
             it.copy(
-                connectionState = ConnectionState.Disconnected,
+                connectionState = reconnectState,
                 hasControl = false,
                 sessionSyncing = true,
             )
         }
         syncWallPollingSchedule()
+        if (reconnectJob?.isActive == true) return
         reconnectAttempt += 1
         val delayMs = nextBackoffMs(reconnectAttempt, retryAfterSeconds)
         val seconds = (delayMs / 1000).coerceAtLeast(1)

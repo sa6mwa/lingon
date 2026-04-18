@@ -609,10 +609,7 @@ private fun TerminalPanel(
                         .padding(horizontal = screenPadding, vertical = screenPadding),
                 )
             }
-            if (
-                state.sessionSyncing ||
-                state.connectionState == ConnectionState.Connecting
-            ) {
+            if (state.showsSyncingIndicator) {
                 Surface(
                     modifier = Modifier
                         .align(Alignment.TopEnd)

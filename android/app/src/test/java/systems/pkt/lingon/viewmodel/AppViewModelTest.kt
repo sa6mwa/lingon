@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -48,8 +49,10 @@ import systems.pkt.lingon.protocol.Welcome
 import systems.pkt.lingon.protocol.WallInactivityStatus
 import systems.pkt.lingon.protocol.ScrollbackRow
 import systems.pkt.lingon.DefaultTerminalZoom
+import systems.pkt.lingon.MaxTerminalZoom
 import systems.pkt.lingon.terminal.TerminalSnapshot
 import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
+import systems.pkt.lingon.work.BackgroundWallServiceController
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppViewModelTest {
@@ -692,6 +695,86 @@ class AppViewModelTest {
     }
 
     @Test
+    fun onAppBackgroundEnablesBackgroundWallServiceWhenConfigured() = runTest {
+        val repository = FakeRepository(backgroundWallEnabled = true)
+        val wsClient = FakeWsClient()
+        val controller = RecordingBackgroundWallServiceController()
+        val viewModel = AppViewModel(
+            repository,
+            wsClient,
+            backgroundWallServiceController = controller,
+        )
+        advanceUntilIdle()
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.onAppBackgroundAt(nowMs = 1234L)
+        advanceUntilIdle()
+
+        assertTrue(controller.enabledValues.contains(true))
+        assertEquals(true, controller.enabledValues.lastOrNull())
+    }
+
+    @Test
+    fun onAppForegroundDisablesBackgroundWallServiceAfterBackgroundEnable() = runTest {
+        val repository = FakeRepository(backgroundWallEnabled = true)
+        val wsClient = FakeWsClient()
+        val controller = RecordingBackgroundWallServiceController()
+        val viewModel = AppViewModel(
+            repository,
+            wsClient,
+            backgroundWallServiceController = controller,
+        )
+        advanceUntilIdle()
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.onAppBackgroundAt(nowMs = 1234L)
+        advanceUntilIdle()
+        viewModel.onAppForegroundAt(nowMs = 2234L)
+        advanceUntilIdle()
+
+        assertTrue(controller.enabledValues.contains(true))
+        assertEquals(false, controller.enabledValues.lastOrNull())
+    }
+
+    @Test
+    fun onAppBackgroundKeepsBackgroundWallServiceDisabledForShareToken() = runTest {
+        val repository = FakeRepository(backgroundWallEnabled = true)
+        val wsClient = FakeWsClient()
+        val controller = RecordingBackgroundWallServiceController()
+        val viewModel = AppViewModel(
+            repository,
+            wsClient,
+            backgroundWallServiceController = controller,
+        )
+        advanceUntilIdle()
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = false,
+                shareToken = "token",
+            ),
+        )
+
+        viewModel.onAppBackgroundAt(nowMs = 1234L)
+        advanceUntilIdle()
+
+        assertFalse(controller.enabledValues.contains(true))
+        assertEquals(false, controller.enabledValues.lastOrNull())
+    }
+
+    @Test
     fun adjustScrollbackUpdatesExposedOffset() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
@@ -817,6 +900,49 @@ class AppViewModelTest {
         advanceUntilIdle()
         assertEquals(1.4f, viewModel.state.value.zoomFactor, 0.0001f)
         assertEquals(0, viewModel.state.value.panResetNonce)
+    }
+
+    @Test
+    fun updateZoomFactorClampsAtRaisedMaxZoom() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        viewModel.updateZoomFactor(MaxTerminalZoom + 1.5f)
+        advanceTimeBy(200)
+        advanceUntilIdle()
+
+        assertEquals(MaxTerminalZoom, viewModel.state.value.zoomFactor, 0.0001f)
+        assertEquals(MaxTerminalZoom, repository.savedZooms["https://localhost:12843/v1|host-1"]!!, 0.0001f)
+    }
+
+    @Test
+    fun setBackgroundWallEnabledIgnoresStaleRepositoryEmission() = runTest {
+        val backgroundWallFlow = MutableSharedFlow<Boolean>(extraBufferCapacity = 4)
+        val repository = FakeRepository(backgroundWallEnabledFlowOverride = backgroundWallFlow)
+        repository.onSetBackgroundWallEnabled = { _ ->
+            backgroundWallFlow.tryEmit(false)
+        }
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        viewModel.setBackgroundWallEnabled(true)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.backgroundWallEnabled)
     }
 
     @Test
@@ -1216,6 +1342,71 @@ class AppViewModelTest {
     }
 
     @Test
+    fun logoutClearsWallInactivityCacheForFreshSession() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        runCurrent()
+        wsClient.fireFrame(wallInactivityStatusFrame(seq = 2, sessionId = "host-1", enabled = true, label = "5m"))
+        runCurrent()
+        assertTrue(viewModel.state.value.wallInactivityEnabled)
+        assertEquals("5m", viewModel.state.value.wallInactivityLabel)
+
+        viewModel.logout()
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+                status = null,
+                transientStatus = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        assertFalse(viewModel.state.value.wallInactivityEnabled)
+        assertNull(viewModel.state.value.wallInactivityLabel)
+
+        wsClient.fireConnect()
+        runCurrent()
+        wsClient.fireFrame(wallInactivityStatusFrame(seq = 3, sessionId = "host-1", enabled = false, label = ""))
+        runCurrent()
+
+        assertFalse(viewModel.state.value.wallInactivityEnabled)
+        assertNull(viewModel.state.value.wallInactivityLabel)
+        assertNull(viewModel.state.value.transientStatus)
+    }
+
+    @Test
     fun scrollbackFrameClearsSessionSyncing() = runTest {
         val repository = FakeRepository(
             sessions = listOf(
@@ -1288,6 +1479,61 @@ class AppViewModelTest {
         assertEquals("welcome", viewModel.state.value.lastFrameType)
         assertFalse(viewModel.state.value.sessionSyncing)
         assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+    }
+
+    @Test
+    fun repeatedSocketCloseKeepsSessionSyncingWhileReconnectIsPending() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        wsClient.fakeSocket.close(1006, "network down")
+        runCurrent()
+        assertTrue(viewModel.state.value.sessionSyncing)
+        assertTrue(viewModel.state.value.showsSyncingIndicator)
+        assertEquals(ConnectionState.Disconnected, viewModel.state.value.connectionState)
+
+        wsClient.fakeSocket.close(1006, "network still down")
+        runCurrent()
+        assertTrue(viewModel.state.value.sessionSyncing)
+        assertTrue(viewModel.state.value.showsSyncingIndicator)
+        assertEquals(ConnectionState.Disconnected, viewModel.state.value.connectionState)
+    }
+
+    @Test
+    fun waitingForHostCountsAsSyncingIndicatorState() = runTest {
+        val state = UiState(
+            loggedIn = true,
+            activeSessionId = "host-1",
+            connectionState = ConnectionState.Waiting,
+            sessionSyncing = false,
+        )
+
+        assertTrue(state.showsSyncingIndicator)
     }
 
     @Test
@@ -1480,19 +1726,24 @@ private class FakeRepository(
     private val failListSessions: Boolean = true,
     private val refreshAuthResult: Boolean = true,
     private val refreshAuthError: Throwable? = null,
+    backgroundWallEnabled: Boolean = false,
+    backgroundWallEnabledFlowOverride: Flow<Boolean>? = null,
     initialSessionZooms: Map<String, Float> = emptyMap(),
     initialLastActiveSessionByEndpoint: Map<String, String> = emptyMap(),
 ) : LingonClient {
+    private val backgroundWallEnabledState = MutableStateFlow(backgroundWallEnabled)
     override val endpointFlow: Flow<String> = MutableStateFlow("https://localhost:12843/v1")
     override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
     override val resizeHostFlow: Flow<Boolean> = MutableStateFlow(false)
-    override val backgroundWallEnabledFlow: Flow<Boolean> = MutableStateFlow(false)
+    override val backgroundWallEnabledFlow: Flow<Boolean> =
+        backgroundWallEnabledFlowOverride ?: backgroundWallEnabledState
     override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
     override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(listOf("https://localhost:12843/v1"))
     override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
     private val lastActiveSessionByEndpoint = initialLastActiveSessionByEndpoint.toMutableMap()
     var refreshAuthCalls: Int = 0
     var saveZoomCalls: Int = 0
+    var onSetBackgroundWallEnabled: ((Boolean) -> Unit)? = null
     val savedZooms = initialSessionZooms.toMutableMap()
 
     override fun setEndpoint(value: String) {
@@ -1513,7 +1764,9 @@ private class FakeRepository(
     }
 
     override fun setBackgroundWallEnabled(value: Boolean) {
-        // no-op
+        onSetBackgroundWallEnabled?.invoke(value) ?: run {
+            backgroundWallEnabledState.value = value
+        }
     }
 
     override fun setAppLockTimeoutMinutes(value: Int) {
@@ -1798,5 +2051,13 @@ private class RecordingWallNotifier : WallNotifier {
     override fun notifyWall(notification: WallNotification) {
         deliveries += "${notification.endpoint.trim()}#${notification.eventId}" to
             "${notification.sender.trim()}\n${notification.message.trim()}"
+    }
+}
+
+private class RecordingBackgroundWallServiceController : BackgroundWallServiceController {
+    val enabledValues = mutableListOf<Boolean>()
+
+    override fun setEnabled(enabled: Boolean) {
+        enabledValues += enabled
     }
 }

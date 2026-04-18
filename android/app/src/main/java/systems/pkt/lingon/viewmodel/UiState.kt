@@ -75,4 +75,10 @@ data class UiState(
 
     val canAttach: Boolean
         get() = loggedIn || !shareToken.isNullOrBlank()
+
+    val showsSyncingIndicator: Boolean
+        get() = sessionSyncing ||
+            connectionState == ConnectionState.Connecting ||
+            connectionState == ConnectionState.Waiting ||
+            connectionState == ConnectionState.Disconnected
 }

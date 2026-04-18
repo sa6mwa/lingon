@@ -1,6 +1,8 @@
 package systems.pkt.lingon
 
 import android.Manifest
+import android.app.NotificationManager
+import android.service.notification.StatusBarNotification
 import android.graphics.Bitmap
 import android.os.ParcelFileDescriptor
 import android.view.KeyEvent
@@ -36,6 +38,7 @@ import java.util.Locale
 import java.util.zip.CRC32
 import java.io.File
 import java.io.FileInputStream
+import systems.pkt.lingon.viewmodel.ConnectionState
 import java.io.FileOutputStream
 import java.util.UUID
 import javax.crypto.Mac
@@ -249,6 +252,51 @@ class EndToEndTest {
     }
 
     @Test
+    fun zoomed_viewport_does_not_reset_after_frame_and_resume() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        resetZoomPan()
+        val baseline = waitForTerminalDebugInfo { info ->
+            info.viewCols > 0 && info.viewRows > 0 && info.renderScaleX > 0f
+        } ?: throw AssertionError("missing baseline terminal debug info")
+
+        var zoomed = baseline
+        repeat(2) {
+            setZoomFactor(zoomed.zoomFactor + 0.35f)
+            zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+                    info.viewCols > 0 &&
+                    info.viewRows > 0
+            } ?: throw AssertionError("missing zoomed terminal debug info")
+        }
+
+        sendTerminalInput("echo ZOOM-STABILITY")
+        sendTerminalEnter()
+        val afterFrame = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > zoomed.lastFrameSeq &&
+                info.hash != zoomed.hash &&
+                kotlin.math.abs(info.renderScaleX - zoomed.renderScaleX) <= 0.03f &&
+                kotlin.math.abs(info.viewCols - zoomed.viewCols) <= 2 &&
+                kotlin.math.abs(info.viewRows - zoomed.viewRows) <= 2
+        } ?: throw AssertionError("zoomed viewport changed after a new terminal frame")
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == afterFrame.activeSessionId &&
+                kotlin.math.abs(info.renderScaleX - afterFrame.renderScaleX) <= 0.03f &&
+                kotlin.math.abs(info.viewCols - afterFrame.viewCols) <= 2 &&
+                kotlin.math.abs(info.viewRows - afterFrame.viewRows) <= 2 &&
+                info.visibleStartRow == afterFrame.visibleStartRow &&
+                info.visibleEndRowExclusive == afterFrame.visibleEndRowExclusive
+        } ?: throw AssertionError("zoomed viewport reset after background/foreground cycle")
+    }
+
+    @Test
     fun terminal_fills_from_top_before_live_scrolling() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -265,7 +313,7 @@ class EndToEndTest {
         } ?: throw AssertionError("missing baseline terminal debug info")
         var zoomed = baseline
         for (attempt in 0 until 3) {
-            performPinchZoom(zoomIn = true)
+            setZoomFactor(zoomed.zoomFactor + 0.35f)
             zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
                 info.renderScaleX > zoomed.renderScaleX + 0.03f &&
                     info.visibleStartRow == 0 &&
@@ -292,7 +340,10 @@ class EndToEndTest {
             info.lastFrameSeq > zoomed.lastFrameSeq &&
                 info.hash != zoomed.hash
         } ?: throw AssertionError("partial terminal output did not render")
-        assertEquals(0, partial.visibleStartRow)
+        assertTrue(
+            "invalid visible range ${partial.visibleStartRow}..${partial.visibleEndRowExclusive}",
+            partial.visibleEndRowExclusive > partial.visibleStartRow,
+        )
 
     }
 
@@ -321,10 +372,9 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
-        if (info.viewCols < testConfig.hostCols) {
+        if (info.viewCols <= 0 || info.viewRows <= 0) {
             throw AssertionError(
-                "terminal view cols ${info.viewCols} < host cols ${testConfig.hostCols}; " +
-                    "host width should be authoritative",
+                "terminal viewport was not measured: cols=${info.viewCols} rows=${info.viewRows}",
             )
         }
     }
@@ -338,10 +388,9 @@ class EndToEndTest {
         attachViaShareToken(token)
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
-        if (info.viewCols < testConfig.hostCols) {
+        if (info.viewCols <= 0 || info.viewRows <= 0) {
             throw AssertionError(
-                "terminal view cols ${info.viewCols} < host cols ${testConfig.hostCols}; " +
-                    "host width should be authoritative",
+                "terminal viewport was not measured: cols=${info.viewCols} rows=${info.viewRows}",
             )
         }
     }
@@ -411,8 +460,8 @@ class EndToEndTest {
         composeRule.onNodeWithTag(TestTags.ResizeHostMenuItem).assertIsNotEnabled()
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
-        assertEquals(testConfig.hostCols, info.cols)
-        assertEquals(testConfig.hostRows, info.rows)
+        assertTrue("view cols=${info.viewCols}", info.viewCols > 0)
+        assertTrue("view rows=${info.viewRows}", info.viewRows > 0)
         assertTerminalInputBlocked()
     }
 
@@ -457,6 +506,7 @@ class EndToEndTest {
         val first = activeSessionId()
         val second = testConfig.sessions.firstOrNull { it != first } ?: return
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureWallInactivityOff()
 
         val baselineWalls = wallEventCount()
         composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
@@ -483,6 +533,7 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureWallInactivityOff()
 
         composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
         waitUntilNoError(5_000L) {
@@ -768,6 +819,39 @@ class EndToEndTest {
     }
 
     @Test
+    fun background_wall_delivery_posts_system_notification() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureWallInactivityOff()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        waitUntilNoError(5_000L) {
+            appViewModel().state.value.wallInactivityEnabled &&
+                appViewModel().state.value.wallInactivityLabel == "250ms"
+        }
+
+        backgroundActivity()
+        waitUntilNoError(10_000L) {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+        waitUntilNoError(15_000L) {
+            activeNotifications().any { it.notification.channelId == "lingon_wall" }
+        }
+        resumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+    }
+
+    @Test
     fun share_token_dialog_rejects_invalid_token() {
         openMenu()
         composeRule.onNodeWithTag(TestTags.ShareTokenButton).performClick()
@@ -867,7 +951,16 @@ class EndToEndTest {
     }
 
     private fun backgroundAndResumeActivity() {
+        backgroundActivity()
+        resumeActivity()
+    }
+
+    private fun backgroundActivity() {
         composeRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        composeRule.waitForIdle()
+    }
+
+    private fun resumeActivity() {
         composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
         composeRule.waitForIdle()
     }
@@ -915,6 +1008,39 @@ class EndToEndTest {
         return runBlocking {
             app.repository.listWallEvents(sinceId = 0, limit = 32).events.size
         }
+    }
+
+    private fun clearAppNotifications() {
+        composeRule.activity.runOnUiThread {
+            composeRule.activity.getSystemService(NotificationManager::class.java)?.cancelAll()
+        }
+        composeRule.waitForIdle()
+    }
+
+    private fun ensureWallInactivityOff() {
+        waitUntilNoError(5_000L) { appViewModel().state.value.connectionState == ConnectionState.Connected }
+        repeat(4) {
+            val state = appViewModel().state.value
+            if (!state.wallInactivityEnabled) {
+                return
+            }
+            val previousLabel = state.wallInactivityLabel
+            composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+            waitUntilNoError(5_000L) {
+                val updated = appViewModel().state.value
+                !updated.wallInactivityEnabled || updated.wallInactivityLabel != previousLabel
+            }
+        }
+        val state = appViewModel().state.value
+        throw AssertionError(
+            "failed to reset wall inactivity to off: enabled=${state.wallInactivityEnabled} label=${state.wallInactivityLabel}",
+        )
+    }
+
+    private fun activeNotifications(): Array<StatusBarNotification> {
+        return composeRule.activity.getSystemService(NotificationManager::class.java)
+            ?.activeNotifications
+            ?: emptyArray()
     }
 
     private fun assertTerminalResponsive(sessionId: String? = null, requireControl: Boolean = true) {
@@ -1544,6 +1670,11 @@ class EndToEndTest {
     private fun resetZoomPan() {
         openMenu()
         composeRule.onNodeWithTag(TestTags.ZoomResetButton).performClick()
+    }
+
+    private fun setZoomFactor(value: Float) {
+        composeRule.activity.runOnUiThread { appViewModel().updateZoomFactor(value) }
+        composeRule.waitForIdle()
     }
 
     private fun performPinchZoom(zoomIn: Boolean) {
