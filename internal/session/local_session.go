@@ -196,7 +196,18 @@ func (s *localSession) shouldIgnoreNextPTYOutput(data []byte) bool {
 	}
 	s.resizeRedrawMu.Lock()
 	defer s.resizeRedrawMu.Unlock()
-	return s.ignoreNextPTYOutput
+	if !s.ignoreNextPTYOutput {
+		return false
+	}
+	if bytes.IndexByte(data, 0x1b) >= 0 {
+		return true
+	}
+	if bytes.IndexAny(data, "\r\n") >= 0 {
+		s.ignoreNextPTYOutput = false
+		return false
+	}
+	s.ignoreNextPTYOutput = false
+	return false
 }
 
 func (s *localSession) emuAltScreenActive() (bool, bool) {
@@ -552,7 +563,7 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	s.emuMu.Lock()
 	prevCols := s.cols
 	prevRows := s.rows
-	if !s.allowRemoteResize && (cols < prevCols || rows < prevRows) {
+	if !s.allowRemoteResize && (cols != prevCols || rows != prevRows) {
 		s.armIgnoreNextPTYOutput()
 	} else {
 		s.clearIgnoredPTYOutput()

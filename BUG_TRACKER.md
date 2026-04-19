@@ -122,8 +122,10 @@ Required status values:
 - Investigation notes:
   - The previous tests only covered quiet shrink/expand cases and missed the destructive case where new post-shrink output pushed preserved rows into scrollback.
   - That still missed the real interactive SIGWINCH path. A separate helper-process regression with a real controlling PTY reproduced the exact user-visible failure: expand first restored the wide content, then a later render collapsed it back to a cropped prompt-at-bottom view.
-  - The current fix work is moving preservation earlier in the resize path and hardening the local-session merge model against destructive resize redraws from interactive shells.
+  - The fix now keeps resize-redraw suppression active across ANSI redraw traffic from interactive shells and only releases it for actual non-redraw output or explicit user input. That preserves the wide screen image across shrink/expand without dropping ordinary post-resize output.
 - Verification in progress:
+  - `go test -count=1 ./internal/session -run 'TestResizeKeepsSessionResponsive|TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput|TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput'`
+  - `go test -count=1 ./internal/attach -run TestMultiAttachHeadlessResizePropagatesToPTY`
   - `go test -count=20 ./internal/session -run 'TestHostSIGWINCH(PreservesInteractiveWideOutputWithoutInput|PreservesScrolledWideOutputWithoutInput|HelperProcess)'`
   - `go test -count=1 ./internal/session -run 'TestHostSIGWINCHResizesLocalPTY|TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput|TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput|TestHostResizePreservesWideScreenWithoutInput|TestHostResizePreservesWideScreenWithBottomCursorWithoutInput|TestHostResizePreservesScrolledWideOutputWithoutInput|TestHostResizePreservesScrolledWideOutputWithTabBarVisible|TestHostResizePreservesWideContentAcrossShrinkAndExpand|TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow|TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput|TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand|TestHostShrinkHidesPreservedRowsUntilLocalPTYExpands'`
   - Full package and full-repo gates are still pending after the new real-SIGWINCH regression landed.
