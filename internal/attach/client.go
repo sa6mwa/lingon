@@ -1583,18 +1583,32 @@ func (c *Client) desktopNotificationsEnabled() bool {
 	return !strings.HasPrefix(strings.TrimSpace(c.Endpoint), "local://")
 }
 
+func (c *Client) ensureDesktopNotifier() desktopnotify.Notifier {
+	if c.DisableDesktopNotifications || !c.desktopNotificationsEnabled() {
+		return nil
+	}
+	if c.DesktopNotifier == nil {
+		c.DesktopNotifier = desktopnotify.New()
+	}
+	return c.DesktopNotifier
+}
+
 func (c *Client) notifyDesktop(wall *protocolpb.Wall) {
-	if wall == nil || c.DisableDesktopNotifications || c.DesktopNotifier == nil || !c.desktopNotificationsEnabled() {
+	if wall == nil {
 		return
 	}
 	if !desktopnotify.IsInactivityWall(wall) {
+		return
+	}
+	notifier := c.ensureDesktopNotifier()
+	if notifier == nil {
 		return
 	}
 	label := strings.TrimSpace(wall.GetSourceSessionId())
 	if label == "" {
 		label = "Lingon"
 	}
-	_ = c.DesktopNotifier.Notify(c.runCtx, desktopnotify.Request{
+	_ = notifier.Notify(c.runCtx, desktopnotify.Request{
 		Title: label,
 		Body:  "inactive",
 	})

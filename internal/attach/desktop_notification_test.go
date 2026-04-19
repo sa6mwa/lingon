@@ -18,6 +18,31 @@ func (n *recordingNotifier) Notify(_ context.Context, req desktopnotify.Request)
 	return nil
 }
 
+func TestClientHandleWallUsesNotifierFactoryWhenUnset(t *testing.T) {
+	notifier := &recordingNotifier{}
+	restore := desktopnotify.SetFactoryForTesting(func() desktopnotify.Notifier { return notifier })
+	defer restore()
+
+	client := &Client{
+		Endpoint: "https://relay.example/v1",
+		Stdout:   io.Discard,
+		runCtx:   context.Background(),
+	}
+
+	client.handleWall(&protocolpb.Wall{
+		Message:         "session-a inactive",
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: "session-a",
+	})
+
+	if len(notifier.requests) != 1 {
+		t.Fatalf("expected one desktop notification from factory-backed notifier, got %d", len(notifier.requests))
+	}
+	if notifier.requests[0].Title != "session-a" || notifier.requests[0].Body != "inactive" {
+		t.Fatalf("unexpected notification %+v", notifier.requests[0])
+	}
+}
+
 func TestClientNotifyDesktopForRemoteInactivityWall(t *testing.T) {
 	notifier := &recordingNotifier{}
 	client := &Client{

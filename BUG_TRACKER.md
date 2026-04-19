@@ -264,10 +264,37 @@ Required status values:
 - Status: `resolved`
 - Area: `android`, `tests`, `tooling`
 - Summary: Local Android integration runs should reuse a running emulator and reset app state between cases instead of paying repeated emulator boot cost.
+- Report:
+  The integration runner was cold-booting or forcing full environment restart cost too often, making Android verification much slower than necessary.
+- Repro:
+  1. Run `make integration-test` from `android/`.
+  2. Let the script complete.
+  3. Run it again.
+  4. Observe that the previous emulator was killed at script exit, so the next run cold-boots again.
+- Regression coverage:
+  - Script-level verification remains live-run based; there is no shell test harness for the runner.
+- Implementation notes:
+  - `android/scripts/run-integration-tests.sh` now keeps a script-started emulator alive by default.
+  - The runner resets `systems.pkt.lingon` and `systems.pkt.lingon.test` state between per-test instrumentation invocations and clears device-side test artifacts before each case.
+  - `adb reverse --remove-all` is issued before re-establishing the harness port mapping so reuse does not accumulate stale reverse mappings.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh`
+  - Code-path review confirming:
+    - cleanup only kills the emulator when `LINGON_IT_KEEP_EMULATOR=0`
+    - the per-test loop resets app state before each Gradle instrumentation invocation
+    - harness restarts remain limited to tests that actually need different backend topology
+  - Live emulator verification on `emulator-5554`:
+    - `env LINGON_IT_ONLY=top_bar_menu_is_accessible ./scripts/run-integration-tests.sh`
+    - the same command immediately after
+    - both runs passed on the same running emulator
+    - the second run did not print `Starting emulator ...`, confirming reuse
+    - the runner printed `Resetting Android app state...` before the instrumentation case on both runs
+- Remaining cost:
+  - The runner still invokes `connectedDebugAndroidTest` once per test method, so Gradle/instrumentation startup overhead remains even though emulator reboot cost is now removed by default.
 
 ### B-010 Test runs leak real desktop notifications to the developer session
 
-- Status: `open`
+- Status: `resolved`
 - Area: `tests`, `desktopnotify`, `session`, `attach`
 - Summary: Test and end-to-end runs must never emit real desktop notifications to the developer’s desktop session.
 - Report:
@@ -279,34 +306,22 @@ Required status values:
   - The recent `make test-webui` output strongly points at wall/inactivity tests in `internal/session` and `internal/attach`, not generic chromedp/browser automation itself.
   - `Runner.fireLocalWallNotification` still falls back to `desktopnotify.New()` whenever `Options.DesktopNotifier` is nil and `DisableDesktopNotifications` is false.
   - PTY harness defaults use a noop notifier, so the remaining leak is likely from test paths that instantiate `Runner` or attach views without an injected notifier or explicit disable flag.
-- Required fix:
-  - Identify every test runner path that can hit wall/inactivity notifications.
-  - Force those paths onto noop/recording notifiers or explicit `DisableDesktopNotifications`.
-  - Add a regression proving test helpers do not reach the real notifier.
-- Report:
-  The current runner imposes a heavy time cost because the emulator keeps getting restarted and the whole environment is reinitialized more often than necessary.
-- Repro:
-  1. Run `make integration-test` from `android/`.
-  2. Let the script complete.
-  3. Run it again.
-  4. Observe that the previous emulator was killed at script exit, so the next run cold-boots again.
 - Regression coverage:
-  - Script-level verification is currently manual; there is no automated shell test harness for the integration runner yet.
+  - `internal/session.TestRunnerLocalWallNotificationUsesNotifierFactoryWhenUnset`
+  - `internal/attach.TestClientHandleWallUsesNotifierFactoryWhenUnset`
+  - package-wide reruns of `internal/session` and `internal/attach` wall/inactivity paths under forced noop notifier
 - Implementation notes:
-  - `android/scripts/run-integration-tests.sh` now keeps a script-started emulator alive by default.
-  - The runner now resets `systems.pkt.lingon` and `systems.pkt.lingon.test` state between per-test instrumentation invocations and clears device-side test artifacts before each case.
-  - `adb reverse --remove-all` is issued before re-establishing the harness port mapping so reuse does not accumulate stale reverse mappings.
+  - `internal/desktopnotify.New()` now goes through a swappable factory so test binaries can force a noop notifier.
+  - `internal/session` and `internal/attach` install a package-wide noop notifier in `TestMain`, so any fallback notifier allocation in those test binaries stays local and silent.
+  - Direct regression tests cover the previously unsafe fallback paths where session or attach code reached for `desktopnotify.New()` without an injected notifier.
+  - `internal/attach.Client` now lazily resolves the notifier in the actual notification path, so the fallback is testable and consistent.
 - Verification:
-  - `bash -n android/scripts/run-integration-tests.sh`
-  - Code-path review of the runner logic confirming:
-    - cleanup only kills the emulator when `LINGON_IT_KEEP_EMULATOR=0`
-    - per-test loop resets app state before each Gradle instrumentation invocation
-    - harness restarts remain limited to the tests that actually need different backend topology
-  - Live emulator verification on `emulator-5554`:
-    - first run: `env LINGON_IT_ONLY=top_bar_menu_is_accessible ./scripts/run-integration-tests.sh`
-    - second run: same command immediately after
-    - both runs passed on the same running emulator
-    - the second run did not print `Starting emulator ...`, confirming reuse
-    - the runner printed `Resetting Android app state...` before the instrumentation case on both runs
-- Remaining cost:
-  - The runner still invokes `connectedDebugAndroidTest` once per test method, so Gradle/instrumentation startup overhead remains even though emulator reboot cost is now removed by default.
+  - `go test -count=1 ./internal/session -run 'Test(RunnerLocalWallNotificationUsesNotifierFactoryWhenUnset|LocalWallInactivityShowsModalOnOtherLocalTabAndDesktopNotification|RelayBacked.*Wall.*|HostSIGWINCHPsAuxAdvancePreservesExpandedScreen|HostSIGWINCHPromptAdvancePreservesExpandedMixedWidthScreen)'`
+  - `go test -count=1 ./internal/attach -run 'Test(ClientHandleWallUsesNotifierFactoryWhenUnset|AttachHonorsRetryAfter|AttachWallModalShowsWrappedLongMessage|MultiAttachHeadlessRoutedStatusStaysOnActiveSession)'`
+  - `go test -count=1 ./internal/session`
+  - `go test -count=1 ./internal/attach`
+  - `make test-webui`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`

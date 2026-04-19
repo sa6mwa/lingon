@@ -18,9 +18,28 @@ type Notifier interface {
 	Notify(context.Context, Request) error
 }
 
+var newFactory = func() Notifier {
+	return newNotifier()
+}
+
 // New constructs an environment-aware desktop notifier.
 func New() Notifier {
-	return newNotifier()
+	return newFactory()
+}
+
+// SetFactoryForTesting replaces the default notifier factory until the returned
+// restore function is called. It is intended for tests that must guarantee no
+// real desktop notification backend is reached.
+func SetFactoryForTesting(factory func() Notifier) func() {
+	prev := newFactory
+	if factory == nil {
+		newFactory = func() Notifier { return nil }
+	} else {
+		newFactory = factory
+	}
+	return func() {
+		newFactory = prev
+	}
 }
 
 // IsInactivityWallMessage reports whether a wall message matches Lingon's inactivity notification shape.

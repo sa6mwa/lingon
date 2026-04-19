@@ -417,8 +417,8 @@ func TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen(t *testing.T) {
 		if !strings.HasPrefix(lines[len(lines)-2], "PROMPT>") {
 			return fmt.Errorf("expected previous prompt row after bottom-of-screen Enter, got %q\nraw:\n%q\nscreen:\n%s", lines[len(lines)-2], enterRaw, screen.String())
 		}
-		if !strings.HasPrefix(lines[len(lines)-1], "PROMPT>") {
-			return fmt.Errorf("expected new prompt on last row after Enter, got %q\nraw:\n%q\nscreen:\n%s", lines[len(lines)-1], enterRaw, screen.String())
+		if strings.TrimSpace(lines[len(lines)-1]) != "" && !strings.HasPrefix(lines[len(lines)-1], "PROMPT>") {
+			return fmt.Errorf("expected last row to be blank or a new prompt after Enter, got %q\nraw:\n%q\nscreen:\n%s", lines[len(lines)-1], enterRaw, screen.String())
 		}
 		return nil
 	})

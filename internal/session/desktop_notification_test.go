@@ -20,6 +20,32 @@ func (n *recordingNotifier) Notify(_ context.Context, req desktopnotify.Request)
 	return nil
 }
 
+func TestRunnerLocalWallNotificationUsesNotifierFactoryWhenUnset(t *testing.T) {
+	notifier := &recordingNotifier{}
+	restore := desktopnotify.SetFactoryForTesting(func() desktopnotify.Notifier { return notifier })
+	defer restore()
+
+	clk := clock.NewMock()
+	r := &Runner{
+		opts:   Options{},
+		runCtx: context.Background(),
+		clock:  clk,
+		localSessions: map[string]*localSession{
+			"s1": {id: "s1", name: "session-a", clock: clk},
+		},
+	}
+
+	r.configureLocalWallNotification("s1", time.Minute, "1m", false)
+	clk.Add(time.Minute)
+
+	if len(notifier.requests) != 1 {
+		t.Fatalf("expected one notification from factory-backed notifier, got %d", len(notifier.requests))
+	}
+	if notifier.requests[0].Title != "session-a" || notifier.requests[0].Body != "inactive" {
+		t.Fatalf("unexpected notification %+v", notifier.requests[0])
+	}
+}
+
 func TestRunnerLocalWallNotificationFiresOnceUntilActivityResets(t *testing.T) {
 	notifier := &recordingNotifier{}
 	clk := clock.NewMock()
