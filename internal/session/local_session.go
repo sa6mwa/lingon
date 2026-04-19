@@ -549,10 +549,14 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	if cols <= 0 || rows <= 0 {
 		return nil, fmt.Errorf("invalid size")
 	}
-	s.armIgnoreNextPTYOutput()
 	s.emuMu.Lock()
 	prevCols := s.cols
 	prevRows := s.rows
+	if !s.allowRemoteResize && (cols < prevCols || rows < prevRows) {
+		s.armIgnoreNextPTYOutput()
+	} else {
+		s.clearIgnoredPTYOutput()
+	}
 	prevSnap := cloneSnapshot(s.Snapshot())
 	prevPreserved, prevOriginCol, prevOriginRow := func() (*protocolpb.Snapshot, int, int) {
 		s.snapMu.RLock()

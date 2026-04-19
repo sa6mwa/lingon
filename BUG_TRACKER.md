@@ -43,6 +43,7 @@ Required status values:
   4. Observe local host PTY and outer terminal resizing.
 - Regression coverage:
   - `internal/session.TestAttachControlResizeDoesNotResizeNonHeadlessHostPTY`
+  - `internal/session.TestResizeKeepsSessionResponsive`
   - `internal/attach.TestMultiAttachHeadlessResizePropagatesToPTY`
   - Android unit coverage ensuring app-side resize frames are not sent
   - Connected Android instrumentation coverage partially rerun
@@ -58,6 +59,7 @@ Required status values:
   - `make test-webui`
   - `./gradlew :app:testDebugUnitTest`
   - `go test -count=1 ./internal/session -run TestAttachControlResizeDoesNotResizeNonHeadlessHostPTY`
+  - `go test -count=1 ./internal/session -run TestResizeKeepsSessionResponsive`
   - `go test -count=1 ./internal/attach -run 'TestMultiAttachHeadlessResizePropagatesToPTY|TestMultiAttachHeadlessInitialAttachSizePropagatesToPTY'`
   - Connected Android instrumentation passed on emulator for:
     - `resize_setting_default_off_does_not_resize_host`
