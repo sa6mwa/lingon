@@ -202,7 +202,7 @@ func (s *localSession) shouldIgnoreNextPTYOutput(data []byte) bool {
 	if bytes.IndexByte(data, 0x1b) >= 0 {
 		return true
 	}
-	if bytes.IndexAny(data, "\r\n") >= 0 {
+	if bytes.ContainsAny(data, "\r\n") {
 		s.ignoreNextPTYOutput = false
 		return false
 	}

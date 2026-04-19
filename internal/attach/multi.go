@@ -2089,36 +2089,6 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	}
 }
 
-func (m *MultiClient) handleResize(ctx context.Context, mu *sync.Mutex, views *map[string]*sessionView, activeID func() string) {
-	ch, stop := subscribeResizeSignals(m.DisableSignalResize)
-	defer stop()
-	resizeEvents := m.ResizeEvents
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ch:
-		case <-resizeEvents:
-		}
-		id := activeID()
-		mu.Lock()
-		view := (*views)[id]
-		mu.Unlock()
-		if view == nil || view.client == nil {
-			continue
-		}
-		cols, rows := view.client.terminalSize()
-		if cols == 0 || rows == 0 {
-			cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
-		}
-		view.client.RenderCurrent()
-		if m.SessionSource != nil || view.client.isController() {
-			_ = view.client.SendResize(ctx, cols, rows)
-		}
-	}
-}
-
 func (m *MultiClient) fetchSessions(ctx context.Context, httpURL string) ([]SessionInfo, error) {
 	if m.SessionSource != nil {
 		sessions, err := m.SessionSource(ctx)
