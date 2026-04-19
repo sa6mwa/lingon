@@ -172,6 +172,8 @@ type Runner struct {
 	renderCursorRow     int
 	renderCursorCol     int
 	renderCursorVisible bool
+	forceFullLocalMu    sync.Mutex
+	forceFullLocalNext  map[string]bool
 
 	inputTraceMu      sync.Mutex
 	inputTraceEnter   map[string]time.Time
@@ -216,7 +218,13 @@ func New(opts Options) *Runner {
 		Endpoint: opts.Endpoint,
 		Theme:    theme.TUI(resolveThemeName(opts.Theme)),
 	}})
-	return &Runner{opts: opts, clock: opts.Clock, trace: opts.Trace, compositor: compositor}
+	return &Runner{
+		opts:               opts,
+		clock:              opts.Clock,
+		trace:              opts.Trace,
+		compositor:         compositor,
+		forceFullLocalNext: make(map[string]bool),
+	}
 }
 
 func (r *Runner) runtime() *mvu.Runtime {
@@ -239,6 +247,32 @@ func (r *Runner) runtime() *mvu.Runtime {
 	}})
 	r.compositor = compositor
 	return compositor
+}
+
+func (r *Runner) markForceFullLocalRender(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	r.forceFullLocalMu.Lock()
+	if r.forceFullLocalNext == nil {
+		r.forceFullLocalNext = make(map[string]bool)
+	}
+	r.forceFullLocalNext[sessionID] = true
+	r.forceFullLocalMu.Unlock()
+}
+
+func (r *Runner) consumeForceFullLocalRender(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	r.forceFullLocalMu.Lock()
+	defer r.forceFullLocalMu.Unlock()
+	if r.forceFullLocalNext == nil {
+		return false
+	}
+	force := r.forceFullLocalNext[sessionID]
+	delete(r.forceFullLocalNext, sessionID)
+	return force
 }
 
 // SessionID returns the active session ID.
@@ -2027,6 +2061,21 @@ func (r *Runner) handleLocalOutput(stdout, stdin *os.File) func(id string, data 
 			r.forceRedraw(stdout)
 			return
 		}
+		forceFull := r.consumeForceFullLocalRender(id)
+		if forceFull {
+			r.renderCache.SetPrevSnapshot(nil)
+			activeID, _ := r.activeSession()
+			suppressTabs := r.tabSuppressed(activeID)
+			cols, rows := termSizeAny(stdout, stdin)
+			if cols <= 0 || rows <= 0 {
+				cols = int(snap.GetCols())
+				rows = int(snap.GetRows())
+			}
+			if err := r.renderHostMVU(r.runCtx, stdout, snap, cols, rows, true, suppressTabs); err != nil {
+				r.logger.Debug("session.render.failed", "err", err, "session", id)
+			}
+			return
+		}
 		if err := r.renderSnapshotWithOverlays(r.runCtx, stdout, stdin, snap); err != nil {
 			r.logger.Debug("session.render.failed", "err", err, "session", id)
 		}
@@ -3094,6 +3143,9 @@ func (r *Runner) resizeLocalSession(local *localSession, cols, rows int) {
 		}
 		return
 	}
+	// local.Resize may synchronously publish the resize snapshot; arm the full
+	// redraw for the next real PTY output after that resize snapshot.
+	r.markForceFullLocalRender(local.ID())
 	if local.publisher != nil {
 		local.publisher.Resize(cols, rows, snap)
 	}
