@@ -98,7 +98,7 @@ Required status values:
 
 ### B-003 Local PTY anti-cropping preservation still broken
 
-- Status: `in_progress`
+- Status: `resolved`
 - Area: `session`, `scrollback`, `render`
 - Summary: Shrinking the host viewport must not destroy right-side content or garble preserved history.
 - Report:
@@ -119,6 +119,8 @@ Required status values:
   - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
   - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
   - `internal/session.TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput`
+  - `internal/session.TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen`
+  - `internal/session.TestHostSIGWINCHPromptAdvancePreservesExpandedMixedWidthScreen`
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
     - `TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow`
@@ -128,15 +130,19 @@ Required status values:
 - Investigation notes:
   - The previous tests only covered quiet shrink/expand cases and missed the destructive case where new post-shrink output pushed preserved rows into scrollback.
   - That still missed the real interactive SIGWINCH path. A separate helper-process regression with a real controlling PTY reproduced the exact user-visible failure: expand first restored the wide content, then a later render collapsed it back to a cropped prompt-at-bottom view.
-  - The fix now keeps resize-redraw suppression active across ANSI redraw traffic from interactive shells and only releases it for actual non-redraw output or explicit user input. That preserves the wide screen image across shrink/expand without dropping ordinary post-resize output.
-  - The current remaining failure is stricter: after expand, even a prompt-only redraw can still corrupt the preserved framebuffer. The next regression now targets `shrink -> expand -> Enter` with a fixed deterministic wide screen so the post-expand merge can be compared against a known baseline.
-- Verification in progress:
+  - The remaining strict failure was `shrink -> expand -> Enter` after a real `bash` + `ps aux` screen. The expanded host view looked correct until later partial redraw bytes arrived; then the bottom half recropped and cursor/prompt landed on stale content.
+  - Raw PTY capture showed bash was sending partial cursor-positioned updates after `Enter`, assuming the expanded screen contents were already present. Lingon was visually restoring the preserved screen, but its emulator state still reflected the shrunken view, so those partial updates applied onto stale state and corrupted the host screen.
+  - The fix rehydrates the emulator with the same restored viewport snapshot Lingon displays on non-headless host expand, so subsequent partial PTY redraws land on the correct framebuffer.
+- Verification:
   - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
   - `go test -count=1 ./internal/session -run 'TestResizeKeepsSessionResponsive|TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput|TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput'`
   - `go test -count=1 ./internal/attach -run TestMultiAttachHeadlessResizePropagatesToPTY`
   - `go test -count=20 ./internal/session -run 'TestHostSIGWINCH(PreservesInteractiveWideOutputWithoutInput|PreservesScrolledWideOutputWithoutInput|HelperProcess)'`
-  - `go test -count=1 ./internal/session -run 'TestHostSIGWINCHResizesLocalPTY|TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput|TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput|TestHostResizePreservesWideScreenWithoutInput|TestHostResizePreservesWideScreenWithBottomCursorWithoutInput|TestHostResizePreservesScrolledWideOutputWithoutInput|TestHostResizePreservesScrolledWideOutputWithTabBarVisible|TestHostResizePreservesWideContentAcrossShrinkAndExpand|TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow|TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput|TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand|TestHostShrinkHidesPreservedRowsUntilLocalPTYExpands'`
-  - Full package and full-repo gates are still pending after the new real-SIGWINCH regression landed.
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - `make test-webui`
 
 ### B-004 Test and harness terminal isolation
 
@@ -258,6 +264,25 @@ Required status values:
 - Status: `resolved`
 - Area: `android`, `tests`, `tooling`
 - Summary: Local Android integration runs should reuse a running emulator and reset app state between cases instead of paying repeated emulator boot cost.
+
+### B-010 Test runs leak real desktop notifications to the developer session
+
+- Status: `open`
+- Area: `tests`, `desktopnotify`, `session`, `attach`
+- Summary: Test and end-to-end runs must never emit real desktop notifications to the developer’s desktop session.
+- Report:
+  During recent `make test-webui` runs, the developer still received real desktop notifications.
+- Repro:
+  1. Run `make test-webui`.
+  2. Observe real desktop notifications during wall/inactivity-related tests.
+- Investigation notes:
+  - The recent `make test-webui` output strongly points at wall/inactivity tests in `internal/session` and `internal/attach`, not generic chromedp/browser automation itself.
+  - `Runner.fireLocalWallNotification` still falls back to `desktopnotify.New()` whenever `Options.DesktopNotifier` is nil and `DisableDesktopNotifications` is false.
+  - PTY harness defaults use a noop notifier, so the remaining leak is likely from test paths that instantiate `Runner` or attach views without an injected notifier or explicit disable flag.
+- Required fix:
+  - Identify every test runner path that can hit wall/inactivity notifications.
+  - Force those paths onto noop/recording notifiers or explicit `DisableDesktopNotifications`.
+  - Add a regression proving test helpers do not reach the real notifier.
 - Report:
   The current runner imposes a heavy time cost because the emulator keeps getting restarted and the whole environment is reinitialized more often than necessary.
 - Repro:

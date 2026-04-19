@@ -242,6 +242,25 @@ func (s *localSession) setInlineOriginRow(row int) {
 	setter.SetInlineOriginRow(row)
 }
 
+func (s *localSession) loadEmulatorSnapshot(snap *protocolpb.Snapshot) {
+	if snap == nil {
+		return
+	}
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	if s.emulator == nil {
+		return
+	}
+	type snapshotLoader interface {
+		LoadSnapshot(terminal.Snapshot)
+	}
+	loader, ok := s.emulator.(snapshotLoader)
+	if !ok {
+		return
+	}
+	loader.LoadSnapshot(protocol.SnapshotFromProto(snap))
+}
+
 func inlineOriginRow(cursorRow, viewportRow, totalRows int) int {
 	if viewportRow < 1 {
 		return 0
@@ -650,6 +669,9 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	s.snapshot = cropSnapshotToViewport(prevPreserved, displayOriginCol, displayOriginRow, cols, rows)
 	snap := s.snapshot
 	s.snapMu.Unlock()
+	if cols > prevCols || rows > prevRows {
+		s.loadEmulatorSnapshot(snap)
+	}
 	return snap, nil
 }
 
@@ -1128,9 +1150,7 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				s.onPTYRead(cp)
 			}
 			filtered := s.filterOSCOutput(data)
-			if s.shouldIgnoreNextPTYOutput(filtered) {
-				continue
-			}
+			suppressResizeRedraw := s.shouldIgnoreNextPTYOutput(filtered)
 			var scrollRows []terminal.ScrollbackRow
 			s.emuMu.Lock()
 			if err := s.emulator.Write(filtered); err != nil {
@@ -1148,6 +1168,9 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				default:
 				}
 				return
+			}
+			if suppressResizeRedraw {
+				continue
 			}
 			if s.onSnapshot != nil {
 				s.onSnapshot(rawSnap)

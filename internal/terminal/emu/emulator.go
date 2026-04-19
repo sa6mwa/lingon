@@ -198,6 +198,63 @@ func (e *Emulator) Snapshot() (terminal.Snapshot, error) {
 	}, nil
 }
 
+// LoadSnapshot replaces the active emulator screen with the provided snapshot.
+func (e *Emulator) LoadSnapshot(snap terminal.Snapshot) {
+	cols := snap.Cols
+	rows := snap.Rows
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	e.flushPendingGrapheme()
+	e.cols = cols
+	e.rows = rows
+	e.main = newScreen(cols, rows)
+	e.alt = newScreen(cols, rows)
+	target := &e.main
+	if snap.Mode&terminal.SnapshotModeAltScreen != 0 {
+		target = &e.alt
+		e.scr = &e.alt
+	} else {
+		e.scr = &e.main
+	}
+	limit := cols * rows
+	if len(snap.Cells) < limit {
+		limit = len(snap.Cells)
+	}
+	copy(target.cells[:limit], snap.Cells[:limit])
+	target.cursor = snap.Cursor
+	target.savedCursor = snap.Cursor
+	if target.cursor.X < 0 {
+		target.cursor.X = 0
+	}
+	if target.cursor.Y < 0 {
+		target.cursor.Y = 0
+	}
+	if target.cursor.X >= cols {
+		target.cursor.X = cols - 1
+	}
+	if target.cursor.Y >= rows {
+		target.cursor.Y = rows - 1
+	}
+	target.savedCursor = target.cursor
+	target.scrollTop = 0
+	target.scrollBottom = rows - 1
+	e.cursorVisible = snap.CursorVisible
+	e.title = snap.Title
+	e.wrapMode = snap.Mode&terminal.SnapshotModeWrap != 0
+	e.originMode = snap.Mode&terminal.SnapshotModeOrigin != 0
+	e.insertMode = snap.Mode&terminal.SnapshotModeInsert != 0
+	e.appCursor = snap.Mode&terminal.SnapshotModeAppCursor != 0
+	e.newLineMode = false
+	e.tabStops = defaultTabs(cols)
+	e.resetAttributes()
+	e.inlineOriginRow = 0
+	e.inlineOriginSet = false
+}
+
 // AltScreenActive reports whether the emulator is currently using the alternate screen.
 func (e *Emulator) AltScreenActive() bool {
 	return e.scr == &e.alt

@@ -283,6 +283,74 @@ func TestHostSIGWINCHPromptAdvanceDoesNotCorruptPreservedScrolledScreen(t *testi
 	})
 }
 
+func TestHostSIGWINCHPromptAdvancePreservesExpandedMixedWidthScreen(t *testing.T) {
+	shell := sigwinchMixedWidthPromptShell(t)
+
+	master, slave, cmd, sess, waitErrCh := startSIGWINCHHelperHost(t, shell, 100, 12, nil)
+	defer func() {
+		_ = master.Close()
+		_ = slave.Close()
+		_ = cmd.Process.Kill()
+		select {
+		case <-waitErrCh:
+		default:
+		}
+		sess.Cancel()
+	}()
+
+	eventuallyWithClock(t, sess.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := sess.Screen()
+		screenText := screen.String()
+		if !strings.Contains(screenText, "RIGHT-29-END") || !strings.Contains(screenText, "PROMPT>") {
+			return fmt.Errorf("expected initial mixed-width scrolled screen with prompt, got:\n%s", screen.String())
+		}
+		return nil
+	})
+	baseline := append([]string(nil), sess.Screen().Lines...)
+	_ = sess.DrainRaw()
+
+	sess.Resize(40, 6)
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+	if sess.Screen().Contains("RIGHT-29-END") {
+		t.Fatalf("expected shrink to hide mixed-width right edge, got:\n%s", sess.Screen().String())
+	}
+	_ = sess.DrainRaw()
+
+	sess.Resize(100, 12)
+	waitForRawContains(t, sess, "RIGHT-29-END", 4*time.Second, 50*time.Millisecond, "expected helper host to emit restored mixed-width content after SIGWINCH expand")
+	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := sess.Screen()
+		screenText := screen.String()
+		if !strings.Contains(screenText, "RIGHT-29-END") || !strings.Contains(screenText, "PROMPT>") {
+			return fmt.Errorf("expected expand to restore mixed-width scrolled screen, got:\n%s", screen.String())
+		}
+		return nil
+	})
+	_ = sess.DrainRaw()
+
+	sess.Send("\r")
+	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := sess.Screen()
+		lines := screen.Lines
+		if len(lines) != len(baseline) {
+			return fmt.Errorf("expected %d rows after prompt advance, got %d\n%s", len(baseline), len(lines), screen.String())
+		}
+		for row := 0; row < len(baseline)-2; row++ {
+			want := baseline[row+1]
+			if lines[row] != want {
+				return fmt.Errorf("expected mixed-width preserved row %d to advance cleanly after prompt\nwant: %q\ngot:  %q\nscreen:\n%s", row+1, want, lines[row], screen.String())
+			}
+		}
+		if !strings.HasPrefix(lines[len(lines)-2], "PROMPT> ") {
+			return fmt.Errorf("expected prompt row before trailing blank, got %q\nscreen:\n%s", lines[len(lines)-2], screen.String())
+		}
+		if strings.TrimSpace(lines[len(lines)-1]) != "" {
+			return fmt.Errorf("expected trailing blank row after prompt advance, got %q\nscreen:\n%s", lines[len(lines)-1], screen.String())
+		}
+		return nil
+	})
+}
+
 func TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
@@ -333,23 +401,24 @@ func TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen(t *testing.T) {
 	_ = sess.DrainRaw()
 
 	sess.Send("\r")
+	enterRaw := waitForRawChunkContains(t, sess, "PROMPT>", 2*time.Second, 50*time.Millisecond, "expected prompt redraw after Enter")
 	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
 		screen := sess.Screen()
 		lines := screen.Lines
 		if len(lines) != len(baseline) {
-			return fmt.Errorf("expected %d rows after prompt advance, got %d\n%s", len(baseline), len(lines), screen.String())
+			return fmt.Errorf("expected %d rows after prompt advance, got %d\nraw:\n%q\n%s", len(baseline), len(lines), enterRaw, screen.String())
 		}
-		matched := 0
-		for row := 0; row < len(baseline)-1; row++ {
-			if lines[row] == baseline[row] || lines[row] == baseline[min(row+1, len(baseline)-1)] {
-				matched++
+		for row := 0; row < len(baseline)-2; row++ {
+			want := baseline[row+1]
+			if lines[row] != want {
+				return fmt.Errorf("expected ps aux row %d to advance cleanly after expand and Enter\nwant: %q\ngot:  %q\nraw:\n%q\nbefore:\n%s\nafter:\n%s", row+1, want, lines[row], enterRaw, strings.Join(baseline, "\n"), screen.String())
 			}
 		}
-		if matched < len(baseline)-3 {
-			return fmt.Errorf("expected ps aux screen to remain substantially preserved after expand and Enter; matched=%d/%d\nbefore:\n%s\nafter:\n%s", matched, len(baseline)-1, strings.Join(baseline, "\n"), screen.String())
+		if !strings.HasPrefix(lines[len(lines)-2], "PROMPT>") {
+			return fmt.Errorf("expected previous prompt row after bottom-of-screen Enter, got %q\nraw:\n%q\nscreen:\n%s", lines[len(lines)-2], enterRaw, screen.String())
 		}
-		if !screen.Contains("PROMPT>") {
-			return fmt.Errorf("expected prompt after Enter, got:\n%s", screen.String())
+		if !strings.HasPrefix(lines[len(lines)-1], "PROMPT>") {
+			return fmt.Errorf("expected new prompt on last row after Enter, got %q\nraw:\n%q\nscreen:\n%s", lines[len(lines)-1], enterRaw, screen.String())
 		}
 		return nil
 	})
@@ -552,6 +621,41 @@ done
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write sigwinch scrolled prompt shell: %v", err)
+	}
+	return path
+}
+
+func sigwinchMixedWidthPromptShell(t *testing.T) string {
+	t.Helper()
+	path := t.TempDir() + "/sigwinch-mixed-width-prompt-shell.sh"
+	const script = `#!/usr/bin/env bash
+stty -echo -icanon min 1 time 0
+cleanup() {
+  stty sane 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+for i in $(seq 1 30); do
+  if (( i % 3 == 0 )); then
+    printf 'SHORT-%02d /var/tmp/item-%02d\n' "$i" "$i"
+  elif (( i % 3 == 1 )); then
+    printf 'MID-%02d /opt/example/component-%02d with moderate text width\n' "$i" "$i"
+  else
+    printf 'WIDE-%02d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%02d-END\n' "$i" "$i"
+  fi
+done
+printf 'PROMPT> '
+
+while IFS= read -r -n1 ch; do
+  case "$ch" in
+    $'\n'|$'\r')
+      printf '\r\nPROMPT> '
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write sigwinch mixed-width prompt shell: %v", err)
 	}
 	return path
 }
