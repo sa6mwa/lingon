@@ -43,11 +43,13 @@ Required status values:
   4. Observe local host PTY and outer terminal resizing.
 - Regression coverage:
   - `internal/session.TestAttachControlResizeDoesNotResizeNonHeadlessHostPTY`
+  - `internal/attach.TestMultiAttachHeadlessResizePropagatesToPTY`
   - Android unit coverage ensuring app-side resize frames are not sent
   - Connected Android instrumentation coverage partially rerun
 - Implementation notes:
   - Android app resize sending path removed/disabled
   - Non-headless host `publisher.OnResize` now ignores remote resize
+  - Headless Lingon-owned PTYs keep resize enabled via explicit session capability and direct emulator snapshot propagation after resize
 - Verification:
   - `go test ./...`
   - `go vet ./...`
@@ -55,6 +57,8 @@ Required status values:
   - `golangci-lint run ./...`
   - `make test-webui`
   - `./gradlew :app:testDebugUnitTest`
+  - `go test -count=1 ./internal/session -run TestAttachControlResizeDoesNotResizeNonHeadlessHostPTY`
+  - `go test -count=1 ./internal/attach -run 'TestMultiAttachHeadlessResizePropagatesToPTY|TestMultiAttachHeadlessInitialAttachSizePropagatesToPTY'`
   - Connected Android instrumentation passed on emulator for:
     - `resize_setting_default_off_does_not_resize_host`
     - `resize_menu_absent_and_input_remains_blocked_without_control`

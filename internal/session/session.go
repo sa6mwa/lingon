@@ -71,6 +71,10 @@ type Options struct {
 	// DisableDesktopNotifications suppresses best-effort desktop notifications for inactivity walls.
 	DisableDesktopNotifications bool
 	DesktopNotifier             desktopnotify.Notifier
+	// AllowRemoteResize permits relay- or attach-driven resize frames to resize
+	// the underlying local PTY. This must remain false for normal host sessions
+	// and only be enabled for headless Lingon-owned PTYs.
+	AllowRemoteResize bool
 	// ToggleWallInactivityFallback handles local-only wall inactivity cycling
 	// when relay-backed toggle is unavailable.
 	ToggleWallInactivityFallback func(context.Context, string) (WallInactivityToggleResult, error)
@@ -1823,26 +1827,27 @@ func parseSessionSequenceSuffix(name string) int {
 
 func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, offline bool, tokenRefresher func(context.Context) (string, error), gate *netgate.Gate, stdout, stdin *os.File, debugRemoteInput bool) (*localSession, error) {
 	session := newLocalSession(ctx, localSessionOptions{
-		ID:              id,
-		Name:            name,
-		Shell:           r.opts.Shell,
-		Term:            r.opts.Term,
-		Cols:            r.opts.Cols,
-		Rows:            r.opts.Rows,
-		ScrollbackLines: r.opts.ScrollbackLines,
-		Respawn:         respawn,
-		Offline:         offline,
-		Logger:          r.logger,
-		Clock:           r.clock,
-		OnOutput:        r.handleLocalOutput(stdout, stdin),
-		OnPTYRead:       r.opts.OnPTYRead,
-		OnSnapshot:      r.opts.OnSnapshot,
-		OnExit:          r.handleLocalExit(stdout, stdin),
-		CursorQuery:     r.cursorQueryFunc(stdout, stdin),
-		Trace:           r.trace,
-		DefaultFg:       r.outerDefaultFg,
-		DefaultBg:       r.outerDefaultBg,
-		DefaultCursor:   r.outerDefaultCursor,
+		ID:                id,
+		Name:              name,
+		Shell:             r.opts.Shell,
+		Term:              r.opts.Term,
+		Cols:              r.opts.Cols,
+		Rows:              r.opts.Rows,
+		ScrollbackLines:   r.opts.ScrollbackLines,
+		Respawn:           respawn,
+		Offline:           offline,
+		Logger:            r.logger,
+		Clock:             r.clock,
+		OnOutput:          r.handleLocalOutput(stdout, stdin),
+		OnPTYRead:         r.opts.OnPTYRead,
+		OnSnapshot:        r.opts.OnSnapshot,
+		OnExit:            r.handleLocalExit(stdout, stdin),
+		CursorQuery:       r.cursorQueryFunc(stdout, stdin),
+		Trace:             r.trace,
+		DefaultFg:         r.outerDefaultFg,
+		DefaultBg:         r.outerDefaultBg,
+		DefaultCursor:     r.outerDefaultCursor,
+		AllowRemoteResize: r.opts.AllowRemoteResize,
 	})
 	session.SetLastActive(r.clock.Now())
 	session.setHolder(host.HostControlID)
@@ -1957,11 +1962,10 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			r.HandleSessionCommand(session.ctx, session.ID(), kind)
 		}
 		publisher.OnResize = func(cols, rows int) {
-			// Non-headless local host sessions treat remote client terminal sizes
-			// purely as viewer viewport hints. They must never accept relay-driven
-			// PTY resizes from Android/attach clients.
-			_ = cols
-			_ = rows
+			if session == nil || !session.AllowRemoteResize() {
+				return
+			}
+			r.resizeLocalSession(session, cols, rows)
 		}
 		publisher.OnControl = func(holderID string) {
 			if holderID == "" {

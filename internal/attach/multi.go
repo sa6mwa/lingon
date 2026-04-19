@@ -1595,9 +1595,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}()
 	}
 
-	go func() {
-		m.handleResize(ctx, &mu, &views, func() string { return activeID })
-	}()
+	resizeSignalCh, stopResizeSignals := subscribeResizeSignals(m.DisableSignalResize)
+	defer stopResizeSignals()
+	resizeEvents := m.ResizeEvents
 
 	reader := bufio.NewReader(stdin)
 	readCh := make(chan []byte, 1)
@@ -1660,10 +1660,45 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		client.ForceTabsVisibleOnce()
 		client.RenderCurrent()
 	}
+	processResizeEvent := func() {
+		id := activeID
+		mu.Lock()
+		view := views[id]
+		mu.Unlock()
+		if view == nil || view.client == nil {
+			return
+		}
+		cols, rows := view.client.terminalSize()
+		if cols == 0 || rows == 0 {
+			cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+		}
+		view.client.RenderCurrent()
+		if m.SessionSource != nil || view.client.isController() {
+			_ = view.client.SendResize(ctx, cols, rows)
+		}
+	}
+	drainPendingResize := func() {
+		for {
+			handled := false
+			select {
+			case <-resizeSignalCh:
+				processResizeEvent()
+				handled = true
+			case <-resizeEvents:
+				processResizeEvent()
+				handled = true
+			default:
+			}
+			if !handled {
+				return
+			}
+		}
+	}
 	flushPending := func() bool {
 		if len(pending) == 0 {
 			return true
 		}
+		drainPendingResize()
 		mu.Lock()
 		view := views[activeID]
 		if view == nil && len(views) == 1 {
@@ -1740,6 +1775,12 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				return err
 			}
 			return ctx.Err()
+		case <-resizeSignalCh:
+			processResizeEvent()
+			continue
+		case <-resizeEvents:
+			processResizeEvent()
+			continue
 		case err := <-readErrCh:
 			if err != io.EOF {
 				m.Logger.Debug("attach.stdin.read.failed", "err", err)

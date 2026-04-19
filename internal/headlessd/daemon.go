@@ -268,6 +268,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		Clock:                       d.clock,
 		DisableDesktopNotifications: d.opts.DisableDesktopNotifications,
 		DesktopNotifier:             d.desktopNotifier,
+		AllowRemoteResize:           true,
 		OnPublishFrame:              d.handlePublishedFrame,
 		OnPublishStatus:             d.handlePublishStatus,
 		OnPublishWall:               d.handlePublishWall,

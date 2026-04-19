@@ -50,14 +50,14 @@ type localSession struct {
 	emuMu    sync.Mutex
 	emulator terminal.Emulator
 
-	snapMu   sync.RWMutex
-	snapshot *protocolpb.Snapshot
-	preserved *protocolpb.Snapshot
+	snapMu            sync.RWMutex
+	snapshot          *protocolpb.Snapshot
+	preserved         *protocolpb.Snapshot
 	preserveOriginCol int
 	preserveOriginRow int
-	scrollMu sync.RWMutex
-	scroll   []terminal.ScrollbackRow
-	pending  []terminal.ScrollbackRow
+	scrollMu          sync.RWMutex
+	scroll            []terminal.ScrollbackRow
+	pending           []terminal.ScrollbackRow
 
 	holderMu sync.Mutex
 	holderID string
@@ -75,6 +75,8 @@ type localSession struct {
 	logger pslog.Logger
 	clock  clock.Clock
 	trace  *trace.Writer
+
+	allowRemoteResize bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -99,7 +101,7 @@ type localSession struct {
 	remoteInputCh chan []byte
 	outputNotify  chan struct{}
 
-	resizeRedrawMu     sync.Mutex
+	resizeRedrawMu      sync.Mutex
 	ignoreNextPTYOutput bool
 }
 
@@ -314,26 +316,27 @@ func analyzeRecentInput(data []byte) recentInputSignals {
 }
 
 type localSessionOptions struct {
-	ID              string
-	Name            string
-	Shell           string
-	Term            string
-	Cols            int
-	Rows            int
-	ScrollbackLines int
-	Respawn         bool
-	Offline         bool
-	Logger          pslog.Logger
-	Clock           clock.Clock
-	OnOutput        func(id string, data []byte, snap *protocolpb.Snapshot)
-	OnPTYRead       func([]byte)
-	OnSnapshot      func(terminal.Snapshot)
-	OnExit          func(id string, err error)
-	CursorQuery     func(terminal.Snapshot) (row, col int, ok bool)
-	Trace           *trace.Writer
-	DefaultFg       string
-	DefaultBg       string
-	DefaultCursor   string
+	ID                string
+	Name              string
+	Shell             string
+	Term              string
+	Cols              int
+	Rows              int
+	ScrollbackLines   int
+	Respawn           bool
+	Offline           bool
+	Logger            pslog.Logger
+	Clock             clock.Clock
+	OnOutput          func(id string, data []byte, snap *protocolpb.Snapshot)
+	OnPTYRead         func([]byte)
+	OnSnapshot        func(terminal.Snapshot)
+	OnExit            func(id string, err error)
+	CursorQuery       func(terminal.Snapshot) (row, col int, ok bool)
+	Trace             *trace.Writer
+	DefaultFg         string
+	DefaultBg         string
+	DefaultCursor     string
+	AllowRemoteResize bool
 }
 
 func newLocalSession(parent context.Context, opts localSessionOptions) *localSession {
@@ -347,27 +350,28 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 		clk = clock.New()
 	}
 	session := &localSession{
-		id:              opts.ID,
-		name:            opts.Name,
-		shell:           opts.Shell,
-		term:            opts.Term,
-		cols:            opts.Cols,
-		rows:            opts.Rows,
-		scrollbackLines: opts.ScrollbackLines,
-		respawn:         opts.Respawn,
-		offline:         opts.Offline,
-		logger:          logger,
-		clock:           clk,
-		ctx:             ctx,
-		cancel:          cancel,
-		onOutput:        opts.OnOutput,
-		onPTYRead:       opts.OnPTYRead,
-		onSnapshot:      opts.OnSnapshot,
-		onExit:          opts.OnExit,
-		cursorQuery:     opts.CursorQuery,
-		trace:           opts.Trace,
-		remoteInputCh:   make(chan []byte, 256),
-		outputNotify:    make(chan struct{}, 1),
+		id:                opts.ID,
+		name:              opts.Name,
+		shell:             opts.Shell,
+		term:              opts.Term,
+		cols:              opts.Cols,
+		rows:              opts.Rows,
+		scrollbackLines:   opts.ScrollbackLines,
+		respawn:           opts.Respawn,
+		offline:           opts.Offline,
+		logger:            logger,
+		clock:             clk,
+		ctx:               ctx,
+		cancel:            cancel,
+		onOutput:          opts.OnOutput,
+		onPTYRead:         opts.OnPTYRead,
+		onSnapshot:        opts.OnSnapshot,
+		onExit:            opts.OnExit,
+		cursorQuery:       opts.CursorQuery,
+		trace:             opts.Trace,
+		allowRemoteResize: opts.AllowRemoteResize,
+		remoteInputCh:     make(chan []byte, 256),
+		outputNotify:      make(chan struct{}, 1),
 	}
 	if opts.Cols > 0 && opts.Rows > 0 {
 		session.snapshot = &protocolpb.Snapshot{
@@ -390,6 +394,10 @@ func (s *localSession) ID() string {
 
 func (s *localSession) Name() string {
 	return s.name
+}
+
+func (s *localSession) AllowRemoteResize() bool {
+	return s != nil && s.allowRemoteResize
 }
 
 func (s *localSession) SetPublisher(p *host.Publisher) {
@@ -574,6 +582,19 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	}
 	if snapErr != nil {
 		return nil, snapErr
+	}
+	if s.onSnapshot != nil {
+		s.onSnapshot(rawSnap)
+	}
+	if s.allowRemoteResize {
+		snap := protocol.SnapshotToProto(rawSnap)
+		s.snapMu.Lock()
+		s.snapshot = snap
+		s.preserved = cloneSnapshot(snap)
+		s.preserveOriginCol = 0
+		s.preserveOriginRow = 0
+		s.snapMu.Unlock()
+		return snap, nil
 	}
 	if prevPreserved == nil {
 		if prevSnap != nil {
