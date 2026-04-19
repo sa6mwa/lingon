@@ -407,47 +407,6 @@ func TestHostSIGWINCHTruncatedRedrawPreservesWideTails(t *testing.T) {
 	})
 }
 
-func TestHostSIGWINCHFirstPostResizeInputForcesFullRedraw(t *testing.T) {
-	if _, err := os.Stat("/bin/bash"); err != nil {
-		t.Skip("bash not available")
-	}
-	shell := sigwinchBashWrapper(t)
-
-	master, slave, cmd, sess, waitErrCh := startSIGWINCHHelperHost(t, shell, 100, 12, []string{"PS1=PROMPT> "})
-	defer func() {
-		_ = master.Close()
-		_ = slave.Close()
-		_ = cmd.Process.Kill()
-		select {
-		case <-waitErrCh:
-		default:
-		}
-		sess.Cancel()
-	}()
-
-	eventuallyWithClock(t, sess.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
-		if !sess.Screen().Contains("PROMPT> ") {
-			return fmt.Errorf("expected initial prompt, got:\n%s", sess.Screen().String())
-		}
-		return nil
-	})
-	_ = sess.DrainRaw()
-
-	sess.Resize(40, 6)
-	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
-	_ = sess.DrainRaw()
-
-	sess.Resize(100, 12)
-	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
-	_ = sess.DrainRaw()
-
-	sess.Send("echo AFTER_RESIZE\n")
-	raw := waitForRawChunkContains(t, sess, "AFTER_RESIZE", 4*time.Second, 50*time.Millisecond, "expected output after resize cycle")
-	if !strings.Contains(raw, "\x1b[2J\x1b[H") {
-		t.Fatalf("expected first post-resize input to force a full redraw, got raw=%q", raw)
-	}
-}
-
 func TestHostSIGWINCHHelperProcess(t *testing.T) {
 	if os.Getenv("LINGON_SIGWINCH_HELPER") != "1" {
 		t.Skip("helper process only")

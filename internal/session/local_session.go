@@ -598,10 +598,10 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	if snapErr != nil {
 		return nil, snapErr
 	}
-	if s.onSnapshot != nil {
-		s.onSnapshot(rawSnap)
-	}
 	if s.allowRemoteResize {
+		if s.onSnapshot != nil {
+			s.onSnapshot(rawSnap)
+		}
 		snap := protocol.SnapshotToProto(rawSnap)
 		s.snapMu.Lock()
 		s.snapshot = snap

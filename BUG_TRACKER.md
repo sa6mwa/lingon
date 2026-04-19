@@ -119,7 +119,6 @@ Required status values:
   - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
   - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
   - `internal/session.TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput`
-  - `internal/session.TestHostSIGWINCHFirstPostResizeInputForcesFullRedraw`
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
     - `TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow`
@@ -131,10 +130,8 @@ Required status values:
   - That still missed the real interactive SIGWINCH path. A separate helper-process regression with a real controlling PTY reproduced the exact user-visible failure: expand first restored the wide content, then a later render collapsed it back to a cropped prompt-at-bottom view.
   - The fix now keeps resize-redraw suppression active across ANSI redraw traffic from interactive shells and only releases it for actual non-redraw output or explicit user input. That preserves the wide screen image across shrink/expand without dropping ordinary post-resize output.
   - The current remaining failure is stricter: after expand, even a prompt-only redraw can still corrupt the preserved framebuffer. The next regression now targets `shrink -> expand -> Enter` with a fixed deterministic wide screen so the post-expand merge can be compared against a known baseline.
-  - The practical mitigation now in place is to invalidate the host render baseline for the first real local-output frame after a resize. That forces a full redraw instead of delta-rendering against a pre-resize framebuffer, which is where the stale right-side fragments and cursor overlap were surfacing in real use.
 - Verification in progress:
-  - `go test -count=1 ./internal/session -run 'TestHostSIGWINCHFirstPostResizeInputForcesFullRedraw|TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput|TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput|TestHostResizePreservesWideContentAcrossShrinkAndExpand|TestHostShrinkHidesPreservedRowsUntilLocalPTYExpands'`
-  - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails|FirstPostResizeInputForcesFullRedraw)'`
+  - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
   - `go test -count=1 ./internal/session -run 'TestResizeKeepsSessionResponsive|TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput|TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput'`
   - `go test -count=1 ./internal/attach -run TestMultiAttachHeadlessResizePropagatesToPTY`
   - `go test -count=20 ./internal/session -run 'TestHostSIGWINCH(PreservesInteractiveWideOutputWithoutInput|PreservesScrolledWideOutputWithoutInput|HelperProcess)'`
