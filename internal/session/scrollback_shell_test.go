@@ -15,6 +15,7 @@ stty -echo -icanon min 1 time 0
 cleanup() {
   stty sane 2>/dev/null || true
 }
+
 trap cleanup EXIT INT TERM
 
 prompt='PROMPT> '
@@ -109,6 +110,87 @@ done
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write scrollback shell wrapper: %v", err)
+	}
+	return scriptPath
+}
+
+func preservedWideScreenShell(t *testing.T) string {
+	t.Helper()
+	scriptPath := filepath.Join(t.TempDir(), "preserved-wide-screen.sh")
+	const script = `#!/usr/bin/env bash
+set -u
+stty -echo -icanon min 1 time 0
+cleanup() {
+  stty sane 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+printf '\033[H\033[2J'
+for i in $(seq 1 12); do
+  printf '\033[%d;1HROW-%02d-LEFT-1234567890-MID-abcdefghij-RIGHT-%02d' "$i" "$i" "$i"
+done
+printf '\033[1;1H'
+
+while :; do
+  sleep 1
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write preserved wide screen shell: %v", err)
+	}
+	return scriptPath
+}
+
+func preservedWideScreenBottomCursorShell(t *testing.T) string {
+	t.Helper()
+	scriptPath := filepath.Join(t.TempDir(), "preserved-wide-screen-bottom-cursor.sh")
+	const script = `#!/usr/bin/env bash
+set -u
+stty -echo -icanon min 1 time 0
+cleanup() {
+  stty sane 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+printf '\033[H\033[2J'
+for i in $(seq 1 11); do
+  printf '\033[%d;1HROW-%02d-LEFT-1234567890-MID-abcdefghij-RIGHT-%02d' "$i" "$i" "$i"
+done
+printf '\033[12;1HPROMPT> '
+
+while :; do
+  sleep 1
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write preserved bottom-cursor shell: %v", err)
+	}
+	return scriptPath
+}
+
+func preservedWideScrollOutputShell(t *testing.T) string {
+	t.Helper()
+	scriptPath := filepath.Join(t.TempDir(), "preserved-wide-scroll-output.sh")
+	const script = `#!/usr/bin/env bash
+set -u
+stty -echo -icanon min 1 time 0
+cleanup() {
+  stty sane 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+printf '\033[H\033[2J'
+for i in $(seq 1 30); do
+  printf 'ROW-%02d-LEFT-1234567890-MID-abcdefghij-RIGHT-%02d\r\n' "$i" "$i"
+done
+printf 'PROMPT> '
+
+while :; do
+  sleep 1
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write preserved wide scroll output shell: %v", err)
 	}
 	return scriptPath
 }

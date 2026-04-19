@@ -245,11 +245,11 @@ func (v *testPTYView) Eventually(timeout, step time.Duration, check func(testScr
 	var lastErr error
 	for time.Now().Before(deadline) {
 		scr := v.screen()
-		if err := check(scr); err == nil {
+		err := check(scr)
+		if err == nil {
 			return
-		} else {
-			lastErr = err
 		}
+		lastErr = err
 		time.Sleep(step)
 	}
 	if lastErr != nil {

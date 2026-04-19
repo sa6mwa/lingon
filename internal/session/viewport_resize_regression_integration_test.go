@@ -286,6 +286,226 @@ func TestHostResizePreservesWideContentAcrossShrinkAndExpand(t *testing.T) {
 	})
 }
 
+func TestHostResizePreservesWideScreenWithoutInput(t *testing.T) {
+	shell := preservedWideScreenShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-wide-screen",
+		SessionName: "viewport-preserve-wide-screen",
+		Shell:       shell,
+		Cols:        60,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForHost(t, h, "viewport-preserve-wide-screen", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("RIGHT-12") {
+			return fmt.Errorf("expected initial wide screen content, got:\n%s", host.Screen().String())
+		}
+		return nil
+	})
+	_ = host.DrainRaw()
+
+	host.Resize(20, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	if host.Screen().Contains("RIGHT-06") || host.Screen().Contains("RIGHT-12") {
+		t.Fatalf("expected shrink to hide right edge on wide stationary screen, got:\n%s", host.Screen().String())
+	}
+	_ = host.DrainRaw()
+
+	host.Resize(60, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "RIGHT-06") || !strings.Contains(screen, "RIGHT-12") {
+			return fmt.Errorf("expected expand to restore wide stationary screen without new input, got:\n%s", screen)
+		}
+		return nil
+	})
+	waitForRawContains(
+		t,
+		host,
+		"RIGHT-12",
+		2*time.Second,
+		50*time.Millisecond,
+		"expected Lingon to emit restored wide content after expand without relying on terminal-side preservation",
+	)
+}
+
+func TestHostResizePreservesWideScreenWithBottomCursorWithoutInput(t *testing.T) {
+	shell := preservedWideScreenBottomCursorShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-wide-screen-bottom-cursor",
+		SessionName: "viewport-preserve-wide-screen-bottom-cursor",
+		Shell:       shell,
+		Cols:        60,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForHost(t, h, "viewport-preserve-wide-screen-bottom-cursor", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "RIGHT-11") || !strings.Contains(screen, "PROMPT>") {
+			return fmt.Errorf("expected initial wide screen with bottom prompt, got:\n%s", screen)
+		}
+		return nil
+	})
+	_ = host.DrainRaw()
+
+	host.Resize(20, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	screenAfterShrink := host.Screen().String()
+	if strings.Contains(screenAfterShrink, "RIGHT-11") {
+		t.Fatalf("expected shrink to hide right edge on bottom-cursor screen, got:\n%s", screenAfterShrink)
+	}
+	_ = host.DrainRaw()
+
+	host.Resize(60, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "RIGHT-11") || !strings.Contains(screen, "PROMPT>") {
+			return fmt.Errorf("expected expand to restore wide bottom-cursor screen without new input, got:\n%s", screen)
+		}
+		return nil
+	})
+	waitForRawContains(
+		t,
+		host,
+		"RIGHT-11",
+		2*time.Second,
+		50*time.Millisecond,
+		"expected Lingon to emit restored wide content after expand on bottom-cursor screen",
+	)
+}
+
+func TestHostResizePreservesScrolledWideOutputWithoutInput(t *testing.T) {
+	shell := preservedWideScrollOutputShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-wide-scroll-output",
+		SessionName: "viewport-preserve-wide-scroll-output",
+		Shell:       shell,
+		Cols:        60,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForHost(t, h, "viewport-preserve-wide-scroll-output", 3*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "ROW-30") || !strings.Contains(screen, "RIGHT-30") || !strings.Contains(screen, "PROMPT>") {
+			return fmt.Errorf("expected initial scrolled wide output with prompt, got:\n%s", screen)
+		}
+		return nil
+	})
+	_ = host.DrainRaw()
+
+	host.Resize(20, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	screenAfterShrink := host.Screen().String()
+	if strings.Contains(screenAfterShrink, "RIGHT-30") {
+		t.Fatalf("expected shrink to hide right edge on scrolled wide output, got:\n%s", screenAfterShrink)
+	}
+	_ = host.DrainRaw()
+
+	host.Resize(60, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "RIGHT-30") || !strings.Contains(screen, "PROMPT>") {
+			return fmt.Errorf("expected expand to restore scrolled wide output without new input, got:\n%s", screen)
+		}
+		return nil
+	})
+	waitForRawContains(
+		t,
+		host,
+		"RIGHT-30",
+		2*time.Second,
+		50*time.Millisecond,
+		"expected Lingon to emit restored scrolled wide content after expand without new input",
+	)
+}
+
+func TestHostResizePreservesScrolledWideOutputWithTabBarVisible(t *testing.T) {
+	shell := preservedWideScrollOutputShell(t)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-wide-scroll-output-tabs",
+		SessionName: "viewport-preserve-wide-scroll-output-tabs",
+		Shell:       shell,
+		Cols:        60,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	peer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-preserve-wide-scroll-output-peer",
+		SessionName: "viewport-preserve-wide-scroll-output-peer",
+		Shell:       "/bin/sh",
+		Cols:        60,
+		Rows:        12,
+	})
+	t.Cleanup(peer.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	eventuallyWithClock(t, h.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
+		row := host.Screen().Row(0)
+		if !strings.Contains(row, "viewport-preserve-wide-scroll-output-tabs") {
+			return fmt.Errorf("expected tab bar visible before resize, got row=%q\nscreen:\n%s", row, host.Screen().String())
+		}
+		if !host.Screen().Contains("RIGHT-30") || !host.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("expected initial scrolled wide output with prompt, got:\n%s", host.Screen().String())
+		}
+		return nil
+	})
+	_ = host.DrainRaw()
+
+	host.Resize(20, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	if host.Screen().Contains("RIGHT-30") {
+		t.Fatalf("expected shrink to hide right edge with tab bar visible, got:\n%s", host.Screen().String())
+	}
+	_ = host.DrainRaw()
+
+	host.Resize(60, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "RIGHT-30") || !strings.Contains(screen, "PROMPT>") {
+			return fmt.Errorf("expected expand to restore scrolled wide output with tab bar visible, got:\n%s", screen)
+		}
+		return nil
+	})
+	waitForRawContains(
+		t,
+		host,
+		"RIGHT-30",
+		2*time.Second,
+		50*time.Millisecond,
+		"expected Lingon to emit restored scrolled wide content after expand with tab bar visible",
+	)
+}
+
 func TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
 
@@ -416,8 +636,8 @@ func TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand(t *testing
 	host.Resize(40, 6)
 	advanceTestClock(host.Clock(), 200*time.Millisecond)
 
-	if host.Screen().Contains("KEEP-12") {
-		t.Fatalf("expected shrink to hide lower viewport rows, got:\n%s", host.Screen().String())
+	if !host.Screen().Contains("KEEP-12") || !host.Screen().Contains("PROMPT>") {
+		t.Fatalf("expected shrink to keep cursor-side lower rows visible, got:\n%s", host.Screen().String())
 	}
 
 	host.Resize(40, 12)
@@ -442,8 +662,9 @@ func TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand(t *testing
 	}
 
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		if !host.Screen().Contains("KEEP-12") {
-			return fmt.Errorf("expected preserved lower viewport content to remain reachable in scrollback, got:\n%s", host.Screen().String())
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "KEEP-3") || !strings.Contains(screen, "KEEP-8") {
+			return fmt.Errorf("expected preserved hidden rows to remain reachable in scrollback, got:\n%s", screen)
 		}
 		return nil
 	})

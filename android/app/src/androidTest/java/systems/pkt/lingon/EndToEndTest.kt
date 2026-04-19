@@ -384,9 +384,9 @@ class EndToEndTest {
             )
         }
         assertTrue(
-            "expected Android terminal to act as a camera over the host width " +
+            "expected minimum zoom to fit the host width into the viewport " +
                 "(viewCols=${info.viewCols}, hostCols=${info.cols}, ink=${render.inkLeft},${render.inkTop}..${render.inkRight},${render.inkBottom})",
-            info.viewCols in 1 until info.cols,
+            info.viewCols == info.cols,
         )
     }
 
@@ -409,9 +409,9 @@ class EndToEndTest {
             )
         }
         assertTrue(
-            "expected Android terminal to keep the share-token host width authoritative while the viewport stays narrower " +
+            "expected minimum zoom to fit the share-token host width into the viewport " +
                 "(viewCols=${info.viewCols}, hostCols=${info.cols}, ink=${render.inkLeft},${render.inkTop}..${render.inkRight},${render.inkBottom})",
-            info.viewCols in 1 until info.cols,
+            info.viewCols == info.cols,
         )
     }
 

@@ -52,6 +52,19 @@ You are collaborating with a highly opinionated Go architect. Optimize for Go-id
 - All test failures must be addressed before the task is considered done, even if a failure appears unrelated to the current change.
 - Do not leave the repo with known failing tests and describe them as “unrelated”; fix them in the same task or explicitly stop and escalate if they cannot be resolved safely.
 
+## Android verification policy (mandatory)
+- Do not run the full connected Android instrumentation suite on every change by default.
+- Use a tiered verification policy:
+  - Always run `./gradlew :app:testDebugUnitTest` for Android-touching changes.
+  - Always run `./gradlew :app:compileDebugAndroidTestKotlin` for Android-touching changes so `src/androidTest` stays buildable.
+  - Run targeted `:app:connectedDebugAndroidTest` cases for the specific Android-visible behavior that changed:
+    - UI/layout/render/pan/zoom
+    - notifications
+    - lifecycle/reconnect/background behavior
+    - relay/app/session interactions visible in the app
+  - Run the full Android integration sweep before release, and after broad terminal/render/session/relay changes that can affect multiple Android-visible behaviors at once.
+- An Android-visible bug is not considered fixed without a passing targeted instrumentation or end-to-end verification for that exact behavior.
+
 ## Repo hygiene
 - If `.golangci.yml` does not exist in repo root, create and seed it with the contents below.
 

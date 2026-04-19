@@ -92,7 +92,7 @@ Required status values:
 
 ### B-003 Local PTY anti-cropping preservation still broken
 
-- Status: `resolved`
+- Status: `in_progress`
 - Area: `session`, `scrollback`, `render`
 - Summary: Shrinking the host viewport must not destroy right-side content or garble preserved history.
 - Report:
@@ -105,6 +105,8 @@ Required status values:
   5. Observe lost right-side content and/or garbled history.
 - Regression coverage:
   - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
+  - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
+  - `internal/session.TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput`
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
     - `TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow`
@@ -113,15 +115,12 @@ Required status values:
     - `TestHostScrollbackResizeRepaintsIndicatorWithoutInput`
 - Investigation notes:
   - The previous tests only covered quiet shrink/expand cases and missed the destructive case where new post-shrink output pushed preserved rows into scrollback.
-  - The fix uses a shrink-time preserved-row queue for local sessions, so post-shrink scrollback drains substitute the pre-shrink row content only when needed, while normal scrollback remains emulator-native.
-- Verification:
-  - `go test -count=1 ./internal/session -run 'TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput'`
-  - `go test -count=1 ./internal/session -run 'TestHostResizePreservesWideContentAcrossShrinkAndExpand|TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow|TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput|TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand|TestHostResizePreservesScrollbackHistory|TestHostScrollbackResizeRepaintsIndicatorWithoutInput'`
-  - `go test ./...`
-  - `go vet ./...`
-  - `golint ./...`
-  - `golangci-lint run ./...`
-  - `make test-webui`
+  - That still missed the real interactive SIGWINCH path. A separate helper-process regression with a real controlling PTY reproduced the exact user-visible failure: expand first restored the wide content, then a later render collapsed it back to a cropped prompt-at-bottom view.
+  - The current fix work is moving preservation earlier in the resize path and hardening the local-session merge model against destructive resize redraws from interactive shells.
+- Verification in progress:
+  - `go test -count=20 ./internal/session -run 'TestHostSIGWINCH(PreservesInteractiveWideOutputWithoutInput|PreservesScrolledWideOutputWithoutInput|HelperProcess)'`
+  - `go test -count=1 ./internal/session -run 'TestHostSIGWINCHResizesLocalPTY|TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput|TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput|TestHostResizePreservesWideScreenWithoutInput|TestHostResizePreservesWideScreenWithBottomCursorWithoutInput|TestHostResizePreservesScrolledWideOutputWithoutInput|TestHostResizePreservesScrolledWideOutputWithTabBarVisible|TestHostResizePreservesWideContentAcrossShrinkAndExpand|TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow|TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput|TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand|TestHostShrinkHidesPreservedRowsUntilLocalPTYExpands'`
+  - Full package and full-repo gates are still pending after the new real-SIGWINCH regression landed.
 
 ### B-004 Test and harness terminal isolation
 
@@ -237,3 +236,36 @@ Required status values:
   - Keep the preserved merged snapshot internal to `localSession`.
   - Publish and render only the live cropped snapshot while the PTY is shrunk.
   - Rehydrate from the preserved buffer when the PTY expands again.
+
+### B-009 Android integration runner repeatedly cold-boots emulators and wastes time
+
+- Status: `resolved`
+- Area: `android`, `tests`, `tooling`
+- Summary: Local Android integration runs should reuse a running emulator and reset app state between cases instead of paying repeated emulator boot cost.
+- Report:
+  The current runner imposes a heavy time cost because the emulator keeps getting restarted and the whole environment is reinitialized more often than necessary.
+- Repro:
+  1. Run `make integration-test` from `android/`.
+  2. Let the script complete.
+  3. Run it again.
+  4. Observe that the previous emulator was killed at script exit, so the next run cold-boots again.
+- Regression coverage:
+  - Script-level verification is currently manual; there is no automated shell test harness for the integration runner yet.
+- Implementation notes:
+  - `android/scripts/run-integration-tests.sh` now keeps a script-started emulator alive by default.
+  - The runner now resets `systems.pkt.lingon` and `systems.pkt.lingon.test` state between per-test instrumentation invocations and clears device-side test artifacts before each case.
+  - `adb reverse --remove-all` is issued before re-establishing the harness port mapping so reuse does not accumulate stale reverse mappings.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh`
+  - Code-path review of the runner logic confirming:
+    - cleanup only kills the emulator when `LINGON_IT_KEEP_EMULATOR=0`
+    - per-test loop resets app state before each Gradle instrumentation invocation
+    - harness restarts remain limited to the tests that actually need different backend topology
+  - Live emulator verification on `emulator-5554`:
+    - first run: `env LINGON_IT_ONLY=top_bar_menu_is_accessible ./scripts/run-integration-tests.sh`
+    - second run: same command immediately after
+    - both runs passed on the same running emulator
+    - the second run did not print `Starting emulator ...`, confirming reuse
+    - the runner printed `Resetting Android app state...` before the instrumentation case on both runs
+- Remaining cost:
+  - The runner still invokes `connectedDebugAndroidTest` once per test method, so Gradle/instrumentation startup overhead remains even though emulator reboot cost is now removed by default.

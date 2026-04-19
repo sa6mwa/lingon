@@ -103,6 +103,14 @@ make integration-test PRESET=pixel7
 
 Artifacts (screenshots + debug info) are pulled to `android/test-artifacts/`.
 
+By default the integration runner now keeps a started emulator alive after the
+run and resets app state between individual test cases. Override with:
+
+```bash
+LINGON_IT_KEEP_EMULATOR=0 make integration-test
+LINGON_IT_RESET_APP_STATE=0 make integration-test
+```
+
 ## Emulator presets
 Use `PRESET` to select a device profile:
 ```bash

@@ -18,6 +18,7 @@ import (
 	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/pty"
+	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/terminal/emu"
 	"pkt.systems/lingon/internal/trace"
@@ -52,6 +53,8 @@ type localSession struct {
 	snapMu   sync.RWMutex
 	snapshot *protocolpb.Snapshot
 	preserved *protocolpb.Snapshot
+	preserveOriginCol int
+	preserveOriginRow int
 	scrollMu sync.RWMutex
 	scroll   []terminal.ScrollbackRow
 	pending  []terminal.ScrollbackRow
@@ -95,6 +98,9 @@ type localSession struct {
 
 	remoteInputCh chan []byte
 	outputNotify  chan struct{}
+
+	resizeRedrawMu     sync.Mutex
+	ignoreNextPTYOutput bool
 }
 
 var errPTYNotReady = errors.New("pty not initialized")
@@ -168,6 +174,27 @@ func (s *localSession) waitForOutputWall(timeout time.Duration) bool {
 	case <-s.outputNotify:
 		return true
 	}
+}
+
+func (s *localSession) armIgnoreNextPTYOutput() {
+	s.resizeRedrawMu.Lock()
+	s.ignoreNextPTYOutput = true
+	s.resizeRedrawMu.Unlock()
+}
+
+func (s *localSession) clearIgnoredPTYOutput() {
+	s.resizeRedrawMu.Lock()
+	s.ignoreNextPTYOutput = false
+	s.resizeRedrawMu.Unlock()
+}
+
+func (s *localSession) shouldIgnoreNextPTYOutput(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	s.resizeRedrawMu.Lock()
+	defer s.resizeRedrawMu.Unlock()
+	return s.ignoreNextPTYOutput
 }
 
 func (s *localSession) emuAltScreenActive() (bool, bool) {
@@ -514,15 +541,16 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	if cols <= 0 || rows <= 0 {
 		return nil, fmt.Errorf("invalid size")
 	}
+	s.armIgnoreNextPTYOutput()
 	s.emuMu.Lock()
 	prevCols := s.cols
 	prevRows := s.rows
 	prevSnap := cloneSnapshot(s.Snapshot())
-	prevPreserved := cloneSnapshot(func() *protocolpb.Snapshot {
+	prevPreserved, prevOriginCol, prevOriginRow := func() (*protocolpb.Snapshot, int, int) {
 		s.snapMu.RLock()
 		defer s.snapMu.RUnlock()
-		return s.preserved
-	}())
+		return cloneSnapshot(s.preserved), s.preserveOriginCol, s.preserveOriginRow
+	}()
 	s.cols = cols
 	s.rows = rows
 	err := s.resizePTY(cols, rows)
@@ -547,41 +575,67 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	if snapErr != nil {
 		return nil, snapErr
 	}
+	if prevPreserved == nil {
+		if prevSnap != nil {
+			prevPreserved = cloneSnapshot(prevSnap)
+		} else {
+			prevPreserved = cloneSnapshot(protocol.SnapshotToProto(rawSnap))
+		}
+	}
+	if prevSnap == nil {
+		prevSnap = cropSnapshotToViewport(prevPreserved, prevOriginCol, prevOriginRow, prevCols, prevRows)
+	}
+	relOriginCol, relOriginRow := viewportOriginForSnapshot(prevSnap, cols, rows)
+	nextOriginCol, nextOriginRow := normalizeViewportOrigin(
+		prevPreserved,
+		prevOriginCol+relOriginCol,
+		prevOriginRow+relOriginRow,
+		cols,
+		rows,
+	)
 	if (cols < prevCols || rows < prevRows) && prevSnap != nil {
 		s.setPendingPreservedScrollbackFromSnapshot(prevSnap)
-		s.appendScrollback(hiddenRowsFromSnapshot(prevSnap, rows))
+		s.appendScrollback(hiddenRowsFromViewport(prevSnap, relOriginRow, rows))
 		s.snapMu.Lock()
 		s.preserved = prevPreserved
-		s.snapshot = cropSnapshotToSize(prevSnap, cols, rows)
+		s.preserveOriginCol = nextOriginCol
+		s.preserveOriginRow = nextOriginRow
+		s.snapshot = cropSnapshotToViewport(prevPreserved, nextOriginCol, nextOriginRow, cols, rows)
 		snap := s.snapshot
 		s.snapMu.Unlock()
 		return snap, nil
 	}
-	snap := s.storeResizedSnapshot(protocol.SnapshotToProto(rawSnap), prevCols, prevRows)
+	displayOriginCol, displayOriginRow := viewportOriginForSnapshot(prevPreserved, cols, rows)
+	displayOriginCol, displayOriginRow = normalizeViewportOrigin(prevPreserved, displayOriginCol, displayOriginRow, cols, rows)
+	s.snapMu.Lock()
+	s.preserved = prevPreserved
+	s.preserveOriginCol = prevOriginCol
+	s.preserveOriginRow = prevOriginRow
+	s.snapshot = cropSnapshotToViewport(prevPreserved, displayOriginCol, displayOriginRow, cols, rows)
+	snap := s.snapshot
+	s.snapMu.Unlock()
 	return snap, nil
 }
 
 func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
 	s.snapMu.Lock()
-	s.preserved = mergePreservedSnapshot(s.preserved, snap, int(snap.GetCols()), int(snap.GetRows()))
-	s.snapshot = cropSnapshotToSize(s.preserved, int(snap.GetCols()), int(snap.GetRows()))
-	stored := s.snapshot
-	s.snapMu.Unlock()
-	return stored
-}
-
-func (s *localSession) storeResizedSnapshot(snap *protocolpb.Snapshot, prevCols, prevRows int) *protocolpb.Snapshot {
-	overlayCols := int(snap.GetCols())
-	overlayRows := int(snap.GetRows())
-	if prevCols > 0 && overlayCols > prevCols {
-		overlayCols = prevCols
-	}
-	if prevRows > 0 && overlayRows > prevRows {
-		overlayRows = prevRows
-	}
-	s.snapMu.Lock()
-	s.preserved = mergePreservedSnapshot(s.preserved, snap, overlayCols, overlayRows)
-	s.snapshot = cropSnapshotToSize(s.preserved, int(snap.GetCols()), int(snap.GetRows()))
+	s.preserved = mergePreservedSnapshotAt(
+		s.preserved,
+		snap,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
+		int(snap.GetCols()),
+		int(snap.GetRows()),
+	)
+	displayOriginCol, displayOriginRow := viewportOriginForSnapshot(s.preserved, int(snap.GetCols()), int(snap.GetRows()))
+	displayOriginCol, displayOriginRow = normalizeViewportOrigin(s.preserved, displayOriginCol, displayOriginRow, int(snap.GetCols()), int(snap.GetRows()))
+	s.snapshot = cropSnapshotToViewport(
+		s.preserved,
+		displayOriginCol,
+		displayOriginRow,
+		int(snap.GetCols()),
+		int(snap.GetRows()),
+	)
 	stored := s.snapshot
 	s.snapMu.Unlock()
 	return stored
@@ -655,6 +709,9 @@ func (s *localSession) writeTerminalReply(data []byte) (int, error) {
 func (s *localSession) writePTYWithMode(data []byte, disableEcho bool) (int, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if len(data) > 0 {
+		s.clearIgnoredPTYOutput()
+	}
 	s.ptyMu.RLock()
 	ptyFile := s.pty
 	ttyFile := s.tty
@@ -1035,6 +1092,9 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				s.onPTYRead(cp)
 			}
 			filtered := s.filterOSCOutput(data)
+			if s.shouldIgnoreNextPTYOutput(filtered) {
+				continue
+			}
 			var scrollRows []terminal.ScrollbackRow
 			s.emuMu.Lock()
 			if err := s.emulator.Write(filtered); err != nil {
@@ -1087,7 +1147,7 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	return nil
 }
 
-func mergePreservedSnapshot(prev, current *protocolpb.Snapshot, overlayCols, overlayRows int) *protocolpb.Snapshot {
+func mergePreservedSnapshotAt(prev, current *protocolpb.Snapshot, originCol, originRow, overlayCols, overlayRows int) *protocolpb.Snapshot {
 	if current == nil {
 		return cloneSnapshot(prev)
 	}
@@ -1104,33 +1164,66 @@ func mergePreservedSnapshot(prev, current *protocolpb.Snapshot, overlayCols, ove
 	prevRows := int(prev.GetRows())
 	currCols := int(current.GetCols())
 	currRows := int(current.GetRows())
-	outCols := maxInt(prevCols, currCols)
-	outRows := maxInt(prevRows, currRows)
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	outCols := maxInt(prevCols, originCol+currCols)
+	outRows := maxInt(prevRows, originRow+currRows)
 	out := blankSnapshot(outCols, outRows)
 	out.Mode = current.GetMode()
 	out.Title = current.GetTitle()
 	out.CursorVisible = current.GetCursorVisible()
 	if current.Cursor != nil {
-		out.Cursor = &protocolpb.Cursor{X: current.Cursor.GetX(), Y: current.Cursor.GetY()}
+		cursorX := originCol + int(current.Cursor.GetX())
+		cursorY := originRow + int(current.Cursor.GetY())
+		if cursorX < 0 {
+			cursorX = 0
+		}
+		if cursorY < 0 {
+			cursorY = 0
+		}
+		if cursorX >= outCols {
+			cursorX = outCols - 1
+		}
+		if cursorY >= outRows {
+			cursorY = outRows - 1
+		}
+		out.Cursor = &protocolpb.Cursor{X: uint32(cursorX), Y: uint32(cursorY)}
 	}
 
 	copySnapshotRegion(out, prev, int(prev.GetCols()), int(prev.GetRows()))
-	copySnapshotRegion(out, current, overlayCols, overlayRows)
+	copySnapshotRegionAtOffset(out, current, originCol, originRow, overlayCols, overlayRows)
 	return out
 }
 
-func hiddenRowsFromSnapshot(snap *protocolpb.Snapshot, visibleRows int) []terminal.ScrollbackRow {
+func hiddenRowsFromViewport(snap *protocolpb.Snapshot, originRow, visibleRows int) []terminal.ScrollbackRow {
 	rows := snapshotToScrollbackRows(snap)
 	if len(rows) == 0 {
 		return nil
 	}
+	if originRow < 0 {
+		originRow = 0
+	}
 	if visibleRows < 0 {
 		visibleRows = 0
 	}
-	if visibleRows >= len(rows) {
+	if originRow >= len(rows) {
+		return cloneScrollbackRows(rows)
+	}
+	end := originRow + visibleRows
+	if end > len(rows) {
+		end = len(rows)
+	}
+	if originRow == 0 && end >= len(rows) {
 		return nil
 	}
-	return cloneScrollbackRows(rows[visibleRows:])
+	out := make([]terminal.ScrollbackRow, 0, originRow+len(rows)-end)
+	out = append(out, cloneScrollbackRows(rows[:originRow])...)
+	out = append(out, cloneScrollbackRows(rows[end:])...)
+	return out
 }
 
 func cloneSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
@@ -1155,7 +1248,7 @@ func cloneSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
 	return out
 }
 
-func cropSnapshotToSize(snap *protocolpb.Snapshot, cols, rows int) *protocolpb.Snapshot {
+func cropSnapshotToViewport(snap *protocolpb.Snapshot, originCol, originRow, cols, rows int) *protocolpb.Snapshot {
 	if snap == nil {
 		return nil
 	}
@@ -1165,13 +1258,19 @@ func cropSnapshotToSize(snap *protocolpb.Snapshot, cols, rows int) *protocolpb.S
 	if rows <= 0 {
 		rows = int(snap.GetRows())
 	}
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
 	out := blankSnapshot(cols, rows)
 	out.Mode = snap.GetMode()
 	out.Title = snap.GetTitle()
 	out.CursorVisible = snap.GetCursorVisible()
 	if snap.Cursor != nil {
-		cursorX := int(snap.Cursor.GetX())
-		cursorY := int(snap.Cursor.GetY())
+		cursorX := int(snap.Cursor.GetX()) - originCol
+		cursorY := int(snap.Cursor.GetY()) - originRow
 		if cols > 0 && cursorX >= cols {
 			cursorX = cols - 1
 		}
@@ -1186,8 +1285,70 @@ func cropSnapshotToSize(snap *protocolpb.Snapshot, cols, rows int) *protocolpb.S
 		}
 		out.Cursor = &protocolpb.Cursor{X: uint32(cursorX), Y: uint32(cursorY)}
 	}
-	copySnapshotRegion(out, snap, cols, rows)
+	copySnapshotRegionFromOffset(out, snap, originCol, originRow, cols, rows)
 	return out
+}
+
+func viewportOriginForSnapshot(snap *protocolpb.Snapshot, viewCols, viewRows int) (int, int) {
+	if snap == nil {
+		return 0, 0
+	}
+	cols := int(snap.GetCols())
+	rows := int(snap.GetRows())
+	cursorX := 0
+	cursorY := 0
+	if snap.Cursor != nil {
+		cursorX = int(snap.Cursor.GetX())
+		cursorY = int(snap.Cursor.GetY())
+	}
+	if cursorX < 0 {
+		cursorX = 0
+	}
+	if cursorY < 0 {
+		cursorY = 0
+	}
+	if cols > 0 && cursorX >= cols {
+		cursorX = cols - 1
+	}
+	if rows > 0 && cursorY >= rows {
+		cursorY = rows - 1
+	}
+	return render.ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
+}
+
+func normalizeViewportOrigin(snap *protocolpb.Snapshot, originCol, originRow, viewCols, viewRows int) (int, int) {
+	if snap == nil {
+		if originCol < 0 {
+			originCol = 0
+		}
+		if originRow < 0 {
+			originRow = 0
+		}
+		return originCol, originRow
+	}
+	cols := int(snap.GetCols())
+	rows := int(snap.GetRows())
+	maxCol := cols - viewCols
+	maxRow := rows - viewRows
+	if maxCol < 0 {
+		maxCol = 0
+	}
+	if maxRow < 0 {
+		maxRow = 0
+	}
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	if originCol > maxCol {
+		originCol = maxCol
+	}
+	if originRow > maxRow {
+		originRow = maxRow
+	}
+	return originCol, originRow
 }
 
 func blankSnapshot(cols, rows int) *protocolpb.Snapshot {
@@ -1209,15 +1370,82 @@ func blankSnapshot(cols, rows int) *protocolpb.Snapshot {
 }
 
 func copySnapshotRegion(dst, src *protocolpb.Snapshot, limitCols, limitRows int) {
+	copySnapshotRegionAtOffset(dst, src, 0, 0, limitCols, limitRows)
+}
+
+func copySnapshotRegionFromOffset(dst, src *protocolpb.Snapshot, originCol, originRow, limitCols, limitRows int) {
 	if dst == nil || src == nil {
 		return
+	}
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
 	}
 	dstCols := int(dst.GetCols())
 	dstRows := int(dst.GetRows())
 	srcCols := int(src.GetCols())
 	srcRows := int(src.GetRows())
-	rows := minInt(dstRows, srcRows)
-	cols := minInt(dstCols, srcCols)
+	rows := minInt(dstRows, srcRows-originRow)
+	cols := minInt(dstCols, srcCols-originCol)
+	if limitRows > 0 && rows > limitRows {
+		rows = limitRows
+	}
+	if limitCols > 0 && cols > limitCols {
+		cols = limitCols
+	}
+	if rows <= 0 || cols <= 0 {
+		return
+	}
+	if len(src.GetGraphemes()) > 0 && len(dst.Graphemes) == 0 {
+		dst.Graphemes = make([]string, dstCols*dstRows)
+	}
+	for y := 0; y < rows; y++ {
+		srcRow := (originRow + y) * srcCols
+		dstRow := y * dstCols
+		for x := 0; x < cols; x++ {
+			srcIdx := srcRow + originCol + x
+			dstIdx := dstRow + x
+			if srcIdx < len(src.Runes) {
+				dst.Runes[dstIdx] = src.Runes[srcIdx]
+			}
+			if srcIdx < len(src.Modes) {
+				dst.Modes[dstIdx] = src.Modes[srcIdx]
+			}
+			if srcIdx < len(src.Fg) {
+				dst.Fg[dstIdx] = src.Fg[srcIdx]
+			}
+			if srcIdx < len(src.Bg) {
+				dst.Bg[dstIdx] = src.Bg[srcIdx]
+			}
+			if len(dst.Graphemes) > 0 {
+				if srcIdx < len(src.Graphemes) {
+					dst.Graphemes[dstIdx] = src.Graphemes[srcIdx]
+				} else {
+					dst.Graphemes[dstIdx] = ""
+				}
+			}
+		}
+	}
+}
+
+func copySnapshotRegionAtOffset(dst, src *protocolpb.Snapshot, originCol, originRow, limitCols, limitRows int) {
+	if dst == nil || src == nil {
+		return
+	}
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	dstCols := int(dst.GetCols())
+	dstRows := int(dst.GetRows())
+	srcCols := int(src.GetCols())
+	srcRows := int(src.GetRows())
+	rows := minInt(dstRows-originRow, srcRows)
+	cols := minInt(dstCols-originCol, srcCols)
 	if limitRows > 0 && rows > limitRows {
 		rows = limitRows
 	}
@@ -1232,10 +1460,10 @@ func copySnapshotRegion(dst, src *protocolpb.Snapshot, limitCols, limitRows int)
 	}
 	for y := 0; y < rows; y++ {
 		srcRow := y * srcCols
-		dstRow := y * dstCols
+		dstRow := (originRow + y) * dstCols
 		for x := 0; x < cols; x++ {
 			srcIdx := srcRow + x
-			dstIdx := dstRow + x
+			dstIdx := dstRow + originCol + x
 			if srcIdx < len(src.Runes) {
 				dst.Runes[dstIdx] = src.Runes[srcIdx]
 			}

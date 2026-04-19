@@ -33,7 +33,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var frameSeq: Long = Long.MIN_VALUE
     private var hostCols: Int = 0
     private var hostRows: Int = 0
-    private var fitToViewWidth: Boolean = false
+    private var fitToViewWidth: Boolean = true
     private var viewCols: Int = 0
     private var viewRows: Int = 0
     private var zoomFactor: Float = DefaultTerminalZoom

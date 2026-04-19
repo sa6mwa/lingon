@@ -20,6 +20,10 @@ EMULATOR_STARTED="0"
 HOST_COLS_OVERRIDE="${HOST_COLS:-}"
 HOST_ROWS_OVERRIDE="${HOST_ROWS:-}"
 CONFIG_PATH=""
+KEEP_EMULATOR="${LINGON_IT_KEEP_EMULATOR:-1}"
+RESET_APP_STATE="${LINGON_IT_RESET_APP_STATE:-1}"
+APP_ID="systems.pkt.lingon"
+TEST_APP_ID="${APP_ID}.test"
 
 resolve_avd_name() {
   if [[ -n "${AVD_NAME}" ]]; then
@@ -70,7 +74,7 @@ cleanup() {
     kill "${HARNESS_PID}" >/dev/null 2>&1 || true
     wait "${HARNESS_PID}" >/dev/null 2>&1 || true
   fi
-  if [[ "${EMULATOR_STARTED}" == "1" ]] && [[ -n "${DEVICE_SERIAL:-}" ]]; then
+  if [[ "${EMULATOR_STARTED}" == "1" ]] && [[ "${KEEP_EMULATOR}" != "1" ]] && [[ -n "${DEVICE_SERIAL:-}" ]]; then
     "${ADB_BIN}" -s "${DEVICE_SERIAL}" emu kill >/dev/null 2>&1 || true
   fi
   release_lock
@@ -161,9 +165,25 @@ stop_harness() {
   fi
 }
 
+reset_test_apps() {
+  if [[ "${RESET_APP_STATE}" != "1" ]]; then
+    return
+  fi
+
+  echo "Resetting Android app state..."
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" wait-for-device >/dev/null 2>&1 || true
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell am force-stop "${APP_ID}" >/dev/null 2>&1 || true
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell am force-stop "${TEST_APP_ID}" >/dev/null 2>&1 || true
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell pm clear "${APP_ID}" >/dev/null 2>&1 || true
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell pm clear "${TEST_APP_ID}" >/dev/null 2>&1 || true
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell rm -rf "/sdcard/Android/data/${APP_ID}/files/test-artifacts" >/dev/null 2>&1 || true
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell rm -rf "/sdcard/Android/data/${TEST_APP_ID}/files/test-artifacts" >/dev/null 2>&1 || true
+}
+
 ensure_adb_reverse() {
   export ADB_REVERSE_PORT="${PORT}"
   echo "Ensuring adb reverse tcp:${PORT}..."
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" reverse --remove-all >/dev/null 2>&1 || true
   "${ADB_BIN}" -s "${DEVICE_SERIAL}" reverse "tcp:${PORT}" "tcp:${PORT}" >/dev/null 2>&1 || true
 }
 
@@ -187,6 +207,10 @@ if [[ -z "${DEVICE_SERIAL}" ]]; then
   "${EMULATOR_BIN}" -avd "${AVD_NAME}" -port "${EMU_PORT}" ${EMULATOR_FLAGS} >/dev/null 2>&1 &
   DEVICE_SERIAL="emulator-${EMU_PORT}"
   EMULATOR_STARTED="1"
+fi
+
+if [[ "${EMULATOR_STARTED}" == "1" ]] && [[ "${KEEP_EMULATOR}" == "1" ]]; then
+  echo "Keeping emulator ${DEVICE_SERIAL} running after the test run."
 fi
 
 ADB_SERIAL="${DEVICE_SERIAL}"
@@ -230,6 +254,8 @@ set +e
     else
       unset LINGON_ANDROID_HARNESS_HOST_SHELL
     fi
+    reset_test_apps
+    ensure_adb_reverse
     echo "Running ${test_name}..."
     ./gradlew :app:connectedDebugAndroidTest \
       --no-configuration-cache \
