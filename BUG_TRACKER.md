@@ -115,12 +115,21 @@ Required status values:
      - expand,
      - press `Enter`,
      - observe preserved right-side content collapse or smear while the prompt/cursor redraw lands on top of stale content.
+  7. Additional host-TUI sequences that were reproduced on the real host path:
+     - shrink,
+     - expand,
+     - press `Ctrl+L` twice,
+     - observe stale pre-resize content still visible and the prompt/cursor no longer on row 1.
+     - shrink,
+     - press `Enter` while still shrunk,
+     - expand,
+     - observe duplicated/cropped preserved rows instead of a cleanly advanced screen.
 - Regression coverage:
   - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
   - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
   - `internal/session.TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput`
-  - `internal/session.TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen`
-  - `internal/session.TestHostSIGWINCHPromptAdvancePreservesExpandedMixedWidthScreen`
+  - `internal/session.TestHostResizeCtrlLClearAfterExpandClearsPreservedContent`
+  - `internal/session.TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar`
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
     - `TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow`
@@ -128,16 +137,17 @@ Required status values:
     - `TestHostResizePreservesScrollbackHistory`
     - `TestHostScrollbackResizeRepaintsIndicatorWithoutInput`
 - Investigation notes:
-  - The previous tests only covered quiet shrink/expand cases and missed the destructive case where new post-shrink output pushed preserved rows into scrollback.
-  - That still missed the real interactive SIGWINCH path. A separate helper-process regression with a real controlling PTY reproduced the exact user-visible failure: expand first restored the wide content, then a later render collapsed it back to a cropped prompt-at-bottom view.
-  - The remaining strict failure was `shrink -> expand -> Enter` after a real `bash` + `ps aux` screen. The expanded host view looked correct until later partial redraw bytes arrived; then the bottom half recropped and cursor/prompt landed on stale content.
-  - Raw PTY capture showed bash was sending partial cursor-positioned updates after `Enter`, assuming the expanded screen contents were already present. Lingon was visually restoring the preserved screen, but its emulator state still reflected the shrunken view, so those partial updates applied onto stale state and corrupted the host screen.
-  - The fix rehydrates the emulator with the same restored viewport snapshot Lingon displays on non-headless host expand, so subsequent partial PTY redraws land on the correct framebuffer.
+  - The previous preservation tests were too quiet. They covered shrink/expand without the follow-up local redraws that the user was actually hitting.
+  - The exact host failure was reproduced with a real `bash` PTY using both `Ctrl+L` after expand and `Enter while shrunk -> expand`. The latter matched the screenshots: the wide content restored on expand, then a later prompt advance recropped and smeared preserved rows.
+  - Raw PTY capture showed bash only emitted a simple `\r\nPROMPT...` advance. The corruption was introduced by Lingon while merging the shrunk viewport back into the preserved framebuffer.
+  - The fix keeps the preserved origin stable across shrink/expand, detects viewport-only upward scrolls, and handles simple newline/prompt redraw chunks against the preserved framebuffer instead of letting them collapse the restored wide screen.
+  - A separate runner issue surfaced during verification: the final DSR render could be lost on local-session exit. That was fixed by forcing the last local snapshot render before removal, and the DSR regressions were rerun to prove it.
 - Verification:
-  - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
-  - `go test -count=1 ./internal/session -run 'TestResizeKeepsSessionResponsive|TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput|TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput'`
-  - `go test -count=1 ./internal/attach -run TestMultiAttachHeadlessResizePropagatesToPTY`
-  - `go test -count=20 ./internal/session -run 'TestHostSIGWINCH(PreservesInteractiveWideOutputWithoutInput|PreservesScrolledWideOutputWithoutInput|HelperProcess)'`
+  - `go test -count=1 ./internal/session -run 'TestHostResize(CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
+  - `go test -count=10 ./internal/session -run 'TestLocalSessionOSCQueryDoesNotSelfSustainPublish|TestInactivityShapedRelayWallDoesNotSuppressFocusedTabWithSiblingLocalPTYWithoutExplicitKind|TestHostResizeCtrlLClearAfterExpandClearsPreservedContent|TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar'`
+  - `go test -count=20 ./internal/session -run 'TestDSRReturnsSnapshotCursorPosition|TestLocalSessionDSRUsesCursorQueryOverride'`
+  - `go test -count=1 ./internal/session`
+  - `go test -count=1 ./internal/attach`
   - `go test -count=1 ./...`
   - `go vet ./...`
   - `golint ./...`

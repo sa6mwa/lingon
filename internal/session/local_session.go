@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -664,8 +665,8 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	displayOriginCol, displayOriginRow = normalizeViewportOrigin(prevPreserved, displayOriginCol, displayOriginRow, cols, rows)
 	s.snapMu.Lock()
 	s.preserved = prevPreserved
-	s.preserveOriginCol = prevOriginCol
-	s.preserveOriginRow = prevOriginRow
+	s.preserveOriginCol = displayOriginCol
+	s.preserveOriginRow = displayOriginRow
 	s.snapshot = cropSnapshotToViewport(prevPreserved, displayOriginCol, displayOriginRow, cols, rows)
 	snap := s.snapshot
 	s.snapMu.Unlock()
@@ -675,8 +676,23 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	return snap, nil
 }
 
-func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
+func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot, scrolledRows int) *protocolpb.Snapshot {
 	s.snapMu.Lock()
+	prevVisible := cloneSnapshot(s.snapshot)
+	if detected := detectViewportScrollUp(prevVisible, snap); detected > scrolledRows {
+		scrolledRows = detected
+	}
+	if scrolledRows > 0 {
+		s.preserved = scrollSnapshotUp(s.preserved, scrolledRows)
+		s.preserveOriginRow += scrolledRows
+		s.preserveOriginCol, s.preserveOriginRow = normalizeViewportOrigin(
+			s.preserved,
+			s.preserveOriginCol,
+			s.preserveOriginRow,
+			int(snap.GetCols()),
+			int(snap.GetRows()),
+		)
+	}
 	s.preserved = mergePreservedSnapshotAt(
 		s.preserved,
 		snap,
@@ -685,15 +701,237 @@ func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snap
 		int(snap.GetCols()),
 		int(snap.GetRows()),
 	)
-	displayOriginCol, displayOriginRow := viewportOriginForSnapshot(s.preserved, int(snap.GetCols()), int(snap.GetRows()))
-	displayOriginCol, displayOriginRow = normalizeViewportOrigin(s.preserved, displayOriginCol, displayOriginRow, int(snap.GetCols()), int(snap.GetRows()))
-	s.snapshot = cropSnapshotToViewport(
+	s.preserveOriginCol, s.preserveOriginRow = normalizeViewportOrigin(
 		s.preserved,
-		displayOriginCol,
-		displayOriginRow,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
 		int(snap.GetCols()),
 		int(snap.GetRows()),
 	)
+	s.snapshot = cropSnapshotToViewport(
+		s.preserved,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
+		int(snap.GetCols()),
+		int(snap.GetRows()),
+	)
+	stored := s.snapshot
+	s.snapMu.Unlock()
+	return stored
+}
+
+func (s *localSession) preservedViewportActive(viewCols, viewRows int) bool {
+	s.snapMu.RLock()
+	defer s.snapMu.RUnlock()
+	return s.preservedViewportActiveLocked(viewCols, viewRows)
+}
+
+func (s *localSession) preservedViewportActiveLocked(viewCols, viewRows int) bool {
+	if s.preserved == nil {
+		return false
+	}
+	return int(s.preserved.GetCols()) > viewCols ||
+		int(s.preserved.GetRows()) > viewRows ||
+		s.preserveOriginCol != 0 ||
+		s.preserveOriginRow != 0
+}
+
+func newlineOnlyChunkCount(data []byte) int {
+	if len(data) == 0 || bytes.IndexByte(data, 0x1b) >= 0 {
+		return 0
+	}
+	count := 0
+	for _, b := range data {
+		switch b {
+		case '\r':
+		case '\n':
+			count++
+		default:
+			return 0
+		}
+	}
+	return count
+}
+
+func promptOnlyChunk(data []byte) (string, bool) {
+	if len(data) == 0 || bytes.IndexByte(data, 0x1b) >= 0 || bytes.ContainsAny(data, "\r\n") {
+		return "", false
+	}
+	prompt := string(data)
+	if strings.TrimSpace(prompt) == "" {
+		return "", false
+	}
+	for _, r := range prompt {
+		if r < 0x20 && r != '\t' {
+			return "", false
+		}
+	}
+	return prompt, true
+}
+
+func isSimplePromptAdvanceChunk(data []byte) (string, bool) {
+	if len(data) == 0 || bytes.IndexByte(data, 0x1b) >= 0 {
+		return "", false
+	}
+	lastBreak := -1
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' {
+			lastBreak = i
+		}
+	}
+	if lastBreak < 0 {
+		return "", false
+	}
+	for i := 0; i <= lastBreak; i++ {
+		if data[i] != '\r' && data[i] != '\n' {
+			return "", false
+		}
+	}
+	return promptOnlyChunk(data[lastBreak+1:])
+}
+
+func blankSnapshotRow(snap *protocolpb.Snapshot, row int) {
+	writeSnapshotTextRow(snap, row, "")
+	if snap == nil || snap.Cursor == nil {
+		return
+	}
+	snap.Cursor.X = 0
+	snap.Cursor.Y = uint32(row)
+	snap.CursorVisible = true
+}
+
+func writeSnapshotTextRow(snap *protocolpb.Snapshot, row int, text string) {
+	if snap == nil {
+		return
+	}
+	cols := int(snap.GetCols())
+	rows := int(snap.GetRows())
+	if cols <= 0 || row < 0 || row >= rows {
+		return
+	}
+	start := row * cols
+	for col := 0; col < cols; col++ {
+		idx := start + col
+		if idx < len(snap.Runes) {
+			snap.Runes[idx] = 0
+		}
+		if idx < len(snap.Modes) {
+			snap.Modes[idx] = 0
+		}
+		if idx < len(snap.Fg) {
+			snap.Fg[idx] = 0
+		}
+		if idx < len(snap.Bg) {
+			snap.Bg[idx] = 0
+		}
+		if idx < len(snap.Graphemes) {
+			snap.Graphemes[idx] = ""
+		}
+	}
+	col := 0
+	for _, r := range text {
+		if col >= cols {
+			break
+		}
+		idx := start + col
+		if idx < len(snap.Runes) {
+			snap.Runes[idx] = uint32(r)
+		}
+		col++
+	}
+	if snap.Cursor == nil {
+		snap.Cursor = &protocolpb.Cursor{}
+	}
+	cursorX := col
+	if cursorX >= cols {
+		cursorX = cols - 1
+	}
+	if cursorX < 0 {
+		cursorX = 0
+	}
+	snap.Cursor.X = uint32(cursorX)
+	snap.Cursor.Y = uint32(row)
+	snap.CursorVisible = true
+}
+
+func (s *localSession) storePromptAdvanceSnapshot(prompt string, viewCols, viewRows int) *protocolpb.Snapshot {
+	s.snapMu.Lock()
+	s.preserved = scrollSnapshotUp(s.preserved, 1)
+	lastRow := int(s.preserved.GetRows()) - 1
+	writeSnapshotTextRow(s.preserved, lastRow, prompt)
+	if s.preserved != nil {
+		maxRow := int(s.preserved.GetRows()) - viewRows
+		if maxRow < 0 {
+			maxRow = 0
+		}
+		s.preserveOriginRow = maxRow
+		maxCol := int(s.preserved.GetCols()) - viewCols
+		if maxCol < 0 {
+			maxCol = 0
+		}
+		if s.preserveOriginCol > maxCol {
+			s.preserveOriginCol = maxCol
+		}
+		if s.preserveOriginCol < 0 {
+			s.preserveOriginCol = 0
+		}
+	}
+	s.snapshot = cropSnapshotToViewport(s.preserved, s.preserveOriginCol, s.preserveOriginRow, viewCols, viewRows)
+	stored := s.snapshot
+	s.snapMu.Unlock()
+	return stored
+}
+
+func (s *localSession) storeNewlineOnlySnapshot(lines, viewCols, viewRows int) *protocolpb.Snapshot {
+	if lines <= 0 {
+		return s.storeSnapshot(s.Snapshot(), 0)
+	}
+	s.snapMu.Lock()
+	s.preserved = scrollSnapshotUp(s.preserved, lines)
+	if s.preserved != nil {
+		last := int(s.preserved.GetRows()) - 1
+		for i := 0; i < lines && last-i >= 0; i++ {
+			blankSnapshotRow(s.preserved, last-i)
+		}
+		maxRow := int(s.preserved.GetRows()) - viewRows
+		if maxRow < 0 {
+			maxRow = 0
+		}
+		s.preserveOriginRow = maxRow
+		maxCol := int(s.preserved.GetCols()) - viewCols
+		if maxCol < 0 {
+			maxCol = 0
+		}
+		if s.preserveOriginCol > maxCol {
+			s.preserveOriginCol = maxCol
+		}
+		if s.preserveOriginCol < 0 {
+			s.preserveOriginCol = 0
+		}
+	}
+	s.snapshot = cropSnapshotToViewport(s.preserved, s.preserveOriginCol, s.preserveOriginRow, viewCols, viewRows)
+	stored := s.snapshot
+	s.snapMu.Unlock()
+	return stored
+}
+
+func (s *localSession) storePromptOnlySnapshot(prompt string, viewCols, viewRows int) *protocolpb.Snapshot {
+	s.snapMu.Lock()
+	row := 0
+	if s.preserved != nil && s.preserved.Cursor != nil {
+		row = int(s.preserved.Cursor.GetY())
+	}
+	if s.preserved != nil {
+		maxRow := int(s.preserved.GetRows()) - 1
+		if row < 0 {
+			row = 0
+		}
+		if row > maxRow {
+			row = maxRow
+		}
+		writeSnapshotTextRow(s.preserved, row, prompt)
+	}
+	s.snapshot = cropSnapshotToViewport(s.preserved, s.preserveOriginCol, s.preserveOriginRow, viewCols, viewRows)
 	stored := s.snapshot
 	s.snapMu.Unlock()
 	return stored
@@ -1112,7 +1350,7 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	rawSnap, snapErr := s.emulator.Snapshot()
 	s.emuMu.Unlock()
 	if snapErr == nil {
-		s.storeSnapshot(protocol.SnapshotToProto(rawSnap))
+		s.storeSnapshot(protocol.SnapshotToProto(rawSnap), 0)
 	}
 	_ = setNonblock(ptyFile, true)
 	defer func() {
@@ -1175,7 +1413,21 @@ func (s *localSession) runOnce(ctx context.Context) error {
 			if s.onSnapshot != nil {
 				s.onSnapshot(rawSnap)
 			}
-			snap := s.storeSnapshot(protocol.SnapshotToProto(rawSnap))
+			protoSnap := protocol.SnapshotToProto(rawSnap)
+			snap := protoSnap
+			if !s.allowRemoteResize && s.preservedViewportActive(int(protoSnap.GetCols()), int(protoSnap.GetRows())) {
+				if lines := newlineOnlyChunkCount(filtered); lines > 0 {
+					snap = s.storeNewlineOnlySnapshot(lines, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+				} else if prompt, ok := promptOnlyChunk(filtered); ok {
+					snap = s.storePromptOnlySnapshot(prompt, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+				} else if prompt, ok := isSimplePromptAdvanceChunk(filtered); ok {
+					snap = s.storePromptAdvanceSnapshot(prompt, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+				} else {
+					snap = s.storeSnapshot(protoSnap, len(scrollRows))
+				}
+			} else {
+				snap = s.storeSnapshot(protoSnap, len(scrollRows))
+			}
 			scrollRows = s.appendScrollback(s.drainScrollbackRows(scrollRows))
 			if s.onOutput != nil {
 				s.onOutput(s.id, filtered, snap)
@@ -1204,6 +1456,107 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func scrollSnapshotUp(snap *protocolpb.Snapshot, rows int) *protocolpb.Snapshot {
+	if snap == nil || rows <= 0 {
+		return cloneSnapshot(snap)
+	}
+	cols := int(snap.GetCols())
+	totalRows := int(snap.GetRows())
+	if cols <= 0 || totalRows <= 0 {
+		return cloneSnapshot(snap)
+	}
+	if rows >= totalRows {
+		out := blankSnapshot(cols, totalRows)
+		out.Mode = snap.GetMode()
+		out.Title = snap.GetTitle()
+		out.CursorVisible = snap.GetCursorVisible()
+		return out
+	}
+	out := blankSnapshot(cols, totalRows)
+	out.Mode = snap.GetMode()
+	out.Title = snap.GetTitle()
+	out.CursorVisible = snap.GetCursorVisible()
+	copySnapshotRegionFromOffset(out, snap, 0, rows, cols, totalRows-rows)
+	if snap.Cursor != nil {
+		cursorY := int(snap.Cursor.GetY()) - rows
+		if cursorY < 0 {
+			cursorY = 0
+		}
+		cursorX := int(snap.Cursor.GetX())
+		if cursorX < 0 {
+			cursorX = 0
+		}
+		if cursorX >= cols {
+			cursorX = cols - 1
+		}
+		out.Cursor = &protocolpb.Cursor{X: uint32(cursorX), Y: uint32(cursorY)}
+	}
+	return out
+}
+
+func detectViewportScrollUp(prev, current *protocolpb.Snapshot) int {
+	if prev == nil || current == nil {
+		return 0
+	}
+	if prev.GetCols() != current.GetCols() || prev.GetRows() != current.GetRows() {
+		return 0
+	}
+	rows := int(current.GetRows())
+	for shift := 1; shift < rows; shift++ {
+		match := true
+		for row := 0; row < rows-shift && match; row++ {
+			if !snapshotRowsEqual(prev, row+shift, current, row) {
+				match = false
+			}
+		}
+		if match {
+			return shift
+		}
+	}
+	return 0
+}
+
+func snapshotRowsEqual(a *protocolpb.Snapshot, aRow int, b *protocolpb.Snapshot, bRow int) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	aCols := int(a.GetCols())
+	bCols := int(b.GetCols())
+	if aCols != bCols || aRow < 0 || bRow < 0 || aRow >= int(a.GetRows()) || bRow >= int(b.GetRows()) {
+		return false
+	}
+	for col := 0; col < aCols; col++ {
+		if snapshotCellKey(a, aRow*aCols+col) != snapshotCellKey(b, bRow*bCols+col) {
+			return false
+		}
+	}
+	return true
+}
+
+func snapshotCellKey(snap *protocolpb.Snapshot, idx int) string {
+	var runeVal uint32
+	if idx < len(snap.GetRunes()) {
+		runeVal = snap.GetRunes()[idx]
+	}
+	var modeVal int32
+	if idx < len(snap.GetModes()) {
+		modeVal = snap.GetModes()[idx]
+	}
+	var fgVal uint32
+	if idx < len(snap.GetFg()) {
+		fgVal = snap.GetFg()[idx]
+	}
+	var bgVal uint32
+	if idx < len(snap.GetBg()) {
+		bgVal = snap.GetBg()[idx]
+	}
+	var grapheme string
+	if idx < len(snap.GetGraphemes()) {
+		grapheme = snap.GetGraphemes()[idx]
+	}
+	return fmt.Sprintf("%d/%d/%d/%d/%s", runeVal, modeVal, fgVal, bgVal, grapheme)
 }
 
 func mergePreservedSnapshotAt(prev, current *protocolpb.Snapshot, originCol, originRow, overlayCols, overlayRows int) *protocolpb.Snapshot {

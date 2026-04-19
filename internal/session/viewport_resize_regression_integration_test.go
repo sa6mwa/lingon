@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -504,6 +505,181 @@ func TestHostResizePreservesScrolledWideOutputWithTabBarVisible(t *testing.T) {
 		50*time.Millisecond,
 		"expected Lingon to emit restored scrolled wide content after expand with tab bar visible",
 	)
+}
+
+func TestHostResizeCtrlLClearAfterExpandClearsPreservedContent(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-clear-after-expand",
+		SessionName: "viewport-resize-clear-after-expand",
+		Shell:       sigwinchBashWrapper(t),
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	peer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-clear-after-expand-peer",
+		SessionName: "viewport-resize-clear-after-expand-peer",
+		Shell:       "/bin/sh",
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(peer.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	host.Send("clear; ps aux\n")
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "PROMPT>") {
+			return fmt.Errorf("expected prompt after initial ps output, got:\n%s", screen)
+		}
+		if !strings.Contains(screen, "pts/") && !strings.Contains(screen, "/bin/bash") {
+			return fmt.Errorf("expected initial process output on screen, got:\n%s", screen)
+		}
+		row := host.Screen().Row(0)
+		if !strings.Contains(row, "viewport-resize-clear-after-expand") {
+			return fmt.Errorf("expected tab bar visible before resize, got row=%q\nscreen:\n%s", row, screen)
+		}
+		return nil
+	})
+	_ = host.DrainRaw()
+
+	host.Resize(40, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(100, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen().String()
+		if !strings.Contains(screen, "PROMPT>") {
+			return fmt.Errorf("expected expand to restore ps output, got:\n%s", screen)
+		}
+		if !strings.Contains(screen, "pts/") && !strings.Contains(screen, "/bin/bash") {
+			return fmt.Errorf("expected expand to restore process output, got:\n%s", screen)
+		}
+		return nil
+	})
+	_ = host.DrainRaw()
+
+	host.SendCtrlL()
+	host.SendCtrlL()
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		cur := host.Cursor()
+		if cur.Row != 1 {
+			return fmt.Errorf("expected cursor on row 1 after clear, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		row := screen.Row(0)
+		if strings.Contains(row, "viewport-resize-clear-after-expand") {
+			return fmt.Errorf("expected tab bar hidden when prompt owns row 1, got row=%q\nscreen:\n%s", row, screen.String())
+		}
+		if !strings.Contains(row, "PROMPT>") {
+			return fmt.Errorf("expected prompt on row 1 after clear, got row=%q\nscreen:\n%s", row, screen.String())
+		}
+		if strings.Contains(screen.String(), "pts/") || strings.Contains(screen.String(), "ps aux") {
+			return fmt.Errorf("expected clear to remove prior ps content after resize restore, got:\n%s", screen.String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const wideCommand = "clear; for i in $(seq 1 30); do printf 'ROW-%02d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%02d-END\\n' \"$i\" \"$i\"; done\n"
+	var hostPTY bytes.Buffer
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-prompt-advance-host",
+		SessionName: "viewport-resize-prompt-advance-host",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        12,
+		OnPTYRead: func(data []byte) {
+			_, _ = hostPTY.Write(data)
+		},
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-prompt-advance-control",
+		SessionName: "viewport-resize-prompt-advance-control",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+	waitForHostPromptNumber(t, control, 1, 3*time.Second)
+
+	host.Send(wideCommand)
+	control.Send(wideCommand)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("RIGHT-30-END") || !control.Screen().Contains("RIGHT-30-END") {
+			return fmt.Errorf("waiting for deterministic wide output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+	waitForHostPromptNumber(t, host, 2, 3*time.Second)
+	waitForHostPromptNumber(t, control, 2, 3*time.Second)
+	_ = host.DrainRaw()
+	_ = control.DrainRaw()
+
+	host.Resize(40, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	if host.Screen().Contains("RIGHT-30-END") {
+		t.Fatalf("expected shrink to hide right edge, got:\n%s", host.Screen().String())
+	}
+	shrunkBeforeEnter := host.Screen().String()
+	_ = host.DrainRaw()
+
+	control.Send("\r")
+	waitForHostPromptNumber(t, control, 3, 3*time.Second)
+	controlScreen := control.Screen()
+
+	hostPTY.Reset()
+	host.Send("\r")
+	waitForHostPromptNumber(t, host, 3, 3*time.Second)
+	shrunkAfterEnter := host.Screen().String()
+	_ = host.DrainRaw()
+
+	host.Resize(100, 12)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if !strings.Contains(screen.String(), "RIGHT-30-END") {
+			return fmt.Errorf("expected expanded screen to restore right tail after shrunk prompt advance, got:\n%s", screen.String())
+		}
+		hostLines := screen.Lines
+		controlLines := controlScreen.Lines
+		if len(hostLines) != len(controlLines) {
+			return fmt.Errorf("expected host/control screens to have same row count, got %d vs %d\nhost:\n%s\ncontrol:\n%s", len(hostLines), len(controlLines), screen.String(), controlScreen.String())
+		}
+		if !strings.Contains(hostLines[0], "viewport-resize-prompt-advance-host") {
+			return fmt.Errorf("expected tab bar visible after expand, got row=%q\nscreen:\n%s", hostLines[0], screen.String())
+		}
+		for row := 1; row < len(hostLines); row++ {
+			if hostLines[row] != controlLines[row] {
+				return fmt.Errorf("expected shrunk prompt advance to match wide control at row %d\nhost:    %q\ncontrol: %q\npty:\n%q\nshrunk before enter:\n%s\nshrunk after enter:\n%s\nhost screen:\n%s\ncontrol screen:\n%s", row+1, hostLines[row], controlLines[row], hostPTY.String(), shrunkBeforeEnter, shrunkAfterEnter, screen.String(), controlScreen.String())
+			}
+		}
+		return nil
+	})
 }
 
 func TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow(t *testing.T) {

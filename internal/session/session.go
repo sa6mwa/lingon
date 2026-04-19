@@ -2032,7 +2032,7 @@ func (r *Runner) handleLocalOutput(stdout, stdin *os.File) func(id string, data 
 			r.forceRedraw(stdout)
 			return
 		}
-		if err := r.renderSnapshotWithOverlays(r.runCtx, stdout, stdin, snap); err != nil {
+		if err := r.renderSnapshotWithOverlays(context.Background(), stdout, stdin, snap); err != nil {
 			r.logger.Debug("session.render.failed", "err", err, "session", id)
 		}
 	}
@@ -2237,10 +2237,29 @@ func (r *Runner) filterOuterOSC(data []byte) []byte {
 
 func (r *Runner) handleLocalExit(stdout, stdin *os.File) func(id string, err error) {
 	return func(id string, err error) {
+		r.renderFinalLocalSnapshot(id, stdout, stdin)
 		r.removeLocalSession(id, stdout, stdin)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			r.logger.Debug("session.local.exit", "session", id, "err", err)
 		}
+	}
+}
+
+func (r *Runner) renderFinalLocalSnapshot(id string, stdout, stdin *os.File) {
+	activeID, activeLocal := r.activeSession()
+	if !activeLocal || activeID != id || r.scrollbackActiveFor(id) {
+		return
+	}
+	local := r.localSession(id)
+	if local == nil {
+		return
+	}
+	snap := local.Snapshot()
+	if snap == nil {
+		return
+	}
+	if err := r.renderSnapshotWithOverlays(context.Background(), stdout, stdin, snap); err != nil && r.logger != nil {
+		r.logger.Debug("session.render.final.failed", "err", err, "session", id)
 	}
 }
 
