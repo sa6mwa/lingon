@@ -98,7 +98,7 @@ Required status values:
 
 ### B-003 Local PTY anti-cropping preservation still broken
 
-- Status: `resolved`
+- Status: `in_progress`
 - Area: `session`, `scrollback`, `render`
 - Summary: Shrinking the host viewport must not destroy right-side content or garble preserved history.
 - Report:
@@ -124,12 +124,18 @@ Required status values:
      - press `Enter` while still shrunk,
      - expand,
      - observe duplicated/cropped preserved rows instead of a cleanly advanced screen.
+     - shrink,
+     - type a normal command while still shrunk,
+     - press `Enter`,
+     - expand,
+     - observe typed command text smeared into preserved wide rows as if the preserved screen were being rewritten in the shrunk coordinate space.
 - Regression coverage:
   - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
   - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
   - `internal/session.TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput`
   - `internal/session.TestHostResizeCtrlLClearAfterExpandClearsPreservedContent`
   - `internal/session.TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar`
+  - `internal/session.TestHostResizeTypingWhileShrunkThenExpandPreservesCommandLine`
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
     - `TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow`
@@ -140,7 +146,8 @@ Required status values:
   - The previous preservation tests were too quiet. They covered shrink/expand without the follow-up local redraws that the user was actually hitting.
   - The exact host failure was reproduced with a real `bash` PTY using both `Ctrl+L` after expand and `Enter while shrunk -> expand`. The latter matched the screenshots: the wide content restored on expand, then a later prompt advance recropped and smeared preserved rows.
   - Raw PTY capture showed bash only emitted a simple `\r\nPROMPT...` advance. The corruption was introduced by Lingon while merging the shrunk viewport back into the preserved framebuffer.
-  - The fix keeps the preserved origin stable across shrink/expand, detects viewport-only upward scrolls, and handles simple newline/prompt redraw chunks against the preserved framebuffer instead of letting them collapse the restored wide screen.
+  - The previous fix was incomplete. It handled quiet prompt-advance and clear cases, but it still attempted to merge shrunk local-PTY redraws into the preserved wide framebuffer in the wrong coordinate space.
+  - The new failing host regression shows the exact breakage: typing `echo TYPED-OK` while shrunk rewrites preserved wide rows with shrunk-screen content.
   - A separate runner issue surfaced during verification: the final DSR render could be lost on local-session exit. That was fixed by forcing the last local snapshot render before removal, and the DSR regressions were rerun to prove it.
 - Verification:
   - `go test -count=1 ./internal/session -run 'TestHostResize(CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
@@ -179,12 +186,21 @@ Required status values:
     - `internal/session/*`
     - `internal/headlessd/*`
     and disabled signal-based resize there as well.
-  - `go test -count=1 ./internal/attach ./internal/session`
-  - `go test -count=1 ./internal/headlessd`
-  - `go test ./...`
+  - Added package-level self-PTY isolation in:
+    - `internal/session.TestMain`
+    - `internal/attach.TestMain`
+    - `internal/testpty`
+    so `go test` re-execs those packages under an owned PTY from inside the test code itself, with no external wrapper.
+  - Verified narrow package execution under self-owned PTY:
+    - `go test -count=1 ./internal/session -run TestLocalSessionOSCQueryDoesNotSelfSustainPublish`
+    - `go test -count=1 ./internal/attach -run TestThemeActiveIndexHeaderColor`
+  - Verified a real resize-driving session test no longer mutated the current tmux pane:
+    - `go test -count=1 ./internal/session -run TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
+    - pane size remained `119x62` before and after the run
  - Notes:
   - The remaining leak was not the Android harness wrapper anymore; it was the runtime attach/session packages still subscribing to process-global `SIGWINCH` even when tests already injected PTY-local resize events.
-  - The full-suite red state reproduced only when `internal/attach` and `internal/session` ran concurrently, which closed after the host-side isolation patch landed.
+  - The self-PTY `TestMain` cut closes the remaining inherited-tty hole at the package boundary: helper subprocesses and `/dev/tty` fallbacks now bind to the owned test PTY instead of the outer tmux session.
+  - The resize-driving session test is still functionally red because `B-003` is not finished, but it no longer leaks terminal mutation to the outer pane.
 
 ## Recently Resolved Or Reverified
 
