@@ -231,6 +231,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	stdout := m.stdoutWriter()
 	renderStdout := terminal.NewLockedWriter(stdout, nil)
 	termSize := m.TermSize
+	if termSize == nil {
+		termSize = func() (int, int) {
+			return terminalSizeAny(stdout, stdin)
+		}
+	}
 	ownsStdin := m.Stdin != nil
 	defer restoreCursor(m.Clock, stdout)
 	if enterAltScreen(m.Clock, stdout) {
@@ -2238,4 +2243,26 @@ func (m *MultiClient) stdoutWriter() io.Writer {
 		return m.Stdout
 	}
 	return os.Stdout
+}
+
+func terminalSizeAny(stdout io.Writer, stdin io.Reader) (int, int) {
+	if outFile, ok := stdout.(*os.File); ok && term.IsTerminal(int(outFile.Fd())) {
+		if cols, rows, err := term.GetSize(int(outFile.Fd())); err == nil && cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	if inFile, ok := stdin.(*os.File); ok && term.IsTerminal(int(inFile.Fd())) {
+		if cols, rows, err := term.GetSize(int(inFile.Fd())); err == nil && cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	if tty, err := os.Open("/dev/tty"); err == nil {
+		defer func() {
+			_ = tty.Close()
+		}()
+		if cols, rows, err := term.GetSize(int(tty.Fd())); err == nil && cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	return 0, 0
 }

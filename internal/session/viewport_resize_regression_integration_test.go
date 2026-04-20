@@ -2292,40 +2292,6 @@ func compareScreensWithNormalizedTabTitles(got, want ptytest.Screen, gotTitle, w
 	return nil
 }
 
-func compareScreenToBottomCrop(got, baseline ptytest.Screen, rows int, titles ...string) error {
-	gotLines := append([]string(nil), got.Lines...)
-	baseLines := append([]string(nil), baseline.Lines...)
-	if len(gotLines) != rows {
-		return fmt.Errorf("expected shrunk screen row count %d, got %d", rows, len(gotLines))
-	}
-	if len(baseLines) == 0 {
-		return fmt.Errorf("baseline screen is empty")
-	}
-	want := make([]string, 0, rows)
-	want = append(want, baseLines[0])
-	contentRows := rows - 1
-	baseContent := baseLines[1:]
-	if contentRows > len(baseContent) {
-		contentRows = len(baseContent)
-	}
-	want = append(want, baseContent[len(baseContent)-contentRows:]...)
-	if len(want) != len(gotLines) {
-		return fmt.Errorf("expected bottom crop row count %d, got %d", len(gotLines), len(want))
-	}
-	for row := range gotLines {
-		gotLine := gotLines[row]
-		wantLine := want[row]
-		if row == 0 {
-			gotLine = normalizeViewportResizeTabRow(gotLine, titles...)
-			wantLine = normalizeViewportResizeTabRow(wantLine, titles...)
-		}
-		if gotLine != wantLine {
-			return fmt.Errorf("screen mismatch at row %d\nwant: %q\ngot:  %q", row+1, wantLine, gotLine)
-		}
-	}
-	return nil
-}
-
 var viewportResizeTabTokenRe = regexp.MustCompile(`viewport-resize[^ ]*`)
 
 func normalizeViewportResizeTabRow(line string, titles ...string) string {

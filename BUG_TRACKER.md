@@ -29,6 +29,50 @@ Required status values:
 
 ## Active Items
 
+### B-011 Multi-attach viewport/camera semantics broken
+
+- Status: `resolved`
+- Area: `attach`, `mvu`, `session`
+- Summary: Normal `lingon attach` (the multi-attach client) must behave like a camera onto the active session, not resize or reflow the underlying non-headless host session.
+- Report:
+  Multi-attach startup paint is garbled, resizing the attach viewport destroys the view, and running commands through attach wraps/reflows as if the active session were resized to the local attach terminal.
+- Repro:
+  1. Start a normal non-headless host with a wide local PTY session.
+  2. Run normal authenticated `lingon attach` (multi-attach client) into that session set.
+  3. Observe broken startup paint and tab/status overlap.
+  4. Resize the attach terminal smaller.
+  5. Observe the active session view being reflowed/wrapped instead of cropped.
+  6. Run a wide-output command such as `ps aux`.
+  7. Observe viewport wrapping/smearing instead of camera cropping.
+- Regression coverage:
+  - `internal/attach.TestMultiAttachWithoutExplicitTermSizeMatchesControlViewportAcrossStartupResizeAndCommand`
+  - Existing guard rails rechecked:
+    - `internal/attach.TestMultiAttachStartupDoesNotSendResizeToRelayHost`
+    - `internal/attach.TestMultiAttachResizeDoesNotResizeRelayHostPTY`
+    - `internal/attach.TestMultiAttachViewportCropsWideHostOutputInsteadOfWrapping`
+- Investigation notes:
+  - Normal authenticated `lingon attach` uses `attach.MultiClient`, not the single `attach.Client`.
+  - The earlier harness tests were misleading because `ptytest.StartMultiAttach` always injects an explicit `TermSize` function.
+  - The real CLI path does not. In `MultiClient.Run`, `termSize := m.TermSize` stayed nil, then child `attach.Client` instances inherited that nil `TermSize`.
+  - Once `MultiClient` swapped client stdout to the locked writer, the child client could no longer discover the real local tty size from `stdoutWriter()`, so it fell back to remote snapshot dimensions.
+  - That caused the exact user-visible failures:
+    - startup painted only against the remote snapshot footprint instead of the local viewport,
+    - resizing the local attach PTY did not update camera dimensions,
+    - wide output such as `ps aux` wrapped/garbled because rendering targeted the wrong width.
+  - The new regression starts `attach.MultiClient` in a real PTY without an explicit `TermSize`, compares it against the harness control path with the same local viewport, and fails on the visible body mismatch.
+  - The runtime fix makes `MultiClient` derive a real terminal-size provider from its own local stdin/stdout tty when `TermSize` is unset, so normal `lingon attach` now uses the real local viewport/camera dimensions.
+- Verification:
+  - `go test -count=1 ./internal/attach -run 'TestMultiAttachWithoutExplicitTermSizeMatchesControlViewportAcrossStartupResizeAndCommand'`
+  - `go test -count=1 ./internal/attach`
+  - `go test -count=1 ./internal/session -run TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen -v`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - `make test-webui`
+- Notes:
+  - During full-suite verification, `TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen` failed because its `ps aux` assertion compared the dynamic `STAT` column literally (`SN+` vs `RN+`). That was tightened by normalizing the `STAT` field along with other dynamic process columns so the regression remains about screen preservation, not scheduler timing noise.
+
 ### B-001 Android non-headless host resize leak
 
 - Status: `resolved`

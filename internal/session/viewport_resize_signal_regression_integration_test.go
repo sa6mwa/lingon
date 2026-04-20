@@ -661,8 +661,11 @@ func compareSessionScreens(got, want *ptytest.PTYSession, normalizeNumbers bool)
 }
 
 func normalizeDynamicScreenLine(line string) string {
-	return dynamicNumberRe.ReplaceAllString(line, "#")
+	line = dynamicNumberRe.ReplaceAllString(line, "#")
+	return dynamicPsAuxStatRe.ReplaceAllString(line, "${1}STAT ")
 }
+
+var dynamicPsAuxStatRe = regexp.MustCompile(`^(\S+\s+#\s+#\s+#\s+#\s+#\s+\S+\s+)\S+\s+`)
 
 func sigwinchBashWrapper(t *testing.T) string {
 	t.Helper()
