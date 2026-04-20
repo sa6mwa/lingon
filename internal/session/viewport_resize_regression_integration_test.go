@@ -528,6 +528,96 @@ func TestHostResizePreservesScrolledWideOutputWithTabBarVisible(t *testing.T) {
 	)
 }
 
+func TestHostResizeTypingWhileShrunkKeepsPromptOnBottomRowWithTabBarVisible(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const wideCommand = "clear; for i in $(seq 1 30); do printf 'ROW-%02d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%02d-END\\n' \"$i\" \"$i\"; done\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-typing-while-shrunk-tabs-host",
+		SessionName: "viewport-resize-typing-while-shrunk-tabs-host",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	peer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-typing-while-shrunk-tabs-peer",
+		SessionName: "viewport-resize-typing-while-shrunk-tabs-peer",
+		Shell:       "/bin/sh",
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(peer.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+
+	host.Send(wideCommand)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if !screen.Contains("RIGHT-30-END") || !screen.Contains("PROMPT-002>") {
+			return fmt.Errorf("expected initial scrolled wide output with prompt, got:\n%s", screen.String())
+		}
+		if !strings.Contains(screen.Row(0), "viewport-resize-typing-while-shrunk-tabs-host") {
+			return fmt.Errorf("expected tab bar visible before shrink, got row=%q\nscreen:\n%s", screen.Row(0), screen.String())
+		}
+		return nil
+	})
+	_ = host.DrainRaw()
+
+	host.Resize(40, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if screen.Contains("RIGHT-30-END") {
+			return fmt.Errorf("expected shrink to hide right tail, got:\n%s", screen.String())
+		}
+		cur := host.Cursor()
+		if cur.Row != 6 {
+			return fmt.Errorf("expected cursor on bottom row while shrunk before typing, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if !strings.Contains(screen.Row(5), "PROMPT-002>") {
+			return fmt.Errorf("expected prompt on bottom row while shrunk, got row=%q\nscreen:\n%s", screen.Row(5), screen.String())
+		}
+		return nil
+	})
+
+	baseline := host.Screen()
+	host.Send("mkpod")
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		cur := host.Cursor()
+		if cur.Row != 6 {
+			return fmt.Errorf("expected cursor to stay on bottom row while typing shrunk command, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		row0 := screen.Row(0)
+		if got, want := row0, baseline.Row(0); got != want {
+			return fmt.Errorf("expected top row to remain stable while typing shrunk command\nwant: %q\ngot:  %q\nscreen:\n%s", want, got, screen.String())
+		}
+		if strings.Contains(row0, "mkpod") {
+			return fmt.Errorf("expected typed command not to bleed into top row, got row=%q\nscreen:\n%s", row0, screen.String())
+		}
+		bottom := screen.Row(5)
+		if !strings.Contains(bottom, "PROMPT-002> mkpod") {
+			return fmt.Errorf("expected typed command on bottom prompt row while shrunk, got row=%q\nscreen:\n%s", bottom, screen.String())
+		}
+		for i := 1; i < 5; i++ {
+			if got, want := screen.Row(i), baseline.Row(i); got != want {
+				return fmt.Errorf("expected shrunk viewport row %d to remain stable while typing command\nwant: %q\ngot:  %q\nscreen:\n%s", i+1, want, got, screen.String())
+			}
+		}
+		return nil
+	})
+}
+
 func TestHostResizeCtrlLClearAfterExpandClearsPreservedContent(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
@@ -1084,6 +1174,153 @@ func TestHostResizePlainPsAuxAfterExpandKeepsPromptOnBottomRow(t *testing.T) {
 		promptRow := host.Screen().Row(hostCur.Row - 1)
 		if !strings.Contains(promptRow, "PROMPT-003>") {
 			return fmt.Errorf("expected current prompt on bottom row after plain ps aux post-resize, got row=%q\nhost:\n%s", promptRow, host.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeTypingWhileShrunkAfterPsAuxKeepsPromptOnBottomRow(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const (
+		wideCols   = 119
+		wideRows   = 30
+		shrunkCols = 80
+		shrunkRows = 24
+	)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-typing-while-shrunk-ps-host",
+		SessionName: "viewport-resize-typing-while-shrunk-ps-host",
+		Shell:       shell,
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(host.Cancel)
+
+	peer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-typing-while-shrunk-ps-peer",
+		SessionName: "viewport-resize-typing-while-shrunk-ps-peer",
+		Shell:       "/bin/sh",
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(peer.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+
+	host.Send("ps aux\n")
+	waitForHostPromptNumber(t, host, 2, 4*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if !screen.Contains("ps aux") || !screen.Contains("PROMPT-002>") {
+			return fmt.Errorf("expected ps aux output with prompt before shrink, got:\n%s", screen.String())
+		}
+		return nil
+	})
+	_ = host.DrainRaw()
+
+	host.Resize(shrunkCols, shrunkRows)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		cur := host.Cursor()
+		if cur.Row != shrunkRows {
+			return fmt.Errorf("expected cursor on bottom row while shrunk after ps aux, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if !strings.Contains(screen.Row(shrunkRows-1), "PROMPT-002>") {
+			return fmt.Errorf("expected prompt on bottom row while shrunk after ps aux, got row=%q\nscreen:\n%s", screen.Row(shrunkRows-1), screen.String())
+		}
+		return nil
+	})
+
+	baseline := host.Screen()
+	host.Send("mkpod")
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		cur := host.Cursor()
+		if cur.Row != shrunkRows {
+			return fmt.Errorf("expected cursor to stay on bottom row while typing after shrunk ps aux, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if got, want := screen.Row(0), baseline.Row(0); got != want {
+			return fmt.Errorf("expected top row to remain stable while typing after shrunk ps aux\nwant: %q\ngot:  %q\nscreen:\n%s", want, got, screen.String())
+		}
+		if strings.Contains(screen.Row(0), "mkpod") {
+			return fmt.Errorf("expected typed command not to bleed into top row after shrunk ps aux, got row=%q\nscreen:\n%s", screen.Row(0), screen.String())
+		}
+		if !strings.Contains(screen.Row(shrunkRows-1), "PROMPT-002> mkpod") {
+			return fmt.Errorf("expected typed command on bottom prompt row after shrunk ps aux, got row=%q\nscreen:\n%s", screen.Row(shrunkRows-1), screen.String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeImmediateTypingAfterShrinkKeepsPromptOnBottomRow(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const (
+		wideCols   = 119
+		wideRows   = 30
+		shrunkCols = 80
+		shrunkRows = 24
+	)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-immediate-typing-after-shrink-host",
+		SessionName: "viewport-resize-immediate-typing-after-shrink-host",
+		Shell:       shell,
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(host.Cancel)
+
+	peer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-immediate-typing-after-shrink-peer",
+		SessionName: "viewport-resize-immediate-typing-after-shrink-peer",
+		Shell:       "/bin/sh",
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(peer.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+
+	host.Send("ps aux\n")
+	waitForHostPromptNumber(t, host, 2, 4*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if !screen.Contains("ps aux") || !screen.Contains("PROMPT-002>") {
+			return fmt.Errorf("expected ps aux output with prompt before immediate shrink typing, got:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	host.Resize(shrunkCols, shrunkRows)
+	host.Send("mkpod")
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		cur := host.Cursor()
+		if cur.Row != shrunkRows {
+			return fmt.Errorf("expected cursor on bottom row after immediate typing post-shrink, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if strings.Contains(screen.Row(0), "mkpod") {
+			return fmt.Errorf("expected immediate typed command not to bleed into top row after shrink, got row=%q\nscreen:\n%s", screen.Row(0), screen.String())
+		}
+		if !strings.Contains(screen.Row(shrunkRows-1), "PROMPT-002> mkpod") {
+			return fmt.Errorf("expected immediate typed command on bottom prompt row after shrink, got row=%q\nscreen:\n%s", screen.Row(shrunkRows-1), screen.String())
 		}
 		return nil
 	})

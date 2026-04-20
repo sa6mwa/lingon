@@ -798,10 +798,11 @@ func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot, scrolledRows int
 func (s *localSession) storePreservedSnapshot(preserved *protocolpb.Snapshot, viewCols, viewRows int) *protocolpb.Snapshot {
 	s.snapMu.Lock()
 	s.preserved = cloneSnapshot(preserved)
+	nextOriginCol, nextOriginRow := viewportOriginForSnapshot(s.preserved, viewCols, viewRows)
 	s.preserveOriginCol, s.preserveOriginRow = normalizeViewportOrigin(
 		s.preserved,
-		s.preserveOriginCol,
-		s.preserveOriginRow,
+		nextOriginCol,
+		nextOriginRow,
 		viewCols,
 		viewRows,
 	)

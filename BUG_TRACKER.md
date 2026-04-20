@@ -102,7 +102,7 @@ Required status values:
 
 ### B-003 Local PTY anti-cropping preservation still broken
 
-- Status: `resolved`
+- Status: `in_progress`
 - Area: `session`, `scrollback`, `render`
 - Summary: Shrinking the host viewport must not destroy right-side content or garble preserved history.
 - Report:
@@ -146,6 +146,11 @@ Required status values:
      - observe a blank screen with only the cursor visible,
      - then run a short command such as `ps aux`,
      - observe stale pre-clear rows revived under the new output.
+  10. Additional host-TUI sequence still reproducing after the clear fix:
+      - render a wide screen with the tab bar visible,
+      - shrink and stay shrunk,
+      - type a short command without pressing `Enter`,
+      - observe the typed text land on row 1/tab chrome while the real prompt is off-screen.
 - Regression coverage:
   - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
   - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
@@ -193,6 +198,8 @@ Required status values:
   - That guard treated any escaped output as suppressible, so a real `clear` emitted after the shrink could be dropped as if it were the resize redraw.
   - Once the clear was swallowed, the preserved screen stayed stale and the next short command overlaid new output onto old pre-clear rows, matching the blank-screen and stale-body screenshots.
   - The fix narrows that suppression rule so real full-screen reset output (`CSI 2J`, `CSI 3J`, `RIS`) is never ignored and instead resets the preserved viewport origin normally.
+  - The current remaining bug is different: while preservation is active and the viewport stays shrunk, normal PTY output updates the preserved emulator but the visible viewport origin is not recomputed from the new preserved cursor position.
+  - That leaves the prompt/cursor off-screen and clamps the cropped cursor back onto row 1, which matches the screenshot where typed command text bleeds into the tab bar.
 - Verification:
   - Focused signal-path preservation slice:
   - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PromptAdvancePreservesExpandedMixedWidthScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`

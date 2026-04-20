@@ -536,6 +536,68 @@ func TestHostSIGWINCHClearAfterMultiStepResizeKeepsPromptVisible(t *testing.T) {
 	})
 }
 
+func TestHostSIGWINCHTypingWhileShrunkAfterPsAuxKeepsPromptOnBottomRow(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	sess := startSIGWINCHInProcessHost(t, countingPromptBash(t), 119, 30, []string{"PS1=PROMPT> "})
+	defer sess.Cancel()
+
+	eventuallyWithClock(t, sess.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !sess.Screen().Contains("PROMPT-001>") {
+			return fmt.Errorf("waiting for initial prompt\nscreen:\n%s", sess.Screen().String())
+		}
+		return nil
+	})
+
+	sess.Send("ps aux\n")
+	waitForHostPromptNumber(t, sess, 2, 4*time.Second)
+	eventuallyWithClock(t, sess.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := sess.Screen()
+		if !screen.Contains("ps aux") || !screen.Contains("PROMPT-002>") {
+			return fmt.Errorf("waiting for ps aux output with prompt\nscreen:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	resizeProcessHost(t, sess, 80, 24)
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+
+	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := sess.Screen()
+		cur := sess.Cursor()
+		if cur.Row != 24 {
+			return fmt.Errorf("expected cursor on bottom row while shrunk after SIGWINCH ps aux, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if !strings.Contains(screen.Row(23), "PROMPT-002>") {
+			return fmt.Errorf("expected prompt on bottom row while shrunk after SIGWINCH ps aux, got row=%q\nscreen:\n%s", screen.Row(23), screen.String())
+		}
+		return nil
+	})
+
+	baseline := sess.Screen()
+	sess.Send("mkpod")
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+
+	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := sess.Screen()
+		cur := sess.Cursor()
+		if cur.Row != 24 {
+			return fmt.Errorf("expected cursor to stay on bottom row while typing after SIGWINCH shrink, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if got, want := screen.Row(0), baseline.Row(0); got != want {
+			return fmt.Errorf("expected top row to remain stable while typing after SIGWINCH shrink\nwant: %q\ngot:  %q\nscreen:\n%s", want, got, screen.String())
+		}
+		if strings.Contains(screen.Row(0), "mkpod") {
+			return fmt.Errorf("expected typed command not to bleed into top row after SIGWINCH shrink, got row=%q\nscreen:\n%s", screen.Row(0), screen.String())
+		}
+		if !strings.Contains(screen.Row(23), "PROMPT-002> mkpod") {
+			return fmt.Errorf("expected typed command on bottom prompt row after SIGWINCH shrink, got row=%q\nscreen:\n%s", screen.Row(23), screen.String())
+		}
+		return nil
+	})
+}
+
 func startSIGWINCHInProcessHost(t *testing.T, shell string, cols, rows int, extraEnv []string) *ptytest.PTYSession {
 	t.Helper()
 	for _, entry := range extraEnv {
