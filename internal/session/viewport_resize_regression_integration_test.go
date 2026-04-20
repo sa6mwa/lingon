@@ -1262,6 +1262,200 @@ func TestHostResizeTypingWhileShrunkAfterPsAuxKeepsPromptOnBottomRow(t *testing.
 	})
 }
 
+func TestHostResizeWhileShrunkAfterPsAuxMatchesBottomViewportCrop(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const (
+		wideCols   = 119
+		wideRows   = 30
+		shrunkCols = 80
+		shrunkRows = 24
+	)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-while-shrunk-ps-host",
+		SessionName: "viewport-resize-while-shrunk-ps-host",
+		Shell:       shell,
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(host.Cancel)
+
+	peer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-while-shrunk-ps-peer",
+		SessionName: "viewport-resize-while-shrunk-ps-peer",
+		Shell:       "/bin/sh",
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(peer.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+
+	host.Send("ps aux\n")
+	waitForHostPromptNumber(t, host, 2, 4*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if !screen.Contains("ps aux") || !screen.Contains("PROMPT-002>") {
+			return fmt.Errorf("expected ps aux output with prompt before shrink, got:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	host.Resize(shrunkCols, shrunkRows)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		cur := host.Cursor()
+		if cur.Row != shrunkRows {
+			return fmt.Errorf("expected cursor on bottom row while shrunk after ps aux, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if !strings.Contains(screen.Row(shrunkRows-1), "PROMPT-002>") {
+			return fmt.Errorf("expected prompt on bottom row while shrunk after ps aux, got row=%q\nscreen:\n%s", screen.Row(shrunkRows-1), screen.String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeWhileShrunkWithDecoratedPromptKeepsPromptVisible(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	shell := decoratedPromptBash(t)
+	const (
+		wideCols   = 119
+		wideRows   = 30
+		shrunkCols = 80
+		shrunkRows = 24
+	)
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-decorated-prompt-host",
+		SessionName: "viewport-resize-decorated-prompt-host",
+		Shell:       shell,
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(host.Cancel)
+
+	peer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-decorated-prompt-peer",
+		SessionName: "viewport-resize-decorated-prompt-peer",
+		Shell:       "/bin/sh",
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(peer.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !strings.Contains(host.Screen().String(), "~{}") {
+			return fmt.Errorf("waiting for decorated prompt\nscreen:\n%s", host.Screen().String())
+		}
+		return nil
+	})
+
+	host.Send("ps aux\n")
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if !screen.Contains("ps aux") || !screen.Contains("~{}") {
+			return fmt.Errorf("expected ps aux output with decorated prompt before shrink, got:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	host.Resize(shrunkCols, shrunkRows)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		cur := host.Cursor()
+		if cur.Row != shrunkRows {
+			return fmt.Errorf("expected cursor on bottom row while shrunk with decorated prompt, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if !strings.Contains(screen.Row(shrunkRows-1), "~{}") {
+			return fmt.Errorf("expected decorated prompt on bottom row while shrunk, got row=%q\nscreen:\n%s", screen.Row(shrunkRows-1), screen.String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeWhileShrunkAfterPsAuxKeepsPromptVisibleAcrossViewportSizes(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	cases := []struct {
+		name string
+		cols int
+		rows int
+	}{
+		{name: "80x24", cols: 80, rows: 24},
+		{name: "80x20", cols: 80, rows: 20},
+		{name: "72x18", cols: 72, rows: 18},
+		{name: "60x16", cols: 60, rows: 16},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			host := h.StartHost(ptytest.HostOptions{
+				SessionID:   "viewport-resize-matrix-host-" + strings.ReplaceAll(tc.name, "x", "-"),
+				SessionName: "viewport-resize-matrix-host-" + strings.ReplaceAll(tc.name, "x", "-"),
+				Shell:       shell,
+				Cols:        119,
+				Rows:        30,
+			})
+			t.Cleanup(host.Cancel)
+
+			peer := h.StartHost(ptytest.HostOptions{
+				SessionID:   "viewport-resize-matrix-peer-" + strings.ReplaceAll(tc.name, "x", "-"),
+				SessionName: "viewport-resize-matrix-peer-" + strings.ReplaceAll(tc.name, "x", "-"),
+				Shell:       "/bin/sh",
+				Cols:        119,
+				Rows:        30,
+			})
+			t.Cleanup(peer.Cancel)
+
+			waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+			waitForHostPromptNumber(t, host, 1, 3*time.Second)
+
+			host.Send("ps aux\n")
+			waitForHostPromptNumber(t, host, 2, 4*time.Second)
+			eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+				screen := host.Screen()
+				if !screen.Contains("ps aux") || !screen.Contains("PROMPT-002>") {
+					return fmt.Errorf("expected ps aux output with prompt before shrink, got:\n%s", screen.String())
+				}
+				return nil
+			})
+
+			host.Resize(tc.cols, tc.rows)
+			advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+			eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+				screen := host.Screen()
+				cur := host.Cursor()
+				if cur.Row != tc.rows {
+					return fmt.Errorf("expected cursor on bottom row while shrunk at %s, got row=%d col=%d\nscreen:\n%s", tc.name, cur.Row, cur.Col, screen.String())
+				}
+				if !strings.Contains(screen.Row(tc.rows-1), "PROMPT-002>") {
+					return fmt.Errorf("expected prompt on bottom row while shrunk at %s, got row=%q\nscreen:\n%s", tc.name, screen.Row(tc.rows-1), screen.String())
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestHostResizeImmediateTypingAfterShrinkKeepsPromptOnBottomRow(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
@@ -2098,6 +2292,40 @@ func compareScreensWithNormalizedTabTitles(got, want ptytest.Screen, gotTitle, w
 	return nil
 }
 
+func compareScreenToBottomCrop(got, baseline ptytest.Screen, rows int, titles ...string) error {
+	gotLines := append([]string(nil), got.Lines...)
+	baseLines := append([]string(nil), baseline.Lines...)
+	if len(gotLines) != rows {
+		return fmt.Errorf("expected shrunk screen row count %d, got %d", rows, len(gotLines))
+	}
+	if len(baseLines) == 0 {
+		return fmt.Errorf("baseline screen is empty")
+	}
+	want := make([]string, 0, rows)
+	want = append(want, baseLines[0])
+	contentRows := rows - 1
+	baseContent := baseLines[1:]
+	if contentRows > len(baseContent) {
+		contentRows = len(baseContent)
+	}
+	want = append(want, baseContent[len(baseContent)-contentRows:]...)
+	if len(want) != len(gotLines) {
+		return fmt.Errorf("expected bottom crop row count %d, got %d", len(gotLines), len(want))
+	}
+	for row := range gotLines {
+		gotLine := gotLines[row]
+		wantLine := want[row]
+		if row == 0 {
+			gotLine = normalizeViewportResizeTabRow(gotLine, titles...)
+			wantLine = normalizeViewportResizeTabRow(wantLine, titles...)
+		}
+		if gotLine != wantLine {
+			return fmt.Errorf("screen mismatch at row %d\nwant: %q\ngot:  %q", row+1, wantLine, gotLine)
+		}
+	}
+	return nil
+}
+
 var viewportResizeTabTokenRe = regexp.MustCompile(`viewport-resize[^ ]*`)
 
 func normalizeViewportResizeTabRow(line string, titles ...string) string {
@@ -2190,6 +2418,30 @@ done
 		t.Fatalf("write resize clear shell: %v", err)
 	}
 	return path
+}
+
+func decoratedPromptBash(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	rcPath := filepath.Join(dir, "bashrc")
+	wrapperPath := filepath.Join(dir, "bash-wrapper.sh")
+	const rc = `
+update_prompt() {
+  printf '\033]0;decorated-shell\007'
+}
+PROMPT_COMMAND=update_prompt
+PS1='\[\e[32m\]\u\[\e[0m\] ~{} '
+set +o emacs
+set +o vi
+`
+	if err := os.WriteFile(rcPath, []byte(rc), 0o644); err != nil {
+		t.Fatalf("write decorated bashrc: %v", err)
+	}
+	wrapper := fmt.Sprintf("#!/usr/bin/env bash\nexec /bin/bash --noprofile --rcfile %q -i\n", rcPath)
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write decorated bash wrapper: %v", err)
+	}
+	return wrapperPath
 }
 
 func waitForResizeClearPrompt(t *testing.T, clk clock.Clock, sess *ptytest.PTYSession, want int, timeout time.Duration) {

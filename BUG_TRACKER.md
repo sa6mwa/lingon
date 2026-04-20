@@ -174,6 +174,8 @@ Required status values:
   - `internal/session.TestHostResizeLargeViewportClearWhileShrunkThenExpandMatchesControl`
   - `internal/session.TestHostResizeLargeViewportClearWhileShrunkThenExpandPsAuxMatchesControl`
   - `internal/session.TestHostResizeBashClearWhileShrunkThenExpandMatchesControl`
+  - `internal/session.TestHostResizeWhileShrunkWithDecoratedPromptKeepsPromptVisible`
+  - `internal/session.TestHostResizeWhileShrunkAfterPsAuxKeepsPromptVisibleAcrossViewportSizes`
   - The interactive host resize regressions now compare the full visible screen after shrink/expand/input flows, not just selected content rows.
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
@@ -198,6 +200,11 @@ Required status values:
   - That guard treated any escaped output as suppressible, so a real `clear` emitted after the shrink could be dropped as if it were the resize redraw.
   - Once the clear was swallowed, the preserved screen stayed stale and the next short command overlaid new output onto old pre-clear rows, matching the blank-screen and stale-body screenshots.
   - The fix narrows that suppression rule so real full-screen reset output (`CSI 2J`, `CSI 3J`, `RIS`) is never ignored and instead resets the preserved viewport origin normally.
+  - After the subsequent user report, the exact remaining “plain shrink leaves the prompt off-screen” screenshot still has not been trapped red under PTY harness coverage.
+  - Two harsher probes were added for that gap:
+    - decorated bash prompts with title/color escape sequences,
+    - a matrix of smaller shrunk viewport sizes after real `ps aux` output.
+  - Those new regressions are green on the current branch, so the remaining mismatch appears narrower than the current deterministic PTY cases and likely depends on a more specific host/session state sequence that still needs isolation.
   - The current remaining bug is different: while preservation is active and the viewport stays shrunk, normal PTY output updates the preserved emulator but the visible viewport origin is not recomputed from the new preserved cursor position.
   - That leaves the prompt/cursor off-screen and clamps the cropped cursor back onto row 1, which matches the screenshot where typed command text bleeds into the tab bar.
 - Verification:
