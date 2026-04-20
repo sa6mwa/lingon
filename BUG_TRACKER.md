@@ -82,19 +82,23 @@ Required status values:
   3. Observe that the visible notification does not show `user@endpoint#session`.
 - Regression coverage:
   - Existing helper-only unit test is insufficient because it validates formatter helpers, not the posted notification payload.
+  - Existing instrumentation only proved the title carried the source; it did not assert the body or expanded content also surfaced `user@addr#session`.
 - Investigation notes:
-  - `AndroidWallNotifier` still uses the generic title `"Broadcast"`.
-  - The formatter helper already produces `sender#session`, but that value is only placed in notification content text.
+  - Relay already emits `sender = username@ip`.
+  - Android receives `sender` and `sourceSessionName`, but `AndroidWallNotifier` currently uses the formatted source only for the title.
+  - The body shown in the notification is still just the wall message, so the requested source format is not guaranteed to appear on the visible surface the user actually sees.
 - Required fix:
-  - Add a regression at the actual notification payload boundary.
-  - Make the visible notification surface the source label.
+  - Make the visible notification payload surface `user@addr#session` in both title and body/expanded text.
+  - Add a regression at the actual posted-notification boundary.
 - Verification:
-  - `./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest`
+  - `./gradlew :app:testDebugUnitTest`
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
   - Connected Android instrumentation passed on emulator for:
     - `background_wall_delivery_posts_system_notification`
 - Notes:
-  - The bug was in the posted notification payload, not the formatter helper.
-  - `AndroidWallNotifier` now uses the formatted source as the visible title and the wall message as the body.
+  - Reopened after user report that installed Android build still did not visibly show `username@addr#sessionname`.
+  - Fixed by making the posted notification body/expanded text include the same `sender#session` source label as the title, instead of showing only the wall message body.
+  - The instrumentation assertion now proves the actual posted notification text equals `<title>: <message>`, so the visible payload cannot silently drop the source label again.
 
 ### B-003 Local PTY anti-cropping preservation still broken
 

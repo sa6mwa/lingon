@@ -873,7 +873,7 @@ class EndToEndTest {
             .orEmpty()
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertTrue("notification title missing session label: $title", title.endsWith("#${activeSessionId()}"))
-        assertEquals("${activeSessionId()} inactive", text)
+        assertEquals("$title: ${activeSessionId()} inactive", text)
         resumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
     }

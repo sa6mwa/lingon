@@ -27,4 +27,12 @@ class AndroidWallNotifierTest {
             formatWallBody("  hello operators  "),
         )
     }
+
+    @Test
+    fun formatWallContentFallsBackToSourceWhenMessageEmpty() {
+        assertEquals(
+            "alice@10.0.0.1#build-host",
+            formatWallContent("alice@10.0.0.1", "build-host", "   "),
+        )
+    }
 }

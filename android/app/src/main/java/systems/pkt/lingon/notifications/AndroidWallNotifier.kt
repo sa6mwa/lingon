@@ -28,7 +28,7 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
         val body = notification.message.trim()
         val source = formatWallSource(notification.sender, notification.sourceSessionName)
         val title = source.ifBlank { "Broadcast" }
-        val content = formatWallBody(body)
+        val content = formatWallContent(notification.sender, notification.sourceSessionName, body)
         val launchIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
