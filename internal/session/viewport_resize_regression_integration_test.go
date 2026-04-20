@@ -2281,7 +2281,7 @@ func compareScreensWithNormalizedTabTitles(got, want ptytest.Screen, gotTitle, w
 	for row := range gotLines {
 		gotLine := gotLines[row]
 		wantLine := wantLines[row]
-		if row == 0 {
+		if row <= 1 {
 			gotLine = normalizeViewportResizeTabRow(gotLine, gotTitle, wantTitle)
 			wantLine = normalizeViewportResizeTabRow(wantLine, gotTitle, wantTitle)
 		}

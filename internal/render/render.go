@@ -664,14 +664,19 @@ func SnapshotViewportNoClearMaskTopRow(w io.Writer, snap *protocolpb.Snapshot, v
 		cursorY = rows - 1
 	}
 
+	contentRows := viewRows - 1
+	if contentRows < 0 {
+		contentRows = 0
+	}
 	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 
 	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
 	if _, err := io.WriteString(w, ansiReset); err != nil {
 		return err
 	}
-	for ty := 2; ty <= viewRows; ty++ {
-		cy := y0 + (ty - 1)
+	for sy := 0; sy < contentRows; sy++ {
+		cy := y0 + sy + 1
+		ty := sy + 2
 		if _, err := io.WriteString(w, fmt.Sprintf("\x1b[%d;%dH", ty, 1)); err != nil {
 			return err
 		}
@@ -682,9 +687,9 @@ func SnapshotViewportNoClearMaskTopRow(w io.Writer, snap *protocolpb.Snapshot, v
 	}
 
 	viewX := cursorX - x0
-	viewY := cursorY - y0
-	if viewX >= 0 && viewX < viewCols && viewY >= 1 && viewY < viewRows {
-		if _, err := io.WriteString(w, fmt.Sprintf("\x1b[%d;%dH", viewY+1, viewX+1)); err != nil {
+	viewY := cursorY - y0 - 1
+	if viewX >= 0 && viewX < viewCols && viewY >= 0 && viewY < contentRows {
+		if _, err := io.WriteString(w, fmt.Sprintf("\x1b[%d;%dH", viewY+2, viewX+1)); err != nil {
 			return err
 		}
 	} else if snap.CursorVisible {
@@ -754,6 +759,10 @@ func SnapshotViewportDeltaMaskTopRow(w io.Writer, prev, snap *protocolpb.Snapsho
 		prevCursorY = rows - 1
 	}
 
+	contentRows := viewRows - 1
+	if contentRows < 0 {
+		contentRows = 0
+	}
 	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
 	px0, py0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, prevCursorX, prevCursorY)
 	if x0 != px0 || y0 != py0 {
@@ -777,8 +786,9 @@ func SnapshotViewportDeltaMaskTopRow(w io.Writer, prev, snap *protocolpb.Snapsho
 	}
 
 	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
-	for ty := 2; ty <= viewRows; ty++ {
-		cy := y0 + (ty - 1)
+	for sy := 0; sy < contentRows; sy++ {
+		cy := y0 + sy + 1
+		ty := sy + 2
 		runs := changedRuns(prev, snap, cy, x0, viewCols, cols, rows)
 		for _, run := range runs {
 			start := run[0]
@@ -793,9 +803,9 @@ func SnapshotViewportDeltaMaskTopRow(w io.Writer, prev, snap *protocolpb.Snapsho
 	}
 
 	viewX := cursorX - x0
-	viewY := cursorY - y0
-	if viewX >= 0 && viewX < viewCols && viewY >= 1 && viewY < viewRows {
-		if _, err := io.WriteString(w, fmt.Sprintf("\x1b[%d;%dH", viewY+1, viewX+1)); err != nil {
+	viewY := cursorY - y0 - 1
+	if viewX >= 0 && viewX < viewCols && viewY >= 0 && viewY < contentRows {
+		if _, err := io.WriteString(w, fmt.Sprintf("\x1b[%d;%dH", viewY+2, viewX+1)); err != nil {
 			return err
 		}
 	} else if snap.CursorVisible {

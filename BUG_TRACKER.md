@@ -29,6 +29,53 @@ Required status values:
 
 ## Active Items
 
+### B-012 Multi-attach input lag/stall on real relay attach
+
+- Status: `resolved`
+- Area: `attach`, `session`, `render`
+- Summary: Normal `lingon attach` against a real non-headless host must remain camera-only and must echo typed input promptly even when the host PTY is larger than the attach viewport.
+- Report:
+  Multi-attach currently becomes useless in a real terminal against a real Lingon host local PTY: input is not sent or arrives ultra-lagged, rendering is wrong, and proper testing would have caught it.
+- Repro:
+  1. Start a normal non-headless host with a local PTY larger than the attach window.
+  2. Run authenticated `lingon attach` in a smaller local terminal and request control.
+  3. Type commands into attach.
+  4. Observe laggy or missing echo/input and broken rendering/wrapping.
+- Investigation notes:
+  - Existing multi-attach coverage was still too weak for this report. It checked startup rendering and host PTY size, but it did not prove:
+    - that no resize frames were sent on the relay attach path, or
+    - that echoed input progressed promptly through the real CLI path under a smaller viewport.
+  - `attach.MultiClient` still built relay child clients without `DisableResizePropagation`, and its `OnReady`/resize-event path still sent controller resizes on relay sessions.
+  - That violates the camera model for normal attach and is a strong candidate for redraw churn and perceived input lag.
+  - The real red repro that matched the user report was on the actual multi-session relay path:
+    - startup/resize/input worked through `attach.MultiClient` without an explicit `TermSize`
+    - after resizing to a smaller viewport and running `ps aux`, the attach view stayed panned to the right edge of the prompt and chopped off the left edge of the command output
+    - this made attach look unresponsive or broken even though bytes were arriving
+  - Root causes isolated this iteration:
+    - `attach.MultiClient` relay children still allowed non-headless resize propagation
+    - masked top-row viewport rendering used the wrong row mapping under reserved top-row attach layouts
+    - attach camera follow stayed horizontally pinned to the prompt cursor after command completion instead of falling back to a left-aligned viewport
+    - after local resize and line-submitting input, attach delta rendering could diff against a stale framebuffer baseline and leave mixed old/new cells on screen
+- Regression coverage:
+  - `internal/attach.TestMultiAttachRealCLIControlDoesNotSendResizeAndEchoesPromptly`
+  - `internal/attach.TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable`
+  - `internal/attach.TestMultiAttachRealCLIControlPsAuxAfterResizeMatchesHostCrop`
+  - `internal/attach.TestMultiAttachRealCLIControlBurstEnterKeepsConsecutiveBashPromptNumbers`
+  - `internal/attach.TestMultiAttachSignalResizeWithMultipleSessionsMatchesExplicitViewport`
+- Verification:
+  - Focused real relay multi-attach slice passed:
+    - `go test -count=1 ./internal/attach -run 'TestMultiAttach(RealCLIControlPsAuxAfterResizeMatchesHostCrop|RealCLIControlBurstEnterKeepsConsecutiveBashPromptNumbers|RealCLIControlWithMultipleSessionsKeepsViewportStable|SignalResizeWithMultipleSessionsMatchesExplicitViewport|RealCLIControlDoesNotSendResizeAndEchoesPromptly)' -v`
+  - WebUI-tagged real crop regression passed:
+    - `go test -count=1 -tags webui ./internal/attach -run TestMultiAttachRealCLIControlPsAuxAfterResizeMatchesHostCrop -v`
+  - Broader package run passed:
+    - `go test -count=1 -timeout 120s ./internal/attach`
+  - Full gates passed:
+    - `go test -count=1 ./...`
+    - `go vet ./...`
+    - `golint ./...`
+    - `golangci-lint run ./...`
+    - `make test-webui`
+
 ### B-011 Multi-attach viewport/camera semantics broken
 
 - Status: `resolved`

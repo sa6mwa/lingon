@@ -2,6 +2,7 @@ package attach
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -123,6 +124,7 @@ type Client struct {
 	forceClear       bool
 	tabSuppress      mvu.CursorTabSuppression
 	forceTabsVisible uint32
+	followInputUntil int64
 	effects          *mvu.EffectScheduler
 	viewOnlyMu       sync.Mutex
 	viewOnly         bool
@@ -701,6 +703,10 @@ func (c *Client) SendInput(ctx context.Context, data []byte) error {
 	if ws == nil {
 		return fmt.Errorf("client not connected")
 	}
+	c.setFollowInputWindow(150 * time.Millisecond)
+	if bytes.IndexByte(data, '\r') >= 0 || bytes.IndexByte(data, '\n') >= 0 {
+		c.invalidateDeltaRender()
+	}
 	frame := &protocolpb.Frame{Payload: &protocolpb.Frame_In{In: &protocolpb.In{Data: data}}}
 	return c.writeFrame(ctx, ws, frame)
 }
@@ -801,6 +807,12 @@ func (c *Client) RenderCurrentClear() {
 	c.forceClear = true
 	c.renderMu.Unlock()
 	c.renderCurrent()
+}
+
+func (c *Client) invalidateDeltaRender() {
+	c.renderMu.Lock()
+	c.renderCache.Reset()
+	c.renderMu.Unlock()
 }
 
 func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
@@ -1207,6 +1219,9 @@ func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 		return
 	}
 	now := c.clock().Now()
+	if !scrollActive && !scrollbackVisible && !c.followHorizontalCursor(now) {
+		viewSnap = clampSnapshotCursorToViewport(viewSnap, cols)
+	}
 	cursor := mvu.CursorFromSnapshot(viewSnap, cols, rows)
 	row := cursor.Row
 	col := cursor.Col
@@ -1259,6 +1274,41 @@ func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 	_ = writeAll(c.clock(), c.stdoutWriter(), rendered.Bytes)
 	c.scheduleRedrawEffect(mvu.EffectKeyTabAutoHide, frame.TabDelay, false)
 	c.scheduleRedrawEffect(mvu.EffectKeyStateExpiry, frame.StateDelay, true)
+}
+
+func (c *Client) setFollowInputWindow(d time.Duration) {
+	if d <= 0 {
+		atomic.StoreInt64(&c.followInputUntil, 0)
+		return
+	}
+	atomic.StoreInt64(&c.followInputUntil, c.clock().Now().Add(d).UnixNano())
+}
+
+func (c *Client) followHorizontalCursor(now time.Time) bool {
+	until := atomic.LoadInt64(&c.followInputUntil)
+	if until == 0 {
+		return false
+	}
+	return now.UnixNano() <= until
+}
+
+func clampSnapshotCursorToViewport(snap *protocolpb.Snapshot, viewCols int) *protocolpb.Snapshot {
+	if snap == nil || snap.Cursor == nil || viewCols <= 0 {
+		return snap
+	}
+	maxX := viewCols - 1
+	if maxX < 0 {
+		maxX = 0
+	}
+	if int(snap.Cursor.GetX()) <= maxX {
+		return snap
+	}
+	clone := cloneSnapshot(snap)
+	if clone.Cursor == nil {
+		clone.Cursor = &protocolpb.Cursor{}
+	}
+	clone.Cursor.X = uint32(maxX)
+	return clone
 }
 
 func (c *Client) renderCurrent() {
@@ -2273,6 +2323,7 @@ func (c *Client) handleResize(ctx context.Context, ws *websocket.Conn) {
 			return
 		case <-ch:
 			cols, rows := c.terminalSize()
+			c.invalidateDeltaRender()
 			if snap := c.getSnapshot(); snap != nil {
 				c.renderSnapshot(snap)
 			}
@@ -2282,6 +2333,7 @@ func (c *Client) handleResize(ctx context.Context, ws *websocket.Conn) {
 			}
 		case <-resizeEvents:
 			cols, rows := c.terminalSize()
+			c.invalidateDeltaRender()
 			if snap := c.getSnapshot(); snap != nil {
 				c.renderSnapshot(snap)
 			}

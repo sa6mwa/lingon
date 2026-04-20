@@ -780,6 +780,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			Theme:                       themeName,
 			Stdin:                       io.NopCloser(strings.NewReader("")),
 			TermSize:                    termSize,
+			DisableResizePropagation:    !localSessionMode,
 			Logger:                      m.Logger,
 			TokenRefresher:              tokenRefresher,
 			Clock:                       m.Clock,
@@ -867,7 +868,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				if cols == 0 || rows == 0 {
 					cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
 				}
-				if localSessionMode || client.isController() {
+				if localSessionMode {
 					_ = client.SendResize(ctx, cols, rows)
 				}
 			}
@@ -1678,7 +1679,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
 		}
 		view.client.RenderCurrent()
-		if m.SessionSource != nil || view.client.isController() {
+		if localSessionMode {
 			_ = view.client.SendResize(ctx, cols, rows)
 		}
 	}
