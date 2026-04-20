@@ -47,8 +47,8 @@ type localSession struct {
 	cmd     *exec.Cmd
 	writeMu sync.Mutex
 
-	emuMu    sync.Mutex
-	emulator terminal.Emulator
+	emuMu       sync.Mutex
+	emulator    terminal.Emulator
 	preserveEmu *emu.Emulator
 
 	snapMu            sync.RWMutex
@@ -198,6 +198,10 @@ func (s *localSession) shouldIgnoreNextPTYOutput(data []byte) bool {
 	s.resizeRedrawMu.Lock()
 	defer s.resizeRedrawMu.Unlock()
 	if !s.ignoreNextPTYOutput {
+		return false
+	}
+	if localOutputForcesFullRedraw(data) {
+		s.ignoreNextPTYOutput = false
 		return false
 	}
 	if bytes.IndexByte(data, 0x1b) >= 0 {
@@ -813,20 +817,21 @@ func (s *localSession) storePreservedSnapshot(preserved *protocolpb.Snapshot, vi
 	return stored
 }
 
-func (s *localSession) preservedViewportActive(viewCols, viewRows int) bool {
-	s.snapMu.RLock()
-	defer s.snapMu.RUnlock()
-	return s.preservedViewportActiveLocked(viewCols, viewRows)
-}
-
-func (s *localSession) preservedViewportActiveLocked(viewCols, viewRows int) bool {
-	if s.preserved == nil {
-		return false
-	}
-	return int(s.preserved.GetCols()) > viewCols ||
-		int(s.preserved.GetRows()) > viewRows ||
-		s.preserveOriginCol != 0 ||
-		s.preserveOriginRow != 0
+func (s *localSession) storeResetSnapshot(snap *protocolpb.Snapshot, viewCols, viewRows int) *protocolpb.Snapshot {
+	s.snapMu.Lock()
+	s.preserved = cloneSnapshot(snap)
+	s.preserveOriginCol = 0
+	s.preserveOriginRow = 0
+	s.snapshot = cropSnapshotToViewport(
+		s.preserved,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
+		viewCols,
+		viewRows,
+	)
+	stored := s.snapshot
+	s.snapMu.Unlock()
+	return stored
 }
 
 func (s *localSession) RespawnEnabled() bool {
@@ -1307,17 +1312,28 @@ func (s *localSession) runOnce(ctx context.Context) error {
 			}
 			protoSnap := protocol.SnapshotToProto(rawSnap)
 			snap := protoSnap
+			resetViewport := !s.allowRemoteResize && localOutputForcesFullRedraw(filtered)
 			if !s.allowRemoteResize && s.preservedEmulatorActive() {
 				if preservedSnap, preservedScroll := s.writePreservedEmulator(filtered); preservedSnap != nil {
-					snap = s.storePreservedSnapshot(preservedSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+					if resetViewport {
+						snap = s.storeResetSnapshot(preservedSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+					} else {
+						snap = s.storePreservedSnapshot(preservedSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+					}
 					scrollRows = preservedScroll
+				} else {
+					if resetViewport {
+						snap = s.storeResetSnapshot(protoSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+					} else {
+						snap = s.storeSnapshot(protoSnap, len(scrollRows))
+					}
+				}
+			} else {
+				if resetViewport {
+					snap = s.storeResetSnapshot(protoSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
 				} else {
 					snap = s.storeSnapshot(protoSnap, len(scrollRows))
 				}
-			} else if !s.allowRemoteResize && s.preservedViewportActive(int(protoSnap.GetCols()), int(protoSnap.GetRows())) {
-				snap = s.storeSnapshot(protoSnap, len(scrollRows))
-			} else {
-				snap = s.storeSnapshot(protoSnap, len(scrollRows))
 			}
 			scrollRows = s.appendScrollback(s.drainScrollbackRows(scrollRows))
 			if s.onOutput != nil {

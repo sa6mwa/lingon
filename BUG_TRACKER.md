@@ -98,7 +98,7 @@ Required status values:
 
 ### B-003 Local PTY anti-cropping preservation still broken
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Area: `session`, `scrollback`, `render`
 - Summary: Shrinking the host viewport must not destroy right-side content or garble preserved history.
 - Report:
@@ -134,6 +134,14 @@ Required status values:
      - shrink,
      - expand,
      - observe the cursor/prompt restored one row too high while the last content row is effectively pushed below the visible window.
+  9. Additional host-TUI sequence reproduced from the latest screenshots:
+     - render a full-height wide screen,
+     - shrink,
+     - run `clear`,
+     - expand,
+     - observe a blank screen with only the cursor visible,
+     - then run a short command such as `ps aux`,
+     - observe stale pre-clear rows revived under the new output.
 - Regression coverage:
   - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
   - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
@@ -154,6 +162,9 @@ Required status values:
   - `internal/session.TestHostResizeLargeViewportFullScreenClearAfterExpandMatchesControl`
   - `internal/session.TestHostResizeLargeViewportClearThenShortCommandMatchesControl`
   - `internal/session.TestHostResizeLargeViewportCtrlLLClearThenShortCommandMatchesControl`
+  - `internal/session.TestHostResizeLargeViewportClearWhileShrunkThenExpandMatchesControl`
+  - `internal/session.TestHostResizeLargeViewportClearWhileShrunkThenExpandPsAuxMatchesControl`
+  - `internal/session.TestHostResizeBashClearWhileShrunkThenExpandMatchesControl`
   - The interactive host resize regressions now compare the full visible screen after shrink/expand/input flows, not just selected content rows.
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
@@ -174,13 +185,18 @@ Required status values:
   - That shortcut branch has now been removed. While preservation is active, local host snapshots now always come from the emulator-driven preservation path rather than ad hoc newline/prompt snapshot synthesis.
   - A remaining clear-specific host failure was then reproduced at the render boundary: after a resized full-screen restore, `clear` did not force a real full-screen repaint, so the next shorter command could leave stale body rows visible on the real terminal.
   - The host render path now forces a full MVU repaint when PTY output carries a real clear/reset sequence (`CSI 2J`, `CSI 3J`, or `RIS`), which matches the semantics the terminal needs after `clear` and `Ctrl+L l`.
+  - The latest remaining clear bug was narrower: after a shrink, Lingon armed a one-shot “ignore the next PTY redraw” guard meant to discard resize artifacts.
+  - That guard treated any escaped output as suppressible, so a real `clear` emitted after the shrink could be dropped as if it were the resize redraw.
+  - Once the clear was swallowed, the preserved screen stayed stale and the next short command overlaid new output onto old pre-clear rows, matching the blank-screen and stale-body screenshots.
+  - The fix narrows that suppression rule so real full-screen reset output (`CSI 2J`, `CSI 3J`, `RIS`) is never ignored and instead resets the preserved viewport origin normally.
 - Verification:
   - Focused signal-path preservation slice:
-    - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PromptAdvancePreservesExpandedMixedWidthScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
+  - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PromptAdvancePreservesExpandedMixedWidthScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
   - Real host typed-command regressions:
     - `go test -count=1 ./internal/session -run 'TestHostResize(TypingWhileShrunkThenExpandPreservesCommandLine|TypingAfterExpandPreservesPromptLine|CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
   - `go test -count=1 ./internal/session -run 'TestHostResize(CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
   - `go test -count=1 ./internal/session -run 'TestHostResizeLargeViewport(FullScreenClearAfterExpandMatchesControl|ClearThenShortCommandMatchesControl|CtrlLLClearThenShortCommandMatchesControl)'`
+  - `go test -count=1 ./internal/session -run 'TestHostResize(LargeViewportClearWhileShrunkThenExpandMatchesControl|LargeViewportClearWhileShrunkThenExpandPsAuxMatchesControl|BashClearWhileShrunkThenExpandMatchesControl)'`
   - `go test -count=1 ./internal/session`
   - `go test -count=1 ./internal/attach`
   - `go test -count=1 ./...`
