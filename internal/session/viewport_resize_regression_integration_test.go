@@ -484,6 +484,9 @@ func TestHostResizePreservesScrolledWideOutputWithTabBarVisible(t *testing.T) {
 	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
 	eventuallyWithClock(t, h.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
 		row := host.Screen().Row(0)
+		if strings.Contains(row, "connected to ") {
+			return fmt.Errorf("waiting for transient connection banner to clear, row=%q", row)
+		}
 		if !strings.Contains(row, "viewport-preserve-wide-scroll-output-tabs") {
 			return fmt.Errorf("expected tab bar visible before resize, got row=%q\nscreen:\n%s", row, host.Screen().String())
 		}

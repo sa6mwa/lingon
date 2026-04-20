@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -572,6 +573,10 @@ type AttachOptions struct {
 	Cols           int
 	Rows           int
 	Clock          clock.Clock
+	// Endpoint overrides the harness relay endpoint. Supports local headless endpoints in tests.
+	Endpoint string
+	// UnixSocket overrides the transport socket used by attach client tests.
+	UnixSocket string
 	// DisableDesktopNotifications suppresses desktop notifications in the attach client.
 	DisableDesktopNotifications bool
 	// DesktopNotifier overrides the attach client's notifier.
@@ -662,6 +667,10 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 		DisableSignalResize:         true,
 		Clock:                       clk,
 		NoHostTimeout:               opts.NoHostTimeout,
+		UnixSocket:                  opts.UnixSocket,
+	}
+	if endpoint := strings.TrimSpace(opts.Endpoint); endpoint != "" {
+		client.Endpoint = endpoint
 	}
 	if authFile != "" {
 		client.TokenRefresher = relayclient.TokenRefresher(h.endpoint, authFile, "", false, func(token string) {

@@ -93,6 +93,10 @@ Required status values:
   7. Observe viewport wrapping/smearing instead of camera cropping.
 - Regression coverage:
   - `internal/attach.TestMultiAttachWithoutExplicitTermSizeMatchesControlViewportAcrossStartupResizeAndCommand`
+  - `internal/attach.TestSingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput`
+  - `internal/attach.TestMultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput`
+  - `internal/attach.TestSingleAttachHeadlessResizeMatrixRendersExpectedViewport`
+  - `internal/attach.TestMultiAttachHeadlessResizeMatrixRendersExpectedViewport`
   - Existing guard rails rechecked:
     - `internal/attach.TestMultiAttachStartupDoesNotSendResizeToRelayHost`
     - `internal/attach.TestMultiAttachResizeDoesNotResizeRelayHostPTY`
@@ -109,6 +113,9 @@ Required status values:
   - The new regression starts `attach.MultiClient` in a real PTY without an explicit `TermSize`, compares it against the harness control path with the same local viewport, and fails on the visible body mismatch.
   - The runtime fix makes `MultiClient` derive a real terminal-size provider from its own local stdin/stdout tty when `TermSize` is unset, so normal `lingon attach` now uses the real local viewport/camera dimensions.
 - Verification:
+  - Focused matrix:
+    - `go test -count=1 ./internal/attach -run 'Test(SingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|MultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|SingleAttachHeadlessResizeMatrixRendersExpectedViewport|MultiAttachHeadlessResizeMatrixRendersExpectedViewport)'`
+    - `go test -count=1 -tags webui ./internal/attach -run 'Test(SingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|MultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|SingleAttachHeadlessResizeMatrixRendersExpectedViewport|MultiAttachHeadlessResizeMatrixRendersExpectedViewport)'`
   - `go test -count=1 ./internal/attach -run 'TestMultiAttachWithoutExplicitTermSizeMatchesControlViewportAcrossStartupResizeAndCommand'`
   - `go test -count=1 ./internal/attach`
   - `go test -count=1 ./internal/session -run TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen -v`
