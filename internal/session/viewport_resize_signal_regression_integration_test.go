@@ -347,6 +347,195 @@ func TestHostSIGWINCHTruncatedRedrawPreservesWideTails(t *testing.T) {
 	})
 }
 
+func TestHostSIGWINCHPlainPsAuxAfterExpandKeepsPromptOnBottomRow(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	sess := startSIGWINCHInProcessHost(t, countingPromptBash(t), 100, 30, []string{"PS1=PROMPT> "})
+	defer sess.Cancel()
+	control := startSIGWINCHInProcessHost(t, countingPromptBash(t), 100, 30, []string{"PS1=PROMPT> "})
+	defer control.Cancel()
+
+	waitForHostPromptNumber(t, sess, 1, 3*time.Second)
+	waitForHostPromptNumber(t, control, 1, 3*time.Second)
+
+	sess.Send("ps aux\n")
+	control.Send("ps aux\n")
+	waitForHostPromptNumber(t, sess, 2, 4*time.Second)
+	waitForHostPromptNumber(t, control, 2, 4*time.Second)
+
+	resizeProcessHost(t, sess, 40, 12)
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+	resizeProcessHost(t, sess, 100, 30)
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+
+	sess.Send("ps aux\n")
+	control.Send("ps aux\n")
+	waitForHostPromptNumber(t, sess, 3, 4*time.Second)
+	waitForHostPromptNumber(t, control, 3, 4*time.Second)
+
+	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		sessCur := sess.Cursor()
+		controlCur := control.Cursor()
+		if sessCur.Row != controlCur.Row || sessCur.Col != controlCur.Col {
+			return fmt.Errorf("cursor mismatch after SIGWINCH plain ps aux; got row=%d col=%d want row=%d col=%d\ngot:\n%s\nwant:\n%s", sessCur.Row, sessCur.Col, controlCur.Row, controlCur.Col, sess.Screen().String(), control.Screen().String())
+		}
+		if sessCur.Row != 30 {
+			return fmt.Errorf("expected cursor on bottom row after SIGWINCH plain ps aux, got row=%d col=%d\nscreen:\n%s", sessCur.Row, sessCur.Col, sess.Screen().String())
+		}
+		if !strings.Contains(sess.Screen().Row(sessCur.Row-1), "PROMPT-003>") {
+			return fmt.Errorf("expected current prompt on bottom row after SIGWINCH plain ps aux, got row=%q\nscreen:\n%s", sess.Screen().Row(sessCur.Row-1), sess.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostSIGWINCHPlainPsAuxAfterExpandKeepsPromptOnBottomRowLargeViewport(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	const cols = 119
+	const rows = 62
+	sess := startSIGWINCHInProcessHost(t, countingPromptBash(t), cols, rows, []string{"PS1=PROMPT> "})
+	defer sess.Cancel()
+	control := startSIGWINCHInProcessHost(t, countingPromptBash(t), cols, rows, []string{"PS1=PROMPT> "})
+	defer control.Cancel()
+
+	waitForHostPromptNumber(t, sess, 1, 3*time.Second)
+	waitForHostPromptNumber(t, control, 1, 3*time.Second)
+
+	sess.Send("ps aux\n")
+	control.Send("ps aux\n")
+	waitForHostPromptNumber(t, sess, 2, 4*time.Second)
+	waitForHostPromptNumber(t, control, 2, 4*time.Second)
+
+	resizeProcessHost(t, sess, 80, 24)
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+	resizeProcessHost(t, sess, cols, rows)
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+
+	sess.Send("ps aux\n")
+	control.Send("ps aux\n")
+	waitForHostPromptNumber(t, sess, 3, 4*time.Second)
+	waitForHostPromptNumber(t, control, 3, 4*time.Second)
+
+	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		sessCur := sess.Cursor()
+		controlCur := control.Cursor()
+		if sessCur.Row != controlCur.Row || sessCur.Col != controlCur.Col {
+			return fmt.Errorf("cursor mismatch after large-viewport SIGWINCH plain ps aux; got row=%d col=%d want row=%d col=%d\ngot:\n%s\nwant:\n%s", sessCur.Row, sessCur.Col, controlCur.Row, controlCur.Col, sess.Screen().String(), control.Screen().String())
+		}
+		if sessCur.Row != rows {
+			return fmt.Errorf("expected cursor on bottom row after large-viewport SIGWINCH plain ps aux, got row=%d col=%d\nscreen:\n%s", sessCur.Row, sessCur.Col, sess.Screen().String())
+		}
+		if !strings.Contains(sess.Screen().Row(sessCur.Row-1), "PROMPT-003>") {
+			return fmt.Errorf("expected current prompt on bottom row after large-viewport SIGWINCH plain ps aux, got row=%q\nscreen:\n%s", sess.Screen().Row(sessCur.Row-1), sess.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostSIGWINCHClearAfterExpandKeepsPromptVisible(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	sess := startSIGWINCHInProcessHost(t, sigwinchBashWrapper(t), 100, 30, []string{"PS1=PROMPT> "})
+	defer sess.Cancel()
+	control := startSIGWINCHInProcessHost(t, sigwinchBashWrapper(t), 100, 30, []string{"PS1=PROMPT> "})
+	defer control.Cancel()
+
+	eventuallyWithClock(t, sess.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !sess.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for initial prompts\nsess:\n%s\ncontrol:\n%s", sess.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	sess.Send("ps aux\n")
+	control.Send("ps aux\n")
+	eventuallyWithClock(t, sess.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !sess.Screen().Contains("ps aux") || !control.Screen().Contains("ps aux") {
+			return fmt.Errorf("waiting for ps aux output\nsess:\n%s\ncontrol:\n%s", sess.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	resizeProcessHost(t, sess, 40, 12)
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+	resizeProcessHost(t, sess, 100, 30)
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+
+	sess.Send("clear\n")
+	control.Send("clear\n")
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+	waitForRawIdle(t, control, 150*time.Millisecond, 3*time.Second)
+
+	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		sessCur := sess.Cursor()
+		controlCur := control.Cursor()
+		if sessCur.Row != controlCur.Row || sessCur.Col != controlCur.Col {
+			return fmt.Errorf("cursor mismatch after SIGWINCH clear; got row=%d col=%d want row=%d col=%d\ngot:\n%s\nwant:\n%s", sessCur.Row, sessCur.Col, controlCur.Row, controlCur.Col, sess.Screen().String(), control.Screen().String())
+		}
+		if sessCur.Row != 1 {
+			return fmt.Errorf("expected cursor on row 1 after SIGWINCH clear, got row=%d col=%d\nscreen:\n%s", sessCur.Row, sessCur.Col, sess.Screen().String())
+		}
+		if !strings.Contains(sess.Screen().Row(0), "PROMPT>") {
+			return fmt.Errorf("expected prompt visible on row 1 after SIGWINCH clear, got row=%q\nscreen:\n%s", sess.Screen().Row(0), sess.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostSIGWINCHClearAfterMultiStepResizeKeepsPromptVisible(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	sess := startSIGWINCHInProcessHost(t, sigwinchBashWrapper(t), 119, 62, []string{"PS1=PROMPT> "})
+	defer sess.Cancel()
+
+	eventuallyWithClock(t, sess.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !sess.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for initial prompt\nscreen:\n%s", sess.Screen().String())
+		}
+		return nil
+	})
+
+	sess.Send("ps aux\n")
+	eventuallyWithClock(t, sess.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !sess.Screen().Contains("ps aux") {
+			return fmt.Errorf("waiting for ps aux output\nscreen:\n%s", sess.Screen().String())
+		}
+		return nil
+	})
+
+	for _, sz := range []struct{ cols, rows int }{
+		{100, 40},
+		{80, 24},
+		{60, 20},
+		{40, 12},
+		{60, 18},
+		{90, 30},
+		{119, 62},
+	} {
+		resizeProcessHost(t, sess, sz.cols, sz.rows)
+		waitForRawIdle(t, sess, 100*time.Millisecond, 2*time.Second)
+	}
+
+	sess.Send("clear\n")
+	waitForRawIdle(t, sess, 150*time.Millisecond, 3*time.Second)
+
+	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		cur := sess.Cursor()
+		if cur.Row != 1 {
+			return fmt.Errorf("expected cursor on row 1 after multistep SIGWINCH clear, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, sess.Screen().String())
+		}
+		if !strings.Contains(sess.Screen().Row(0), "PROMPT>") {
+			return fmt.Errorf("expected prompt visible on row 1 after multistep SIGWINCH clear, got row=%q\nscreen:\n%s", sess.Screen().Row(0), sess.Screen().String())
+		}
+		return nil
+	})
+}
+
 func startSIGWINCHInProcessHost(t *testing.T, shell string, cols, rows int, extraEnv []string) *ptytest.PTYSession {
 	t.Helper()
 	for _, entry := range extraEnv {
@@ -377,6 +566,19 @@ func resizeProcessHost(t *testing.T, sess *ptytest.PTYSession, cols, rows int) {
 var dynamicNumberRe = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
 
 func compareSessionScreens(got, want *ptytest.PTYSession, normalizeNumbers bool) error {
+	gotCur := got.Cursor()
+	wantCur := want.Cursor()
+	if gotCur.Row != wantCur.Row || gotCur.Col != wantCur.Col {
+		return fmt.Errorf(
+			"cursor mismatch: got row=%d col=%d want row=%d col=%d\ngot:\n%s\nwant:\n%s",
+			gotCur.Row,
+			gotCur.Col,
+			wantCur.Row,
+			wantCur.Col,
+			got.Screen().String(),
+			want.Screen().String(),
+		)
+	}
 	gotLines := append([]string(nil), got.Screen().Lines...)
 	wantLines := append([]string(nil), want.Screen().Lines...)
 	if len(gotLines) != len(wantLines) {

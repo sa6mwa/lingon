@@ -376,9 +376,15 @@ func TestHostResizePreservesWideScreenWithBottomCursorWithoutInput(t *testing.T)
 	advanceTestClock(h.Clock(), 200*time.Millisecond)
 
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		screen := host.Screen().String()
-		if !strings.Contains(screen, "RIGHT-11") || !strings.Contains(screen, "PROMPT>") {
-			return fmt.Errorf("expected expand to restore wide bottom-cursor screen without new input, got:\n%s", screen)
+		screen := host.Screen()
+		if !strings.Contains(screen.String(), "RIGHT-11") || !strings.Contains(screen.String(), "PROMPT>") {
+			return fmt.Errorf("expected expand to restore wide bottom-cursor screen without new input, got:\n%s", screen.String())
+		}
+		if cur := host.Cursor(); cur.Row != 12 {
+			return fmt.Errorf("expected cursor on bottom row after expand, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if !strings.Contains(screen.Row(11), "PROMPT>") {
+			return fmt.Errorf("expected prompt on bottom row after expand, got row=%q\nscreen:\n%s", screen.Row(11), screen.String())
 		}
 		return nil
 	})
@@ -429,9 +435,15 @@ func TestHostResizePreservesScrolledWideOutputWithoutInput(t *testing.T) {
 	advanceTestClock(h.Clock(), 200*time.Millisecond)
 
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		screen := host.Screen().String()
-		if !strings.Contains(screen, "RIGHT-30") || !strings.Contains(screen, "PROMPT>") {
-			return fmt.Errorf("expected expand to restore scrolled wide output without new input, got:\n%s", screen)
+		screen := host.Screen()
+		if !strings.Contains(screen.String(), "RIGHT-30") || !strings.Contains(screen.String(), "PROMPT>") {
+			return fmt.Errorf("expected expand to restore scrolled wide output without new input, got:\n%s", screen.String())
+		}
+		if cur := host.Cursor(); cur.Row != 12 {
+			return fmt.Errorf("expected cursor on bottom row after expand, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if !strings.Contains(screen.Row(11), "PROMPT>") {
+			return fmt.Errorf("expected prompt on bottom row after expand, got row=%q\nscreen:\n%s", screen.Row(11), screen.String())
 		}
 		return nil
 	})
@@ -492,9 +504,15 @@ func TestHostResizePreservesScrolledWideOutputWithTabBarVisible(t *testing.T) {
 	advanceTestClock(h.Clock(), 200*time.Millisecond)
 
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		screen := host.Screen().String()
-		if !strings.Contains(screen, "RIGHT-30") || !strings.Contains(screen, "PROMPT>") {
-			return fmt.Errorf("expected expand to restore scrolled wide output with tab bar visible, got:\n%s", screen)
+		screen := host.Screen()
+		if !strings.Contains(screen.String(), "RIGHT-30") || !strings.Contains(screen.String(), "PROMPT>") {
+			return fmt.Errorf("expected expand to restore scrolled wide output with tab bar visible, got:\n%s", screen.String())
+		}
+		if cur := host.Cursor(); cur.Row != 12 {
+			return fmt.Errorf("expected cursor on bottom row after expand with tab bar visible, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		if !strings.Contains(screen.Row(11), "PROMPT>") {
+			return fmt.Errorf("expected prompt on bottom row after expand with tab bar visible, got row=%q\nscreen:\n%s", screen.Row(11), screen.String())
 		}
 		return nil
 	})
@@ -677,6 +695,11 @@ func TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar(t *tes
 		); err != nil {
 			return fmt.Errorf("%v\npty:\n%q\nshrunk before enter:\n%s\nshrunk after enter:\n%s\nhost screen:\n%s\ncontrol screen:\n%s", err, hostPTY.String(), shrunkBeforeEnter, shrunkAfterEnter, screen.String(), controlScreen.String())
 		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected prompt-advance cursor to match wide control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, screen.String(), controlScreen.String())
+		}
 		return nil
 	})
 }
@@ -751,6 +774,11 @@ func TestHostResizeTypingAfterExpandPreservesPromptLine(t *testing.T) {
 			"viewport-resize-typing-after-expand-control",
 		); err != nil {
 			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected typed-after-expand cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
 		}
 		return nil
 	})
@@ -830,6 +858,230 @@ func TestHostResizeTypingWhileShrunkThenExpandPreservesCommandLine(t *testing.T)
 			"viewport-resize-typing-while-shrunk-control",
 		); err != nil {
 			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected typed-while-shrunk cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizePostExpandFullScreenOutputMatchesControl(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := sigwinchBashWrapper(t)
+	const seedWide = "printf 'SEED-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-END\\n'\n"
+	const fillCommand = "i=1; while [ $i -le 40 ]; do printf 'POST-%02d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%02d-END\\n' $i $i; i=$(($i+1)); done\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-post-expand-output-host",
+		SessionName: "viewport-resize-post-expand-output-host",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-post-expand-output-control",
+		SessionName: "viewport-resize-post-expand-output-control",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for initial prompts\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Send(seedWide)
+	control.Send(seedWide)
+	eventuallyWithClock(t, h.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("RIGHT-END") || !control.Screen().Contains("RIGHT-END") {
+			return fmt.Errorf("waiting for seeded wide content\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(40, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(100, 30)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.Send(fillCommand)
+	control.Send(fillCommand)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("POST-40") || !control.Screen().Contains("POST-40") {
+			return fmt.Errorf("waiting for full-screen post-expand output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-post-expand-output-host",
+			"viewport-resize-post-expand-output-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected post-expand full-screen cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizePsAuxAfterExpandKeepsPromptOnBottomRow(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const command = "clear; ps aux\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-ps-aux-host",
+		SessionName: "viewport-resize-ps-aux-host",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-ps-aux-control",
+		SessionName: "viewport-resize-ps-aux-control",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+	waitForHostPromptNumber(t, control, 1, 3*time.Second)
+
+	host.Send(command)
+	control.Send(command)
+	waitForHostPromptNumber(t, host, 2, 4*time.Second)
+	waitForHostPromptNumber(t, control, 2, 4*time.Second)
+
+	host.Resize(40, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(100, 30)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.Send(command)
+	control.Send(command)
+	waitForHostPromptNumber(t, host, 3, 4*time.Second)
+	waitForHostPromptNumber(t, control, 3, 4*time.Second)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf(
+				"expected host cursor to match control after ps aux post-resize, got host row=%d col=%d control row=%d col=%d\nhost:\n%s\ncontrol:\n%s",
+				hostCur.Row,
+				hostCur.Col,
+				controlCur.Row,
+				controlCur.Col,
+				host.Screen().String(),
+				control.Screen().String(),
+			)
+		}
+		if hostCur.Row != 30 {
+			return fmt.Errorf("expected host cursor on bottom row after ps aux post-resize, got row=%d col=%d\nhost:\n%s", hostCur.Row, hostCur.Col, host.Screen().String())
+		}
+		promptRow := host.Screen().Row(hostCur.Row - 1)
+		if !strings.Contains(promptRow, "PROMPT-003>") {
+			return fmt.Errorf("expected current prompt on bottom row after ps aux post-resize, got row=%q\nhost:\n%s", promptRow, host.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizePlainPsAuxAfterExpandKeepsPromptOnBottomRow(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const command = "ps aux\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-plain-ps-aux-host",
+		SessionName: "viewport-resize-plain-ps-aux-host",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-plain-ps-aux-control",
+		SessionName: "viewport-resize-plain-ps-aux-control",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+	waitForHostPromptNumber(t, control, 1, 3*time.Second)
+
+	host.Send(command)
+	control.Send(command)
+	waitForHostPromptNumber(t, host, 2, 4*time.Second)
+	waitForHostPromptNumber(t, control, 2, 4*time.Second)
+
+	host.Resize(40, 12)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(100, 30)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.Send(command)
+	control.Send(command)
+	waitForHostPromptNumber(t, host, 3, 4*time.Second)
+	waitForHostPromptNumber(t, control, 3, 4*time.Second)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf(
+				"expected host cursor to match control after plain ps aux post-resize, got host row=%d col=%d control row=%d col=%d\nhost:\n%s\ncontrol:\n%s",
+				hostCur.Row,
+				hostCur.Col,
+				controlCur.Row,
+				controlCur.Col,
+				host.Screen().String(),
+				control.Screen().String(),
+			)
+		}
+		if hostCur.Row != 30 {
+			return fmt.Errorf("expected host cursor on bottom row after plain ps aux post-resize, got row=%d col=%d\nhost:\n%s", hostCur.Row, hostCur.Col, host.Screen().String())
+		}
+		promptRow := host.Screen().Row(hostCur.Row - 1)
+		if !strings.Contains(promptRow, "PROMPT-003>") {
+			return fmt.Errorf("expected current prompt on bottom row after plain ps aux post-resize, got row=%q\nhost:\n%s", promptRow, host.Screen().String())
 		}
 		return nil
 	})

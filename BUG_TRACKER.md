@@ -98,7 +98,7 @@ Required status values:
 
 ### B-003 Local PTY anti-cropping preservation still broken
 
-- Status: `resolved`
+- Status: `needs_verification`
 - Area: `session`, `scrollback`, `render`
 - Summary: Shrinking the host viewport must not destroy right-side content or garble preserved history.
 - Report:
@@ -129,6 +129,11 @@ Required status values:
      - press `Enter`,
      - expand,
      - observe typed command text smeared into preserved wide rows as if the preserved screen were being rewritten in the shrunk coordinate space.
+  8. Additional host-TUI sequence still reproducing after the earlier fix:
+     - render a full-height wide screen with the prompt on the bottom row,
+     - shrink,
+     - expand,
+     - observe the cursor/prompt restored one row too high while the last content row is effectively pushed below the visible window.
 - Regression coverage:
   - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
   - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
@@ -136,6 +141,16 @@ Required status values:
   - `internal/session.TestHostResizeCtrlLClearAfterExpandClearsPreservedContent`
   - `internal/session.TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar`
   - `internal/session.TestHostResizeTypingWhileShrunkThenExpandPreservesCommandLine`
+  - `internal/session.TestHostResizePreservesWideScreenWithBottomCursorWithoutInput`
+  - `internal/session.TestHostResizePreservesScrolledWideOutputWithoutInput`
+  - `internal/session.TestHostResizePreservesScrolledWideOutputWithTabBarVisible`
+  - `internal/session.TestHostResizePostExpandFullScreenOutputMatchesControl`
+  - `internal/session.TestHostResizePsAuxAfterExpandKeepsPromptOnBottomRow`
+  - `internal/session.TestHostResizePlainPsAuxAfterExpandKeepsPromptOnBottomRow`
+  - `internal/session.TestHostSIGWINCHPlainPsAuxAfterExpandKeepsPromptOnBottomRow`
+  - `internal/session.TestHostSIGWINCHPlainPsAuxAfterExpandKeepsPromptOnBottomRowLargeViewport`
+  - `internal/session.TestHostSIGWINCHClearAfterExpandKeepsPromptVisible`
+  - `internal/session.TestHostSIGWINCHClearAfterMultiStepResizeKeepsPromptVisible`
   - The interactive host resize regressions now compare the full visible screen after shrink/expand/input flows, not just selected content rows.
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
@@ -152,6 +167,9 @@ Required status values:
   - The final fix stopped overlaying shrunk local redraws onto the preserved framebuffer directly. Instead, when preservation is active, Lingon keeps a second preserved emulator that stays in the preserved coordinate space and receives the real PTY output stream. The visible viewport is then cropped from that preserved emulator snapshot.
   - That dual-emulator cut removes the coordinate-space corruption that caused `Enter`, `Ctrl+L`, and typed command echoes to smear/crop preserved rows after shrink/expand cycles.
   - The regression assertions were then tightened again so the host preservation tests compare the full viewport after each operation, with only dynamic tab-title tokens normalized on row 1.
+  - There was still one leftover non-emulator shortcut in the local host read loop: newline-only and simple-prompt chunks could bypass the emulator path and synthesize preserved snapshots directly.
+  - That shortcut branch has now been removed. While preservation is active, local host snapshots now always come from the emulator-driven preservation path rather than ad hoc newline/prompt snapshot synthesis.
+  - The exact bottom-row/cursor-overlap screenshot sequence was not captured as a failing regression in this iteration, so the bug remains `needs_verification` pending user confirmation or a tighter red test.
 - Verification:
   - Focused signal-path preservation slice:
     - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PromptAdvancePreservesExpandedMixedWidthScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
