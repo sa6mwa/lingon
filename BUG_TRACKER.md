@@ -151,6 +151,9 @@ Required status values:
   - `internal/session.TestHostSIGWINCHPlainPsAuxAfterExpandKeepsPromptOnBottomRowLargeViewport`
   - `internal/session.TestHostSIGWINCHClearAfterExpandKeepsPromptVisible`
   - `internal/session.TestHostSIGWINCHClearAfterMultiStepResizeKeepsPromptVisible`
+  - `internal/session.TestHostResizeLargeViewportFullScreenClearAfterExpandMatchesControl`
+  - `internal/session.TestHostResizeLargeViewportClearThenShortCommandMatchesControl`
+  - `internal/session.TestHostResizeLargeViewportCtrlLLClearThenShortCommandMatchesControl`
   - The interactive host resize regressions now compare the full visible screen after shrink/expand/input flows, not just selected content rows.
   - Surrounding preservation coverage reverified:
     - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
@@ -169,13 +172,15 @@ Required status values:
   - The regression assertions were then tightened again so the host preservation tests compare the full viewport after each operation, with only dynamic tab-title tokens normalized on row 1.
   - There was still one leftover non-emulator shortcut in the local host read loop: newline-only and simple-prompt chunks could bypass the emulator path and synthesize preserved snapshots directly.
   - That shortcut branch has now been removed. While preservation is active, local host snapshots now always come from the emulator-driven preservation path rather than ad hoc newline/prompt snapshot synthesis.
-  - The exact bottom-row/cursor-overlap screenshot sequence was not captured as a failing regression in this iteration, so the bug remains `needs_verification` pending user confirmation or a tighter red test.
+  - A remaining clear-specific host failure was then reproduced at the render boundary: after a resized full-screen restore, `clear` did not force a real full-screen repaint, so the next shorter command could leave stale body rows visible on the real terminal.
+  - The host render path now forces a full MVU repaint when PTY output carries a real clear/reset sequence (`CSI 2J`, `CSI 3J`, or `RIS`), which matches the semantics the terminal needs after `clear` and `Ctrl+L l`.
 - Verification:
   - Focused signal-path preservation slice:
     - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PromptAdvancePreservesExpandedMixedWidthScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
   - Real host typed-command regressions:
     - `go test -count=1 ./internal/session -run 'TestHostResize(TypingWhileShrunkThenExpandPreservesCommandLine|TypingAfterExpandPreservesPromptLine|CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
   - `go test -count=1 ./internal/session -run 'TestHostResize(CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
+  - `go test -count=1 ./internal/session -run 'TestHostResizeLargeViewport(FullScreenClearAfterExpandMatchesControl|ClearThenShortCommandMatchesControl|CtrlLLClearThenShortCommandMatchesControl)'`
   - `go test -count=1 ./internal/session`
   - `go test -count=1 ./internal/attach`
   - `go test -count=1 ./...`
@@ -344,7 +349,7 @@ Required status values:
 ### B-010 Test runs leak real desktop notifications to the developer session
 
 - Status: `resolved`
-- Area: `tests`, `desktopnotify`, `session`, `attach`
+- Area: `tests`, `desktopnotify`
 - Summary: Test and end-to-end runs must never emit real desktop notifications to the developer’s desktop session.
 - Report:
   During recent `make test-webui` runs, the developer still received real desktop notifications.
@@ -355,22 +360,25 @@ Required status values:
   - The recent `make test-webui` output strongly points at wall/inactivity tests in `internal/session` and `internal/attach`, not generic chromedp/browser automation itself.
   - `Runner.fireLocalWallNotification` still falls back to `desktopnotify.New()` whenever `Options.DesktopNotifier` is nil and `DisableDesktopNotifications` is false.
   - PTY harness defaults use a noop notifier, so the remaining leak is likely from test paths that instantiate `Runner` or attach views without an injected notifier or explicit disable flag.
+  - A later broad `go test ./...` run still produced real desktop notifications even after package-local `TestMain` patches, which proved the real gap was broader: other package test binaries can import notifier-using code without inheriting those package-local overrides.
 - Regression coverage:
+  - `internal/desktopnotify.TestNewDefaultsToNoopNotifierUnderGoTest`
+  - `internal/desktopnotify.TestRunningUnderTestBinary`
   - `internal/session.TestRunnerLocalWallNotificationUsesNotifierFactoryWhenUnset`
   - `internal/attach.TestClientHandleWallUsesNotifierFactoryWhenUnset`
-  - package-wide reruns of `internal/session` and `internal/attach` wall/inactivity paths under forced noop notifier
+  - `internal/headlessd.TestDaemonNotifyDesktopUsesNotifierFactoryWhenUnset`
+  - focused reruns of notifier fallback paths in `internal/session`, `internal/attach`, and `internal/headlessd`
 - Implementation notes:
-  - `internal/desktopnotify.New()` now goes through a swappable factory so test binaries can force a noop notifier.
-  - `internal/session` and `internal/attach` install a package-wide noop notifier in `TestMain`, so any fallback notifier allocation in those test binaries stays local and silent.
+  - `internal/desktopnotify.New()` now defaults to `noopNotifier` automatically inside any `go test` binary, so fallback notifier allocation is silent across all package test binaries, not only packages with bespoke `TestMain` setup.
+  - Package-local notifier overrides in `internal/session`, `internal/attach`, and `internal/headlessd` are no longer required to keep tests silent.
   - Direct regression tests cover the previously unsafe fallback paths where session or attach code reached for `desktopnotify.New()` without an injected notifier.
   - `internal/attach.Client` now lazily resolves the notifier in the actual notification path, so the fallback is testable and consistent.
 - Verification:
+  - `go test -count=1 ./internal/desktopnotify`
   - `go test -count=1 ./internal/session -run 'Test(RunnerLocalWallNotificationUsesNotifierFactoryWhenUnset|LocalWallInactivityShowsModalOnOtherLocalTabAndDesktopNotification|RelayBacked.*Wall.*|HostSIGWINCHPsAuxAdvancePreservesExpandedScreen|HostSIGWINCHPromptAdvancePreservesExpandedMixedWidthScreen)'`
   - `go test -count=1 ./internal/attach -run 'Test(ClientHandleWallUsesNotifierFactoryWhenUnset|AttachHonorsRetryAfter|AttachWallModalShowsWrappedLongMessage|MultiAttachHeadlessRoutedStatusStaysOnActiveSession)'`
-  - `go test -count=1 ./internal/session`
-  - `go test -count=1 ./internal/attach`
-  - `make test-webui`
   - `go test -count=1 ./...`
+  - `make test-webui`
   - `go vet ./...`
   - `golint ./...`
   - `golangci-lint run ./...`

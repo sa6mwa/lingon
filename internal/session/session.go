@@ -2028,14 +2028,30 @@ func (r *Runner) handleLocalOutput(stdout, stdin *os.File) func(id string, data 
 		}
 		r.noteLocalActivity(id)
 		r.noteLocalOutput(id, data)
+		forceFull := localOutputForcesFullRedraw(data)
 		if snap == nil {
-			r.forceRedraw(stdout)
+			r.forceRedrawWithMode(stdout, forceFull)
 			return
 		}
-		if err := r.renderSnapshotWithOverlays(context.Background(), stdout, stdin, snap); err != nil {
+		activeID, _ := r.activeSession()
+		suppressTabs := r.tabSuppressed(activeID)
+		cols, rows := termSizeAny(stdout, stdin)
+		if cols <= 0 || rows <= 0 {
+			cols, rows = r.opts.Cols, r.opts.Rows
+		}
+		if err := r.renderHostMVU(context.Background(), stdout, snap, cols, rows, forceFull, suppressTabs); err != nil {
 			r.logger.Debug("session.render.failed", "err", err, "session", id)
 		}
 	}
+}
+
+func localOutputForcesFullRedraw(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	return bytes.Contains(data, []byte("\x1b[2J")) ||
+		bytes.Contains(data, []byte("\x1b[3J")) ||
+		bytes.Contains(data, []byte("\x1bc"))
 }
 
 func containsEnter(data []byte) bool {

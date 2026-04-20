@@ -2,6 +2,8 @@ package desktopnotify
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"pkt.systems/lingon/internal/protocolpb"
@@ -18,9 +20,20 @@ type Notifier interface {
 	Notify(context.Context, Request) error
 }
 
-var newFactory = func() Notifier {
+type noopNotifier struct{}
+
+func (noopNotifier) Notify(context.Context, Request) error {
+	return nil
+}
+
+func defaultFactory() Notifier {
+	if runningUnderTestBinary(os.Args) {
+		return noopNotifier{}
+	}
 	return newNotifier()
 }
+
+var newFactory = defaultFactory
 
 // New constructs an environment-aware desktop notifier.
 func New() Notifier {
@@ -40,6 +53,23 @@ func SetFactoryForTesting(factory func() Notifier) func() {
 	return func() {
 		newFactory = prev
 	}
+}
+
+func runningUnderTestBinary(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	name := filepath.Base(strings.TrimSpace(args[0]))
+	if strings.HasSuffix(name, ".test") {
+		return true
+	}
+	for _, arg := range args[1:] {
+		arg = strings.TrimSpace(arg)
+		if strings.HasPrefix(arg, "-test.") {
+			return true
+		}
+	}
+	return false
 }
 
 // IsInactivityWallMessage reports whether a wall message matches Lingon's inactivity notification shape.

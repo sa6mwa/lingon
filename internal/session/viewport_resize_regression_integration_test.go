@@ -1087,6 +1087,484 @@ func TestHostResizePlainPsAuxAfterExpandKeepsPromptOnBottomRow(t *testing.T) {
 	})
 }
 
+func TestHostResizeLargeViewportClearAfterExpandMatchesControl(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := sigwinchBashWrapper(t)
+	const cols = 119
+	const rows = 62
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-clear-host",
+		SessionName: "viewport-resize-large-clear-host",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-clear-control",
+		SessionName: "viewport-resize-large-clear-control",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for initial prompts\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Send("ps aux\n")
+	control.Send("ps aux\n")
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("ps aux") || !control.Screen().Contains("ps aux") {
+			return fmt.Errorf("waiting for ps aux output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(80, 24)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(cols, rows)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.Send("clear\n")
+	control.Send("clear\n")
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-large-clear-host",
+			"viewport-resize-large-clear-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected large clear cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
+		}
+		if hostCur.Row != 1 {
+			return fmt.Errorf("expected large clear cursor on row 1, got row=%d col=%d\nhost screen:\n%s", hostCur.Row, hostCur.Col, host.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeLargeViewportCtrlLLClearAfterExpandMatchesControl(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := sigwinchBashWrapper(t)
+	const cols = 119
+	const rows = 62
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-ctrl-l-clear-host",
+		SessionName: "viewport-resize-large-ctrl-l-clear-host",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-ctrl-l-clear-control",
+		SessionName: "viewport-resize-large-ctrl-l-clear-control",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for initial prompts\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Send("ps aux\n")
+	control.Send("ps aux\n")
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("ps aux") || !control.Screen().Contains("ps aux") {
+			return fmt.Errorf("waiting for ps aux output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(80, 24)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(cols, rows)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.SendCtrlL()
+	host.Send("l")
+	control.SendCtrlL()
+	control.Send("l")
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-large-ctrl-l-clear-host",
+			"viewport-resize-large-ctrl-l-clear-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected large ctrl+l l clear cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
+		}
+		if hostCur.Row != 1 {
+			return fmt.Errorf("expected large ctrl+l l clear cursor on row 1, got row=%d col=%d\nhost screen:\n%s", hostCur.Row, hostCur.Col, host.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeLargeViewportFullScreenClearAfterExpandMatchesControl(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const cols = 119
+	const rows = 62
+	const fillCommand = "clear; i=1; while [ $i -le 120 ]; do printf 'FILL-%03d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%03d-END\\n' $i $i; i=$(($i+1)); done\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-full-clear-host",
+		SessionName: "viewport-resize-large-full-clear-host",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-full-clear-control",
+		SessionName: "viewport-resize-large-full-clear-control",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+	waitForHostPromptNumber(t, control, 1, 3*time.Second)
+
+	host.Send(fillCommand)
+	control.Send(fillCommand)
+	waitForHostPromptNumber(t, host, 2, 4*time.Second)
+	waitForHostPromptNumber(t, control, 2, 4*time.Second)
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("FILL-120") || !control.Screen().Contains("FILL-120") {
+			return fmt.Errorf("waiting for full-height output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(80, 24)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(cols, rows)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+	_ = host.DrainRaw()
+	_ = control.DrainRaw()
+
+	host.Send("clear\n")
+	control.Send("clear\n")
+	hostRaw := waitForRawChunkContains(t, host, "\x1b[2J", 2*time.Second, 50*time.Millisecond, "expected resized host clear to trigger full-screen clear sequence")
+	controlRaw := waitForRawChunkContains(t, control, "\x1b[2J", 2*time.Second, 50*time.Millisecond, "expected control clear to trigger full-screen clear sequence")
+	waitForHostPromptNumber(t, host, 3, 4*time.Second)
+	waitForHostPromptNumber(t, control, 3, 4*time.Second)
+	_ = hostRaw
+	_ = controlRaw
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-large-full-clear-host",
+			"viewport-resize-large-full-clear-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected full-screen clear cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
+		}
+		if hostCur.Row != 1 {
+			return fmt.Errorf("expected full-screen clear cursor on row 1, got row=%d col=%d\nhost screen:\n%s", hostCur.Row, hostCur.Col, host.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeLargeViewportFullScreenCtrlLLClearAfterExpandMatchesControl(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := sigwinchBashWrapper(t)
+	const cols = 119
+	const rows = 62
+	const fillCommand = "clear; i=1; while [ $i -le 120 ]; do printf 'FILL-%03d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%03d-END\\n' $i $i; i=$(($i+1)); done\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-full-ctrl-l-clear-host",
+		SessionName: "viewport-resize-large-full-ctrl-l-clear-host",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-full-ctrl-l-clear-control",
+		SessionName: "viewport-resize-large-full-ctrl-l-clear-control",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for initial prompts\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Send(fillCommand)
+	control.Send(fillCommand)
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("FILL-120") || !control.Screen().Contains("FILL-120") || !host.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for full-height output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(80, 24)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(cols, rows)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.SendCtrlL()
+	host.Send("l")
+	control.SendCtrlL()
+	control.Send("l")
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for prompt after ctrl+l l clear\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-large-full-ctrl-l-clear-host",
+			"viewport-resize-large-full-ctrl-l-clear-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected full-screen ctrl+l l clear cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
+		}
+		if hostCur.Row != 1 {
+			return fmt.Errorf("expected full-screen ctrl+l l clear cursor on row 1, got row=%d col=%d\nhost screen:\n%s", hostCur.Row, hostCur.Col, host.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeLargeViewportClearThenShortCommandMatchesControl(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := sigwinchBashWrapper(t)
+	const cols = 119
+	const rows = 62
+	const fillCommand = "clear; i=1; while [ $i -le 120 ]; do printf 'FILL-%03d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%03d-END\\n' $i $i; i=$(($i+1)); done\n"
+	const shortCommand = "printf 'SHORT-ONE\\nSHORT-TWO\\nSHORT-THREE\\n'\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-clear-short-host",
+		SessionName: "viewport-resize-large-clear-short-host",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-clear-short-control",
+		SessionName: "viewport-resize-large-clear-short-control",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for initial prompts\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Send(fillCommand)
+	control.Send(fillCommand)
+	eventuallyWithClock(t, h.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("FILL-120") || !control.Screen().Contains("FILL-120") {
+			return fmt.Errorf("waiting for full-height output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(80, 24)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(cols, rows)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.Send("clear\n")
+	control.Send("clear\n")
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.Send(shortCommand)
+	control.Send(shortCommand)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("SHORT-THREE") || !control.Screen().Contains("SHORT-THREE") {
+			return fmt.Errorf("waiting for short command output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-large-clear-short-host",
+			"viewport-resize-large-clear-short-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected clear-then-short cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+}
+
+func TestHostResizeLargeViewportCtrlLLClearThenShortCommandMatchesControl(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := sigwinchBashWrapper(t)
+	const cols = 119
+	const rows = 62
+	const fillCommand = "clear; i=1; while [ $i -le 120 ]; do printf 'FILL-%03d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%03d-END\\n' $i $i; i=$(($i+1)); done\n"
+	const shortCommand = "printf 'SHORT-ONE\\nSHORT-TWO\\nSHORT-THREE\\n'\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-ctrl-l-clear-short-host",
+		SessionName: "viewport-resize-large-ctrl-l-clear-short-host",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-large-ctrl-l-clear-short-control",
+		SessionName: "viewport-resize-large-ctrl-l-clear-short-control",
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("PROMPT>") || !control.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for initial prompts\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Send(fillCommand)
+	control.Send(fillCommand)
+	eventuallyWithClock(t, h.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("FILL-120") || !control.Screen().Contains("FILL-120") {
+			return fmt.Errorf("waiting for full-height output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(80, 24)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(cols, rows)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.SendCtrlL()
+	host.Send("l")
+	control.SendCtrlL()
+	control.Send("l")
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.Send(shortCommand)
+	control.Send(shortCommand)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("SHORT-THREE") || !control.Screen().Contains("SHORT-THREE") {
+			return fmt.Errorf("waiting for short command output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-large-ctrl-l-clear-short-host",
+			"viewport-resize-large-ctrl-l-clear-short-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
+		}
+		hostCur := host.Cursor()
+		controlCur := control.Cursor()
+		if hostCur.Row != controlCur.Row || hostCur.Col != controlCur.Col {
+			return fmt.Errorf("expected ctrl+l l clear-then-short cursor to match control, got host row=%d col=%d control row=%d col=%d\nhost screen:\n%s\ncontrol screen:\n%s", hostCur.Row, hostCur.Col, controlCur.Row, controlCur.Col, host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+}
+
 func compareScreensWithNormalizedTabTitles(got, want ptytest.Screen, gotTitle, wantTitle string) error {
 	gotLines := append([]string(nil), got.Lines...)
 	wantLines := append([]string(nil), want.Lines...)
