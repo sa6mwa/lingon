@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -665,18 +666,16 @@ func TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar(t *tes
 		if !strings.Contains(screen.String(), "RIGHT-30-END") {
 			return fmt.Errorf("expected expanded screen to restore right tail after shrunk prompt advance, got:\n%s", screen.String())
 		}
-		hostLines := screen.Lines
-		controlLines := controlScreen.Lines
-		if len(hostLines) != len(controlLines) {
-			return fmt.Errorf("expected host/control screens to have same row count, got %d vs %d\nhost:\n%s\ncontrol:\n%s", len(hostLines), len(controlLines), screen.String(), controlScreen.String())
+		if !strings.Contains(screen.Row(0), "viewport-resize-prompt-advance-host") {
+			return fmt.Errorf("expected tab bar visible after expand, got row=%q\nscreen:\n%s", screen.Row(0), screen.String())
 		}
-		if !strings.Contains(hostLines[0], "viewport-resize-prompt-advance-host") {
-			return fmt.Errorf("expected tab bar visible after expand, got row=%q\nscreen:\n%s", hostLines[0], screen.String())
-		}
-		for row := 1; row < len(hostLines); row++ {
-			if hostLines[row] != controlLines[row] {
-				return fmt.Errorf("expected shrunk prompt advance to match wide control at row %d\nhost:    %q\ncontrol: %q\npty:\n%q\nshrunk before enter:\n%s\nshrunk after enter:\n%s\nhost screen:\n%s\ncontrol screen:\n%s", row+1, hostLines[row], controlLines[row], hostPTY.String(), shrunkBeforeEnter, shrunkAfterEnter, screen.String(), controlScreen.String())
-			}
+		if err := compareScreensWithNormalizedTabTitles(
+			screen,
+			controlScreen,
+			"viewport-resize-prompt-advance-host",
+			"viewport-resize-prompt-advance-control",
+		); err != nil {
+			return fmt.Errorf("%v\npty:\n%q\nshrunk before enter:\n%s\nshrunk after enter:\n%s\nhost screen:\n%s\ncontrol screen:\n%s", err, hostPTY.String(), shrunkBeforeEnter, shrunkAfterEnter, screen.String(), controlScreen.String())
 		}
 		return nil
 	})
@@ -745,15 +744,13 @@ func TestHostResizeTypingAfterExpandPreservesPromptLine(t *testing.T) {
 	}
 
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		hostLines := host.Screen().Lines
-		controlLines := control.Screen().Lines
-		if len(hostLines) != len(controlLines) {
-			return fmt.Errorf("expected same row count after typing, got %d vs %d\nhost:\n%s\ncontrol:\n%s", len(hostLines), len(controlLines), host.Screen().String(), control.Screen().String())
-		}
-		for row := 1; row < len(hostLines); row++ {
-			if hostLines[row] != controlLines[row] {
-				return fmt.Errorf("expected typed prompt line to match control at row %d\nhost:    %q\ncontrol: %q\nhost screen:\n%s\ncontrol screen:\n%s", row+1, hostLines[row], controlLines[row], host.Screen().String(), control.Screen().String())
-			}
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-typing-after-expand-host",
+			"viewport-resize-typing-after-expand-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
 		}
 		return nil
 	})
@@ -823,21 +820,56 @@ func TestHostResizeTypingWhileShrunkThenExpandPreservesCommandLine(t *testing.T)
 	advanceTestClock(h.Clock(), 250*time.Millisecond)
 
 	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		hostLines := host.Screen().Lines
-		controlLines := control.Screen().Lines
-		if len(hostLines) != len(controlLines) {
-			return fmt.Errorf("expected same row count after typing while shrunk, got %d vs %d\nhost:\n%s\ncontrol:\n%s", len(hostLines), len(controlLines), host.Screen().String(), control.Screen().String())
-		}
 		if !strings.Contains(host.Screen().String(), "TYPED-OK") {
 			return fmt.Errorf("expected expanded host screen to contain command output, got:\n%s", host.Screen().String())
 		}
-		for row := 1; row < len(hostLines); row++ {
-			if hostLines[row] != controlLines[row] {
-				return fmt.Errorf("expected typed-while-shrunk screen to match control at row %d\nhost:    %q\ncontrol: %q\nhost screen:\n%s\ncontrol screen:\n%s", row+1, hostLines[row], controlLines[row], host.Screen().String(), control.Screen().String())
-			}
+		if err := compareScreensWithNormalizedTabTitles(
+			host.Screen(),
+			control.Screen(),
+			"viewport-resize-typing-while-shrunk-host",
+			"viewport-resize-typing-while-shrunk-control",
+		); err != nil {
+			return fmt.Errorf("%v\nhost screen:\n%s\ncontrol screen:\n%s", err, host.Screen().String(), control.Screen().String())
 		}
 		return nil
 	})
+}
+
+func compareScreensWithNormalizedTabTitles(got, want ptytest.Screen, gotTitle, wantTitle string) error {
+	gotLines := append([]string(nil), got.Lines...)
+	wantLines := append([]string(nil), want.Lines...)
+	if len(gotLines) != len(wantLines) {
+		return fmt.Errorf("expected same row count, got %d vs %d", len(gotLines), len(wantLines))
+	}
+	for row := range gotLines {
+		gotLine := gotLines[row]
+		wantLine := wantLines[row]
+		if row == 0 {
+			gotLine = normalizeViewportResizeTabRow(gotLine, gotTitle, wantTitle)
+			wantLine = normalizeViewportResizeTabRow(wantLine, gotTitle, wantTitle)
+		}
+		if gotLine != wantLine {
+			return fmt.Errorf("screen mismatch at row %d\nhost:    %q\ncontrol: %q", row+1, gotLine, wantLine)
+		}
+	}
+	return nil
+}
+
+var viewportResizeTabTokenRe = regexp.MustCompile(`viewport-resize[^ ]*`)
+
+func normalizeViewportResizeTabRow(line string, titles ...string) string {
+	const banner = "connected to "
+	prefix := line
+	suffix := ""
+	if idx := strings.Index(line, banner); idx >= 0 {
+		prefix = line[:idx]
+		suffix = line[idx:]
+	}
+	for _, title := range titles {
+		prefix = strings.ReplaceAll(prefix, title, "<SESSION>")
+	}
+	prefix = viewportResizeTabTokenRe.ReplaceAllString(prefix, "<SESSION>")
+	return prefix + suffix
 }
 
 func TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow(t *testing.T) {
