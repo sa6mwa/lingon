@@ -682,6 +682,164 @@ func TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar(t *tes
 	})
 }
 
+func TestHostResizeTypingAfterExpandPreservesPromptLine(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const wideCommand = "clear; for i in $(seq 1 30); do printf 'ROW-%02d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%02d-END\\n' \"$i\" \"$i\"; done\n"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-typing-after-expand-host",
+		SessionName: "viewport-resize-typing-after-expand-host",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-typing-after-expand-control",
+		SessionName: "viewport-resize-typing-after-expand-control",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+	waitForHostPromptNumber(t, control, 1, 3*time.Second)
+
+	host.Send(wideCommand)
+	control.Send(wideCommand)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("RIGHT-30-END") || !control.Screen().Contains("RIGHT-30-END") {
+			return fmt.Errorf("waiting for deterministic wide output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+	waitForHostPromptNumber(t, host, 2, 3*time.Second)
+	waitForHostPromptNumber(t, control, 2, 3*time.Second)
+	_ = host.DrainRaw()
+	_ = control.DrainRaw()
+
+	host.Resize(40, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+	host.Resize(100, 12)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("RIGHT-30-END") {
+			return fmt.Errorf("expected expand to restore wide content, got:\n%s", host.Screen().String())
+		}
+		return nil
+	})
+
+	for _, ch := range []byte("ps aux") {
+		host.SendBytes([]byte{ch})
+		control.SendBytes([]byte{ch})
+		advanceTestClock(h.Clock(), 100*time.Millisecond)
+	}
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		hostLines := host.Screen().Lines
+		controlLines := control.Screen().Lines
+		if len(hostLines) != len(controlLines) {
+			return fmt.Errorf("expected same row count after typing, got %d vs %d\nhost:\n%s\ncontrol:\n%s", len(hostLines), len(controlLines), host.Screen().String(), control.Screen().String())
+		}
+		for row := 1; row < len(hostLines); row++ {
+			if hostLines[row] != controlLines[row] {
+				return fmt.Errorf("expected typed prompt line to match control at row %d\nhost:    %q\ncontrol: %q\nhost screen:\n%s\ncontrol screen:\n%s", row+1, hostLines[row], controlLines[row], host.Screen().String(), control.Screen().String())
+			}
+		}
+		return nil
+	})
+}
+
+func TestHostResizeTypingWhileShrunkThenExpandPreservesCommandLine(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	t.Setenv("PS1", "PROMPT> ")
+	shell := countingPromptBash(t)
+	const wideCommand = "clear; for i in $(seq 1 30); do printf 'ROW-%02d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%02d-END\\n' \"$i\" \"$i\"; done\n"
+	const typedCommand = "echo TYPED-OK"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-typing-while-shrunk-host",
+		SessionName: "viewport-resize-typing-while-shrunk-host",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(host.Cancel)
+
+	control := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-typing-while-shrunk-control",
+		SessionName: "viewport-resize-typing-while-shrunk-control",
+		Shell:       shell,
+		Cols:        100,
+		Rows:        12,
+	})
+	t.Cleanup(control.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForHostPromptNumber(t, host, 1, 3*time.Second)
+	waitForHostPromptNumber(t, control, 1, 3*time.Second)
+
+	host.Send(wideCommand)
+	control.Send(wideCommand)
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("RIGHT-30-END") || !control.Screen().Contains("RIGHT-30-END") {
+			return fmt.Errorf("waiting for deterministic wide output\nhost:\n%s\ncontrol:\n%s", host.Screen().String(), control.Screen().String())
+		}
+		return nil
+	})
+	waitForHostPromptNumber(t, host, 2, 3*time.Second)
+	waitForHostPromptNumber(t, control, 2, 3*time.Second)
+	_ = host.DrainRaw()
+	_ = control.DrainRaw()
+
+	host.Resize(40, 6)
+	advanceTestClock(h.Clock(), 200*time.Millisecond)
+
+	for _, ch := range []byte(typedCommand) {
+		host.SendBytes([]byte{ch})
+		advanceTestClock(h.Clock(), 100*time.Millisecond)
+	}
+	host.Send("\r")
+	waitForRawContains(t, host, "TYPED-OK", 3*time.Second, 50*time.Millisecond, "expected host command output while shrunk")
+	waitForHostPromptNumber(t, host, 3, 3*time.Second)
+
+	control.Send(typedCommand + "\r")
+	waitForRawContains(t, control, "TYPED-OK", 3*time.Second, 50*time.Millisecond, "expected control command output")
+	waitForHostPromptNumber(t, control, 3, 3*time.Second)
+
+	host.Resize(100, 12)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	eventuallyWithClock(t, h.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		hostLines := host.Screen().Lines
+		controlLines := control.Screen().Lines
+		if len(hostLines) != len(controlLines) {
+			return fmt.Errorf("expected same row count after typing while shrunk, got %d vs %d\nhost:\n%s\ncontrol:\n%s", len(hostLines), len(controlLines), host.Screen().String(), control.Screen().String())
+		}
+		if !strings.Contains(host.Screen().String(), "TYPED-OK") {
+			return fmt.Errorf("expected expanded host screen to contain command output, got:\n%s", host.Screen().String())
+		}
+		for row := 1; row < len(hostLines); row++ {
+			if hostLines[row] != controlLines[row] {
+				return fmt.Errorf("expected typed-while-shrunk screen to match control at row %d\nhost:    %q\ncontrol: %q\nhost screen:\n%s\ncontrol screen:\n%s", row+1, hostLines[row], controlLines[row], host.Screen().String(), control.Screen().String())
+			}
+		}
+		return nil
+	})
+}
+
 func TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
 

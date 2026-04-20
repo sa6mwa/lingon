@@ -98,7 +98,7 @@ Required status values:
 
 ### B-003 Local PTY anti-cropping preservation still broken
 
-- Status: `in_progress`
+- Status: `resolved`
 - Area: `session`, `scrollback`, `render`
 - Summary: Shrinking the host viewport must not destroy right-side content or garble preserved history.
 - Report:
@@ -148,11 +148,14 @@ Required status values:
   - Raw PTY capture showed bash only emitted a simple `\r\nPROMPT...` advance. The corruption was introduced by Lingon while merging the shrunk viewport back into the preserved framebuffer.
   - The previous fix was incomplete. It handled quiet prompt-advance and clear cases, but it still attempted to merge shrunk local-PTY redraws into the preserved wide framebuffer in the wrong coordinate space.
   - The new failing host regression shows the exact breakage: typing `echo TYPED-OK` while shrunk rewrites preserved wide rows with shrunk-screen content.
-  - A separate runner issue surfaced during verification: the final DSR render could be lost on local-session exit. That was fixed by forcing the last local snapshot render before removal, and the DSR regressions were rerun to prove it.
+  - The final fix stopped overlaying shrunk local redraws onto the preserved framebuffer directly. Instead, when preservation is active, Lingon keeps a second preserved emulator that stays in the preserved coordinate space and receives the real PTY output stream. The visible viewport is then cropped from that preserved emulator snapshot.
+  - That dual-emulator cut removes the coordinate-space corruption that caused `Enter`, `Ctrl+L`, and typed command echoes to smear/crop preserved rows after shrink/expand cycles.
 - Verification:
+  - Focused signal-path preservation slice:
+    - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PromptAdvancePreservesExpandedMixedWidthScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
+  - Real host typed-command regressions:
+    - `go test -count=1 ./internal/session -run 'TestHostResize(TypingWhileShrunkThenExpandPreservesCommandLine|TypingAfterExpandPreservesPromptLine|CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
   - `go test -count=1 ./internal/session -run 'TestHostResize(CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
-  - `go test -count=10 ./internal/session -run 'TestLocalSessionOSCQueryDoesNotSelfSustainPublish|TestInactivityShapedRelayWallDoesNotSuppressFocusedTabWithSiblingLocalPTYWithoutExplicitKind|TestHostResizeCtrlLClearAfterExpandClearsPreservedContent|TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar'`
-  - `go test -count=20 ./internal/session -run 'TestDSRReturnsSnapshotCursorPosition|TestLocalSessionDSRUsesCursorQueryOverride'`
   - `go test -count=1 ./internal/session`
   - `go test -count=1 ./internal/attach`
   - `go test -count=1 ./...`
