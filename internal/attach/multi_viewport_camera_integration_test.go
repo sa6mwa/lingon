@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -16,6 +19,12 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/ptytest"
+)
+
+var (
+	attachCLIBuildOnce sync.Once
+	attachCLIBuildPath string
+	attachCLIBuildErr  error
 )
 
 func TestMultiAttachStartupDoesNotSendResizeToRelayHost(t *testing.T) {
@@ -296,6 +305,504 @@ func TestMultiAttachRealCLIControlDoesNotSendResizeAndEchoesPromptly(t *testing.
 		t.Fatalf("expected relay-backed host PTY to remain 120x30 after attach resize/input, got:\n%s", host.Screen().String())
 	}
 	assertNoClientResizeFrames(t, rec, "attach-camera-lag")
+}
+
+func TestMultiAttachRealCLIControlBuffersStartupInputUntilViewReady(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	shell := t.TempDir() + "/attach-startup-input-bash.sh"
+	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
+	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
+		t.Fatalf("write attach startup-input bash wrapper: %v", err)
+	}
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-startup-input",
+		SessionName: "attach-startup-input",
+		Shell:       shell,
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-startup-input"})
+	if !screenContainsWithin(host, "PROMPT>", 3*time.Second) {
+		t.Fatalf("expected host prompt before attach startup, got:\n%s", host.Screen().String())
+	}
+
+	attach := startMultiAttachWithoutExplicitTermSize(t, h, ptytest.MultiAttachOptions{
+		SessionID: "attach-startup-input",
+		Cols:      60,
+		Rows:      16,
+	})
+	t.Cleanup(attach.session.Cancel)
+
+	attach.session.Send("echo ATTACH_STARTUP_READY\r")
+
+	if !screenContainsWithin(host, "ATTACH_STARTUP_READY", 3*time.Second) {
+		t.Fatalf("expected input typed during multi-attach startup to reach host, got host:\n%s\nattach:\n%s", host.Screen().String(), attach.session.Screen().String())
+	}
+	if !screenContainsWithin(attach.session, "ATTACH_STARTUP_READY", 3*time.Second) {
+		t.Fatalf("expected startup input output to render in attach once ready, got:\n%s", attach.session.Screen().String())
+	}
+}
+
+func TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsive(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	shell := t.TempDir() + "/attach-repeated-byte-bash.sh"
+	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
+	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
+		t.Fatalf("write attach repeated-byte bash wrapper: %v", err)
+	}
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-repeated-byte",
+		SessionName: "attach-repeated-byte",
+		Shell:       shell,
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-repeated-byte"})
+	if !screenContainsWithin(host, "PROMPT>", 3*time.Second) {
+		t.Fatalf("expected host prompt before attach startup, got:\n%s", host.Screen().String())
+	}
+
+	attach := startMultiAttachWithoutExplicitTermSize(t, h, ptytest.MultiAttachOptions{
+		SessionID: "attach-repeated-byte",
+		Cols:      60,
+		Rows:      16,
+	})
+	t.Cleanup(attach.session.Cancel)
+
+	attach.session.Eventually(5*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !strings.Contains(screen.String(), "PROMPT>") {
+			return fmt.Errorf("prompt not visible yet")
+		}
+		return nil
+	})
+	waitForClientCount(t, h, "attach-repeated-byte", 1, 3*time.Second)
+
+	attach.resize(50, 14)
+	ptytest.Advance(h.Clock(), 300*time.Millisecond)
+
+	prefix := ""
+	for _, burst := range []string{"abcde", "fghij", "klmno", "pqrst"} {
+		prefix += burst
+		attach.session.Send(burst)
+		if !screenContainsWithin(host, "PROMPT> "+prefix, 350*time.Millisecond) {
+			t.Fatalf("expected host echo for prefix %q within 350ms, got:\n%s", prefix, host.Screen().String())
+		}
+		if !screenContainsWithin(attach.session, "PROMPT> "+prefix, 700*time.Millisecond) {
+			t.Fatalf("expected attach echo for prefix %q within 700ms, got:\n%s", prefix, attach.session.Screen().String())
+		}
+	}
+}
+
+func TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsiveRealClock(t *testing.T) {
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	shell := t.TempDir() + "/attach-repeated-byte-realclock-bash.sh"
+	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
+	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
+		t.Fatalf("write attach repeated-byte realclock bash wrapper: %v", err)
+	}
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-repeated-byte-realclock",
+		SessionName: "attach-repeated-byte-realclock",
+		Shell:       shell,
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-repeated-byte-realclock"})
+	if !screenContainsWithin(host, "PROMPT>", 3*time.Second) {
+		t.Fatalf("expected host prompt before attach startup, got:\n%s", host.Screen().String())
+	}
+
+	attach := startMultiAttachWithoutExplicitTermSize(t, h, ptytest.MultiAttachOptions{
+		SessionID: "attach-repeated-byte-realclock",
+		Cols:      60,
+		Rows:      16,
+	})
+	t.Cleanup(attach.session.Cancel)
+
+	attach.session.Eventually(5*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !strings.Contains(screen.String(), "PROMPT>") {
+			return fmt.Errorf("prompt not visible yet")
+		}
+		return nil
+	})
+	waitForClientCount(t, h, "attach-repeated-byte-realclock", 1, 3*time.Second)
+	attach.resize(50, 14)
+	ptytest.Advance(h.Clock(), 300*time.Millisecond)
+
+	prefix := ""
+	for _, burst := range []string{"abcde", "fghij", "klmno", "pqrst"} {
+		prefix += burst
+		start := time.Now()
+		attach.session.Send(burst)
+		if !screenContainsWithin(host, "PROMPT> "+prefix, 350*time.Millisecond) {
+			t.Fatalf("expected host echo for prefix %q within 350ms, got:\n%s", prefix, host.Screen().String())
+		}
+		hostElapsed := time.Since(start)
+		if !screenContainsWithin(attach.session, "PROMPT> "+prefix, 1200*time.Millisecond) {
+			t.Fatalf("expected attach echo for prefix %q within 1200ms, got:\n%s", prefix, attach.session.Screen().String())
+		}
+		attachElapsed := time.Since(start)
+		if attachElapsed > 1200*time.Millisecond {
+			t.Fatalf("attach echo for prefix %q took %v after host echoed in %v\nattach:\n%s", prefix, attachElapsed, hostElapsed, attach.session.Screen().String())
+		}
+	}
+}
+
+func TestMultiAttachExternalCLIRepeatedInputStaysResponsiveRealClock(t *testing.T) {
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	shell := t.TempDir() + "/attach-external-cli-bash.sh"
+	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
+	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
+		t.Fatalf("write attach external-cli bash wrapper: %v", err)
+	}
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-external-cli",
+		SessionName: "attach-external-cli",
+		Shell:       shell,
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-external-cli"})
+	if !screenContainsWithin(host, "PROMPT>", 3*time.Second) {
+		t.Fatalf("expected host prompt before external attach startup, got:\n%s", host.Screen().String())
+	}
+
+	attach := startLingonAttachCLI(t, h, "attach-external-cli", 60, 16)
+	t.Cleanup(attach.Cancel)
+
+	attach.Eventually(8*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !strings.Contains(screen.String(), "PROMPT>") {
+			return fmt.Errorf("prompt not visible yet")
+		}
+		return nil
+	})
+	waitForClientCount(t, h, "attach-external-cli", 1, 5*time.Second)
+
+	attach.Resize(50, 14)
+	ptytest.Advance(h.Clock(), 300*time.Millisecond)
+
+	prefix := ""
+	for _, burst := range []string{"abcde", "fghij", "klmno", "pqrst"} {
+		prefix += burst
+		start := time.Now()
+		attach.Send(burst)
+		if !screenContainsWithin(host, "PROMPT> "+prefix, 350*time.Millisecond) {
+			t.Fatalf("expected host echo for prefix %q within 350ms, got:\n%s", prefix, host.Screen().String())
+		}
+		hostElapsed := time.Since(start)
+		if !screenContainsWithin(attach, "PROMPT> "+prefix, 1200*time.Millisecond) {
+			t.Fatalf("expected external attach echo for prefix %q within 1200ms after host echoed in %v, got:\n%s", prefix, hostElapsed, attach.Screen().String())
+		}
+		attachElapsed := time.Since(start)
+		if attachElapsed > 1200*time.Millisecond {
+			t.Fatalf("external attach echo for prefix %q took %v after host echoed in %v\nattach:\n%s", prefix, attachElapsed, hostElapsed, attach.Screen().String())
+		}
+	}
+}
+
+func TestMultiAttachExternalCLIRepeatedSingleByteCommandsDoNotAccumulateLatencyRealClock(t *testing.T) {
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-external-cli-latency",
+		SessionName: "attach-external-cli-latency",
+		Shell:       countingPromptBashForAttach(t),
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-external-cli-latency"})
+	waitForPromptNumberWithin(t, host, 1, 3*time.Second)
+
+	attach := startLingonAttachCLI(t, h, "attach-external-cli-latency", 60, 16)
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptNumberWithin(t, attach, 1, 8*time.Second)
+	waitForClientCount(t, h, "attach-external-cli-latency", 1, 5*time.Second)
+
+	attach.Resize(26, 8)
+	ptytest.Advance(h.Clock(), 300*time.Millisecond)
+
+	for prompt := 1; prompt <= 20; prompt++ {
+		line := fmt.Sprintf("PROMPT-%03d> :", prompt)
+		start := time.Now()
+		attach.Send(":")
+		if !screenContainsWithin(host, line, 350*time.Millisecond) {
+			t.Fatalf("expected host echo for prompt %03d within 350ms, got:\n%s", prompt, host.Screen().String())
+		}
+		hostElapsed := time.Since(start)
+		if !screenContainsWithin(attach, line, 1200*time.Millisecond) {
+			t.Fatalf("expected attach echo for prompt %03d within 1200ms after host echoed in %v, got:\n%s", prompt, hostElapsed, attach.Screen().String())
+		}
+		attachElapsed := time.Since(start)
+		if attachElapsed > 1200*time.Millisecond {
+			t.Fatalf("attach echo for prompt %03d took %v after host echoed in %v\nattach:\n%s", prompt, attachElapsed, hostElapsed, attach.Screen().String())
+		}
+
+		start = time.Now()
+		attach.Send("\r")
+		waitForPromptNumberWithin(t, host, prompt+1, 1200*time.Millisecond)
+		hostElapsed = time.Since(start)
+		waitForPromptNumberWithin(t, attach, prompt+1, 2*time.Second)
+		attachElapsed = time.Since(start)
+		if attachElapsed > 2*time.Second {
+			t.Fatalf("attach prompt advance to %03d took %v after host advanced in %v\nattach:\n%s", prompt+1, attachElapsed, hostElapsed, attach.Screen().String())
+		}
+	}
+}
+
+func TestMultiAttachExternalCLIRepeatedSingleByteCommandsStayResponsiveWithBackgroundSessionOutput(t *testing.T) {
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	hostA := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-external-cli-latency-a",
+		SessionName: "attach-external-cli-latency-a",
+		Shell:       countingPromptBashForAttach(t),
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(hostA.Cancel)
+	hostB := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-external-cli-latency-b",
+		SessionName: "attach-external-cli-latency-b",
+		Shell:       "/bin/bash",
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(hostB.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-external-cli-latency-a", "attach-external-cli-latency-b"})
+	waitForPromptNumberWithin(t, hostA, 1, 3*time.Second)
+	hostB.Send("i=0; while [ $i -lt 400 ]; do echo NOISE-$i; i=$((i+1)); sleep 0.01; done &\n")
+	if !screenContainsWithin(hostB, "NOISE-5", 3*time.Second) {
+		t.Fatalf("expected background session noise before attach startup, got:\n%s", hostB.Screen().String())
+	}
+
+	attach := startLingonAttachCLI(t, h, "attach-external-cli-latency-a", 26, 8)
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptNumberWithin(t, attach, 1, 8*time.Second)
+	waitForClientCount(t, h, "attach-external-cli-latency-a", 1, 5*time.Second)
+
+	for prompt := 1; prompt <= 12; prompt++ {
+		line := fmt.Sprintf("PROMPT-%03d> :", prompt)
+		start := time.Now()
+		attach.Send(":")
+		if !screenContainsWithin(hostA, line, 350*time.Millisecond) {
+			t.Fatalf("expected host echo for prompt %03d within 350ms with background session noise, got:\n%s", prompt, hostA.Screen().String())
+		}
+		hostElapsed := time.Since(start)
+		if !screenContainsWithin(attach, line, 1200*time.Millisecond) {
+			t.Fatalf("expected attach echo for prompt %03d within 1200ms after host echoed in %v with background session noise, got:\n%s", prompt, hostElapsed, attach.Screen().String())
+		}
+		attachElapsed := time.Since(start)
+		if attachElapsed > 1200*time.Millisecond {
+			t.Fatalf("attach echo for prompt %03d took %v after host echoed in %v with background session noise\nattach:\n%s", prompt, attachElapsed, hostElapsed, attach.Screen().String())
+		}
+
+		start = time.Now()
+		attach.Send("\r")
+		waitForPromptNumberWithin(t, hostA, prompt+1, 1200*time.Millisecond)
+		hostElapsed = time.Since(start)
+		waitForPromptNumberWithin(t, attach, prompt+1, 2*time.Second)
+		attachElapsed = time.Since(start)
+		if attachElapsed > 2*time.Second {
+			t.Fatalf("attach prompt advance to %03d took %v after host advanced in %v with background session noise\nattach:\n%s", prompt+1, attachElapsed, hostElapsed, attach.Screen().String())
+		}
+	}
+}
+
+func TestMultiAttachExternalCLIRepeatedSingleByteCommandsStayResponsiveAfterLargeHostOutput(t *testing.T) {
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-external-cli-large-output",
+		SessionName: "attach-external-cli-large-output",
+		Shell:       countingPromptBashForAttach(t),
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-external-cli-large-output"})
+	waitForPromptNumberWithin(t, host, 1, 3*time.Second)
+
+	host.Send("ps aux\r")
+	if !screenContainsWithin(host, "ps aux", 3*time.Second) {
+		t.Fatalf("expected large host output before attach startup, got:\n%s", host.Screen().String())
+	}
+	waitForPromptNumberWithin(t, host, 2, 3*time.Second)
+
+	attach := startLingonAttachCLI(t, h, "attach-external-cli-large-output", 26, 8)
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptNumberWithin(t, attach, 2, 8*time.Second)
+	waitForClientCount(t, h, "attach-external-cli-large-output", 1, 5*time.Second)
+
+	for prompt := 2; prompt <= 14; prompt++ {
+		line := fmt.Sprintf("PROMPT-%03d> :", prompt)
+		start := time.Now()
+		attach.Send(":")
+		if !screenContainsWithin(host, line, 350*time.Millisecond) {
+			t.Fatalf("expected host echo for prompt %03d within 350ms after large output, got:\n%s", prompt, host.Screen().String())
+		}
+		hostElapsed := time.Since(start)
+		if !screenContainsWithin(attach, line, 1200*time.Millisecond) {
+			t.Fatalf("expected attach echo for prompt %03d within 1200ms after host echoed in %v after large output, got:\n%s", prompt, hostElapsed, attach.Screen().String())
+		}
+		attachElapsed := time.Since(start)
+		if attachElapsed > 1200*time.Millisecond {
+			t.Fatalf("attach echo for prompt %03d took %v after host echoed in %v after large output\nattach:\n%s", prompt, attachElapsed, hostElapsed, attach.Screen().String())
+		}
+
+		start = time.Now()
+		attach.Send("\r")
+		waitForPromptNumberWithin(t, host, prompt+1, 1200*time.Millisecond)
+		hostElapsed = time.Since(start)
+		waitForPromptNumberWithin(t, attach, prompt+1, 2*time.Second)
+		attachElapsed = time.Since(start)
+		if attachElapsed > 2*time.Second {
+			t.Fatalf("attach prompt advance to %03d took %v after host advanced in %v after large output\nattach:\n%s", prompt+1, attachElapsed, hostElapsed, attach.Screen().String())
+		}
+	}
+}
+
+func TestMultiAttachRealCLIControlRepeatedSingleByteCommandsStayResponsiveAfterLargeHostOutput(t *testing.T) {
+	rec := ptytest.NewWSRecorder()
+	h := newHarness(t, ptytest.WithClock(clock.New()), ptytest.WithWSRecorder(rec))
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-realcli-large-output",
+		SessionName: "attach-realcli-large-output",
+		Shell:       countingPromptBashForAttach(t),
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-realcli-large-output"})
+	waitForPromptNumberWithin(t, host, 1, 3*time.Second)
+
+	host.Send("ps aux\r")
+	if !screenContainsWithin(host, "ps aux", 3*time.Second) {
+		t.Fatalf("expected large host output before attach startup, got:\n%s", host.Screen().String())
+	}
+	waitForPromptNumberWithin(t, host, 2, 3*time.Second)
+
+	attach := startMultiAttachWithoutExplicitTermSize(t, h, ptytest.MultiAttachOptions{
+		SessionID: "attach-realcli-large-output",
+		Cols:      26,
+		Rows:      8,
+	})
+	t.Cleanup(attach.session.Cancel)
+
+	waitForPromptNumberWithin(t, attach.session, 2, 5*time.Second)
+	waitForClientCount(t, h, "attach-realcli-large-output", 1, 5*time.Second)
+	ptytest.Advance(h.Clock(), 4*time.Second)
+
+	for prompt := 2; prompt <= 14; prompt++ {
+		line := fmt.Sprintf("PROMPT-%03d> :", prompt)
+		start := time.Now()
+		attach.session.Send(":")
+		if inputAt, ok := waitForClientInputFrameSince(rec, "attach-realcli-large-output", start, 1200*time.Millisecond); !ok {
+			t.Fatalf("expected client input frame for prompt %03d within 1200ms after send; frames=%s", prompt, recentInputFrameTrace(rec, "attach-realcli-large-output"))
+		} else if delay := inputAt.Sub(start); delay > 350*time.Millisecond {
+			t.Fatalf("client input frame for prompt %03d took %v to reach relay\nframes=%s", prompt, delay, recentInputFrameTrace(rec, "attach-realcli-large-output"))
+		}
+		if !screenContainsWithin(host, line, 350*time.Millisecond) {
+			if eventualAt, ok := waitForHostEchoAfter(host, line, start, 5*time.Second); ok {
+				t.Fatalf("host echo for prompt %03d took %v after large output\nhost:\n%s", prompt, eventualAt.Sub(start), host.Screen().String())
+			}
+			t.Fatalf("expected host echo for prompt %03d within 350ms after large output, and it never arrived within 5s\nhost:\n%s", prompt, host.Screen().String())
+		}
+		hostElapsed := time.Since(start)
+		if !screenContainsWithin(attach.session, line, 1200*time.Millisecond) {
+			t.Fatalf("expected attach echo for prompt %03d within 1200ms after host echoed in %v after large output, got:\n%s", prompt, hostElapsed, attach.session.Screen().String())
+		}
+
+		start = time.Now()
+		attach.session.Send("\r")
+		waitForPromptNumberWithin(t, host, prompt+1, 1200*time.Millisecond)
+		waitForPromptNumberWithin(t, attach.session, prompt+1, 2*time.Second)
+	}
+}
+
+func TestRelayHostDoesNotKeepPublishingSnapshotsAfterLargeOutputSettles(t *testing.T) {
+	rec := ptytest.NewWSRecorder()
+	h := newHarness(t, ptytest.WithClock(clock.New()), ptytest.WithWSRecorder(rec))
+
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "host-large-output-idle",
+		SessionName: "host-large-output-idle",
+		Shell:       countingPromptBashForAttach(t),
+		Cols:        120,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"host-large-output-idle"})
+	waitForPromptNumberWithin(t, host, 1, 3*time.Second)
+	host.Send("ps aux\r")
+	if !screenContainsWithin(host, "ps aux", 3*time.Second) {
+		t.Fatalf("expected host large output, got:\n%s", host.Screen().String())
+	}
+	waitForPromptNumberWithin(t, host, 2, 3*time.Second)
+
+	before := countHostSnapshotFrames(rec, "host-large-output-idle")
+	ptytest.Advance(h.Clock(), 500*time.Millisecond)
+	after := countHostSnapshotFrames(rec, "host-large-output-idle")
+	if delta := after - before; delta > 5 {
+		t.Fatalf("expected settled host to stop snapshot churn after large output; saw %d new snapshots in 500ms", delta)
+	}
 }
 
 func TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable(t *testing.T) {
@@ -697,10 +1204,82 @@ func startMultiAttachWithSignalResize(t *testing.T, h *ptytest.Harness, opts pty
 		session: sess,
 		resize: func(cols, rows int) {
 			sess.Resize(cols, rows)
-			_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
 			ptytest.Advance(h.Clock(), 50*time.Millisecond)
 		},
 	}
+}
+
+func startLingonAttachCLI(t *testing.T, h *ptytest.Harness, sessionID string, cols, rows int) *ptytest.PTYSession {
+	t.Helper()
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	bin := buildLingonAttachBinary(t)
+	master, slave := ptytest.OpenPTY(t, cols, rows)
+	sess := ptytest.NewPTYSessionWithClock(t, master, slave, cols, rows, h.Clock())
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = slave.Close()
+	})
+
+	cmd := exec.Command(
+		bin,
+		"attach",
+		sessionID,
+		"--endpoint", h.Endpoint(),
+		"--auth-file", h.AuthFile(),
+		"--request-control",
+		"--disable-desktop-notifications",
+	)
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start lingon attach cli: %v", err)
+	}
+	_ = slave.Close()
+
+	go func() {
+		sess.SetRunErr(cmd.Wait())
+	}()
+	return sess
+}
+
+func buildLingonAttachBinary(t *testing.T) string {
+	t.Helper()
+	attachCLIBuildOnce.Do(func() {
+		_, file, _, ok := runtime.Caller(0)
+		if !ok {
+			attachCLIBuildErr = fmt.Errorf("resolve caller path")
+			return
+		}
+		repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+		dir, err := os.MkdirTemp("", "lingon-attach-repro-*")
+		if err != nil {
+			attachCLIBuildErr = fmt.Errorf("create lingon attach build dir: %w", err)
+			return
+		}
+		out := filepath.Join(dir, "lingon-attach-repro")
+		cmd := exec.Command("go", "build", "-o", out, "./cmd/lingon")
+		cmd.Dir = repoRoot
+		if output, err := cmd.CombinedOutput(); err != nil {
+			attachCLIBuildErr = fmt.Errorf("go build lingon: %w\n%s", err, string(output))
+			return
+		}
+		attachCLIBuildPath = out
+	})
+	if attachCLIBuildErr != nil {
+		t.Fatalf("build lingon attach binary: %v", attachCLIBuildErr)
+	}
+	return attachCLIBuildPath
 }
 
 func assertBodyMatchesWithin(t *testing.T, want, got *ptytest.PTYSession, phase string, timeout time.Duration) {
@@ -826,6 +1405,76 @@ func eventuallyWithClockAttach(t *testing.T, clk clock.Clock, timeout, step time
 		return
 	}
 	t.Fatal(err)
+}
+
+func waitForClientInputFrameSince(rec *ptytest.WSRecorder, sessionID string, start time.Time, timeout time.Duration) (time.Time, bool) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, frame := range rec.Frames() {
+			if frame.Role != "client" || frame.Direction != ptytest.DirClientToServer || frame.SessionID != sessionID || frame.Payload != "input" {
+				continue
+			}
+			if !frame.Time.Before(start) {
+				return frame.Time, true
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, frame := range rec.Frames() {
+		if frame.Role != "client" || frame.Direction != ptytest.DirClientToServer || frame.SessionID != sessionID || frame.Payload != "input" {
+			continue
+		}
+		if !frame.Time.Before(start) {
+			return frame.Time, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func recentInputFrameTrace(rec *ptytest.WSRecorder, sessionID string) string {
+	frames := rec.Frames()
+	if len(frames) == 0 {
+		return "<none>"
+	}
+	var parts []string
+	for i := len(frames) - 1; i >= 0 && len(parts) < 12; i-- {
+		frame := frames[i]
+		if frame.SessionID != sessionID {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s %s %s seq=%d at=%s", frame.Role, frame.Direction, frame.Payload, frame.Seq, frame.Time.Format("15:04:05.000")))
+	}
+	if len(parts) == 0 {
+		return "<none>"
+	}
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return strings.Join(parts, " | ")
+}
+
+func countHostSnapshotFrames(rec *ptytest.WSRecorder, sessionID string) int {
+	count := 0
+	for _, frame := range rec.Frames() {
+		if frame.Role == "host" && frame.Direction == ptytest.DirClientToServer && frame.SessionID == sessionID && frame.Payload == "snapshot" {
+			count++
+		}
+	}
+	return count
+}
+
+func waitForHostEchoAfter(host *ptytest.PTYSession, line string, start time.Time, timeout time.Duration) (time.Time, bool) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if host.Screen().Contains(line) {
+			return time.Now(), true
+		}
+		ptytest.Advance(host.Clock(), 25*time.Millisecond)
+	}
+	if host.Screen().Contains(line) {
+		return time.Now(), true
+	}
+	return time.Time{}, false
 }
 
 func countingPromptBashForAttach(t *testing.T) string {

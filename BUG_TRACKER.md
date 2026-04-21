@@ -31,7 +31,7 @@ Required status values:
 
 ### B-012 Multi-attach input lag/stall on real relay attach
 
-- Status: `resolved`
+- Status: `in_progress`
 - Area: `attach`, `session`, `render`
 - Summary: Normal `lingon attach` against a real non-headless host must remain camera-only and must echo typed input promptly even when the host PTY is larger than the attach viewport.
 - Report:
@@ -75,6 +75,9 @@ Required status values:
     - `golint ./...`
     - `golangci-lint run ./...`
     - `make test-webui`
+- Reopened:
+  - User reports the real relay attach path is still persistently laggy when fully connected, with single-character input echo arriving several seconds late and worsening across repeated input.
+  - Investigation is now moving from helper-driven attach coverage to sustained external-CLI PTY timing regressions.
 
 ### B-011 Multi-attach viewport/camera semantics broken
 

@@ -5,7 +5,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -620,9 +619,6 @@ func startSIGWINCHInProcessHost(t *testing.T, shell string, cols, rows int, extr
 func resizeProcessHost(t *testing.T, sess *ptytest.PTYSession, cols, rows int) {
 	t.Helper()
 	sess.Resize(cols, rows)
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGWINCH); err != nil {
-		t.Fatalf("signal process SIGWINCH: %v", err)
-	}
 }
 
 var dynamicNumberRe = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
