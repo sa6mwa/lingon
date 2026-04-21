@@ -68,3 +68,51 @@ func TestAttachRelayWallInactivityStatusFansOutToPeer(t *testing.T) {
 		return nil
 	})
 }
+
+func TestMultiAttachWallStatusBannerDoesNotBlockPromptRepaint(t *testing.T) {
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-relay-wall-banner-repaint",
+		SessionName: "attach-relay-wall-banner-repaint",
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(host.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-relay-wall-banner-repaint"})
+	host.Send("echo BANNER_REPAINT_READY\n")
+	if !screenContainsWithin(host, "BANNER_REPAINT_READY", 2*time.Second) {
+		t.Fatalf("expected host readiness marker before attach")
+	}
+
+	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
+		SessionID: "attach-relay-wall-banner-repaint",
+		Cols:      100,
+		Rows:      30,
+	})
+	t.Cleanup(attach.Cancel)
+
+	if !screenContainsWithin(attach, "BANNER_REPAINT_READY", 3*time.Second) {
+		t.Fatalf("expected attach to render readiness marker before banner test")
+	}
+
+	attach.SendCtrlL()
+	attach.Send("w")
+	if !screenContainsWithinRealTime(attach, "wall inactivity 2m", 2*time.Second) {
+		t.Fatalf("expected wall inactivity banner on attach, got:\n%s", attach.Screen().String())
+	}
+
+	attach.Send("echo BANNER_REPAINT_OK\n")
+	if !screenContainsWithin(host, "BANNER_REPAINT_OK", 350*time.Millisecond) {
+		t.Fatalf("expected host marker to execute promptly, got:\n%s", host.Screen().String())
+	}
+	attach.Eventually(350*time.Millisecond, 20*time.Millisecond, func(screen ptytest.Screen) error {
+		if !strings.Contains(screen.Row(0), "wall inactivity 2m") {
+			return fmt.Errorf("expected wall inactivity banner on row 0, row=%q", screen.Row(0))
+		}
+		if !strings.Contains(screen.String(), "BANNER_REPAINT_OK") {
+			return fmt.Errorf("expected attach output marker while banner visible, got:\n%s", screen.String())
+		}
+		return nil
+	})
+}
