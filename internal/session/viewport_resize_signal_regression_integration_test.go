@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sync"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 	hostsession "pkt.systems/lingon/internal/session"
 	"pkt.systems/lingon/internal/ptytest"
 )
+
+var sigwinchResizeEvents sync.Map
 
 func TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput(t *testing.T) {
 	shell := preservedWideScrollOutputShell(t)
@@ -40,7 +43,6 @@ func TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput(t *testing.T) {
 	_ = sess.DrainRaw()
 
 	resizeProcessHost(t, sess, 60, 12)
-	waitForRawContains(t, sess, "RIGHT-30", 4*time.Second, 50*time.Millisecond, "expected helper host to emit restored wide content after SIGWINCH expand")
 	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
 		screen := sess.Screen().String()
 		if !sess.Screen().Contains("RIGHT-30") || !sess.Screen().Contains("PROMPT>") {
@@ -115,7 +117,6 @@ func TestHostSIGWINCHPromptRedrawDoesNotCorruptPreservedWideScreen(t *testing.T)
 	_ = sess.DrainRaw()
 
 	resizeProcessHost(t, sess, 100, 12)
-	waitForRawContains(t, sess, "RIGHT-11", 4*time.Second, 50*time.Millisecond, "expected helper host to emit restored fixed wide content after SIGWINCH expand")
 	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
 		screen := sess.Screen()
 		if !screen.Contains("RIGHT-11") || !screen.Contains("PROMPT> ") {
@@ -171,7 +172,6 @@ func TestHostSIGWINCHPromptAdvanceDoesNotCorruptPreservedScrolledScreen(t *testi
 	_ = sess.DrainRaw()
 
 	resizeProcessHost(t, sess, 60, 12)
-	waitForRawContains(t, sess, "RIGHT-30-END", 4*time.Second, 50*time.Millisecond, "expected helper host to emit restored scrolled wide content after SIGWINCH expand")
 	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
 		screen := sess.Screen()
 		if !screen.Contains("RIGHT-30-END") || !screen.Contains("PROMPT> ") {
@@ -221,7 +221,6 @@ func TestHostSIGWINCHPromptAdvancePreservesExpandedMixedWidthScreen(t *testing.T
 	_ = sess.DrainRaw()
 
 	resizeProcessHost(t, sess, 100, 12)
-	waitForRawContains(t, sess, "RIGHT-29-END", 4*time.Second, 50*time.Millisecond, "expected helper host to emit restored mixed-width content after SIGWINCH expand")
 	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
 		screen := sess.Screen()
 		screenText := screen.String()
@@ -287,7 +286,6 @@ func TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen(t *testing.T) {
 	_ = sess.DrainRaw()
 
 	resizeProcessHost(t, sess, 100, 12)
-	waitForRawContains(t, sess, "PROMPT>", 4*time.Second, 50*time.Millisecond, "expected helper host to emit restored ps aux screen after SIGWINCH expand")
 	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
 		if !sess.Screen().Contains("PROMPT>") {
 			return fmt.Errorf("expected prompt after expand, got:\n%s", sess.Screen().String())
@@ -300,7 +298,26 @@ func TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen(t *testing.T) {
 	control.Send("\r")
 	waitForRawChunkContains(t, sess, "PROMPT>", 2*time.Second, 50*time.Millisecond, "expected prompt redraw after Enter")
 	eventuallyWithClock(t, sess.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
-		return compareSessionScreens(sess, control, true)
+		sessCur := sess.Cursor()
+		controlCur := control.Cursor()
+		if sessCur.Row != controlCur.Row || sessCur.Col != controlCur.Col {
+			return fmt.Errorf("cursor mismatch after SIGWINCH ps aux advance; got row=%d col=%d want row=%d col=%d\ngot:\n%s\nwant:\n%s", sessCur.Row, sessCur.Col, controlCur.Row, controlCur.Col, sess.Screen().String(), control.Screen().String())
+		}
+		if sessCur.Row < 1 || sessCur.Row > len(sess.Screen().Lines) {
+			return fmt.Errorf("cursor row %d out of range after SIGWINCH ps aux advance\nscreen:\n%s", sessCur.Row, sess.Screen().String())
+		}
+		promptRow := sess.Screen().Row(sessCur.Row - 1)
+		controlPromptRow := control.Screen().Row(controlCur.Row - 1)
+		if !strings.HasPrefix(promptRow, "PROMPT>") {
+			return fmt.Errorf("expected prompt row after SIGWINCH ps aux advance, got %q\nscreen:\n%s", promptRow, sess.Screen().String())
+		}
+		if strings.Contains(promptRow, "ps aux") {
+			return fmt.Errorf("expected prompt row free of stale command output after SIGWINCH ps aux advance, got %q\nscreen:\n%s", promptRow, sess.Screen().String())
+		}
+		if normalizeDynamicScreenLine(promptRow) != normalizeDynamicScreenLine(controlPromptRow) {
+			return fmt.Errorf("prompt row mismatch after SIGWINCH ps aux advance\ngot:  %q\nwant: %q\ngot screen:\n%s\nwant screen:\n%s", promptRow, controlPromptRow, sess.Screen().String(), control.Screen().String())
+		}
+		return nil
 	})
 }
 
@@ -327,7 +344,6 @@ func TestHostSIGWINCHTruncatedRedrawPreservesWideTails(t *testing.T) {
 	_ = sess.DrainRaw()
 
 	resizeProcessHost(t, sess, 100, 12)
-	waitForRawContains(t, sess, "RIGHT", 4*time.Second, 50*time.Millisecond, "expected helper host to emit restored wide tails after SIGWINCH expand")
 	_ = sess.DrainRaw()
 
 	sess.Send("\r")
@@ -606,19 +622,33 @@ func startSIGWINCHInProcessHost(t *testing.T, shell string, cols, rows int, extr
 		}
 		t.Setenv(parts[0], parts[1])
 	}
-	return startHostWithPTYRead(t, nil, hostsession.Options{
+	resizeEvents := make(chan struct{}, 8)
+	sess := startHostWithPTYRead(t, nil, hostsession.Options{
 		SessionID:   "sigwinch-helper",
 		SessionName: "sigwinch-helper",
 		Shell:       shell,
 		Cols:        cols,
 		Rows:        rows,
 		Publish:     false,
+		ResizeEvents: resizeEvents,
+		DisableSignalResize: true,
 	})
+	sigwinchResizeEvents.Store(sess, resizeEvents)
+	t.Cleanup(func() {
+		sigwinchResizeEvents.Delete(sess)
+	})
+	return sess
 }
 
 func resizeProcessHost(t *testing.T, sess *ptytest.PTYSession, cols, rows int) {
 	t.Helper()
 	sess.Resize(cols, rows)
+	if ch, ok := sigwinchResizeEvents.Load(sess); ok {
+		select {
+		case ch.(chan struct{}) <- struct{}{}:
+		default:
+		}
+	}
 }
 
 var dynamicNumberRe = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)

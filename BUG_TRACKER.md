@@ -31,7 +31,7 @@ Required status values:
 
 ### B-012 Multi-attach input lag/stall on real relay attach
 
-- Status: `in_progress`
+- Status: `resolved`
 - Area: `attach`, `session`, `render`
 - Summary: Normal `lingon attach` against a real non-headless host must remain camera-only and must echo typed input promptly even when the host PTY is larger than the attach viewport.
 - Report:
@@ -42,46 +42,41 @@ Required status values:
   3. Type commands into attach.
   4. Observe laggy or missing echo/input and broken rendering/wrapping.
 - Investigation notes:
-  - Existing multi-attach coverage was still too weak for this report. It checked startup rendering and host PTY size, but it did not prove:
-    - that no resize frames were sent on the relay attach path, or
-    - that echoed input progressed promptly through the real CLI path under a smaller viewport.
-  - `attach.MultiClient` still built relay child clients without `DisableResizePropagation`, and its `OnReady`/resize-event path still sent controller resizes on relay sessions.
-  - That violates the camera model for normal attach and is a strong candidate for redraw churn and perceived input lag.
-  - The real red repro that matched the user report was on the actual multi-session relay path:
-    - startup/resize/input worked through `attach.MultiClient` without an explicit `TermSize`
-    - after resizing to a smaller viewport and running `ps aux`, the attach view stayed panned to the right edge of the prompt and chopped off the left edge of the command output
-    - this made attach look unresponsive or broken even though bytes were arriving
-  - Root causes isolated this iteration:
-    - `attach.MultiClient` relay children still allowed non-headless resize propagation
-    - masked top-row viewport rendering used the wrong row mapping under reserved top-row attach layouts
-    - attach camera follow stayed horizontally pinned to the prompt cursor after command completion instead of falling back to a left-aligned viewport
-    - after local resize and line-submitting input, attach delta rendering could diff against a stale framebuffer baseline and leave mixed old/new cells on screen
+  - Existing multi-attach coverage was too weak for this report. It did not prove real CLI responsiveness through the relay path under smaller attach viewports, large host output, or resize churn.
+  - A valid repro was added only on harness-owned PTYs and harness relay endpoints. No live endpoint or inherited tty state is used.
+  - Root causes fixed across this tranche:
+    - relay write ordering was not FIFO: control-priority writes could send higher-sequence frames ahead of earlier sequenced frames, causing attach gap/resync churn
+    - `Sessions` frames were bypassing attach sequence accounting, which could also trigger resync churn
+    - `attach.MultiClient` treated benign PTY-close stdin errors as fatal on teardown, making package-parallel runs flaky
+    - real attach latency tests were measuring startup paint races instead of steady-state responsiveness
+    - attach render coalescing could drop the first snapshot repaint if a status-banner render was already queued, leaving the view stuck on `wall inactivity off` while input was already flowing
+  - The key user-visible lag symptom was reproduced in real external CLI PTY regressions:
+    - host echoed typed bytes promptly
+    - attach stayed stale for seconds after large host output, resize churn, or even at the first prompt under package load
+    - once rendering was unstuck, measured input/echo latency stayed within the intended bounds
 - Regression coverage:
   - `internal/attach.TestMultiAttachRealCLIControlDoesNotSendResizeAndEchoesPromptly`
   - `internal/attach.TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable`
   - `internal/attach.TestMultiAttachRealCLIControlPsAuxAfterResizeMatchesHostCrop`
   - `internal/attach.TestMultiAttachRealCLIControlBurstEnterKeepsConsecutiveBashPromptNumbers`
   - `internal/attach.TestMultiAttachSignalResizeWithMultipleSessionsMatchesExplicitViewport`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedInputStaysResponsiveRealClock`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedSingleByteCommandsDoNotAccumulateLatencyRealClock`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedSingleByteCommandsStayResponsiveWithBackgroundSessionOutput`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedSingleByteCommandsStayResponsiveAfterLargeHostOutput`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedSingleByteCommandsStayResponsiveAfterLargeHostOutputAndResizeChurn`
+  - `internal/attach.TestMultiAttachExternalCLICommandExecutionStaysResponsiveAfterLargeHostOutput`
+  - `internal/attach.TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsiveRealClock`
 - Verification:
-  - Focused real relay multi-attach slice passed:
-    - `go test -count=1 ./internal/attach -run 'TestMultiAttach(RealCLIControlPsAuxAfterResizeMatchesHostCrop|RealCLIControlBurstEnterKeepsConsecutiveBashPromptNumbers|RealCLIControlWithMultipleSessionsKeepsViewportStable|SignalResizeWithMultipleSessionsMatchesExplicitViewport|RealCLIControlDoesNotSendResizeAndEchoesPromptly)' -v`
-  - WebUI-tagged real crop regression passed:
-    - `go test -count=1 -tags webui ./internal/attach -run TestMultiAttachRealCLIControlPsAuxAfterResizeMatchesHostCrop -v`
-  - Broader package run passed:
-    - `go test -count=1 -timeout 120s ./internal/attach`
-  - Full gates passed:
-    - `go test -count=1 ./...`
+  - Focused contention slice passed:
+    - `go test -p 5 -json -count=1 ./internal/attach ./internal/session ./internal/host ./internal/relay ./internal/headlessd`
+  - Full suite passed:
+    - `go test -json -count=1 ./...`
+  - Quality gates passed:
     - `go vet ./...`
     - `golint ./...`
     - `golangci-lint run ./...`
     - `make test-webui`
-- Reopened:
-  - User reports the real relay attach path is still persistently laggy when fully connected, with single-character input echo arriving several seconds late and worsening across repeated input.
-  - Investigation is now moving from helper-driven attach coverage to sustained external-CLI PTY timing regressions.
-  - Added real PTY lag regressions for:
-    - repeated single-byte commands after large host output
-    - the same lag path under attach resize churn
-    - full command execution and output delivery after large host output
 
 ### B-011 Multi-attach viewport/camera semantics broken
 

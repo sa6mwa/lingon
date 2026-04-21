@@ -26,7 +26,6 @@ type wsConn struct {
 	sendMu       sync.Mutex
 	lastActivity atomic.Int64
 	sendCh       chan *protocolpb.Frame
-	ctrlCh       chan *protocolpb.Frame
 	done         chan struct{}
 	closed       sync.Once
 }
@@ -43,7 +42,6 @@ func newWSConn(id string, role Role, sessionID string, scope ShareScope, conn *w
 		conn:      conn,
 		logger:    logger,
 		sendCh:    make(chan *protocolpb.Frame, 128),
-		ctrlCh:    make(chan *protocolpb.Frame, 64),
 		done:      make(chan struct{}),
 	}
 	ws.touchActivity()
@@ -60,11 +58,7 @@ func (c *wsConn) Send(ctx context.Context, frame *protocolpb.Frame) error {
 	if frame == nil {
 		return nil
 	}
-	ch := c.sendCh
-	if isControlFrame(frame) {
-		ch = c.ctrlCh
-	}
-	return c.enqueue(ctx, ch, frame)
+	return c.enqueue(ctx, c.sendCh, frame)
 }
 
 func (c *wsConn) SendImmediate(ctx context.Context, frame *protocolpb.Frame) error {
@@ -154,23 +148,6 @@ func (c *wsConn) writeLoop() {
 		select {
 		case <-c.done:
 			return
-		default:
-		}
-		select {
-		case frame := <-c.ctrlCh:
-			if frame != nil {
-				_ = c.writeFrame(frame)
-			}
-			continue
-		default:
-		}
-		select {
-		case <-c.done:
-			return
-		case frame := <-c.ctrlCh:
-			if frame != nil {
-				_ = c.writeFrame(frame)
-			}
 		case frame := <-c.sendCh:
 			if frame != nil {
 				_ = c.writeFrame(frame)
@@ -191,16 +168,6 @@ func (c *wsConn) writeFrame(frame *protocolpb.Frame) error {
 	}
 	c.touchActivity()
 	return nil
-}
-
-func isControlFrame(frame *protocolpb.Frame) bool {
-	if frame == nil {
-		return false
-	}
-	if frame.GetControl() != nil || frame.GetWelcome() != nil || frame.GetError() != nil || frame.GetSessions() != nil || frame.GetWallInactivityStatus() != nil {
-		return true
-	}
-	return false
 }
 
 func readFrame(ctx context.Context, conn *websocket.Conn, readLimit int64) (*protocolpb.Frame, error) {

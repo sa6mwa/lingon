@@ -105,6 +105,9 @@ type Client struct {
 	scrollbackView   mvu.ScrollbackViewport
 	renderMu         sync.Mutex
 	writeMu          sync.Mutex
+	renderReqMu      sync.Mutex
+	renderReqCh      chan struct{}
+	renderDirty      atomic.Uint32
 	lastActivity     atomic.Int64
 	stdin            io.Reader
 	stdout           io.Writer
@@ -216,6 +219,7 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	c.runCtx = ctx
 	c.effects = mvu.NewEffectScheduler(c.clock())
 	defer c.effects.StopAll()
+	c.startRenderLoop(ctx)
 	c.resetReady()
 	c.scrollbackMu.Lock()
 	if c.scrollbackBuffer == nil {
@@ -861,7 +865,7 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 				c.Logger.Debug("attach.client.frame.diff", "session", c.SessionID, "client", c.ClientID, "seq", frame.Seq)
 			}
 			if snap := c.applyDiff(diff); snap != nil {
-				c.renderSnapshot(snap)
+				c.requestRenderCurrent()
 			}
 			continue
 		}
@@ -878,13 +882,14 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 			scrollbackVisible := c.scrollbackView.Visible()
 			c.scrollbackMu.RUnlock()
 			if scrollbackVisible {
-				c.renderCurrent()
+				c.requestRenderCurrent()
 			}
 			continue
 		}
 		if sessions := frame.GetSessions(); sessions != nil {
-			if c.OnSessions != nil {
-				c.OnSessions(decodeSessionInfos(sessions.GetSessions()))
+			_, resync := c.handleSessionsFrame(frame.Seq, sessions.GetSessions())
+			if resync {
+				_ = c.requestResync(ctx, ws)
 			}
 			continue
 		}
@@ -1082,7 +1087,10 @@ func (c *Client) handleSnapshot(seq uint64, snap *protocolpb.Snapshot) {
 	c.resyncRequested = false
 	c.forceFreshHello = false
 	c.mu.Unlock()
-	c.renderSnapshot(snap)
+	c.renderMu.Lock()
+	c.renderCache.Reset()
+	c.renderMu.Unlock()
+	c.requestRenderCurrent()
 	c.markReady()
 }
 
@@ -1276,6 +1284,49 @@ func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 	c.scheduleRedrawEffect(mvu.EffectKeyStateExpiry, frame.StateDelay, true)
 }
 
+func (c *Client) startRenderLoop(ctx context.Context) {
+	c.renderReqMu.Lock()
+	if c.renderReqCh != nil {
+		c.renderReqMu.Unlock()
+		return
+	}
+	ch := make(chan struct{}, 1)
+	c.renderReqCh = ch
+	c.renderReqMu.Unlock()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+			}
+			for {
+				c.renderDirty.Store(0)
+				c.renderCurrent()
+				if c.renderDirty.Load() == 0 {
+					break
+				}
+			}
+		}
+	}()
+}
+
+func (c *Client) requestRenderCurrent() {
+	c.renderReqMu.Lock()
+	ch := c.renderReqCh
+	c.renderReqMu.Unlock()
+	if ch == nil {
+		c.renderCurrent()
+		return
+	}
+	c.renderDirty.Store(1)
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
 func (c *Client) setFollowInputWindow(d time.Duration) {
 	if d <= 0 {
 		atomic.StoreInt64(&c.followInputUntil, 0)
@@ -1463,7 +1514,7 @@ func (c *Client) renderDisabledSnapshot(snap *protocolpb.Snapshot) {
 }
 
 func (c *Client) snapshotOrBlank() *protocolpb.Snapshot {
-	if snap := c.getSnapshot(); snap != nil {
+	if snap := c.Snapshot(); snap != nil {
 		return snap
 	}
 	cols, rows := c.terminalSize()
@@ -1520,6 +1571,9 @@ func (c *Client) acceptSeq(seq uint64) (bool, bool) {
 	if seq <= c.lastSeq {
 		return false, false
 	}
+	if c.Logger != nil {
+		c.Logger.Debug("attach.client.seq_gap", "session", c.SessionID, "client", c.ClientID, "last_seq", c.lastSeq, "next_seq", seq)
+	}
 	c.lastSeq = seq
 	c.needsResync = true
 	c.resyncRequested = false
@@ -1535,7 +1589,21 @@ func (c *Client) requestResync(ctx context.Context, ws *websocket.Conn) error {
 	c.resyncRequested = true
 	c.forceFreshHello = true
 	c.mu.Unlock()
+	if c.Logger != nil {
+		c.Logger.Debug("attach.client.resync", "session", c.SessionID, "client", c.ClientID)
+	}
 	return c.sendHello(ctx, ws)
+}
+
+func (c *Client) handleSessionsFrame(seq uint64, sessions []*protocolpb.SessionInfo) (bool, bool) {
+	accept, resync := c.acceptSeq(seq)
+	if !accept {
+		return false, resync
+	}
+	if c.OnSessions != nil {
+		c.OnSessions(decodeSessionInfos(sessions))
+	}
+	return true, resync
 }
 
 func (c *Client) setError(err error) {
@@ -1942,7 +2010,7 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 			var err error
 			n, err = reader.Read(buf)
 			if err != nil {
-				if err != io.EOF {
+				if !isBenignStdinReadErr(err) {
 					c.Logger.Debug("attach.stdin.read.failed", "err", err)
 				}
 				return
@@ -2323,20 +2391,14 @@ func (c *Client) handleResize(ctx context.Context, ws *websocket.Conn) {
 			return
 		case <-ch:
 			cols, rows := c.terminalSize()
-			c.invalidateDeltaRender()
-			if snap := c.getSnapshot(); snap != nil {
-				c.renderSnapshot(snap)
-			}
+			c.RenderCurrentFull()
 			if !c.DisableResizePropagation && c.isController() {
 				frame := &protocolpb.Frame{Payload: &protocolpb.Frame_Resize{Resize: &protocolpb.Resize{Cols: uint32(cols), Rows: uint32(rows)}}}
 				_ = c.writeFrame(ctx, ws, frame)
 			}
 		case <-resizeEvents:
 			cols, rows := c.terminalSize()
-			c.invalidateDeltaRender()
-			if snap := c.getSnapshot(); snap != nil {
-				c.renderSnapshot(snap)
-			}
+			c.RenderCurrentFull()
 			if !c.DisableResizePropagation && c.isController() {
 				frame := &protocolpb.Frame{Payload: &protocolpb.Frame_Resize{Resize: &protocolpb.Resize{Cols: uint32(cols), Rows: uint32(rows)}}}
 				_ = c.writeFrame(ctx, ws, frame)

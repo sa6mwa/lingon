@@ -781,6 +781,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			Stdin:                       io.NopCloser(strings.NewReader("")),
 			TermSize:                    termSize,
 			DisableResizePropagation:    !localSessionMode,
+			DisableSignalResize:         true,
 			Logger:                      m.Logger,
 			TokenRefresher:              tokenRefresher,
 			Clock:                       m.Clock,
@@ -1678,7 +1679,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		if cols == 0 || rows == 0 {
 			cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
 		}
-		view.client.RenderCurrent()
+		view.client.RenderCurrentFull()
 		if localSessionMode {
 			_ = view.client.SendResize(ctx, cols, rows)
 		}
@@ -1788,11 +1789,14 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			processResizeEvent()
 			continue
 		case err := <-readErrCh:
-			if err != io.EOF {
+			if !isBenignStdinReadErr(err) {
 				m.Logger.Debug("attach.stdin.read.failed", "err", err)
 			}
 			if fatal := m.fatal(); fatal != nil {
 				return fatal
+			}
+			if isBenignStdinReadErr(err) {
+				return nil
 			}
 			return err
 		case data := <-readCh:

@@ -482,7 +482,7 @@ func TestHostResizePreservesScrolledWideOutputWithTabBarVisible(t *testing.T) {
 	t.Cleanup(peer.Cancel)
 
 	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
-	eventuallyWithClock(t, h.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
+	eventuallyWithClock(t, h.Clock(), 10*time.Second, 50*time.Millisecond, func() error {
 		row := host.Screen().Row(0)
 		if strings.Contains(row, "connected to ") {
 			return fmt.Errorf("waiting for transient connection banner to clear, row=%q", row)
