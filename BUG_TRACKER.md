@@ -78,6 +78,10 @@ Required status values:
 - Reopened:
   - User reports the real relay attach path is still persistently laggy when fully connected, with single-character input echo arriving several seconds late and worsening across repeated input.
   - Investigation is now moving from helper-driven attach coverage to sustained external-CLI PTY timing regressions.
+  - Added real PTY lag regressions for:
+    - repeated single-byte commands after large host output
+    - the same lag path under attach resize churn
+    - full command execution and output delivery after large host output
 
 ### B-011 Multi-attach viewport/camera semantics broken
 
