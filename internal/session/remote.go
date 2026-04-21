@@ -30,6 +30,7 @@ import (
 type remoteSessionInfo struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name,omitempty"`
+	Headless     bool      `json:"headless,omitempty"`
 	Status       string    `json:"status"`
 	LastActiveAt time.Time `json:"last_active_at"`
 }
@@ -1424,6 +1425,7 @@ func toRemoteSessions(sessions []attach.SessionInfo) []remoteSessionInfo {
 		out = append(out, remoteSessionInfo{
 			ID:           session.ID,
 			Name:         session.Name,
+			Headless:     session.Headless,
 			Status:       session.Status,
 			LastActiveAt: session.LastActiveAt,
 		})
@@ -1444,6 +1446,7 @@ func toRemoteSessionsFromProto(infos []*protocolpb.SessionInfo) []remoteSessionI
 		out = append(out, remoteSessionInfo{
 			ID:           info.Id,
 			Name:         info.Name,
+			Headless:     info.Headless,
 			Status:       info.Status,
 			LastActiveAt: time.Unix(info.LastActiveUnix, 0).UTC(),
 		})

@@ -33,6 +33,7 @@ type PublishOptions struct {
 	Clock            clock.Clock
 	SessionID        string
 	SessionName      string
+	Headless         bool
 	Cols             int
 	Rows             int
 	PublishControl   bool
@@ -488,6 +489,7 @@ func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
 			Rows:         uint32(p.opts.Rows),
 			WantsControl: p.opts.PublishControl,
 			ClientType:   "host",
+			Headless:     p.opts.Headless,
 		}},
 	}
 	if err := writeFrame(ctx, ws, hello); err != nil {

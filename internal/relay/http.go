@@ -1010,6 +1010,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 	cols := int(frame.GetHello().Cols)
 	rows := int(frame.GetHello().Rows)
 	sessionName := strings.TrimSpace(frame.GetHello().ClientId)
+	sessionHeadless := frame.GetHello().GetHeadless()
 	reconnected := false
 	var (
 		storedSession Session
@@ -1034,6 +1035,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 				ID:           frame.SessionId,
 				Username:     username,
 				Name:         sessionName,
+				Headless:     sessionHeadless,
 				CreatedAt:    now,
 				LastActiveAt: now,
 				Status:       "active",
@@ -1041,6 +1043,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 		} else {
 			storedSession.LastActiveAt = now
 			storedSession.Status = "active"
+			storedSession.Headless = sessionHeadless
 			if sessionName != "" {
 				storedSession.Name = sessionName
 			}

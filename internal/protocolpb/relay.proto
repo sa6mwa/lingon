@@ -35,6 +35,7 @@ message Hello {
   bool wants_control = 4;
   uint64 last_seq = 5;
   string client_type = 6;
+  bool headless = 7;
 }
 
 message Welcome {
@@ -145,6 +146,7 @@ message SessionInfo {
   string name = 2;
   string status = 3;
   int64 last_active_unix = 4;
+  bool headless = 5;
 }
 
 message Wall {

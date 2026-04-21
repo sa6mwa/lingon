@@ -103,8 +103,9 @@ func waitForSessionName(t *testing.T, clk clock.Clock, endpoint, token, name str
 }
 
 type sessionRow struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Headless bool   `json:"headless"`
 }
 
 func fetchSessions(endpoint, token string) ([]sessionRow, error) {

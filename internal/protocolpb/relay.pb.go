@@ -452,6 +452,7 @@ type Hello struct {
 	WantsControl  bool                   `protobuf:"varint,4,opt,name=wants_control,json=wantsControl,proto3" json:"wants_control,omitempty"`
 	LastSeq       uint64                 `protobuf:"varint,5,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
 	ClientType    string                 `protobuf:"bytes,6,opt,name=client_type,json=clientType,proto3" json:"client_type,omitempty"`
+	Headless      bool                   `protobuf:"varint,7,opt,name=headless,proto3" json:"headless,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -526,6 +527,13 @@ func (x *Hello) GetClientType() string {
 		return x.ClientType
 	}
 	return ""
+}
+
+func (x *Hello) GetHeadless() bool {
+	if x != nil {
+		return x.Headless
+	}
+	return false
 }
 
 type Welcome struct {
@@ -1422,6 +1430,7 @@ type SessionInfo struct {
 	Name           string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Status         string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
 	LastActiveUnix int64                  `protobuf:"varint,4,opt,name=last_active_unix,json=lastActiveUnix,proto3" json:"last_active_unix,omitempty"`
+	Headless       bool                   `protobuf:"varint,5,opt,name=headless,proto3" json:"headless,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1482,6 +1491,13 @@ func (x *SessionInfo) GetLastActiveUnix() int64 {
 		return x.LastActiveUnix
 	}
 	return 0
+}
+
+func (x *SessionInfo) GetHeadless() bool {
+	if x != nil {
+		return x.Headless
+	}
+	return false
 }
 
 type Wall struct {
@@ -1744,7 +1760,7 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\acommand\x18\x17 \x01(\v2\x18.lingon.protocol.CommandH\x00R\acommand\x12]\n" +
 	"\x16wall_inactivity_status\x18\x18 \x01(\v2%.lingon.protocol.WallInactivityStatusH\x00R\x14wallInactivityStatus\x127\n" +
 	"\bactivity\x18\x19 \x01(\v2\x19.lingon.protocol.ActivityH\x00R\bactivityB\t\n" +
-	"\apayload\"\xad\x01\n" +
+	"\apayload\"\xc9\x01\n" +
 	"\x05Hello\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x12\n" +
 	"\x04cols\x18\x02 \x01(\rR\x04cols\x12\x12\n" +
@@ -1752,7 +1768,8 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\rwants_control\x18\x04 \x01(\bR\fwantsControl\x12\x19\n" +
 	"\blast_seq\x18\x05 \x01(\x04R\alastSeq\x12\x1f\n" +
 	"\vclient_type\x18\x06 \x01(\tR\n" +
-	"clientType\"\x9e\x01\n" +
+	"clientType\x12\x1a\n" +
+	"\bheadless\x18\a \x01(\bR\bheadless\"\x9e\x01\n" +
 	"\aWelcome\x12'\n" +
 	"\x0fgranted_control\x18\x01 \x01(\bR\x0egrantedControl\x12\x1f\n" +
 	"\vserver_cols\x18\x02 \x01(\rR\n" +
@@ -1818,12 +1835,13 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\x01x\x18\x01 \x01(\rR\x01x\x12\f\n" +
 	"\x01y\x18\x02 \x01(\rR\x01y\"D\n" +
 	"\bSessions\x128\n" +
-	"\bsessions\x18\x01 \x03(\v2\x1c.lingon.protocol.SessionInfoR\bsessions\"s\n" +
+	"\bsessions\x18\x01 \x03(\v2\x1c.lingon.protocol.SessionInfoR\bsessions\"\x8f\x01\n" +
 	"\vSessionInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12(\n" +
-	"\x10last_active_unix\x18\x04 \x01(\x03R\x0elastActiveUnix\"\xfc\x01\n" +
+	"\x10last_active_unix\x18\x04 \x01(\x03R\x0elastActiveUnix\x12\x1a\n" +
+	"\bheadless\x18\x05 \x01(\bR\bheadless\"\xfc\x01\n" +
 	"\x04Wall\x12\x16\n" +
 	"\x06sender\x18\x01 \x01(\tR\x06sender\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12'\n" +

@@ -58,6 +58,7 @@ func frameSessions(sessions []Session) *protocolpb.Frame {
 			Name:           session.Name,
 			Status:         session.Status,
 			LastActiveUnix: session.LastActiveAt.Unix(),
+			Headless:       session.Headless,
 		})
 	}
 	return &protocolpb.Frame{

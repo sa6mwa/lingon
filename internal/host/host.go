@@ -29,6 +29,7 @@ type Host struct {
 	Token       string
 	SessionID   string
 	SessionName string
+	Headless    bool
 	Cols        int
 	Rows        int
 	Command     []string
@@ -140,6 +141,7 @@ func (h *Host) Run(ctx context.Context) error {
 			Rows:         uint32(h.Rows),
 			WantsControl: true,
 			ClientType:   "host",
+			Headless:     h.Headless,
 		}},
 	}
 	if err := writeFrame(runCtx, ws, hello); err != nil {

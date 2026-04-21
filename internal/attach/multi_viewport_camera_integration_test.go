@@ -2,6 +2,7 @@ package attach_test
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1386,9 +1387,19 @@ func startLingonAttachCLI(t *testing.T, h *ptytest.Harness, sessionID string, co
 		t.Fatalf("start lingon attach cli: %v", err)
 	}
 	_ = slave.Close()
+	go func() {
+		<-sess.Context().Done()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
 
 	go func() {
-		sess.SetRunErr(cmd.Wait())
+		err := cmd.Wait()
+		if sess.Context().Err() != nil && (err == nil || errors.Is(err, os.ErrProcessDone) || strings.Contains(err.Error(), "signal: killed")) {
+			err = nil
+		}
+		sess.SetRunErr(err)
 	}()
 	return sess
 }

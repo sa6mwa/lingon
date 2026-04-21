@@ -2361,6 +2361,7 @@ func decodeSessionInfos(infos []*protocolpb.SessionInfo) []SessionInfo {
 		out = append(out, SessionInfo{
 			ID:           info.Id,
 			Name:         info.Name,
+			Headless:     info.Headless,
 			Status:       info.Status,
 			LastActiveAt: time.Unix(info.LastActiveUnix, 0).UTC(),
 		})

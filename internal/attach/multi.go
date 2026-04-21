@@ -169,6 +169,15 @@ func selectRenderableView(views map[string]*sessionView, activeID string) (*sess
 	return view, view.id
 }
 
+func sessionByID(sessions []SessionInfo, id string) (SessionInfo, bool) {
+	for _, session := range sessions {
+		if session.ID == id {
+			return session, true
+		}
+	}
+	return SessionInfo{}, false
+}
+
 // Run starts the multi-session attach client.
 func (m *MultiClient) Run(ctx context.Context) error {
 	if m.Logger == nil {
@@ -178,6 +187,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		return fmt.Errorf("endpoint is required")
 	}
 	localSessionMode := m.SessionSource != nil
+	sessionAllowsResize := func(session SessionInfo) bool {
+		return localSessionMode || session.Headless
+	}
 	if m.Clock == nil {
 		m.Clock = clock.New()
 	}
@@ -780,7 +792,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			Theme:                       themeName,
 			Stdin:                       io.NopCloser(strings.NewReader("")),
 			TermSize:                    termSize,
-			DisableResizePropagation:    !localSessionMode,
+			DisableResizePropagation:    !sessionAllowsResize(session),
 			DisableSignalResize:         true,
 			Logger:                      m.Logger,
 			TokenRefresher:              tokenRefresher,
@@ -869,7 +881,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				if cols == 0 || rows == 0 {
 					cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
 				}
-				if localSessionMode {
+				if sessionAllowsResize(session) {
 					_ = client.SendResize(ctx, cols, rows)
 				}
 			}
@@ -1394,13 +1406,15 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				view.missingSince = time.Time{}
 				continue
 			}
-			retainMissing := view.visible || view.connecting || view.connectedOnce
+			prev, hadPrev := prevSessions[id]
+			headlessMissing := localSessionMode || (hadPrev && prev.Headless)
+			retainMissing := !headlessMissing && (view.visible || view.connecting || view.connectedOnce)
 			if retainMissing {
 				if view.missingSince.IsZero() {
 					view.missingSince = now
 				}
 				if now.Sub(view.missingSince) < missingSessionGrace {
-					if prev, ok := prevSessions[id]; ok {
+					if hadPrev {
 						retainedSessions = append(retainedSessions, prev)
 					} else {
 						retainedSessions = append(retainedSessions, SessionInfo{
@@ -1430,6 +1444,16 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		sessions = append(updated, retainedSessions...)
 		if len(sessions) > 0 {
 			mvu.SortSessionsByLastActive(sessions)
+		}
+		for id, view := range views {
+			if view == nil || view.client == nil {
+				continue
+			}
+			session, ok := sessionByID(sessions, id)
+			if !ok {
+				continue
+			}
+			view.client.DisableResizePropagation = !sessionAllowsResize(session)
 		}
 		if activeID != "" && !mvu.SessionIDExists(mvu.SessionTabSourcesFrom(sessions), activeID) {
 			activeID = m.pickActiveSession(sessions)
@@ -1671,6 +1695,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		id := activeID
 		mu.Lock()
 		view := views[id]
+		session, _ := sessionByID(sessions, id)
 		mu.Unlock()
 		if view == nil || view.client == nil {
 			return
@@ -1680,7 +1705,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
 		}
 		view.client.RenderCurrentFull()
-		if localSessionMode {
+		if sessionAllowsResize(session) {
 			_ = view.client.SendResize(ctx, cols, rows)
 		}
 	}
