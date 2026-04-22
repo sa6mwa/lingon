@@ -17,6 +17,7 @@ GOFLAGS ?=
 BUILD_FLAGS ?= -trimpath
 LD_FLAGS ?=
 TEST_LOG ?= test.log
+WEBUI_TEST_PKGS ?= ./internal/attach
 
 ANDROID_DIR ?= android
 APK_PATH ?= $(ANDROID_DIR)/app/build/outputs/apk/release/app-release.apk
@@ -67,6 +68,7 @@ help:
 	@echo "  GOFLAGS=$(GOFLAGS)"
 	@echo "  BUILD_FLAGS=$(BUILD_FLAGS)"
 	@echo "  LD_FLAGS=$(LD_FLAGS)"
+	@echo "  WEBUI_TEST_PKGS=$(WEBUI_TEST_PKGS)"
 	@echo "  ANDROID_DIR=$(ANDROID_DIR)"
 	@echo "  APK_PATH=$(APK_PATH)"
 	@echo "  APK_OUT=$(APK_OUT)"
@@ -97,7 +99,7 @@ test:
 	@bash -lc 'set -o pipefail; $(GO) test -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
 
 test-webui:
-	@bash -lc 'set -o pipefail; $(GO) test -count=1 -tags webui -json ./... | tee -a "$(TEST_LOG)"'
+	@bash -lc 'set -o pipefail; $(GO) test -count=1 -tags webui -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
 
 test-last-fail:
 	@bash -lc 'if [ ! -f "$(TEST_LOG)" ]; then echo "missing $(TEST_LOG); run make test first"; exit 1; fi; \

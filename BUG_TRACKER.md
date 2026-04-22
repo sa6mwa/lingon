@@ -29,6 +29,33 @@ Required status values:
 
 ## Active Items
 
+### B-017 Attach startup connected banner wipes row-1 prompt/body
+
+- Status: `resolved`
+- Area: `attach`, `mvu`, `render`
+- Summary: On multi-attach startup, the green `connected to ...` banner must overlay only its own cells on row 1 and must not blank the prompt/body underneath the rest of the row.
+- Report:
+  `lingon attach` starts with only the cursor and the green connected banner visible; the prompt/body on row 1 is erased underneath the banner overlay.
+- Repro:
+  1. Start a normal non-headless host whose prompt is visible on row 1.
+  2. Start `lingon attach` / multi-attach into that session.
+  3. Observe the transient green `connected to ...` banner on row 1.
+  4. The left side of row 1 should still show the prompt/body; instead it is blanked.
+- Investigation notes:
+  - Existing attach startup tests only checked that the tab bar hides when the cursor owns row 1.
+  - Existing MVU/runtime tests cover banner composition in isolation, but not the real multi-attach startup path with a visible prompt underneath.
+  - The new real PTY regression failed exactly as reported: row 1 contained only the right-aligned `connected to ...` banner and spaces elsewhere, with the underlying prompt blanked.
+  - Root cause was in top-row overlay rendering: on attach, the renderer masked row 1 entirely and then cleared/drew the banner, so the startup snapshot never painted the underlying row-1 content first.
+  - Fixed by rendering row 1 base content first, rendering rows 2..N through the existing mask-top-row path, and then drawing the top overlay without clearing the whole row.
+- Regression coverage:
+  - `internal/attach.TestMultiAttachStartupConnectedBannerOverlaysPromptInsteadOfBlankingRow`
+  - `internal/attach.TestAttachFastReadyDoesNotLeaveLoadingBanner`
+  - `internal/mvu.TestRenderAttachConnectionBannerOwnsTopRow`
+  - `internal/mvu.TestRenderHostConnectionBannerOverwritesTopRowWithoutShiftingContent`
+- Verification:
+  - `go test -count=1 ./internal/attach -run 'TestMultiAttachStartupConnectedBannerOverlaysPromptInsteadOfBlankingRow|TestAttachFastReadyDoesNotLeaveLoadingBanner' -v`
+  - `go test -count=1 ./internal/mvu -run 'TestRenderAttachConnectionBannerOwnsTopRow|TestRenderHostConnectionBannerOverwritesTopRowWithoutShiftingContent' -v`
+
 ### B-013 Android wall delivery missing
 
 - Status: `resolved`
@@ -500,6 +527,27 @@ Required status values:
     - rerun the relevant narrow package checks after the signal-driven file removal and confirm no new inherited-tty path remains.
 
 ## Recently Resolved Or Reverified
+
+### B-018 `make test-webui` reruns the whole repo under the `webui` tag
+
+- Status: `resolved`
+- Area: `build`, `tests`, `webui`
+- Summary: `make test-webui` must run the actual webui-tagged package set, not `go test -tags webui ./...`.
+- Report:
+  The current target takes far too long because it reruns the whole repository with the `webui` tag instead of only the package(s) that actually declare `//go:build webui` tests.
+- Repro:
+  1. Run `make test-webui`.
+  2. Observe that it executes `go test -count=1 -tags webui -json ./...`.
+  3. The run covers the full repo rather than the real webui-tagged package set.
+- Investigation notes:
+  - `rg` over `*_test.go` showed only `internal/attach/webui_chromedp_test.go` currently declares `//go:build webui`.
+  - The prior Make target therefore paid full-repo PTY/session coverage costs even though only `./internal/attach` needed the `webui` tag.
+  - The Make target now runs an explicit package list via `WEBUI_TEST_PKGS`, defaulting to `./internal/attach`.
+- Regression coverage:
+  - Makefile contract update only; no Go test added.
+- Verification:
+  - `make test-webui`
+  - `rg -n --glob '*_test.go' '//go:build webui|\\+build webui' .`
 
 ### B-005 Android reconnect syncing indicator missing while reconnect is pending
 
