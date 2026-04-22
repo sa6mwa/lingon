@@ -285,9 +285,14 @@ func (m *MultiClient) Run(ctx context.Context) error {
 
 	var mu sync.Mutex
 	var refreshMu sync.Mutex
+	var missingRefreshMu sync.Mutex
+	var missingRefreshTimer *clock.Timer
 	var lastRefresh time.Time
 	var refreshSessions func() int
 	var forceRefreshSessions func() int
+	var refreshSessionsWithForce func(bool) int
+	var scheduleMissingRefresh func(time.Duration)
+	var stopMissingRefresh func()
 	var applySessions func([]SessionInfo)
 	var activateView func(string) error
 	views := make(map[string]*sessionView)
@@ -772,6 +777,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			view.connectedOnce = prev.connectedOnce
 			view.reconnectAt = prev.reconnectAt
 			view.reconnectGen = prev.reconnectGen
+			view.missingSince = prev.missingSince
 		}
 		cctx, ccancel := context.WithCancel(ctx)
 		var tokenRefresher func(context.Context) (string, error)
@@ -890,6 +896,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 			if !localSessionMode {
 				showLoading("")
+			}
+			if showStatus && client.HasSnapshot() {
+				client.RenderCurrentFull()
 			}
 			if showStatus && m.OnActive != nil {
 				m.OnActive(session.ID)
@@ -1108,6 +1117,24 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				updateDisconnectOverlay()
 			}
 			for {
+				mu.Lock()
+				missingSince := currentView.missingSince
+				mu.Unlock()
+				if !missingSince.IsZero() && m.Clock.Now().Sub(missingSince) >= missingSessionGrace && forceRefreshSessions != nil {
+					count := forceRefreshSessions()
+					if m.Logger != nil {
+						m.Logger.Debug("attach.sessions.refresh.missing_expired", "session", current.ID, "count", count)
+					}
+					if ctx.Err() != nil {
+						return
+					}
+					mu.Lock()
+					_, ok := views[current.ID]
+					mu.Unlock()
+					if !ok {
+						return
+					}
+				}
 				delay := m.backoffPolicy.Next(attempt)
 				if retryDelay, ok := retryafter.FromError(err); ok && retryDelay > delay {
 					delay = retryDelay
@@ -1394,6 +1421,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			prevSessions[s.ID] = s
 		}
 		retainedSessions := make([]SessionInfo, 0)
+		nextMissingRefresh := time.Duration(-1)
 		var nextActive string
 		var needsConnect bool
 		var needsActivate bool
@@ -1407,13 +1435,16 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				continue
 			}
 			prev, hadPrev := prevSessions[id]
-			headlessMissing := localSessionMode || (hadPrev && prev.Headless)
-			retainMissing := !headlessMissing && (view.visible || view.connecting || view.connectedOnce)
+			retainMissing := view.visible || view.connecting || view.connectedOnce
 			if retainMissing {
 				if view.missingSince.IsZero() {
 					view.missingSince = now
 				}
 				if now.Sub(view.missingSince) < missingSessionGrace {
+					delay := missingSessionGrace - now.Sub(view.missingSince)
+					if nextMissingRefresh < 0 || delay < nextMissingRefresh {
+						nextMissingRefresh = delay
+					}
 					if hadPrev {
 						retainedSessions = append(retainedSessions, prev)
 					} else {
@@ -1473,14 +1504,22 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			shouldExit = true
 		}
 		mu.Unlock()
+		if nextMissingRefresh >= 0 {
+			scheduleMissingRefresh(nextMissingRefresh)
+		} else {
+			stopMissingRefresh()
+		}
 		if len(sessions) > 0 {
 			stopWaitForSessions()
 			if !localSessionMode && !isOffline() {
-				_ = ui.ApplyAction(mvu.AttachConnectivityAction{Input: mvu.AttachConnectivityInput{
+				result := ui.ApplyAction(mvu.AttachConnectivityAction{Input: mvu.AttachConnectivityInput{
 					Connected: true,
 					Endpoint:  endpointLabel,
 					Now:       m.Clock.Now(),
 				}})
+				if result.Changed {
+					renderActiveCurrent()
+				}
 			}
 		}
 		setTabs()
@@ -1498,17 +1537,17 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		renderTabs()
 	}
 
-	refreshSessions = func() int {
+	refreshSessionsWithForce = func(force bool) int {
 		refreshMu.Lock()
 		defer refreshMu.Unlock()
 		now := m.Clock.Now()
-		if !lastRefresh.IsZero() && now.Sub(lastRefresh) < time.Second {
+		if !force && !lastRefresh.IsZero() && now.Sub(lastRefresh) < time.Second {
 			if m.Logger != nil {
 				m.Logger.Trace("attach.sessions.refresh.skip", "since", now.Sub(lastRefresh))
 			}
 			return -1
 		}
-		if m.Gate != nil && !m.Gate.Allowed() {
+		if !force && m.Gate != nil && !m.Gate.Allowed() {
 			if m.Logger != nil {
 				m.Logger.Trace("attach.sessions.refresh.gated")
 			}
@@ -1531,11 +1570,38 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		applySessions(updated)
 		return len(updated)
 	}
+	refreshSessions = func() int {
+		return refreshSessionsWithForce(false)
+	}
 	forceRefreshSessions = func() int {
-		refreshMu.Lock()
-		lastRefresh = time.Time{}
-		refreshMu.Unlock()
-		return refreshSessions()
+		return refreshSessionsWithForce(true)
+	}
+	scheduleMissingRefresh = func(delay time.Duration) {
+		if delay < 0 {
+			delay = 0
+		}
+		missingRefreshMu.Lock()
+		defer missingRefreshMu.Unlock()
+		if missingRefreshTimer == nil {
+			missingRefreshTimer = m.Clock.AfterFunc(delay, func() {
+				missingRefreshMu.Lock()
+				missingRefreshTimer = nil
+				missingRefreshMu.Unlock()
+				if ctx.Err() == nil && forceRefreshSessions != nil {
+					forceRefreshSessions()
+				}
+			})
+			return
+		}
+		missingRefreshTimer.Reset(delay)
+	}
+	stopMissingRefresh = func() {
+		missingRefreshMu.Lock()
+		if missingRefreshTimer != nil {
+			missingRefreshTimer.Stop()
+			missingRefreshTimer = nil
+		}
+		missingRefreshMu.Unlock()
 	}
 
 	var refreshTicker *clock.Ticker

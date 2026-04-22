@@ -223,12 +223,12 @@ func TestRealCLIRelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionSta
 	stoppedB = true
 
 	waitForSessionIDsExact(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionA}, 8*time.Second)
+	if !screenContainsWithinRealTime(attach, "Not connected", 2*time.Second) {
+		t.Fatalf("expected dead relay headless session to remain visible during normal grace:\n%s", attach.Screen().String())
+	}
 	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
 		if screen.Contains("Not connected") || screen.Contains("reconnecting") {
 			return fmt.Errorf("stale disconnect overlay remained after dead tab removal:\n%s", screen.String())
-		}
-		if !screen.Contains("PROMPT>") {
-			return fmt.Errorf("surviving headless session prompt missing after active session death:\n%s", screen.String())
 		}
 		return nil
 	})
@@ -289,6 +289,9 @@ func TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionSta
 	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
 		if screen.Contains("Not connected") || screen.Contains("reconnecting") {
 			return fmt.Errorf("stale disconnect overlay remained after local dead tab removal:\n%s", screen.String())
+		}
+		if strings.Contains(screen.Row(0), sessionB) {
+			return fmt.Errorf("dead local headless tab %q still present after grace: %q", sessionB, screen.Row(0))
 		}
 		if !screen.Contains("PROMPT>") {
 			return fmt.Errorf("surviving local headless session prompt missing after active session death:\n%s", screen.String())
