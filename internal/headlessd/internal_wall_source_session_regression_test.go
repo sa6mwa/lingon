@@ -9,11 +9,12 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/pslog"
 )
 
 func TestDaemonInternalWallPreservesSourceSessionID(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-target-session"
 	sourceID := "headless-source-session"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)

@@ -376,7 +376,7 @@ func TestAttachRapidTabSwitchKeepsIO(t *testing.T) {
 	}
 }
 
-func TestAttachActiveSessionExitActivatesNext(t *testing.T) {
+func TestAttachActiveSessionExitActivatesNextImmediately(t *testing.T) {
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID: "host-1",
@@ -432,17 +432,15 @@ func TestAttachActiveSessionExitActivatesNext(t *testing.T) {
 	}
 
 	host.SendBytes([]byte{0x04})
-	h.Advance(1 * time.Second)
-	activeMu.Lock()
-	currentActive := activeID
-	activeMu.Unlock()
-	if currentActive != thirdID {
-		t.Fatalf("expected active session %q to remain during grace, got %q", thirdID, currentActive)
-	}
+	waitUntil(t, h.Clock(), 3*time.Second, func() bool {
+		activeMu.Lock()
+		currentActive := activeID
+		activeMu.Unlock()
+		return currentActive != "" && currentActive != thirdID
+	})
 
 	waitForSessionRemovalByID(t, h.Clock(), h.Endpoint(), h.AccessToken(), thirdID, 10*time.Second)
 	waitForSessionCount(t, h.Clock(), h.Endpoint(), h.AccessToken(), 2, 10*time.Second)
-	h.Advance(6 * time.Second)
 
 	attachSess.SendCtrlL()
 	attachSess.Send("n")

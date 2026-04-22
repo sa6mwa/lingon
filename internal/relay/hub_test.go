@@ -184,6 +184,39 @@ func TestHubBroadcastFromHost(t *testing.T) {
 	}
 }
 
+func TestHubSessionClosedDoesNotBroadcastHostDisconnected(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	hub.RegisterHost(host, "s1", 80, 24)
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	frame := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_SessionClosed{SessionClosed: &protocolpb.SessionClosed{
+			Reason: "terminated",
+		}},
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, frame); err != errHostSessionClosed {
+		t.Fatalf("HandleHostFrame(session_closed) err = %v, want %v", err, errHostSessionClosed)
+	}
+	if len(client.sent) != 1 {
+		t.Fatalf("client frames = %d, want 1", len(client.sent))
+	}
+	if client.sent[0].GetSessionClosed() == nil {
+		t.Fatalf("expected session_closed frame, got %#v", client.sent[0].Payload)
+	}
+
+	hub.Unregister(host)
+	if len(client.sent) != 1 {
+		t.Fatalf("unexpected extra client frame after unregister: %d", len(client.sent))
+	}
+	if client.closed != 1 {
+		t.Fatalf("client closed = %d, want 1", client.closed)
+	}
+}
+
 func TestHubBroadcastSessionFrame(t *testing.T) {
 	hub := NewHub(nil)
 	if got := hub.replayHistoryBytes; got != config.DefaultReplayHistoryBytes {

@@ -62,6 +62,7 @@ type sessionState struct {
 	history       []*protocolpb.Frame
 	historyBytes  int
 	replayMu      sync.RWMutex
+	explicitClose bool
 }
 
 // NewHub constructs a Hub.
@@ -112,6 +113,7 @@ func (h *Hub) registerHost(conn connection, sessionID string, cols, rows int) co
 	state.host = conn
 	state.cols = cols
 	state.rows = rows
+	state.explicitClose = false
 	h.logger.Debug("relay.hub.host.register", "session", sessionID, "conn", conn.ID(), "cols", cols, "rows", rows)
 	return replaced
 }
@@ -218,11 +220,16 @@ func (h *Hub) Unregister(conn connection) {
 			state.host = nil
 			state.controller = ""
 			h.logger.Info("relay.host.disconnect.done", "session", conn.SessionID())
-			notifyReason = "host disconnected"
+			if state.explicitClose {
+				notifyReason = "session closed"
+			} else {
+				notifyReason = "host disconnected"
+			}
 			notify = make([]connection, 0, len(state.clients))
 			for _, client := range state.clients {
 				notify = append(notify, client)
 			}
+			state.explicitClose = false
 		}
 	} else {
 		delete(state.clients, conn.ID())
@@ -238,12 +245,14 @@ func (h *Hub) Unregister(conn connection) {
 	if len(notify) == 0 {
 		return
 	}
-	frame := frameError(notifyReason)
 	for _, client := range notify {
-		if ws, ok := client.(*wsConn); ok {
-			_ = ws.SendImmediate(context.Background(), frame)
-		} else {
-			_ = client.Send(context.Background(), frame)
+		if notifyReason == "host disconnected" {
+			frame := frameError(notifyReason)
+			if ws, ok := client.(*wsConn); ok {
+				_ = ws.SendImmediate(context.Background(), frame)
+			} else {
+				_ = client.Send(context.Background(), frame)
+			}
 		}
 		_ = client.Close(context.Background(), notifyReason)
 	}
@@ -285,7 +294,30 @@ func (h *Hub) HandleHostFrame(ctx context.Context, conn connection, frame *proto
 		return errStaleHostConnection
 	}
 	if frame.GetSessionClosed() != nil {
+		state.seq++
+		frame.Seq = state.seq
+		frame.SessionId = conn.SessionID()
+		h.recordFrameLocked(state, frame)
+		state.explicitClose = true
+		clients := make([]connection, 0, len(state.clients))
+		for _, client := range state.clients {
+			clients = append(clients, client)
+		}
 		h.mu.Unlock()
+		for _, client := range clients {
+			var err error
+			if ws, ok := client.(*wsConn); ok {
+				err = ws.SendImmediate(ctx, frame)
+			} else {
+				err = client.Send(ctx, frame)
+			}
+			if err != nil {
+				if isExpectedSendError(err) {
+					continue
+				}
+				h.logger.Debug("relay.client.send.failed", "err", err)
+			}
+		}
 		return errHostSessionClosed
 	}
 	if ctrl := frame.GetControl(); ctrl != nil {

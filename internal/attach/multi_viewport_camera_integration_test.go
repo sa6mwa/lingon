@@ -20,6 +20,7 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 var (
@@ -232,7 +233,7 @@ func TestMultiAttachRealCLIControlDoesNotSendResizeAndEchoesPromptly(t *testing.
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	shell := t.TempDir() + "/attach-lag-bash.sh"
+	shell := testutil.TempDir(t) + "/attach-lag-bash.sh"
 	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write attach lag bash wrapper: %v", err)
@@ -314,7 +315,7 @@ func TestMultiAttachRealCLIControlBuffersStartupInputUntilViewReady(t *testing.T
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	shell := t.TempDir() + "/attach-startup-input-bash.sh"
+	shell := testutil.TempDir(t) + "/attach-startup-input-bash.sh"
 	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write attach startup-input bash wrapper: %v", err)
@@ -357,7 +358,7 @@ func TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsive(t *test
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	shell := t.TempDir() + "/attach-repeated-byte-bash.sh"
+	shell := testutil.TempDir(t) + "/attach-repeated-byte-bash.sh"
 	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write attach repeated-byte bash wrapper: %v", err)
@@ -414,7 +415,7 @@ func TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsiveRealCloc
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	shell := t.TempDir() + "/attach-repeated-byte-realclock-bash.sh"
+	shell := testutil.TempDir(t) + "/attach-repeated-byte-realclock-bash.sh"
 	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write attach repeated-byte realclock bash wrapper: %v", err)
@@ -471,7 +472,7 @@ func TestMultiAttachExternalCLIRepeatedInputStaysResponsiveRealClock(t *testing.
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	shell := t.TempDir() + "/attach-external-cli-bash.sh"
+	shell := testutil.TempDir(t) + "/attach-external-cli-bash.sh"
 	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write attach external-cli bash wrapper: %v", err)
@@ -943,7 +944,7 @@ func TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable(t *tes
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	shell := t.TempDir() + "/attach-multi-bash.sh"
+	shell := testutil.TempDir(t) + "/attach-multi-bash.sh"
 	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write multi attach bash wrapper: %v", err)
@@ -1035,7 +1036,7 @@ func TestMultiAttachSignalResizeWithMultipleSessionsMatchesExplicitViewport(t *t
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	shell := t.TempDir() + "/attach-signal-bash.sh"
+	shell := testutil.TempDir(t) + "/attach-signal-bash.sh"
 	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write signal bash wrapper: %v", err)
@@ -1132,19 +1133,20 @@ func TestMultiAttachRealCLIControlBurstEnterKeepsConsecutiveBashPromptNumbers(t 
 	})
 	t.Cleanup(attach.session.Cancel)
 
-	waitForPromptNumberWithin(t, attach.session, 1, 3*time.Second)
+	startPrompt := ensureAttachPromptNumberVisibleRealTime(t, hostA, attach.session, 1, 10*time.Second)
+	finalPrompt := startPrompt + 24
 
 	attach.resize(32, 8)
 	attach.session.SendBytes([]byte(strings.Repeat("\n", 24)))
 
 	eventuallyWithClockAttach(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
 		hostNums := promptNumbersFromScreen(hostA.Screen().String())
-		if len(hostNums) == 0 || hostNums[len(hostNums)-1] != 25 {
-			return fmt.Errorf("expected host to advance to prompt 25, got %v\npty=%q\nhost:\n%s", hostNums, ptyOut.String(), hostA.Screen().String())
+		if len(hostNums) == 0 || hostNums[len(hostNums)-1] != finalPrompt {
+			return fmt.Errorf("expected host to advance to prompt %d, got %v\npty=%q\nhost:\n%s", finalPrompt, hostNums, ptyOut.String(), hostA.Screen().String())
 		}
 		attachNums := promptNumbersFromScreen(attach.session.Screen().String())
-		if len(attachNums) == 0 || attachNums[len(attachNums)-1] != 25 {
-			return fmt.Errorf("expected multi-attach real-cli to advance to prompt 25, got %v\npty=%q\nattach:\n%s", attachNums, ptyOut.String(), attach.session.Screen().String())
+		if len(attachNums) == 0 || attachNums[len(attachNums)-1] != finalPrompt {
+			return fmt.Errorf("expected multi-attach real-cli to advance to prompt %d, got %v\npty=%q\nattach:\n%s", finalPrompt, attachNums, ptyOut.String(), attach.session.Screen().String())
 		}
 		return nil
 	})
@@ -1373,7 +1375,7 @@ func startLingonAttachCLI(t *testing.T, h *ptytest.Harness, sessionID string, co
 		"--request-control",
 		"--disable-desktop-notifications",
 	)
-	homeDir := t.TempDir()
+	homeDir := testutil.TempDir(t)
 	cmd.Env = testAttachCLIEnv(homeDir)
 	cmd.Stdin = slave
 	cmd.Stdout = slave
@@ -1443,6 +1445,19 @@ func buildLingonAttachBinary(t *testing.T) string {
 		out := filepath.Join(dir, "lingon-attach-repro")
 		cmd := exec.Command("go", "build", "-o", out, "./cmd/lingon")
 		cmd.Dir = repoRoot
+		cacheDir := filepath.Join(repoRoot, ".cache", "go-build-test")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			attachCLIBuildErr = fmt.Errorf("create go build cache dir: %w", err)
+			return
+		}
+		env := append([]string(nil), os.Environ()...)
+		env = append(env, "GOCACHE="+cacheDir)
+		if modCache := strings.TrimSpace(os.Getenv("GOMODCACHE")); modCache != "" {
+			env = append(env, "GOMODCACHE="+modCache)
+		} else if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			env = append(env, "GOMODCACHE="+filepath.Join(home, "go", "pkg", "mod"))
+		}
+		cmd.Env = env
 		if output, err := cmd.CombinedOutput(); err != nil {
 			attachCLIBuildErr = fmt.Errorf("go build lingon: %w\n%s", err, string(output))
 			return
@@ -1768,7 +1783,7 @@ func waitForRawPTYContainsAfter(mu *sync.Mutex, buf *bytes.Buffer, needle string
 
 func countingPromptBashForAttach(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	rcPath := filepath.Join(dir, "bashrc")
 	wrapperPath := filepath.Join(dir, "bash-wrapper.sh")
 	const rc = `

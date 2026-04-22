@@ -99,6 +99,9 @@ type Client struct {
 	needsResync      bool
 	resyncRequested  bool
 	forceFreshHello  bool
+	suppressInitialWallStatus bool
+	wallStatusKnown  bool
+	wallStatusEnabled bool
 	renderCache      mvu.RenderCache
 	scrollbackMu     sync.RWMutex
 	scrollbackBuffer *mvu.ProtoScrollbackBuffer
@@ -140,6 +143,8 @@ type Client struct {
 	OnFrame func(*protocolpb.Frame)
 	// OnSessions is invoked when a sessions update frame arrives.
 	OnSessions func([]SessionInfo)
+	// OnSessionClosed is invoked when the server reports explicit host-side session termination.
+	OnSessionClosed func(reason string)
 	// OnSendHello is invoked when a resync hello is sent after welcome.
 	OnSendHello func(error)
 	// OnWall is invoked when a wall frame arrives.
@@ -672,6 +677,10 @@ func (c *Client) SeedFrom(prev *Client) {
 	if prev == nil {
 		return
 	}
+	c.ClientID = prev.ClientID
+	if prev.SessionID != c.SessionID {
+		return
+	}
 	prev.mu.RLock()
 	snap := cloneSnapshot(prev.lastSnapshot)
 	prev.mu.RUnlock()
@@ -685,7 +694,6 @@ func (c *Client) SeedFrom(prev *Client) {
 	c.needsResync = false
 	c.resyncRequested = false
 	c.mu.Unlock()
-	c.ClientID = prev.ClientID
 	c.renderMu.Lock()
 	c.renderCache = renderCache
 	c.renderMu.Unlock()
@@ -900,8 +908,17 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 		if !accept {
 			continue
 		}
+		if closed := frame.GetSessionClosed(); closed != nil {
+			if c.OnSessionClosed != nil {
+				c.OnSessionClosed(strings.TrimSpace(closed.GetReason()))
+			}
+			continue
+		}
 		if welcome := frame.GetWelcome(); welcome != nil {
 			c.handleControl(welcome.HolderClientId)
+			c.mu.Lock()
+			c.suppressInitialWallStatus = true
+			c.mu.Unlock()
 			c.markReady()
 			err := c.sendHello(ctx, ws)
 			if c.OnSendHello != nil {
@@ -1797,6 +1814,24 @@ func wallInactivityStatusMessage(status *protocolpb.WallInactivityStatus) (messa
 }
 
 func (c *Client) handleWallInactivityStatus(status *protocolpb.WallInactivityStatus) {
+	c.mu.Lock()
+	suppressInitial := c.suppressInitialWallStatus
+	prevKnown := c.wallStatusKnown
+	prevEnabled := c.wallStatusEnabled
+	if suppressInitial {
+		c.suppressInitialWallStatus = false
+	}
+	if status != nil && strings.TrimSpace(status.GetError()) == "" {
+		c.wallStatusKnown = true
+		c.wallStatusEnabled = status.GetEnabled()
+	}
+	c.mu.Unlock()
+	if suppressInitial && status != nil && strings.TrimSpace(status.GetError()) == "" && !status.GetEnabled() && strings.TrimSpace(status.GetInactiveAfter()) == "" {
+		return
+	}
+	if status != nil && strings.TrimSpace(status.GetError()) == "" && !status.GetEnabled() && (!prevKnown || !prevEnabled) && strings.TrimSpace(status.GetInactiveAfter()) == "" {
+		return
+	}
 	message, kind := wallInactivityStatusMessage(status)
 	if message == "" {
 		return

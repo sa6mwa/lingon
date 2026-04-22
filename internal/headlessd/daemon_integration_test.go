@@ -21,11 +21,12 @@ import (
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/session"
+	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/pslog"
 )
 
 func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-itest"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -124,7 +125,7 @@ func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
 }
 
 func TestDaemonRunRejectsDuplicateSessionID(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-duplicate-id"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -186,7 +187,7 @@ func TestDaemonRunRejectsDuplicateSessionID(t *testing.T) {
 }
 
 func TestDaemonOfflineTogglePersistsState(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-offline"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -240,7 +241,7 @@ func TestDaemonOfflineTogglePersistsState(t *testing.T) {
 }
 
 func TestDaemonReplaysPublishStatusToNewAttachClient(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-status-replay"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -325,7 +326,7 @@ func TestDaemonReplaysPublishStatusToNewAttachClient(t *testing.T) {
 }
 
 func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-inactive-once"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -456,7 +457,7 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 }
 
 func TestDaemonModeSwitchDisablesLocalAndRelayWallInactivity(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "hd-mode-switch"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -640,7 +641,7 @@ func TestDaemonModeSwitchDisablesLocalAndRelayWallInactivity(t *testing.T) {
 }
 
 func TestDaemonOfflineInactivityWallPropagatesToRelay(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "hd-offline-relay"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {

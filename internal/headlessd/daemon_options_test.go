@@ -8,6 +8,7 @@ import (
 
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/headless"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 func TestNormalizeWallInactiveAfterLevelsDefaultsWhenEmpty(t *testing.T) {
@@ -33,7 +34,7 @@ func TestNormalizeWallInactiveAfterLevelsFiltersInvalidAndDedupes(t *testing.T) 
 }
 
 func TestRemoveStateRecordSkipsDifferentPID(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	d := New(Options{
 		ConfigDir: cfgDir,
 		SessionID: "owned-by-other",
@@ -69,7 +70,7 @@ func TestRemoveStateRecordSkipsDifferentPID(t *testing.T) {
 }
 
 func TestRemoveStateRecordDeletesOwnedPID(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	d := New(Options{
 		ConfigDir: cfgDir,
 		SessionID: "owned-by-self",

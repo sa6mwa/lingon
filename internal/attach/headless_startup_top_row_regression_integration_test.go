@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 func TestMultiAttachStartupHidesTabsWhenCursorOwnsTopRow(t *testing.T) {
@@ -54,7 +55,7 @@ func TestMultiAttachStartupHidesTabsWhenCursorOwnsTopRow(t *testing.T) {
 func writeAttachIdleShell(t *testing.T) string {
 	t.Helper()
 	const script = "#!/bin/sh\nwhile :; do sleep 1; done\n"
-	path := filepath.Join(t.TempDir(), "attach-idle.sh")
+	path := filepath.Join(testutil.TempDir(t), "attach-idle.sh")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write attach idle shell: %v", err)
 	}

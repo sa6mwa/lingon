@@ -434,6 +434,12 @@ func (r *Runner) Run(ctx context.Context) error {
 				activeID, _ := r.activeSession()
 				if id != "" && id == activeID {
 					if r.remoteSessions != nil && !r.isLocalSession(id) {
+						if r.remoteSessions.IsDisabled(id) || r.remoteSessions.HasSession(id) || r.remoteSessions.IsRetained(id) {
+							return
+						}
+						if r.activateAnyLocal(stdout, stdin) {
+							r.forceRedrawWithMode(stdout, true)
+						}
 						return
 					}
 					if r.remoteSessions != nil && (r.remoteSessions.IsDisabled(id) || r.remoteSessions.HasSession(id)) {
@@ -766,11 +772,8 @@ func (r *Runner) Run(ctx context.Context) error {
 				if cols <= 0 || rows <= 0 {
 					continue
 				}
-				r.opts.Cols, r.opts.Rows = cols, rows
-				activeID, activeLocal := r.activeSession()
-				if activeLocal {
-					r.resizeLocalSession(r.localSession(activeID), cols, rows)
-				}
+				r.ResizeActive(cols, rows)
+				activeID, _ := r.activeSession()
 				if r.scrollbackActiveFor(activeID) {
 					r.renderScrollback(stdout, stdin)
 					continue
@@ -781,11 +784,8 @@ func (r *Runner) Run(ctx context.Context) error {
 				if cols <= 0 || rows <= 0 {
 					continue
 				}
-				r.opts.Cols, r.opts.Rows = cols, rows
-				activeID, activeLocal := r.activeSession()
-				if activeLocal {
-					r.resizeLocalSession(r.localSession(activeID), cols, rows)
-				}
+				r.ResizeActive(cols, rows)
+				activeID, _ := r.activeSession()
 				if r.scrollbackActiveFor(activeID) {
 					r.renderScrollback(stdout, stdin)
 					continue

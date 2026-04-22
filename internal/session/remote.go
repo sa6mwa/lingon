@@ -58,6 +58,7 @@ type remoteView struct {
 	disabled        bool
 	awaiting        bool
 	running         bool
+	sessionClosed   bool
 	restart         bool
 	needsFullRender bool
 	stdout          io.Writer
@@ -575,11 +576,28 @@ func (m *remoteManager) Show(ctx context.Context, sessionID string, stdout io.Wr
 		view := m.views[sessionID]
 		visible := view != nil && view.visible
 		client := (*attach.Client)(nil)
+		headless := false
 		if view != nil {
 			client = view.client
+			view.sessionClosed = false
+		}
+		for _, info := range m.sessions {
+			if info.ID == sessionID {
+				headless = info.Headless
+				break
+			}
 		}
 		m.mu.Unlock()
 		if visible && client != nil {
+			if headless {
+				cols, rows := 0, 0
+				if m.termSize != nil {
+					cols, rows = m.termSize()
+				}
+				if cols > 0 && rows > 0 {
+					_ = client.SendResize(ctx, cols, rows)
+				}
+			}
 			client.RenderCurrent()
 		}
 	}
@@ -741,6 +759,9 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		}
 		client.OnOverlayStateChange = func() {
 			m.notifyOverlayChange(session.ID)
+		}
+		client.OnSessionClosed = func(_ string) {
+			m.handleExplicitSessionClosed(session.ID)
 		}
 		client.SetCompositor(m.compositor)
 		view.client = client
@@ -1103,7 +1124,11 @@ func (m *remoteManager) handleViewClosed(view *remoteView, runID uint64, err err
 	if current == view && view.runID == runID {
 		view.running = false
 		view.cancel = nil
-		if view.restart {
+		if view.sessionClosed {
+			delete(m.retained, view.id)
+			delete(m.views, view.id)
+			delete(m.disabled, view.id)
+		} else if view.restart {
 			restart = true
 			view.restart = false
 			ctx = view.ctx
@@ -1121,6 +1146,9 @@ func (m *remoteManager) handleViewClosed(view *remoteView, runID uint64, err err
 	}
 	m.mu.Unlock()
 	m.logViewState("view_closed", view, err)
+	if view.ctx != nil && view.ctx.Err() == nil && !view.sessionClosed && err != nil {
+		_ = m.refreshSessions(view.ctx)
+	}
 	if restart && ctx != nil && ctx.Err() == nil {
 		_ = m.connectView(ctx, view, io.Discard, func() {
 			m.markReady(view.id)
@@ -1184,6 +1212,7 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 		if _, ok := allIDs[id]; ok {
 			delete(m.retained, id)
 			view.missingSince = time.Time{}
+			view.sessionClosed = false
 			if view.visible && view.cancel == nil && !view.awaiting && !view.disabled && !view.running {
 				view.awaiting = true
 				reconnectViews = append(reconnectViews, view)
@@ -1191,6 +1220,15 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 			continue
 		}
 		if !shouldRetainRemoteView(view) {
+			if view.cancel != nil {
+				view.cancel()
+			}
+			delete(m.views, id)
+			delete(m.disabled, id)
+			delete(m.retained, id)
+			continue
+		}
+		if view.sessionClosed {
 			if view.cancel != nil {
 				view.cancel()
 			}
@@ -1244,6 +1282,45 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 
 	if changed && callback != nil {
 		callback(nextSessions)
+	}
+}
+
+func (m *remoteManager) handleExplicitSessionClosed(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	m.mu.Lock()
+	view := m.views[sessionID]
+	var cancel context.CancelFunc
+	if view != nil {
+		view.sessionClosed = true
+		cancel = view.cancel
+		delete(m.views, sessionID)
+	}
+	delete(m.retained, sessionID)
+	delete(m.disabled, sessionID)
+	nextSessions := make([]remoteSessionInfo, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		if session.ID == sessionID {
+			continue
+		}
+		nextSessions = append(nextSessions, session)
+	}
+	changed := sessionsKey(m.sessions) != sessionsKey(nextSessions)
+	m.sessions = nextSessions
+	callback := m.onSessions
+	closeCallback := m.onViewClosed
+	copied := copySessions(m.sessions)
+	m.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if changed && callback != nil {
+		callback(copied)
+	}
+	if closeCallback != nil {
+		closeCallback(sessionID, fmt.Errorf("session closed"))
 	}
 }
 

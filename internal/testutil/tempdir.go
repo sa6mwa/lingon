@@ -2,14 +2,16 @@ package testutil
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
-const baseTempDir = "/tmp/lingontest"
+const baseTempDirName = "lingontest"
 
 // TempDir creates a temp directory under /tmp/lingontest and cleans it up.
 func TempDir(t *testing.T) string {
 	t.Helper()
+	baseTempDir := filepath.Join(os.TempDir(), baseTempDirName)
 	if err := os.MkdirAll(baseTempDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", baseTempDir, err)
 	}

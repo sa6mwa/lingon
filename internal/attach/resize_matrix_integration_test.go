@@ -10,6 +10,7 @@ import (
 
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 func TestSingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput(t *testing.T) {
@@ -29,16 +30,10 @@ func TestSingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput(t 
 	t.Cleanup(host.Cancel)
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"single-relay-matrix"})
-	attach := h.StartAttach(ptytest.AttachOptions{
-		SessionID:      "single-relay-matrix",
-		RequestControl: true,
-		Cols:           40,
-		Rows:           10,
-		RawInput:       true,
-	})
+	attach := startLingonAttachCLI(t, h, "single-relay-matrix", 40, 10)
 	t.Cleanup(attach.Cancel)
 
-	waitForPromptVisible(t, attach, 3*time.Second)
+	ensureAttachPromptVisibleRealTime(t, host, attach, 10*time.Second)
 	runRelayResizeMatrix(t, host, attach, func(cols, rows int) { attach.Resize(cols, rows) })
 }
 
@@ -74,7 +69,7 @@ func TestMultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput(t *
 	})
 	t.Cleanup(attach.session.Cancel)
 
-	waitForPromptVisible(t, attach.session, 3*time.Second)
+	ensureAttachPromptVisibleRealTime(t, hostA, attach.session, 10*time.Second)
 	runMultiRelayResizeMatrix(t, hostA, attach.session, attach.resize)
 }
 
@@ -160,7 +155,6 @@ func TestMultiAttachHeadlessResizeMatrixRendersExpectedViewport(t *testing.T) {
 
 func runRelayResizeMatrix(t *testing.T, host, attach *ptytest.PTYSession, resize func(cols, rows int)) {
 	t.Helper()
-	state := []string{"PROMPT>"}
 	steps := []struct {
 		name string
 		cols int
@@ -176,15 +170,14 @@ func runRelayResizeMatrix(t *testing.T, host, attach *ptytest.PTYSession, resize
 	for _, step := range steps {
 		resize(step.cols, step.rows)
 		ptytest.Advance(host.Clock(), 250*time.Millisecond)
-		state = runRelaySizeProbe(t, host, attach, state, step.cols, step.rows, step.name+"-size")
-		state = runRelayLongOutputProbe(t, host, attach, state, step.cols, step.rows, step.name+"-rows")
+		runRelaySizeProbe(t, host, attach, step.cols, step.rows, step.name+"-size")
+		runRelayLongOutputProbe(t, host, attach, step.cols, step.rows, step.name+"-rows")
 	}
 }
 
-func runRelaySizeProbe(t *testing.T, host, attach *ptytest.PTYSession, state []string, cols, rows int, phase string) []string {
+func runRelaySizeProbe(t *testing.T, host, attach *ptytest.PTYSession, cols, rows int, phase string) {
 	t.Helper()
 	token := "__SIZE_DONE__"
-	next := trimTerminalState(applyPromptCommand(state, "stty size; echo "+token, "10 40", token), 10)
 	attach.Send("stty size; echo " + token + "\r")
 	eventuallyWithClockAttach(t, host.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
 		if !strings.Contains(host.Screen().String(), token) {
@@ -193,37 +186,29 @@ func runRelaySizeProbe(t *testing.T, host, attach *ptytest.PTYSession, state []s
 		if !strings.Contains(host.Screen().String(), "10 40") {
 			return fmt.Errorf("host PTY size changed unexpectedly:\n%s", host.Screen().String())
 		}
-		want := trimRowsRight(expectedSingleAttachScreen(cols, rows, next...))
-		got := trimRowsRight(cropPadHostScreen(attach.Screen(), cols, rows))
+		want := trimRowsRight(cropPadHostBody(host.Screen(), cols, rows))
+		got := trimRowsRight(attachBody(attach.Screen()))
 		if got != want {
 			return fmt.Errorf("%s mismatch\nwant:\n%s\n\ngot:\n%s\n\nhost:\n%s\n\nattach:\n%s", phase, want, got, host.Screen().String(), attach.Screen().String())
 		}
 		return nil
 	})
-	return next
 }
 
-func runRelayLongOutputProbe(t *testing.T, host, attach *ptytest.PTYSession, state []string, cols, rows int, phase string) []string {
+func runRelayLongOutputProbe(t *testing.T, host, attach *ptytest.PTYSession, cols, rows int, phase string) {
 	t.Helper()
-	const lineCount = 18
-	output := make([]string, 0, lineCount)
-	for i := 1; i <= lineCount; i++ {
-		output = append(output, fmt.Sprintf("ROW-%02d", i))
-	}
-	next := trimTerminalState(applyPromptCommand(state, fmt.Sprintf("emitrows %d", lineCount), output...), 10)
 	attach.Send("emitrows 18\r")
 	eventuallyWithClockAttach(t, host.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
 		if !strings.Contains(host.Screen().String(), "ROW-18") {
 			return fmt.Errorf("waiting for long output on host")
 		}
-		want := trimRowsRight(expectedSingleAttachScreen(cols, rows, next...))
-		got := trimRowsRight(cropPadHostScreen(attach.Screen(), cols, rows))
+		want := trimRowsRight(cropPadHostBody(host.Screen(), cols, rows))
+		got := trimRowsRight(attachBody(attach.Screen()))
 		if got != want {
 			return fmt.Errorf("%s mismatch\nwant:\n%s\n\ngot:\n%s\n\nhost:\n%s\n\nattach:\n%s", phase, want, got, host.Screen().String(), attach.Screen().String())
 		}
 		return nil
 	})
-	return next
 }
 
 func runHeadlessResizeMatrix(t *testing.T, attach *ptytest.PTYSession, resize func(cols, rows int)) {
@@ -339,27 +324,6 @@ func expectedHeadlessScreen(rows, lineCount int) string {
 	return strings.Join(lines[len(lines)-rows:], "\n")
 }
 
-func expectedSingleAttachScreen(cols, rows int, lines ...string) string {
-	if rows <= 0 || cols <= 0 {
-		return ""
-	}
-	cropped := make([]string, 0, maxInt(rows, len(lines)))
-	for _, line := range lines {
-		runes := []rune(line)
-		if len(runes) > cols {
-			line = string(runes[:cols])
-		}
-		cropped = append(cropped, line)
-	}
-	if len(cropped) > rows {
-		cropped = cropped[len(cropped)-rows:]
-	}
-	for len(cropped) < rows {
-		cropped = append(cropped, "")
-	}
-	return strings.Join(cropped[:rows], "\n")
-}
-
 func expectedTerminalContent(rows, lineCount int) string {
 	if rows <= 0 {
 		return ""
@@ -379,6 +343,10 @@ func expectedTerminalContent(rows, lineCount int) string {
 }
 
 func attachTerminalContent(screen ptytest.Screen) string {
+	return strings.Join(terminalStateFromScreen(screen), "\n")
+}
+
+func terminalStateFromScreen(screen ptytest.Screen) []string {
 	start := 0
 	for start < screen.Rows {
 		line := strings.TrimRight(screen.Row(start), " ")
@@ -391,33 +359,10 @@ func attachTerminalContent(screen ptytest.Screen) string {
 	for row := start; row < screen.Rows; row++ {
 		lines = append(lines, screen.Row(row))
 	}
-	return strings.Join(lines, "\n")
-}
-
-func applyPromptCommand(state []string, command string, output ...string) []string {
-	next := append([]string(nil), state...)
-	if len(next) == 0 {
-		next = append(next, "PROMPT>")
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
 	}
-	last := len(next) - 1
-	if strings.HasPrefix(next[last], "PROMPT>") {
-		next[last] = "PROMPT>" + command
-	} else {
-		next = append(next, "PROMPT>"+command)
-	}
-	next = append(next, output...)
-	next = append(next, "PROMPT>")
-	return next
-}
-
-func trimTerminalState(state []string, rows int) []string {
-	if rows <= 0 {
-		return nil
-	}
-	if len(state) <= rows {
-		return append([]string(nil), state...)
-	}
-	return append([]string(nil), state[len(state)-rows:]...)
+	return lines
 }
 
 func maxInt(a, b int) int {
@@ -550,7 +495,7 @@ func cropPadHostBody(screen ptytest.Screen, cols, rows int) string {
 
 func fixedPromptEmitRowsBash(t *testing.T) string {
 	t.Helper()
-	rcPath := filepath.Join(t.TempDir(), "lingon-attach-rc")
+	rcPath := filepath.Join(testutil.TempDir(t), "lingon-attach-rc")
 	rc := strings.Join([]string{
 		"export PS1='PROMPT>'",
 		"emitrows() {",
@@ -565,7 +510,7 @@ func fixedPromptEmitRowsBash(t *testing.T) string {
 	if err := os.WriteFile(rcPath, []byte(rc), 0o644); err != nil {
 		t.Fatalf("write rc file: %v", err)
 	}
-	shellPath := filepath.Join(t.TempDir(), "lingon-attach-shell.sh")
+	shellPath := filepath.Join(testutil.TempDir(t), "lingon-attach-shell.sh")
 	script := "#!/usr/bin/env bash\nexec /bin/bash --noprofile --rcfile " + shellQuote(rcPath) + " -i\n"
 	if err := os.WriteFile(shellPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write shell wrapper: %v", err)

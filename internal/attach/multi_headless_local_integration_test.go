@@ -24,11 +24,12 @@ import (
 	"pkt.systems/lingon/internal/ptytest"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/terminal"
+	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/pslog"
 )
 
 func TestMultiAttachSwitchesAcrossLocalHeadlessSocketsPTY(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 
 	stopA := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -164,7 +165,7 @@ func TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh(t *test
 }
 
 func TestMultiAttachHeadlessRoutedStatusStaysOnActiveSession(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	socketA := dir + "/status-a.sock"
 	socketB := dir + "/status-b.sock"
 	stopA := startFakeLocalStatusServer(t, fakeLocalStatusServerSpec{
@@ -246,7 +247,7 @@ func TestMultiAttachHeadlessRoutedStatusStaysOnActiveSession(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessDoesNotForwardMouseReports(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
 		SessionID: "mouse-a",
@@ -289,7 +290,7 @@ func TestMultiAttachHeadlessDoesNotForwardMouseReports(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessOfflineToggleForwarded(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "offline-a"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -344,7 +345,7 @@ func TestMultiAttachHeadlessOfflineToggleForwarded(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessOfflineToggleUpdatesTabStyle(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "offline-style-a"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -649,7 +650,7 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessCtrlLWForwardedToHostLogic(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "wall-local-a"
 	var wallToggleCalls atomic.Int32
 	h := newHarness(t,
@@ -1193,7 +1194,7 @@ func TestMultiAttachHeadlessCtrlLWForwardedWithRequestControlDisabled(t *testing
 }
 
 func TestMultiAttachHeadlessCtrlLLClearsAndTabBarRecovers(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "clear-local-a"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -1253,7 +1254,7 @@ func TestMultiAttachHeadlessCtrlLLClearsAndTabBarRecovers(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessGraceExit(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "exit-local-a"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -1314,7 +1315,7 @@ func TestMultiAttachHeadlessGraceExit(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessRoutesRealPublishStatusBanner(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "status-live-a"
 	h := newHarness(t, ptytest.WithClock(clock.New()))
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
@@ -1360,7 +1361,7 @@ func TestMultiAttachHeadlessRoutesRealPublishStatusBanner(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessCtrlLRTogglesRespawnAndSurvivesExit(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "respawn-local-a"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -1413,7 +1414,7 @@ func TestMultiAttachHeadlessCtrlLRTogglesRespawnAndSurvivesExit(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessCtrlLCDoesNotCreateSession(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "ctrl-l-c-headless-noop-a"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -1468,7 +1469,7 @@ func TestMultiAttachHeadlessCtrlLCDoesNotCreateSession(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessReattachPreservesScrollbackPTY(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "rbuf-a"
 	h := newHarness(t, ptytest.WithClock(clock.New()))
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
@@ -1553,7 +1554,7 @@ func TestMultiAttachHeadlessReattachPreservesScrollbackPTY(t *testing.T) {
 }
 
 func TestMultiAttachHeadlessResizePropagatesToPTY(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	const sessionID = "resize-local-a"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -1717,7 +1718,7 @@ func startHeadlessDaemon(t *testing.T, spec headlessDaemonSpec) func() {
 
 func headlessInteractiveShell(t *testing.T) string {
 	t.Helper()
-	scriptPath := filepath.Join(t.TempDir(), "headless-interactive-shell.sh")
+	scriptPath := filepath.Join(testutil.TempDir(t), "headless-interactive-shell.sh")
 	const script = `#!/usr/bin/env bash
 set -u
 stty -echo -icanon min 1 time 0

@@ -10,12 +10,13 @@ import (
 
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 const ctrlDFlagEnv = "LINGON_TEST_CTRL_D_FLAG"
 
 func TestMultiAttachCtrlLDSendsEOFAndCtrlDDetachesRelay(t *testing.T) {
-	flagPath := filepath.Join(t.TempDir(), "relay-eof.flag")
+	flagPath := filepath.Join(testutil.TempDir(t), "relay-eof.flag")
 	t.Setenv(ctrlDFlagEnv, flagPath)
 
 	recorder := ptytest.NewWSRecorder()
@@ -90,10 +91,10 @@ func TestMultiAttachCtrlLDSendsEOFAndCtrlDDetachesRelay(t *testing.T) {
 }
 
 func TestMultiAttachCtrlLDSendsEOFAndCtrlDDetachesHeadlessLocal(t *testing.T) {
-	flagPath := filepath.Join(t.TempDir(), "headless-eof.flag")
+	flagPath := filepath.Join(testutil.TempDir(t), "headless-eof.flag")
 	t.Setenv(ctrlDFlagEnv, flagPath)
 
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	shellPath := writeCtrlDProbeShell(t)
 
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
@@ -166,7 +167,7 @@ func writeCtrlDProbeShell(t *testing.T) string {
 		"  printf '1\\n' >\"$flag\"\n" +
 		"fi\n" +
 		"while :; do sleep 1; done\n"
-	path := filepath.Join(t.TempDir(), "ctrl-d-probe.sh")
+	path := filepath.Join(testutil.TempDir(t), "ctrl-d-probe.sh")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write ctrl-d probe shell: %v", err)
 	}

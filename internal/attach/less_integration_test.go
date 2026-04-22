@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 var lessVisibleLinePattern = regexp.MustCompile(`LESS-LINE-(\d{3})`)
@@ -41,16 +42,16 @@ func TestAttachLessArrowKeysFollowApplicationCursorMode(t *testing.T) {
 	t.Cleanup(attach.Cancel)
 
 	waitForClientCount(t, h, sessionID, 1, 3*time.Second)
-	waitForAttachLessTopLine(t, h, attach, 3*time.Second, func(line int) bool { return line == 2 })
+	waitForAttachLessTopLine(t, h, attach, 3*time.Second, func(line int) bool { return line == 1 })
 
 	attach.SendBytes([]byte("j"))
-	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 3 })
+	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 2 })
 
 	attach.SendBytes([]byte{0x1b, '[', 'B'})
-	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 4 })
+	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 3 })
 
 	attach.SendBytes([]byte{0x1b, '[', 'A'})
-	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 3 })
+	waitForAttachLessTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 2 })
 }
 
 func TestMultiAttachLessArrowKeysFollowApplicationCursorMode(t *testing.T) {
@@ -123,7 +124,7 @@ func attachVisibleLessTopLine(screen ptytest.Screen) (int, bool) {
 
 func lessTestShell(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	dataPath := filepath.Join(dir, "less-repro.txt")
 	var lines []string
 	for i := 1; i <= 120; i++ {

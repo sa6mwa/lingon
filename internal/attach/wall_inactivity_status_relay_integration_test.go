@@ -3,9 +3,11 @@ package attach_test
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/ptytest"
 )
 
@@ -112,6 +114,60 @@ func TestMultiAttachWallStatusBannerDoesNotBlockPromptRepaint(t *testing.T) {
 		}
 		if !strings.Contains(screen.String(), "BANNER_REPAINT_OK") {
 			return fmt.Errorf("expected attach output marker while banner visible, got:\n%s", screen.String())
+		}
+		return nil
+	})
+}
+
+func TestMultiAttachSwitchToDisconnectedRelayTabDoesNotShowWallInactivityOff(t *testing.T) {
+	h := newHarness(t)
+	hostA := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-wall-status-switch-a",
+		SessionName: "attach-wall-status-switch-a",
+		Cols:        100,
+		Rows:        30,
+	})
+	hostB := h.StartHost(ptytest.HostOptions{
+		SessionID:   "attach-wall-status-switch-b",
+		SessionName: "attach-wall-status-switch-b",
+		Cols:        100,
+		Rows:        30,
+	})
+	t.Cleanup(hostA.Cancel)
+	t.Cleanup(hostB.Cancel)
+
+	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-wall-status-switch-a", "attach-wall-status-switch-b"})
+
+	var viewsMu sync.Mutex
+	views := make(map[string]*attach.Client)
+	attachSess := h.StartMultiAttach(ptytest.MultiAttachOptions{
+		SessionID: "attach-wall-status-switch-a",
+		Cols:      100,
+		Rows:      30,
+		OnView: func(sessionID string, client *attach.Client) {
+			viewsMu.Lock()
+			views[sessionID] = client
+			viewsMu.Unlock()
+		},
+	})
+	t.Cleanup(attachSess.Cancel)
+
+	waitForClientReady(t, h.Clock(), &viewsMu, views, "attach-wall-status-switch-a", 3*time.Second)
+	attachSess.SendCtrlL()
+	attachSess.Send("n")
+	waitForClientReady(t, h.Clock(), &viewsMu, views, "attach-wall-status-switch-b", 3*time.Second)
+	attachSess.SendCtrlL()
+	attachSess.Send("p")
+	waitForClientReady(t, h.Clock(), &viewsMu, views, "attach-wall-status-switch-a", 3*time.Second)
+
+	hostB.Cancel()
+	ptytest.Advance(h.Clock(), 1*time.Second)
+
+	attachSess.SendCtrlL()
+	attachSess.Send("n")
+	attachSess.Eventually(3*time.Second, 80*time.Millisecond, func(screen ptytest.Screen) error {
+		if strings.Contains(screen.Row(0), "wall inactivity off") {
+			return fmt.Errorf("unexpected wall inactivity banner while switching to disconnected relay tab: %q", screen.Row(0))
 		}
 		return nil
 	})

@@ -69,7 +69,7 @@ Required status values:
 
 ### B-014 Wall inactivity banner leaks onto disconnected remote tab switch
 
-- Status: `open`
+- Status: `in_progress`
 - Area: `attach`, `session`, `mvu`
 - Summary: Switching to a disconnected remote session in multi-client must not show the green `wall inactivity off` top-bar banner unless the user explicitly toggled wall inactivity.
 - Report:
@@ -80,69 +80,82 @@ Required status values:
   3. Observe `wall inactivity off` shown in the top bar without a user toggle action.
 - Investigation notes:
   - This banner should be event-driven from an explicit wall inactivity toggle/status update, not a generic tab-switch side effect.
-  - Likely involves stale status/banner state being carried across tab selection.
+  - The user reports two concrete failure modes:
+    - switching to a never-opened/disconnected tab in multi-client shows `wall inactivity off`
+    - reconnecting back into a tab can also surface the same stale green banner
+  - One direct PTY regression now exists for the disconnected-tab switch path and passes repeatedly.
+  - The broader live symptom is still not reproduced in harness coverage, so this bug stays open until the reconnect/never-opened path is trapped red as well.
 - Regression coverage:
-  - Pending.
+  - `internal/attach.TestMultiAttachSwitchToDisconnectedRelayTabDoesNotShowWallInactivityOff`
 - Verification:
-  - Pending.
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=50 ./internal/attach -run TestMultiAttachSwitchToDisconnectedRelayTabDoesNotShowWallInactivityOff -v`
+  - Remaining gap: the user-reported reconnect/never-opened banner leak still needs a red real PTY regression.
 
-### B-015 Headless attach keeps dead session tab and garbles output after headless exits
+### B-015 Headless headless-exit semantics are inconsistent across attach and host-remote clients
 
 - Status: `resolved`
 - Area: `attach`, `headless`, `relay`
-- Summary: When a `lingon -x` headless session terminates, `lingon attach` must not keep an unreachable stale tab with garbled output that only disappears after restarting attach.
+- Summary: When a headless session exits normally, relay-backed clients must treat it as a terminated session, not a lost connection with reconnect grace.
 - Report:
-  In `lingon attach` against a headless session, after the headless session has already terminated, the tab remains visible, unreachable, and garbled. Restarting `lingon attach` is currently required to make it disappear.
+  When `exit` is run in a headless terminal, the relay/client path treats it as connection-lost and shows reconnect grace instead of a clean terminated-session removal. This should match normal Lingon host session termination semantics.
 - Repro:
-  1. Start a headless session and connect with `lingon attach`.
-  2. Terminate the headless session.
-  3. Observe the session tab remains in attach showing stale/garbled output and reconnecting state.
+  1. Start a headless session and connect through relay from `lingon attach` or a host remote multi-client.
+  2. Run `exit` in the headless session.
+  3. Observe a red `connection lost` banner and reconnect grace instead of clean session termination/removal.
 - Investigation notes:
-  - The user suspects the bug is in `lingon attach` because restarting attach clears the stale tab.
-  - Root cause was `attach.MultiClient` applying normal relay missing-session retention/reconnect behavior to headless sessions. For headless/local sessions, disappearance must mean immediate removal, not reconnect grace.
+  - Previous work incorrectly treated headless as a special case and marked this resolved too early.
+  - Headless sessions are just Lingon-owned local PTYs; they should not have bespoke grace semantics.
+  - The remaining explicit-exit bug was lower in the stack than the attach/session clients:
+    - after a host sent `session_closed`, the relay still tore the host down through the generic unregister path
+    - that generic path broadcast `host disconnected` to clients
+    - this raced the queued `session_closed` frame and intermittently left clients seeing reconnect semantics instead of clean termination
+  - Fixes in this tranche:
+    - relay now sends `session_closed` to clients immediately
+    - relay marks explicit host close in session state and suppresses the generic `host disconnected` error broadcast on unregister
+    - host remote manager now forces an immediate session refresh on unexpected remote-view close while the context is still live, so a missed explicit-close frame cannot leave a stale remote view around until the normal 60s poll
+    - headless attach grace behavior remains normal for unexpected disappearance; only explicit `session_closed` removes immediately
 - Regression coverage:
-  - `internal/attach/headless_cli_regression_integration_test.go`
-    - `TestRealCLIRelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
-    - `TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
+  - `internal/relay.TestHubSessionClosedDoesNotBroadcastHostDisconnected`
+  - `internal/relay.TestHostSessionClosedFrameMarksSessionInactiveImmediately`
+  - `internal/attach.TestRealCLIRelayHeadlessExitRemovesTerminatedSessionWithoutReconnectOverlay`
+  - `internal/session.TestHostRemoteHeadlessExitRemovesSessionWithoutReconnectOverlay`
+  - Existing grace regressions rechecked:
+    - `internal/attach.TestRealCLIRelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
+    - `internal/attach.TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
 - Verification:
-  - Focused:
-    - `go test -count=1 ./internal/attach -run 'TestRealCLI(RelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)'`
-  - Broader:
-    - `go test -count=1 ./internal/attach`
-    - `go test -count=1 -tags webui ./internal/attach`
-  - Code-path review:
-    - `internal/attach/multi.go` now skips missing-session retention for local/headless sessions, immediately removes dead views, and allows active-session reselection to the surviving session.
+  - `env TMPDIR=/home/mike/t go test -count=1 ./internal/relay -run 'TestHubSessionClosedDoesNotBroadcastHostDisconnected|TestHostSessionClosedFrameMarksSessionInactiveImmediately'`
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=5 ./internal/attach -run 'TestRealCLI(RelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay|DeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)' -v`
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=10 ./internal/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay)' -v`
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=1 ./...`
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test make test-webui`
 
-### B-016 Headless attach resize does not resize headless session
+### B-016 Headless initial-connect resize is missing in relay clients
 
 - Status: `resolved`
 - Area: `attach`, `headless`, `session`
-- Summary: `lingon attach` connected to a headless `lingon -x` session must resize the headless PTY when the attach viewport changes.
+- Summary: Relay-backed headless sessions must resize to the controlling client viewport on initial connect as well as on later WINCH changes.
 - Report:
-  `lingon attach` does not resize a `lingon -x` headless session.
+  `lingon attach` does resize a headless session on later WINCH, but not on initial connect, and host remote multi-client still does not resize relay headless sessions correctly.
 - Repro:
   1. Start a headless session.
-  2. Connect via `lingon attach`.
-  3. Resize the attach terminal smaller/larger.
-  4. Observe the headless session does not follow the attach size.
+  2. Connect via `lingon attach` or host remote multi-client with a viewport different from the current headless PTY size.
+  3. Observe the headless session does not immediately adopt the controller viewport.
+  4. In `lingon attach`, later WINCH may resize correctly, proving the connect-time path is missing.
 - Investigation notes:
   - This is a distinct bug from non-headless camera-only behavior; headless is supposed to allow resize propagation.
-  - Root cause was relay-published headless sessions lacking explicit headless metadata, so `attach.MultiClient` treated them like ordinary camera-only remotes and suppressed resize propagation.
+  - Existing coverage only proved later resize propagation and initial snapshot delivery on narrower paths.
+  - Fixes in this tranche:
+    - `lingon host` remote multi-client now uses the active remote-session resize path on WINCH
+    - both attach and host-remote clients now send the controller viewport to relay headless sessions on initial connect as well as later WINCH
+    - the host-side initial-connect regression helper was strengthened so it retries the actual tab-switch sequence long enough to prove the resize behavior rather than flaking on the mode switch itself
 - Regression coverage:
-  - `internal/attach/headless_cli_regression_integration_test.go`
-    - `TestRealCLIRelayHeadlessResizeMatrixRendersExpectedViewport`
-    - `TestRealCLILocalHeadlessResizeMatrixRendersExpectedViewport`
-    - `TestRelayHeadlessMultiAttachReceivesInitialSnapshot`
-    - `TestRelayHeadlessMultiAttachExplicitSessionReceivesInitialSnapshotWithPeers`
+  - `internal/attach.TestRealCLIRelayHeadlessInitialConnectAndWinchResizePTY`
+  - `internal/session.TestHostRemoteHeadlessInitialConnectAndWinchResizePTY`
 - Verification:
-  - Focused:
-    - `go test -count=1 ./internal/attach -run 'Test(RealCLI(RelayHeadlessResizeMatrixRendersExpectedViewport|LocalHeadlessResizeMatrixRendersExpectedViewport)|RelayHeadlessMultiAttachReceivesInitialSnapshot|RelayHeadlessMultiAttachExplicitSessionReceivesInitialSnapshotWithPeers)'`
-  - Broader:
-    - `go test -count=1 ./internal/attach`
-    - `go test -count=1 -tags webui ./internal/attach`
-  - Code-path review:
-    - `internal/relay/types.go`, `internal/relay/http.go`, `internal/relay/proto_helpers.go`, `internal/protocolpb/relay.proto`, and `internal/attach/session_info.go` now propagate explicit `headless` session metadata.
-    - `internal/attach/multi.go` now gates resize propagation on per-session headless capability instead of only local-session mode.
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=5 ./internal/attach -run 'TestRealCLI(RelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay|DeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)' -v`
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=10 ./internal/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay)' -v`
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=1 ./...`
+  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test make test-webui`
 
 ### B-012 Multi-attach input lag/stall on real relay attach
 

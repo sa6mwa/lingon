@@ -45,6 +45,44 @@ func TestRealCLIRelayHeadlessResizeMatrixRendersExpectedViewport(t *testing.T) {
 	runMultiHeadlessResizeMatrix(t, attach, func(cols, rows int) { attach.Resize(cols, rows) })
 }
 
+func TestRealCLIRelayHeadlessInitialConnectAndWinchResizePTY(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+	const sessionID = "relay-headless-realcli-connect-size"
+	stop := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: shortConfigDir(t),
+		SessionID: sessionID,
+		Publish:   true,
+		Endpoint:  h.Endpoint(),
+		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stop)
+
+	waitForSessionsWithTimeout(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionID}, 8*time.Second)
+	waitForHeadlessFlags(t, h.Clock(), h.Endpoint(), h.AccessToken(), map[string]bool{sessionID: true}, 8*time.Second)
+
+	attach := startLingonAttachCLI(t, h, sessionID, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+	attach.Eventually(2*time.Second, 80*time.Millisecond, func(screen ptytest.Screen) error {
+		if strings.Contains(screen.Row(0), "wall inactivity off") {
+			return fmt.Errorf("unexpected wall inactivity banner on initial relay headless connect: %q", screen.Row(0))
+		}
+		return nil
+	})
+	assertHeadlessPTYSizeViaShell(t, attach, 40, 10, "connect-size")
+
+	attach.Resize(52, 14)
+	ptytest.Advance(attach.Clock(), 250*time.Millisecond)
+	assertHeadlessPTYSizeViaShell(t, attach, 52, 14, "post-winch-size")
+}
+
 func TestRelayHeadlessMultiAttachReceivesInitialSnapshot(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
@@ -238,6 +276,71 @@ func TestRealCLIRelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionSta
 	if !screenContainsWithinRealTime(attach, token, 2*time.Second) {
 		t.Fatalf("surviving relay headless tab did not remain interactive:\n%s", attach.Screen().String())
 	}
+}
+
+func TestRealCLIRelayHeadlessExitRemovesTerminatedSessionWithoutReconnectOverlay(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+	const sessionA = "relay-headless-exit-survivor"
+	const sessionB = "relay-headless-exit-active"
+	stopA := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: shortConfigDir(t),
+		SessionID: sessionA,
+		Publish:   true,
+		Endpoint:  h.Endpoint(),
+		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stopA)
+	stopB := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: shortConfigDir(t),
+		SessionID: sessionB,
+		Publish:   true,
+		Endpoint:  h.Endpoint(),
+		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stopB)
+
+	waitForSessionIDsExact(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionA, sessionB}, 8*time.Second)
+	waitForHeadlessFlags(t, h.Clock(), h.Endpoint(), h.AccessToken(), map[string]bool{sessionA: true, sessionB: true}, 8*time.Second)
+
+	attach := startLingonAttachCLI(t, h, sessionB, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+	attach.Send("exit\r")
+
+	waitForSessionIDsExact(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionA}, 8*time.Second)
+	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
+		row0 := screen.Row(0)
+		if strings.Contains(row0, "wall inactivity off") {
+			return fmt.Errorf("unexpected stale wall inactivity banner after explicit headless exit: %q", row0)
+		}
+		if strings.Contains(screen.String(), "Not connected") || strings.Contains(row0, "connection lost") || strings.Contains(row0, "reconnecting") {
+			return fmt.Errorf("unexpected reconnect overlay after explicit headless exit:\n%s", screen.String())
+		}
+		if strings.Contains(row0, sessionB) {
+			return fmt.Errorf("terminated relay headless tab %q still present: %q", sessionB, row0)
+		}
+		if !screen.Contains("PROMPT>") {
+			return fmt.Errorf("surviving relay headless prompt missing after explicit exit:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	const token = "RELAY_HEADLESS_EXIT_SURVIVOR_OK"
+	attach.Send("echo " + token + "\r")
+	attach.Eventually(2*time.Second, 80*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains(token) {
+			return fmt.Errorf("surviving relay headless session was not interactive after explicit exit:\n%s", screen.String())
+		}
+		return nil
+	})
 }
 
 func TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable(t *testing.T) {
