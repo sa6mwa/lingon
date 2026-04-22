@@ -1,7 +1,7 @@
-//go:build webui
-// +build webui
+//go:build integration
+// +build integration
 
-package attach
+package integrationwebui_test
 
 import (
 	"bytes"
@@ -28,6 +28,7 @@ import (
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
+	attachpkg "pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/relay"
@@ -44,10 +45,9 @@ func newTestClock() clock.Clock {
 func TestWebUIControlFlow(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestWebUIControlFlow(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -111,7 +111,7 @@ func TestWebUIControlFlow(t *testing.T) {
 	defer w1.Close()
 	out1 := &bytes.Buffer{}
 	size1 := &sizeProvider{cols: 80, rows: 24}
-	c1 := &Client{
+	c1 := &attachpkg.Client{
 		Endpoint:       endpoint,
 		SessionID:      "session_test",
 		AccessToken:    access.Token,
@@ -130,9 +130,7 @@ func TestWebUIControlFlow(t *testing.T) {
 	}()
 
 	waitUntil(t, clk, 5*time.Second, func() bool {
-		c1.mu.RLock()
-		defer c1.mu.RUnlock()
-		return c1.holderID == "client1"
+		return hub.ControllerID("session_test") == "client1"
 	}, hostErr, c1Err)
 
 	_, _ = w1.Write([]byte("HELLO\r\n"))
@@ -147,7 +145,7 @@ func TestWebUIControlFlow(t *testing.T) {
 		t.Fatalf("GenerateCodeCustom: %v", err)
 	}
 
-	userDataDir := filepath.Join(home, "chromedp")
+	userDataDir := filepath.Join(root, "chromedp")
 	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
 		t.Fatalf("user data dir: %v", err)
 	}
@@ -318,10 +316,9 @@ func TestWebUIControlFlow(t *testing.T) {
 func TestWebUIAccountSeparation(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -343,7 +340,7 @@ func TestWebUIAccountSeparation(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -461,8 +458,8 @@ func TestWebUIAccountSeparation(t *testing.T) {
 		}, hostErr)
 	}
 
-	runLogin(userA.User.Username, "pass-a", userA.TOTPSecret, "web-session-a", "READY_A", "READY_B", filepath.Join(home, "chromedp-a"))
-	runLogin(userB.User.Username, "pass-b", userB.TOTPSecret, "web-session-b", "READY_B", "READY_A", filepath.Join(home, "chromedp-b"))
+	runLogin(userA.User.Username, "pass-a", userA.TOTPSecret, "web-session-a", "READY_A", "READY_B", filepath.Join(root, "chromedp-a"))
+	runLogin(userB.User.Username, "pass-b", userB.TOTPSecret, "web-session-b", "READY_B", "READY_A", filepath.Join(root, "chromedp-b"))
 
 	shareA, err := store.CreateShareToken("web-session-a", relay.ShareScopeView, time.Minute, time.Now().UTC())
 	if err != nil {
@@ -501,17 +498,16 @@ func TestWebUIAccountSeparation(t *testing.T) {
 		}, hostErr)
 	}
 
-	runShare(shareA.Token, "READY_A", "READY_B", filepath.Join(home, "chromedp-share-a"))
-	runShare(shareB.Token, "READY_B", "READY_A", filepath.Join(home, "chromedp-share-b"))
+	runShare(shareA.Token, "READY_A", "READY_B", filepath.Join(root, "chromedp-share-a"))
+	runShare(shareB.Token, "READY_B", "READY_A", filepath.Join(root, "chromedp-share-b"))
 }
 
 func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -529,7 +525,7 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -573,7 +569,7 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 		t.Fatalf("CreateShareToken: %v", err)
 	}
 
-	ctx, cancel := newChromedpContext(t, filepath.Join(home, "chromedp-share-cookie"))
+	ctx, cancel := newChromedpContext(t, filepath.Join(root, "chromedp-share-cookie"))
 	defer cancel()
 	if err := chromedp.Run(ctx, network.Enable()); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
@@ -679,10 +675,9 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 func TestWebUIWebSocketBackoff(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -700,7 +695,7 @@ func TestWebUIWebSocketBackoff(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -748,7 +743,7 @@ func TestWebUIWebSocketBackoff(t *testing.T) {
 		t.Fatalf("GenerateCodeCustom: %v", err)
 	}
 
-	userDataDir := filepath.Join(home, "chromedp")
+	userDataDir := filepath.Join(root, "chromedp")
 	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
 		t.Fatalf("user data dir: %v", err)
 	}
@@ -801,10 +796,9 @@ func TestWebUIWebSocketBackoff(t *testing.T) {
 func TestWebUIFullscreenSingleLayout(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -822,7 +816,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -863,7 +857,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 
 	waitUntil(t, clk, 5*time.Second, func() bool { return hub.HasHost("fullscreen-a") }, hostErr)
 
-	ctx, cancel := newChromedpContext(t, filepath.Join(home, "chromedp-fullscreen"))
+	ctx, cancel := newChromedpContext(t, filepath.Join(root, "chromedp-fullscreen"))
 	defer cancel()
 	if err := chromedp.Run(ctx, network.Enable()); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
@@ -1083,10 +1077,9 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -1104,7 +1097,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -1150,7 +1143,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 		waitUntil(t, clk, 5*time.Second, func() bool { return hub.HasHost(sessionID) }, hostErr)
 	}
 
-	ctx, cancel := newChromedpContext(t, filepath.Join(home, "chromedp-tab-overflow"))
+	ctx, cancel := newChromedpContext(t, filepath.Join(root, "chromedp-tab-overflow"))
 	defer cancel()
 	if err := chromedp.Run(ctx,
 		network.Enable(),
@@ -1273,10 +1266,9 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 func TestWebUIHostBurstRepro(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -1294,7 +1286,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -1348,7 +1340,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
 		t.Fatalf("GenerateCodeCustom: %v", err)
 	}
 
-	userDataDir := filepath.Join(home, "chromedp")
+	userDataDir := filepath.Join(root, "chromedp")
 	if err := os.MkdirAll(userDataDir, 0o755); err != nil {
 		t.Fatalf("user data dir: %v", err)
 	}
@@ -1996,10 +1988,9 @@ func readReconnectAt(ctx context.Context) (float64, error) {
 func TestWebUIResizeDoesNotBypassReconnectBackoff(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -2017,7 +2008,7 @@ func TestWebUIResizeDoesNotBypassReconnectBackoff(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -2065,7 +2056,7 @@ func TestWebUIResizeDoesNotBypassReconnectBackoff(t *testing.T) {
 		t.Fatalf("GenerateCodeCustom: %v", err)
 	}
 
-	ctx, cancel := newChromedpContext(t, filepath.Join(home, "chromedp-backoff-resize"))
+	ctx, cancel := newChromedpContext(t, filepath.Join(root, "chromedp-backoff-resize"))
 	defer cancel()
 	if err := chromedp.Run(ctx, network.Enable()); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
@@ -2153,10 +2144,9 @@ func TestWebUIResizeDoesNotBypassReconnectBackoff(t *testing.T) {
 func TestWebUISwitchesToNewActiveSessionAfterNoHost(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -2174,7 +2164,7 @@ func TestWebUISwitchesToNewActiveSessionAfterNoHost(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -2223,7 +2213,7 @@ func TestWebUISwitchesToNewActiveSessionAfterNoHost(t *testing.T) {
 		t.Fatalf("GenerateCodeCustom: %v", err)
 	}
 
-	ctx, cancel := newChromedpContext(t, filepath.Join(home, "chromedp-switch-active"))
+	ctx, cancel := newChromedpContext(t, filepath.Join(root, "chromedp-switch-active"))
 	defer cancel()
 	if err := chromedp.Run(ctx, network.Enable()); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
@@ -2292,10 +2282,9 @@ func TestWebUISwitchesToNewActiveSessionAfterNoHost(t *testing.T) {
 func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -2313,7 +2302,7 @@ func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -2337,7 +2326,7 @@ func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 		t.Fatalf("GenerateCodeCustom: %v", err)
 	}
 
-	ctx, cancel := newChromedpContext(t, filepath.Join(home, "chromedp-manual-refresh"))
+	ctx, cancel := newChromedpContext(t, filepath.Join(root, "chromedp-manual-refresh"))
 	defer cancel()
 	if err := chromedp.Run(ctx, network.Enable()); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
@@ -2403,10 +2392,9 @@ func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 func TestWebUIConnectAndReloadDoNotRearmWallInactivityWithoutTerminalInput(t *testing.T) {
 	clk := newTestClock()
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -2424,7 +2412,7 @@ func TestWebUIConnectAndReloadDoNotRearmWallInactivityWithoutTerminalInput(t *te
 	store := relay.NewStore()
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 	relayServer.ConfigureWall(1*time.Second, []time.Duration{250 * time.Millisecond})
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
@@ -2469,7 +2457,7 @@ func TestWebUIConnectAndReloadDoNotRearmWallInactivityWithoutTerminalInput(t *te
 		return fetchWallEventCount(t, endpoint, access.Token) == 1
 	}, hostErr)
 
-	ctx, cancel := newChromedpContext(t, filepath.Join(home, "chromedp-wall-idle"))
+	ctx, cancel := newChromedpContext(t, filepath.Join(root, "chromedp-wall-idle"))
 	defer cancel()
 	if err := chromedp.Run(ctx, network.Enable()); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)

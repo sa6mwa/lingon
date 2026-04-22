@@ -17,7 +17,7 @@ GOFLAGS ?=
 BUILD_FLAGS ?= -trimpath
 LD_FLAGS ?=
 TEST_LOG ?= test.log
-WEBUI_TEST_PKGS ?= ./internal/attach
+WEBUI_TEST_PKGS ?= ./integration/webui
 
 ANDROID_DIR ?= android
 APK_PATH ?= $(ANDROID_DIR)/app/build/outputs/apk/release/app-release.apk
@@ -34,7 +34,7 @@ help:
 	@echo "  make build          # build the lingon binary"
 	@echo "  make test           # run tests with coverage"
 	@echo "  make test-short     # run short tests with coverage"
-	@echo "  make test-webui     # run webui-tagged tests"
+	@echo "  make test-webui     # run web UI integration tests"
 	@echo "  make test-last-fail # show last failing test from $(TEST_LOG)"
 	@echo "  make test-android   # run Android integration tests"
 	@echo "  make test-all       # run all tests (phone tests are not headless!)"
@@ -99,7 +99,7 @@ test:
 	@bash -lc 'set -o pipefail; $(GO) test -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
 
 test-webui:
-	@bash -lc 'set -o pipefail; $(GO) test -count=1 -tags webui -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
+	@bash -lc 'set -o pipefail; $(GO) test -count=1 -tags integration -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
 
 test-last-fail:
 	@bash -lc 'if [ ! -f "$(TEST_LOG)" ]; then echo "missing $(TEST_LOG); run make test first"; exit 1; fi; \
