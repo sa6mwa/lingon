@@ -1445,19 +1445,6 @@ func buildLingonAttachBinary(t *testing.T) string {
 		out := filepath.Join(dir, "lingon-attach-repro")
 		cmd := exec.Command("go", "build", "-o", out, "./cmd/lingon")
 		cmd.Dir = repoRoot
-		cacheDir := filepath.Join(repoRoot, ".cache", "go-build-test")
-		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-			attachCLIBuildErr = fmt.Errorf("create go build cache dir: %w", err)
-			return
-		}
-		env := append([]string(nil), os.Environ()...)
-		env = append(env, "GOCACHE="+cacheDir)
-		if modCache := strings.TrimSpace(os.Getenv("GOMODCACHE")); modCache != "" {
-			env = append(env, "GOMODCACHE="+modCache)
-		} else if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-			env = append(env, "GOMODCACHE="+filepath.Join(home, "go", "pkg", "mod"))
-		}
-		cmd.Env = env
 		if output, err := cmd.CombinedOutput(); err != nil {
 			attachCLIBuildErr = fmt.Errorf("go build lingon: %w\n%s", err, string(output))
 			return

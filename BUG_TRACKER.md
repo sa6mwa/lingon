@@ -88,7 +88,7 @@ Required status values:
 - Regression coverage:
   - `internal/attach.TestMultiAttachSwitchToDisconnectedRelayTabDoesNotShowWallInactivityOff`
 - Verification:
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=50 ./internal/attach -run TestMultiAttachSwitchToDisconnectedRelayTabDoesNotShowWallInactivityOff -v`
+  - `go test -count=50 ./internal/attach -run TestMultiAttachSwitchToDisconnectedRelayTabDoesNotShowWallInactivityOff -v`
   - Remaining gap: the user-reported reconnect/never-opened banner leak still needs a red real PTY regression.
 
 ### B-015 Headless headless-exit semantics are inconsistent across attach and host-remote clients
@@ -123,11 +123,11 @@ Required status values:
     - `internal/attach.TestRealCLIRelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
     - `internal/attach.TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
 - Verification:
-  - `env TMPDIR=/home/mike/t go test -count=1 ./internal/relay -run 'TestHubSessionClosedDoesNotBroadcastHostDisconnected|TestHostSessionClosedFrameMarksSessionInactiveImmediately'`
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=5 ./internal/attach -run 'TestRealCLI(RelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay|DeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)' -v`
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=10 ./internal/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay)' -v`
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=1 ./...`
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test make test-webui`
+  - `go test -count=1 ./internal/relay -run 'TestHubSessionClosedDoesNotBroadcastHostDisconnected|TestHostSessionClosedFrameMarksSessionInactiveImmediately'`
+  - `go test -count=5 ./internal/attach -run 'TestRealCLI(RelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay|DeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)' -v`
+  - `go test -count=10 ./internal/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay)' -v`
+  - `go test -count=1 ./...`
+  - `make test-webui`
 
 ### B-016 Headless initial-connect resize is missing in relay clients
 
@@ -152,10 +152,10 @@ Required status values:
   - `internal/attach.TestRealCLIRelayHeadlessInitialConnectAndWinchResizePTY`
   - `internal/session.TestHostRemoteHeadlessInitialConnectAndWinchResizePTY`
 - Verification:
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=5 ./internal/attach -run 'TestRealCLI(RelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay|DeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)' -v`
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=10 ./internal/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay)' -v`
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test go test -count=1 ./...`
-  - `env TMPDIR=/home/mike/t GOMODCACHE=/home/mike/go/pkg/mod GOCACHE=/home/mike/.cache/go-build-test make test-webui`
+  - `go test -count=5 ./internal/attach -run 'TestRealCLI(RelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay|DeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)' -v`
+  - `go test -count=10 ./internal/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay)' -v`
+  - `go test -count=1 ./...`
+  - `make test-webui`
 
 ### B-012 Multi-attach input lag/stall on real relay attach
 
