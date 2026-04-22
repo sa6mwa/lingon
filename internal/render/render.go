@@ -817,6 +817,54 @@ func SnapshotViewportDeltaMaskTopRow(w io.Writer, prev, snap *protocolpb.Snapsho
 	return nil
 }
 
+// ViewportRowSpan returns one visible viewport row segment for the current
+// cursor-driven viewport origin. start and end are zero-based columns within the
+// visible viewport, with end exclusive.
+func ViewportRowSpan(snap *protocolpb.Snapshot, viewCols, viewRows, row, start, end int) string {
+	if snap == nil {
+		return ""
+	}
+	cols := int(snap.Cols)
+	rows := int(snap.Rows)
+	if viewCols <= 0 {
+		viewCols = cols
+	}
+	if viewRows <= 0 {
+		viewRows = rows
+	}
+	if row < 0 || row >= viewRows {
+		return ""
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end > viewCols {
+		end = viewCols
+	}
+	if end <= start {
+		return ""
+	}
+
+	cursorX := int(snap.Cursor.GetX())
+	cursorY := int(snap.Cursor.GetY())
+	if cursorX < 0 {
+		cursorX = 0
+	}
+	if cursorY < 0 {
+		cursorY = 0
+	}
+	if cols > 0 && cursorX >= cols {
+		cursorX = cols - 1
+	}
+	if rows > 0 && cursorY >= rows {
+		cursorY = rows - 1
+	}
+
+	x0, y0 := ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
+	defaultAttr := renderAttr{mode: 0, fg: terminal.ColorDefault, bg: terminal.ColorDefault}
+	return buildRowSpan(snap, y0+row, x0, start, end, cols, rows, defaultAttr)
+}
+
 // SnapshotViewportDim renders a snapshot in dimmed grayscale for disabled views.
 func SnapshotViewportDim(w io.Writer, snap *protocolpb.Snapshot, viewCols, viewRows int) error {
 	if snap == nil {

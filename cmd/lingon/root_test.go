@@ -10,7 +10,7 @@ import (
 )
 
 func TestRootCommandSuppressesUsageOnError(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 
 	loader := lingon.NewLoader()
 	cmd := NewRootCommand(loader)

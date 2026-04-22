@@ -151,8 +151,8 @@ func TestActionRegressionAttachBannerOwnsTopRow(t *testing.T) {
 		t.Fatalf("render attach: %v", err)
 	}
 	row := renderRow(t, out.Bytes, cols, rows, 0)
-	if strings.Contains(row, "PROMPT>") {
-		t.Fatalf("expected banner to own row 1 without prompt bleed, got %q", row)
+	if !strings.Contains(row, "PROMPT>") {
+		t.Fatalf("expected banner overlay to preserve prompt on row 1, got %q", row)
 	}
 	if !strings.Contains(row, "connection lost") {
 		t.Fatalf("expected banner badge on row 1, got %q", row)

@@ -15,10 +15,8 @@ import (
 )
 
 func TestWallCommandPrintsJSONResponseOnSuccess(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	now := time.Now().UTC()
 
 	var gotPath string
@@ -81,10 +79,8 @@ func TestWallCommandPrintsJSONResponseOnSuccess(t *testing.T) {
 }
 
 func TestWallCommandQuietSuppressesSuccessOutput(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	now := time.Now().UTC()
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

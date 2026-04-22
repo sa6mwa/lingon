@@ -8,8 +8,7 @@ import (
 )
 
 func TestDefaultConfigUsesConstants(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
+	root := testutil.SetXDGConfigEnv(t)
 	t.Setenv("TERM", "xterm-256color")
 
 	cfg := DefaultConfig()
@@ -24,7 +23,7 @@ func TestDefaultConfigUsesConstants(t *testing.T) {
 		t.Fatalf("TLS.Mode = %q, want %q", cfg.Server.TLS.Mode, DefaultTLSMode)
 	}
 
-	expectedDir := filepath.Join(home, DefaultConfigDirName)
+	expectedDir := filepath.Join(root, "lingon")
 	if cfg.Server.DataDir != expectedDir {
 		t.Fatalf("DataDir = %q, want %q", cfg.Server.DataDir, expectedDir)
 	}

@@ -91,8 +91,7 @@ func NewLoader() *Loader {
 
 	v.SetConfigName("config")
 	v.AddConfigPath(".")
-	v.AddConfigPath("$HOME/.config/lingon")
-	v.AddConfigPath("$HOME/.lingon")
+	v.AddConfigPath(DefaultConfigDir())
 
 	return &Loader{v: v}
 }

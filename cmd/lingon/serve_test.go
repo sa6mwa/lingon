@@ -9,7 +9,7 @@ import (
 )
 
 func TestServeNoBannerShorthand(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 
 	loader := lingon.NewLoader()
 	cmd := NewServeCommand(loader)
@@ -27,7 +27,7 @@ func TestServeNoBannerShorthand(t *testing.T) {
 }
 
 func TestServeWallFlags(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 
 	loader := lingon.NewLoader()
 	cmd := NewServeCommand(loader)
@@ -48,7 +48,7 @@ func TestServeWallFlags(t *testing.T) {
 }
 
 func TestServeWallInactiveAfterEmptyString(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 
 	loader := lingon.NewLoader()
 	cmd := NewServeCommand(loader)
@@ -66,7 +66,7 @@ func TestServeWallInactiveAfterEmptyString(t *testing.T) {
 }
 
 func TestServeReplayHistoryBytesFlag(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 
 	loader := lingon.NewLoader()
 	cmd := NewServeCommand(loader)

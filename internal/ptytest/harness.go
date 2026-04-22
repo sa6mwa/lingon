@@ -291,10 +291,10 @@ func (h *Harness) StopServer() {
 }
 
 func (h *Harness) initServer() {
-	h.home = testutil.TempDir(h.t)
-	h.t.Setenv("HOME", h.home)
+	h.home = testutil.SetXDGConfigEnv(h.t)
+	configDir := filepath.Join(h.home, "lingon")
 
-	tlsDir := filepath.Join(h.home, ".lingon", "tls")
+	tlsDir := filepath.Join(configDir, "tls")
 	populateTLSDir(h.t, tlsDir)
 	cert, err := tlsmgr.LoadLocalServerCert(tlsDir)
 	if err != nil {
@@ -305,7 +305,7 @@ func (h *Harness) initServer() {
 		Certificates: []tls.Certificate{cert},
 	}
 
-	usersPath := filepath.Join(h.home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	h.usersPath = usersPath
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
@@ -329,7 +329,7 @@ func (h *Harness) initServer() {
 	auth := relay.NewAuthenticator(users)
 	h.auth = auth
 
-	h.dataDir = filepath.Join(h.home, ".lingon")
+	h.dataDir = configDir
 	h.users = users
 	h.store = store
 
@@ -346,7 +346,7 @@ func (h *Harness) initServer() {
 	}
 	h.accessToken = access.Token
 	h.refresh = refresh
-	h.authPath = filepath.Join(h.home, ".lingon", "auth.json")
+	h.authPath = filepath.Join(configDir, "auth.json")
 	state := authstore.State{
 		Endpoint:         h.endpoint,
 		AccessToken:      access.Token,

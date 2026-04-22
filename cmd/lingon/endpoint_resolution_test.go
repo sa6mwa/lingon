@@ -17,10 +17,8 @@ import (
 )
 
 func TestSessionsCommandInfersEndpointFromSingleStoredAuthWhenUnset(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	now := time.Now().UTC()
 
 	var gotPath string
@@ -70,10 +68,8 @@ func TestSessionsCommandInfersEndpointFromSingleStoredAuthWhenUnset(t *testing.T
 }
 
 func TestSessionsCommandErrorsWhenStoredEndpointsAreAmbiguous(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	now := time.Now().UTC()
 
 	for _, endpoint := range []string{
@@ -113,10 +109,8 @@ func TestSessionsCommandErrorsWhenStoredEndpointsAreAmbiguous(t *testing.T) {
 }
 
 func TestResolveEndpointValuePrefersConfiguredEndpointOverStoredAuth(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	now := time.Now().UTC()
 	if err := lingon.SaveAuth(authPath, lingon.AuthState{
 		Endpoint:         "https://stored.example.com/v1",
@@ -128,7 +122,7 @@ func TestResolveEndpointValuePrefersConfiguredEndpointOverStoredAuth(t *testing.
 		t.Fatalf("SaveAuth: %v", err)
 	}
 
-	configPath := filepath.Join(home, ".lingon", "config.yaml")
+	configPath := filepath.Join(root, "lingon", "config.yaml")
 	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example.com/v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(config): %v", err)
 	}
@@ -169,10 +163,8 @@ func TestResolveEndpointValueFallsBackToLocalhostWithoutStoredAuth(t *testing.T)
 }
 
 func TestResolveEndpointValueIgnoresStoredAuthForExplicitTokenFlag(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	now := time.Now().UTC()
 	if err := lingon.SaveAuth(authPath, lingon.AuthState{
 		Endpoint:         "https://stored.example.com/v1",
@@ -184,7 +176,7 @@ func TestResolveEndpointValueIgnoresStoredAuthForExplicitTokenFlag(t *testing.T)
 		t.Fatalf("SaveAuth: %v", err)
 	}
 
-	configPath := filepath.Join(home, ".lingon", "config.yaml")
+	configPath := filepath.Join(root, "lingon", "config.yaml")
 	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example.com/v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(config): %v", err)
 	}
@@ -212,11 +204,10 @@ func TestResolveEndpointValueIgnoresStoredAuthForExplicitTokenFlag(t *testing.T)
 }
 
 func TestResolveConfiguredEndpointValueIgnoresStoredAuthInference(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
+	root := testutil.SetXDGConfigEnv(t)
 
 	now := time.Now().UTC()
-	if err := lingon.SaveAuth(filepath.Join(home, ".lingon", "auth.json"), lingon.AuthState{
+	if err := lingon.SaveAuth(filepath.Join(root, "lingon", "auth.json"), lingon.AuthState{
 		Endpoint:         "https://stored.example.com/v1",
 		AccessToken:      "stored-token",
 		AccessExpiresAt:  now.Add(5 * time.Minute),
@@ -226,7 +217,7 @@ func TestResolveConfiguredEndpointValueIgnoresStoredAuthInference(t *testing.T) 
 		t.Fatalf("SaveAuth: %v", err)
 	}
 
-	configPath := filepath.Join(home, ".lingon", "config.yaml")
+	configPath := filepath.Join(root, "lingon", "config.yaml")
 	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example.com/v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(config): %v", err)
 	}
@@ -247,10 +238,8 @@ func TestResolveConfiguredEndpointValueIgnoresStoredAuthInference(t *testing.T) 
 }
 
 func TestResolveEndpointValueIgnoresBrokenAuthForLogin(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll(auth dir): %v", err)
 	}
@@ -274,10 +263,8 @@ func TestResolveEndpointValueIgnoresBrokenAuthForLogin(t *testing.T) {
 }
 
 func TestSessionsCommandIgnoresStoredAuthForExplicitAccessToken(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll(auth dir): %v", err)
 	}
@@ -295,7 +282,7 @@ func TestSessionsCommandIgnoresStoredAuthForExplicitAccessToken(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configPath := filepath.Join(home, ".lingon", "config.yaml")
+	configPath := filepath.Join(root, "lingon", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll(config dir): %v", err)
 	}
@@ -331,10 +318,8 @@ func TestSessionsCommandIgnoresStoredAuthForExplicitAccessToken(t *testing.T) {
 }
 
 func TestResolveEndpointValuePrefersExplicitFlagOverAmbiguousStoredAuth(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	root := testutil.SetXDGConfigEnv(t)
+	authPath := filepath.Join(root, "lingon", "auth.json")
 	now := time.Now().UTC()
 	for _, endpoint := range []string{
 		"https://alpha.example.com/v1",

@@ -29,10 +29,9 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	configDir := filepath.Join(root, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -41,7 +40,7 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -60,12 +59,12 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAccessToken: %v", err)
 	}
-	dataDir := filepath.Join(home, ".lingon")
+	dataDir := configDir
 	if err := store.Save(dataDir); err != nil {
 		t.Fatalf("Save store: %v", err)
 	}
 
-	authPath := filepath.Join(home, ".lingon", "auth.json")
+	authPath := filepath.Join(configDir, "auth.json")
 	state := authstore.State{
 		Endpoint:         "https://127.0.0.1:0/v1",
 		AccessToken:      access.Token,

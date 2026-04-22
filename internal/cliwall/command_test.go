@@ -13,12 +13,11 @@ import (
 )
 
 func TestExecuteUsesExplicitEndpointAndAuthFile(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
+	root := testutil.SetXDGConfigEnv(t)
 
 	now := time.Now().UTC()
-	ambientAuthPath := filepath.Join(home, ".lingon", "auth.json")
-	explicitAuthPath := filepath.Join(home, "explicit-auth.json")
+	ambientAuthPath := filepath.Join(root, "lingon", "auth.json")
+	explicitAuthPath := filepath.Join(root, "explicit-auth.json")
 
 	ambient := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("unexpected ambient endpoint hit: %s", r.URL)

@@ -16,7 +16,7 @@ import (
 )
 
 func TestSessionsHeadlessUsesLocalState(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 	cfgDir := lingon.DefaultConfigDir()
 	store := headless.NewStore(cfgDir)
 	if err := store.WithLock(func(state *headless.State) error {
@@ -48,7 +48,7 @@ func TestSessionsHeadlessUsesLocalState(t *testing.T) {
 }
 
 func TestDetachRemovesLocalState(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 	cfgDir := lingon.DefaultConfigDir()
 	socketPath, err := headless.SocketPath(cfgDir, "local-b")
 	if err != nil {
@@ -94,7 +94,7 @@ func TestDetachRemovesLocalState(t *testing.T) {
 }
 
 func TestDetachAllRemovesAllLocalState(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 	cfgDir := lingon.DefaultConfigDir()
 	if err := os.MkdirAll(headless.BaseDir(cfgDir), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -167,7 +167,7 @@ func TestDetachAllRemovesAllLocalState(t *testing.T) {
 }
 
 func TestDetachAllNoSessions(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 	loader := lingon.NewLoader()
 	cmd := NewRootCommand(loader)
 	cmd.SetArgs([]string{"detach", "all"})
@@ -177,7 +177,7 @@ func TestDetachAllNoSessions(t *testing.T) {
 }
 
 func TestDetachMultipleSessionIDs(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 	cfgDir := lingon.DefaultConfigDir()
 	if err := os.MkdirAll(headless.BaseDir(cfgDir), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -249,7 +249,7 @@ func TestDetachMultipleSessionIDs(t *testing.T) {
 }
 
 func TestDetachRejectsAllWithSessionIDs(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 	loader := lingon.NewLoader()
 	cmd := NewRootCommand(loader)
 	cmd.SetArgs([]string{"detach", "all", "local-a"})
@@ -259,7 +259,7 @@ func TestDetachRejectsAllWithSessionIDs(t *testing.T) {
 }
 
 func TestDetachCompletionListsSessionIDs(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 	cfgDir := lingon.DefaultConfigDir()
 	if err := os.MkdirAll(headless.BaseDir(cfgDir), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -327,7 +327,7 @@ func TestDetachCompletionListsSessionIDs(t *testing.T) {
 }
 
 func TestSendHeadlessRejectsUnknownSessionIDBeforeFallback(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetXDGConfigEnv(t)
 	cfgDir := lingon.DefaultConfigDir()
 	store := headless.NewStore(cfgDir)
 	if err := store.WithLock(func(state *headless.State) error {

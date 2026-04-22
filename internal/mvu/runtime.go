@@ -3,6 +3,7 @@ package mvu
 import (
 	"bytes"
 	"io"
+	"strings"
 	"time"
 
 	"pkt.systems/lingon/internal/protocolpb"
@@ -263,8 +264,12 @@ func renderSnapshot(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int
 	if forceClear {
 		return render.SnapshotViewport(w, snap, cols, rows)
 	}
-	topRowOwned := resolved.TabBarVisible || bannerRowOwned(resolved, top.BannerOwnsRow)
+	bannerOwns := bannerRowOwned(resolved, top.BannerOwnsRow)
+	topRowOwned := resolved.TabBarVisible || bannerOwns
 	if topRowOwned {
+		if bannerOwns && !resolved.TabBarVisible {
+			return renderBannerOverlayFrame(w, prev, snap, cols, rows, resolved, cursor)
+		}
 		var err error
 		if prev != nil {
 			err = render.SnapshotViewportDeltaMaskTopRow(w, prev, snap, cols, rows)
@@ -282,13 +287,6 @@ func renderSnapshot(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int
 		}
 		if len(overlay) == 0 {
 			return nil
-		}
-		if bannerRowOwned(resolved, top.BannerOwnsRow) {
-			var row bytes.Buffer
-			ClearRow(&row, cols, 1, resolved.State.Theme)
-			if _, err := w.Write(row.Bytes()); err != nil {
-				return err
-			}
 		}
 		_, err = w.Write(overlay)
 		return err
@@ -311,4 +309,69 @@ func renderSnapshot(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int
 		return render.SnapshotViewportDelta(w, prev, snap, cols, rows)
 	}
 	return render.SnapshotViewportNoClear(w, snap, cols, rows)
+}
+
+func renderBannerOverlayFrame(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int, resolved Resolved, cursor Cursor) error {
+	if prev != nil {
+		if err := render.SnapshotViewportDeltaMaskTopRow(w, prev, snap, cols, rows); err != nil {
+			return err
+		}
+	} else if rows > 1 {
+		if err := render.SnapshotViewportNoClearMaskTopRow(w, snap, cols, rows); err != nil {
+			return err
+		}
+	}
+
+	message, style := topBannerMessageAndStyle(resolved)
+	if message == "" || cols <= 0 {
+		var cursorBuf bytes.Buffer
+		WriteCursor(&cursorBuf, cursor)
+		_, err := w.Write(cursorBuf.Bytes())
+		return err
+	}
+	if len(message) > cols {
+		message = message[len(message)-cols:]
+	}
+	startCol := cols - len(message) + 1
+	if startCol < 1 {
+		startCol = 1
+	}
+
+	var row bytes.Buffer
+	row.WriteString("\x1b[1;1H")
+	if startCol > 1 {
+		row.WriteString(render.ViewportRowSpan(snap, cols, rows, 0, 0, startCol-1))
+	}
+	row.WriteString("\x1b[1;")
+	row.WriteString(itoa(startCol))
+	row.WriteString("H")
+	switch style {
+	case BannerGreen:
+		row.WriteString("\x1b[38;2;0;0;0;42m")
+	case BannerYellow:
+		row.WriteString("\x1b[38;2;0;0;0;43m")
+	default:
+		row.WriteString("\x1b[97;41m")
+	}
+	row.WriteString(message)
+	row.WriteString(resolved.State.Theme.Reset)
+	WriteCursor(&row, cursor)
+	_, err := w.Write(row.Bytes())
+	return err
+}
+
+func topBannerMessageAndStyle(resolved Resolved) (string, BannerStyle) {
+	if resolved.ConnectionVisible {
+		return resolved.State.ConnectionMessage, resolved.State.ConnectionStyle
+	}
+	if resolved.LoadingVisible {
+		return resolved.State.LoadingMessage, BannerYellow
+	}
+	if resolved.ScrollbackVisible {
+		msg := strings.TrimSpace(resolved.State.ScrollbackMessage)
+		if msg != "" {
+			return msg, BannerGreen
+		}
+	}
+	return "", BannerGreen
 }

@@ -147,14 +147,28 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	if os.Getenv("LINGON_HOST_ECHO_LOG") == "" {
 		_ = os.Setenv("LINGON_HOST_ECHO_LOG", hostEchoLog)
 	}
-	home, err := os.MkdirTemp("", "lingon-android-harness-")
+	root, err := os.MkdirTemp("", "lingon-android-harness-")
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Setenv("HOME", home); err != nil {
+	configRoot := filepath.Join(root, ".config")
+	cacheRoot := filepath.Join(root, ".cache")
+	stateRoot := filepath.Join(root, ".state")
+	dataRoot := filepath.Join(root, ".local", "share")
+	if err := os.Setenv("XDG_CONFIG_HOME", configRoot); err != nil {
 		return nil, err
 	}
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	if err := os.Setenv("XDG_CACHE_HOME", cacheRoot); err != nil {
+		return nil, err
+	}
+	if err := os.Setenv("XDG_STATE_HOME", stateRoot); err != nil {
+		return nil, err
+	}
+	if err := os.Setenv("XDG_DATA_HOME", dataRoot); err != nil {
+		return nil, err
+	}
+	configDir := filepath.Join(configRoot, "lingon")
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		return nil, err
 	}
@@ -174,7 +188,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	if err := users.Save(usersPath); err != nil {
 		return nil, err
 	}
@@ -210,7 +224,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.ConfigureWall(harnessWallTimeout(), harnessWallLevels())
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 	h := &harness{
 		config: harnessConfig{
 			Endpoint:    endpoint,
@@ -221,11 +235,11 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		},
 		ctx:       ctx,
-		baseDir:   home,
+		baseDir:   root,
 		selfPath:  selfPath,
 		endpoint:  endpoint,
 		access:    access.Token,
-		authPath:  filepath.Join(home, ".lingon", "auth.json"),
+		authPath:  filepath.Join(configDir, "auth.json"),
 		hostIndex: 0,
 		cols:      opts.cols,
 		rows:      opts.rows,
@@ -331,7 +345,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 		}
 
 		secondID := fmt.Sprintf("host-%d", opts.sessionCount+1)
-		scriptPath, err := writeHostScript(home, secondID, selfPath)
+		scriptPath, err := writeHostScript(root, secondID, selfPath)
 		if err != nil {
 			h.stop()
 			return nil, err

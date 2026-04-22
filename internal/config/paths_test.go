@@ -8,10 +8,9 @@ import (
 )
 
 func TestDefaultPaths(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
+	root := testutil.SetXDGConfigEnv(t)
 
-	expectedDir := filepath.Join(home, DefaultConfigDirName)
+	expectedDir := filepath.Join(root, "lingon")
 	if got := DefaultConfigDir(); got != expectedDir {
 		t.Fatalf("DefaultConfigDir() = %q, want %q", got, expectedDir)
 	}

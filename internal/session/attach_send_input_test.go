@@ -74,10 +74,9 @@ func waitUntilAll(t *testing.T, timeout time.Duration, cond func() bool, errChs 
 }
 
 func runSendInputScenario(t *testing.T, sharedConfig bool) {
-	hostHome := testutil.TempDir(t)
-	t.Setenv("HOME", hostHome)
-
-	tlsDir := filepath.Join(hostHome, ".lingon", "tls")
+	hostRoot := testutil.SetXDGConfigEnv(t)
+	hostConfigDir := filepath.Join(hostRoot, "lingon")
+	tlsDir := filepath.Join(hostConfigDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -86,7 +85,7 @@ func runSendInputScenario(t *testing.T, sharedConfig bool) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(hostHome, ".lingon", "users.json")
+	usersPath := filepath.Join(hostConfigDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -110,7 +109,7 @@ func runSendInputScenario(t *testing.T, sharedConfig bool) {
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(hostHome, ".lingon")
+	relayServer.DataDir = hostConfigDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -124,7 +123,7 @@ func runSendInputScenario(t *testing.T, sharedConfig bool) {
 	endpoint := srv.URL + "/v1"
 	httpURL := endpoint
 
-	hostAuthPath := filepath.Join(hostHome, ".lingon", "auth.json")
+	hostAuthPath := filepath.Join(hostConfigDir, "auth.json")
 	authState := authstore.State{
 		Endpoint:         httpURL,
 		AccessToken:      access.Token,
@@ -137,13 +136,14 @@ func runSendInputScenario(t *testing.T, sharedConfig bool) {
 	}
 
 	if !sharedConfig {
-		attachHome := testutil.TempDir(t)
-		attachAuthPath := filepath.Join(attachHome, ".lingon", "auth.json")
+		attachRoot := testutil.SetXDGConfigEnv(t)
+		attachConfigDir := filepath.Join(attachRoot, "lingon")
+		attachAuthPath := filepath.Join(attachConfigDir, "auth.json")
 		if err := authstore.Save(attachAuthPath, authState); err != nil {
 			t.Fatalf("save attach auth: %v", err)
 		}
-		caSrc := filepath.Join(hostHome, ".lingon", "tls", "ca.pem")
-		caDstDir := filepath.Join(attachHome, ".lingon", "tls")
+		caSrc := filepath.Join(hostConfigDir, "tls", "ca.pem")
+		caDstDir := filepath.Join(attachConfigDir, "tls")
 		if err := os.MkdirAll(caDstDir, 0o700); err != nil {
 			t.Fatalf("mkdir attach tls: %v", err)
 		}
@@ -154,7 +154,6 @@ func runSendInputScenario(t *testing.T, sharedConfig bool) {
 		if err := os.WriteFile(filepath.Join(caDstDir, "ca.pem"), data, 0o600); err != nil {
 			t.Fatalf("write attach ca: %v", err)
 		}
-		t.Setenv("HOME", attachHome)
 	}
 
 	hostInput := &byteCollector{}

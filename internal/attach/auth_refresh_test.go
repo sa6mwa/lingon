@@ -2,8 +2,6 @@ package attach_test
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -25,8 +23,7 @@ func TestAttachRefreshesExpiredAccessToken(t *testing.T) {
 	t.Cleanup(host.Cancel)
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"session_auth_refresh"})
-
-	authPath := filepath.Join(os.Getenv("HOME"), ".lingon", "auth.json")
+	authPath := h.AuthFile()
 	refresh := h.RefreshToken()
 	state := authstore.State{
 		Endpoint:         h.Endpoint(),
@@ -77,8 +74,7 @@ func TestAttachFailsOnExpiredRefreshToken(t *testing.T) {
 	t.Cleanup(host.Cancel)
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"session_auth_expired"})
-
-	authPath := filepath.Join(os.Getenv("HOME"), ".lingon", "auth.json")
+	authPath := h.AuthFile()
 	state := authstore.State{
 		Endpoint:         h.Endpoint(),
 		AccessToken:      "expired-token",

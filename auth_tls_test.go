@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/lingon/internal/tlsmgr"
 )
 
 func TestLoginUsesLocalCA(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	root := testutil.SetXDGConfigEnv(t)
+	tlsDir := filepath.Join(root, filepath.Base(config.DefaultConfigDir()), "tls")
 
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
