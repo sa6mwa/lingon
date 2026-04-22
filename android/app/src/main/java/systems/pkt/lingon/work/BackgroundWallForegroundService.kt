@@ -115,6 +115,7 @@ class BackgroundWallForegroundService : Service() {
             .setContentText("Receiving wall notifications in the background")
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setGroup(notificationGroupID)
             .setContentIntent(pendingIntent)
             .build()
     }
@@ -139,6 +140,7 @@ class BackgroundWallForegroundService : Service() {
 
     private companion object {
         private const val channelID = "lingon_background_wall"
+        private const val notificationGroupID = "lingon_background_wall_group"
         private const val notificationId = 2001
         private const val pollIntervalMs = 5_000L
         private const val servicePageLimit = 100

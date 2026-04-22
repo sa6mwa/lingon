@@ -50,6 +50,7 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setGroup(notificationGroupID)
             .setContentIntent(pendingIntent)
             .build()
         NotificationManagerCompat.from(context).notify(nextID.incrementAndGet(), notification)
@@ -75,6 +76,7 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
 
     private companion object {
         const val channelID = "lingon_wall"
+        const val notificationGroupID = "lingon_wall_group"
         val nextID = AtomicInteger(1000)
     }
 }

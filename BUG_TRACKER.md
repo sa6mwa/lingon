@@ -29,6 +29,121 @@ Required status values:
 
 ## Active Items
 
+### B-013 Android wall delivery missing
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `relay`
+- Summary: Relay wall events must surface in the Android app through the intended delivery path, including background notification delivery when enabled.
+- Report:
+  Lingon wall no longer works to the Android app.
+- Repro:
+  1. Trigger a relay wall event for the logged-in Android user.
+  2. Observe that the Android app does not surface the wall as expected.
+- Investigation notes:
+  - Need to verify both delivery paths:
+    - live WebSocket `Frame.wall` handling in `AppViewModel`
+    - background wall polling via `BackgroundWallForegroundService` and `/wall/events`
+  - Existing Android instrumentation `background_wall_delivery_posts_system_notification` only covered inactivity-driven background delivery, not a real manual `lingon wall` command path.
+  - Added a shared in-process wall command executor and switched the Android harness wall trigger to use the same endpoint/auth resolution path as `cmd/lingon wall`, with explicit `--endpoint`/`--auth-file` semantics and isolated harness auth state.
+  - Added Android instrumentation for both:
+    - live manual wall delivery while connected
+    - background manual wall delivery while wall polling is enabled
+  - The first strengthened background-manual wall e2e then failed for a real Android-side reason: the app posted a wall notification, but Android auto-grouped it behind a blank `ranker_group` summary when the background foreground-service notification was also present.
+  - This meant the older instrumentation could report success while selecting the wrong `lingon_wall` notification, and on-device the wall notification could effectively disappear behind the blank summary.
+  - Fixed by assigning explicit, separate notification groups to:
+    - wall notifications
+    - the background foreground-service notification
+  - Tightened the Android instrumentation to:
+    - select the real wall child notification instead of any `lingon_wall` record
+    - explicitly fail if a blank `ranker_group` summary is present for wall delivery
+- Regression coverage:
+  - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::manual_wall_delivery_posts_system_notification`
+  - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_manual_wall_delivery_posts_system_notification`
+  - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_wall_delivery_posts_system_notification`
+- Verification:
+  - `./gradlew :app:testDebugUnitTest`
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `env LINGON_IT_ONLY=manual_wall_delivery_posts_system_notification ./scripts/run-integration-tests.sh`
+  - `env LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification ./scripts/run-integration-tests.sh`
+  - `env LINGON_IT_ONLY=background_wall_delivery_posts_system_notification ./scripts/run-integration-tests.sh`
+
+### B-014 Wall inactivity banner leaks onto disconnected remote tab switch
+
+- Status: `open`
+- Area: `attach`, `session`, `mvu`
+- Summary: Switching to a disconnected remote session in multi-client must not show the green `wall inactivity off` top-bar banner unless the user explicitly toggled wall inactivity.
+- Report:
+  When switching to a disconnected remote session in multi-client (`lingon` host or `lingon attach`), the `wall inactivity off` green banner appears in the top bar.
+- Repro:
+  1. Open a multi-client host or attach with at least one disconnected remote session.
+  2. Switch to that disconnected remote tab.
+  3. Observe `wall inactivity off` shown in the top bar without a user toggle action.
+- Investigation notes:
+  - This banner should be event-driven from an explicit wall inactivity toggle/status update, not a generic tab-switch side effect.
+  - Likely involves stale status/banner state being carried across tab selection.
+- Regression coverage:
+  - Pending.
+- Verification:
+  - Pending.
+
+### B-015 Headless attach keeps dead session tab and garbles output after headless exits
+
+- Status: `resolved`
+- Area: `attach`, `headless`, `relay`
+- Summary: When a `lingon -x` headless session terminates, `lingon attach` must not keep an unreachable stale tab with garbled output that only disappears after restarting attach.
+- Report:
+  In `lingon attach` against a headless session, after the headless session has already terminated, the tab remains visible, unreachable, and garbled. Restarting `lingon attach` is currently required to make it disappear.
+- Repro:
+  1. Start a headless session and connect with `lingon attach`.
+  2. Terminate the headless session.
+  3. Observe the session tab remains in attach showing stale/garbled output and reconnecting state.
+- Investigation notes:
+  - The user suspects the bug is in `lingon attach` because restarting attach clears the stale tab.
+  - Root cause was `attach.MultiClient` applying normal relay missing-session retention/reconnect behavior to headless sessions. For headless/local sessions, disappearance must mean immediate removal, not reconnect grace.
+- Regression coverage:
+  - `internal/attach/headless_cli_regression_integration_test.go`
+    - `TestRealCLIRelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
+    - `TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
+- Verification:
+  - Focused:
+    - `go test -count=1 ./internal/attach -run 'TestRealCLI(RelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)'`
+  - Broader:
+    - `go test -count=1 ./internal/attach`
+    - `go test -count=1 -tags webui ./internal/attach`
+  - Code-path review:
+    - `internal/attach/multi.go` now skips missing-session retention for local/headless sessions, immediately removes dead views, and allows active-session reselection to the surviving session.
+
+### B-016 Headless attach resize does not resize headless session
+
+- Status: `resolved`
+- Area: `attach`, `headless`, `session`
+- Summary: `lingon attach` connected to a headless `lingon -x` session must resize the headless PTY when the attach viewport changes.
+- Report:
+  `lingon attach` does not resize a `lingon -x` headless session.
+- Repro:
+  1. Start a headless session.
+  2. Connect via `lingon attach`.
+  3. Resize the attach terminal smaller/larger.
+  4. Observe the headless session does not follow the attach size.
+- Investigation notes:
+  - This is a distinct bug from non-headless camera-only behavior; headless is supposed to allow resize propagation.
+  - Root cause was relay-published headless sessions lacking explicit headless metadata, so `attach.MultiClient` treated them like ordinary camera-only remotes and suppressed resize propagation.
+- Regression coverage:
+  - `internal/attach/headless_cli_regression_integration_test.go`
+    - `TestRealCLIRelayHeadlessResizeMatrixRendersExpectedViewport`
+    - `TestRealCLILocalHeadlessResizeMatrixRendersExpectedViewport`
+    - `TestRelayHeadlessMultiAttachReceivesInitialSnapshot`
+    - `TestRelayHeadlessMultiAttachExplicitSessionReceivesInitialSnapshotWithPeers`
+- Verification:
+  - Focused:
+    - `go test -count=1 ./internal/attach -run 'Test(RealCLI(RelayHeadlessResizeMatrixRendersExpectedViewport|LocalHeadlessResizeMatrixRendersExpectedViewport)|RelayHeadlessMultiAttachReceivesInitialSnapshot|RelayHeadlessMultiAttachExplicitSessionReceivesInitialSnapshotWithPeers)'`
+  - Broader:
+    - `go test -count=1 ./internal/attach`
+    - `go test -count=1 -tags webui ./internal/attach`
+  - Code-path review:
+    - `internal/relay/types.go`, `internal/relay/http.go`, `internal/relay/proto_helpers.go`, `internal/protocolpb/relay.proto`, and `internal/attach/session_info.go` now propagate explicit `headless` session metadata.
+    - `internal/attach/multi.go` now gates resize propagation on per-session headless capability instead of only local-session mode.
+
 ### B-012 Multi-attach input lag/stall on real relay attach
 
 - Status: `resolved`

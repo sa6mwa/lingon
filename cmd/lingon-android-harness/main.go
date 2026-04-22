@@ -25,6 +25,8 @@ import (
 
 	"golang.org/x/term"
 
+	"pkt.systems/lingon"
+	"pkt.systems/lingon/internal/cliwall"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/session"
@@ -59,9 +61,14 @@ type harness struct {
 	selfPath   string
 	endpoint   string
 	access     string
+	authPath   string
 	hostIndex  int
 	cols       int
 	rows       int
+}
+
+type harnessWallRequest struct {
+	Message string `json:"message"`
 }
 
 type sessionHandle struct {
@@ -218,12 +225,21 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 		selfPath:  selfPath,
 		endpoint:  endpoint,
 		access:    access.Token,
+		authPath:  filepath.Join(home, ".lingon", "auth.json"),
 		hostIndex: 0,
 		cols:      opts.cols,
 		rows:      opts.rows,
 	}
+	if err := lingon.SaveAuth(h.authPath, lingon.AuthState{
+		Endpoint:        endpoint,
+		AccessToken:     access.Token,
+		AccessExpiresAt: access.ExpiresAt,
+	}); err != nil {
+		return nil, err
+	}
 
 	controlPath := ensureBasePath(opts.basePath) + "/__harness/start-host"
+	wallPath := ensureBasePath(opts.basePath) + "/__harness/send-wall"
 	relayHandler := server.WrapBasePath(opts.basePath, relayServer.Handler())
 	clientDelay := time.Duration(0)
 	if raw := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_CLIENT_DELAY_MS")); raw != "" {
@@ -256,6 +272,24 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"ids": ids})
+			return
+		case wallPath:
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req harnessWallRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := h.sendWallCLI(strings.TrimSpace(req.Message)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "sent"})
 			return
 		default:
 			if clientDelay > 0 && strings.HasSuffix(r.URL.Path, "/ws/client") {
@@ -332,6 +366,23 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	h.config.Users = []harnessUser{user1, user2}
 
 	return h, nil
+}
+
+func (h *harness) sendWallCLI(message string) error {
+	if message == "" {
+		return fmt.Errorf("message is required")
+	}
+	return cliwall.Execute(context.Background(), cliwall.Request{
+		Loader:          lingon.NewLoader(),
+		Endpoint:        h.endpoint,
+		EndpointChanged: true,
+		AuthFile:        h.authPath,
+		AuthFileChanged: true,
+		Message:         message,
+		Insecure:        true,
+		Quiet:           true,
+		Stdout:          io.Discard,
+	})
 }
 
 func harnessWallTimeout() time.Duration {

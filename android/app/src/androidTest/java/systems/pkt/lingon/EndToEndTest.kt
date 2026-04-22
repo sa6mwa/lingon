@@ -856,10 +856,11 @@ class EndToEndTest {
             activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
         }
         waitUntilNoError(15_000L) {
-            activeNotifications().any { it.notification.channelId == "lingon_wall" }
+            wallNotifications().isNotEmpty()
         }
-        val wallNotification = activeNotifications()
-            .firstOrNull { it.notification.channelId == "lingon_wall" }
+        assertNoWallNotificationAutogroupSummary()
+        val wallNotification = wallNotifications()
+            .firstOrNull()
             ?: throw AssertionError("missing lingon_wall notification")
         val title = wallNotification.notification.extras
             .getCharSequence(Notification.EXTRA_TITLE)
@@ -874,6 +875,147 @@ class EndToEndTest {
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertTrue("notification title missing session label: $title", title.endsWith("#${activeSessionId()}"))
         assertEquals("$title: ${activeSessionId()} inactive", text)
+        resumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+    }
+
+    @Test
+    fun manual_wall_delivery_posts_system_notification() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+
+        val message = "manual wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(message)
+
+        waitUntilNoError(10_000L) {
+            wallNotifications().isNotEmpty()
+        }
+        assertNoWallNotificationAutogroupSummary()
+        val wallNotification = wallNotifications()
+            .firstOrNull()
+            ?: throw AssertionError("missing lingon_wall notification")
+        val title = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        val text = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
+        assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
+        assertEquals("$title: $message", text)
+    }
+
+    @Test
+    fun background_manual_wall_delivery_posts_system_notification() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilNoError(10_000L) {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        val message = "background manual wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(message)
+
+        waitUntilNoError(15_000L) {
+            wallNotifications().isNotEmpty()
+        }
+        assertNoWallNotificationAutogroupSummary()
+        val wallNotification = wallNotifications()
+            .firstOrNull()
+            ?: throw AssertionError("missing lingon_wall notification")
+        val title = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        val text = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
+        assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
+        assertEquals("$title: $message", text)
+
+        resumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+    }
+
+    @Test
+    fun background_wall_delivery_stops_without_notification_permission_and_recovers_after_grant() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureWallInactivityOff()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilNoError(10_000L) {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        revokeNotificationPermission()
+        clearWallNotifications()
+
+        val blockedMessage = "permission blocked wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(blockedMessage)
+        Thread.sleep(3_000L)
+        assertFalse(
+            "wall notification should be suppressed when POST_NOTIFICATIONS is revoked",
+            activeNotifications().any { it.notification.channelId == "lingon_wall" },
+        )
+
+        grantNotificationPermission()
+        val recoveredMessage = "permission restored wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(recoveredMessage)
+        waitUntilNoError(15_000L) {
+            wallNotifications().isNotEmpty()
+        }
+        assertNoWallNotificationAutogroupSummary()
+        val wallNotification = wallNotifications()
+            .firstOrNull()
+            ?: throw AssertionError("missing lingon_wall notification after restoring permission")
+        val title = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        val text = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
+        assertEquals("$title: $recoveredMessage", text)
+
         resumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
     }
@@ -1044,6 +1186,37 @@ class EndToEndTest {
         composeRule.waitForIdle()
     }
 
+    private fun clearWallNotifications() {
+        composeRule.activity.runOnUiThread {
+            val manager = composeRule.activity.getSystemService(NotificationManager::class.java) ?: return@runOnUiThread
+            manager.activeNotifications
+                .filter {
+                    it.notification.channelId == "lingon_wall" ||
+                        it.notification.channelId == "lingon_background_wall"
+                }
+                .forEach { manager.cancel(it.id) }
+        }
+        composeRule.waitForIdle()
+    }
+
+    private fun revokeNotificationPermission() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand(
+                "pm revoke systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
+            ),
+        )
+    }
+
+    private fun grantNotificationPermission() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand(
+                "pm grant systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
+            ),
+        )
+    }
+
     private fun ensureWallInactivityOff() {
         waitUntilNoError(5_000L) { appViewModel().state.value.connectionState == ConnectionState.Connected }
         repeat(4) {
@@ -1068,6 +1241,34 @@ class EndToEndTest {
         return composeRule.activity.getSystemService(NotificationManager::class.java)
             ?.activeNotifications
             ?: emptyArray()
+    }
+
+    private fun wallNotifications(): List<StatusBarNotification> {
+        return activeNotifications()
+            .filter {
+                it.notification.channelId == "lingon_wall" &&
+                    it.tag != "ranker_group"
+            }
+    }
+
+    private fun assertNoWallNotificationAutogroupSummary() {
+        val summary = activeNotifications().firstOrNull {
+            it.notification.channelId == "lingon_wall" &&
+                it.tag == "ranker_group"
+        }
+        if (summary != null) {
+            val title = summary.notification.extras
+                .getCharSequence(Notification.EXTRA_TITLE)
+                ?.toString()
+                ?.trim()
+                .orEmpty()
+            val text = summary.notification.extras
+                .getCharSequence(Notification.EXTRA_TEXT)
+                ?.toString()
+                ?.trim()
+                .orEmpty()
+            throw AssertionError("unexpected lingon_wall auto-group summary title=$title text=$text")
+        }
     }
 
     private fun assertTerminalResponsive(sessionId: String? = null, requireControl: Boolean = true) {
@@ -1984,6 +2185,32 @@ class EndToEndTest {
             val code = connection.responseCode
             if (code != HttpURLConnection.HTTP_OK) {
                 throw AssertionError("harness start-host failed with HTTP $code")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun sendWallViaHarness(message: String) {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/send-wall")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            connection.outputStream.use { out ->
+                out.write("""{"message":${org.json.JSONObject.quote(message)}}""".toByteArray())
+            }
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness send-wall failed with HTTP $code")
             }
         } finally {
             connection.disconnect()
