@@ -453,13 +453,15 @@ Required status values:
 
 ### B-004 Test and harness terminal isolation
 
-- Status: `resolved`
+- Status: `in_progress`
 - Area: `tests`, `android`, `pty`
 - Summary: Tests and harnesses must operate only on their own PTYs and must never mutate the inherited terminal running Lingon/tmux.
 - Report:
   Previous test and harness runs resized or reconfigured the terminal session running the tests.
 - Repro:
-  Historical; not yet pinned to one remaining deterministic path.
+  1. Run resize-driving test coverage from the normal developer shell/tmux/Lingon session.
+  2. Observe the outer tmux/Lingon terminal get resized, detached, or otherwise corrupted.
+  3. The user reported this again after a recent test run, so the item is not trustworthy as resolved.
 - Regression coverage:
   - `cmd/lingon-android-harness.TestWriteHostScriptDoesNotTouchCallerTTY`
   - `internal/attach.TestSubscribeResizeSignalsDisabled`
@@ -487,10 +489,15 @@ Required status values:
   - Verified a real resize-driving session test no longer mutated the current tmux pane:
     - `go test -count=1 ./internal/session -run TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
     - pane size remained `119x62` before and after the run
- - Notes:
+- Notes:
   - The remaining leak was not the Android harness wrapper anymore; it was the runtime attach/session packages still subscribing to process-global `SIGWINCH` even when tests already injected PTY-local resize events.
   - The self-PTY `TestMain` cut closes the remaining inherited-tty hole at the package boundary: helper subprocesses and `/dev/tty` fallbacks now bind to the owned test PTY instead of the outer tmux session.
   - The resize-driving session test is still functionally red because `B-003` is not finished, but it no longer leaks terminal mutation to the outer pane.
+  - New hardening in this tranche:
+    - `AGENTS.md` now has a non-negotiable terminal-isolation section forbidding inherited-tty mutation and process-level `SIGWINCH` stimulus in tests/helpers.
+    - `internal/session/viewport_resize_signal_regression_integration_test.go` was removed so signal-driven resize regressions no longer exist in the test suite.
+  - Remaining verification gap:
+    - rerun the relevant narrow package checks after the signal-driven file removal and confirm no new inherited-tty path remains.
 
 ## Recently Resolved Or Reverified
 

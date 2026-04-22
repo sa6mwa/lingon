@@ -2590,3 +2590,32 @@ func TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand(t *testing
 		return nil
 	})
 }
+
+func sigwinchBashWrapper(t *testing.T) string {
+	t.Helper()
+	path := t.TempDir() + "/sigwinch-bash-wrapper.sh"
+	const script = `#!/usr/bin/env bash
+export PS1='PROMPT> '
+exec /bin/bash --noprofile --norc -i
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write sigwinch bash wrapper: %v", err)
+	}
+	return path
+}
+
+func waitForRawChunkContains(t *testing.T, sess *ptytest.PTYSession, substr string, timeout, step time.Duration, msg string) string {
+	t.Helper()
+	deadline := sess.Clock().Now().Add(timeout)
+	var seen strings.Builder
+	for sess.Clock().Now().Before(deadline) {
+		chunk := sess.DrainRaw()
+		seen.WriteString(chunk)
+		if strings.Contains(seen.String(), substr) {
+			return seen.String()
+		}
+		advanceTestClock(sess.Clock(), step)
+	}
+	t.Fatalf("%s", msg)
+	return ""
+}

@@ -105,6 +105,16 @@ linters:
   - and relevant existing suites still pass.
 - If a report contains multiple failure modes, add one explicit assertion per failure mode (or separate tests) so coverage is auditable.
 
+## Terminal isolation (mandatory, non-negotiable)
+- Tests, harnesses, and ad hoc verification commands must never mutate the inherited terminal/tty/pty of the shell, tmux client, or Lingon session they were launched from.
+- Any test or helper that needs raw mode, resize events, or PTY control must create and use its own dedicated PTY/TTY, fully isolated from the user's terminal.
+- Process-level window-change signaling is prohibited in tests and test helpers:
+  - do not send `SIGWINCH` to the process, process group, parent process, or inherited tty owner
+  - do not rely on process-global `signal.Notify(..., SIGWINCH)` as a test stimulus
+- If resize behavior must be tested, drive it only through PTY-local mechanisms owned by the test, such as resizing the dedicated PTY created for that test.
+- Do not use `/dev/tty`, inherited stdin/stdout terminals, or shell wrappers that alter the caller terminal state as part of test setup.
+- When any illicit inherited-tty or process-level resize behavior is discovered in the test codebase, remove or refactor it immediately; do not preserve it as legacy coverage.
+
 ## Bug tracking and post-fix verification (mandatory)
 - Track active user-reported bugs in [BUG_TRACKER.md](BUG_TRACKER.md).
 - Add or update the tracker entry before or during investigation; do not rely on thread memory alone.
