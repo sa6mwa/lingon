@@ -197,6 +197,63 @@ class AppViewModelTest {
     }
 
     @Test
+    fun sendHeadlessResizeNow_sendsSingleResizeForActiveHeadlessSession() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "headless-1", name = "Headless 1", status = "active", headless = true),
+                ),
+                activeSessionId = "headless-1",
+                terminalCols = 132,
+                terminalRows = 41,
+                connectionState = ConnectionState.Connected,
+            ),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+
+        viewModel.sendHeadlessResizeNow()
+
+        assertEquals(1, wsClient.resizeCount)
+    }
+
+    @Test
+    fun connectActiveSession_doesNotAdvertiseViewportResizeInHello() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "headless-1", name = "Headless 1", status = "active", headless = true)),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "headless-1", name = "Headless 1", status = "active", headless = true)),
+                activeSessionId = "headless-1",
+                terminalCols = 132,
+                terminalRows = 41,
+                connectionState = ConnectionState.Disconnected,
+            ),
+        )
+
+        viewModel.selectSession("headless-1")
+        advanceUntilIdle()
+
+        assertEquals(0, wsClient.lastConnectOptions?.cols)
+        assertEquals(0, wsClient.lastConnectOptions?.rows)
+    }
+
+    @Test
     fun selectSessionDoesNotInheritViewportResetTokenWhenSwitchingTabs() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()

@@ -117,6 +117,10 @@ type internalWallEvent struct {
 	Kind              protocolpb.WallKind `json:"kind"`
 }
 
+type internalDetachRequest struct {
+	Reason string `json:"reason"`
+}
+
 // New constructs a daemon.
 func New(opts Options) *Daemon {
 	logger := opts.Logger
@@ -296,6 +300,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/client", d.handleWSClient)
 	mux.HandleFunc("/internal/headless/wall", d.handleInternalWall)
+	detachCh := make(chan string, 1)
+	mux.HandleFunc("/internal/headless/detach", d.handleInternalDetach(detachCh))
 	httpServer := &http.Server{Handler: mux}
 	serveErrCh := make(chan error, 1)
 	go func() {
@@ -312,6 +318,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		cancelRunner()
+	case reason := <-detachCh:
+		if strings.TrimSpace(reason) == "" {
+			reason = "detached"
+		}
+		if d.runner != nil {
+			d.runner.StopSession(d.sessionID, reason)
+		} else {
+			cancelRunner()
+		}
 	case err := <-runnerErrCh:
 		runnerDone = true
 		runnerErr = err
@@ -345,6 +360,34 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	_ = d.writeState("stopped", "")
 	return nil
+}
+
+func (d *Daemon) handleInternalDetach(detachCh chan<- string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req internalDetachRequest
+		if r.Body != nil {
+			defer func() {
+				_ = r.Body.Close()
+			}()
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+				http.Error(w, "invalid detach payload", http.StatusBadRequest)
+				return
+			}
+		}
+		reason := strings.TrimSpace(req.Reason)
+		if reason == "" {
+			reason = "detached"
+		}
+		select {
+		case detachCh <- reason:
+		default:
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}
 }
 
 func (d *Daemon) resolveSessionID() (string, error) {

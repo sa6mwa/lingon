@@ -20,6 +20,8 @@ data class RelaySession(
     val lastActiveAt: String? = null,
     @SerialName("username")
     val username: String? = null,
+    @SerialName("headless")
+    val headless: Boolean = false,
 )
 
 @Serializable

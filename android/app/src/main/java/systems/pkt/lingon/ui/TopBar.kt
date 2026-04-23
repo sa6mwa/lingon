@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
@@ -52,6 +53,9 @@ fun TopBar(
     wallInactivityLabel: String?,
     wallInactivityAvailable: Boolean,
     onToggleWallInactivity: () -> Unit,
+    headlessResizeAvailable: Boolean,
+    headlessResizeEnabled: Boolean,
+    onResizeHeadlessNow: () -> Unit,
     onReload: () -> Unit,
     onShowShareToken: () -> Unit,
     onShowCertificates: () -> Unit,
@@ -242,11 +246,38 @@ fun TopBar(
     }
 
     @Composable
+    fun HeadlessResizeActionButton(compactVertical: Boolean) {
+        if (!headlessResizeAvailable) {
+            return
+        }
+        val buttonSize = if (compactVertical) 28.dp else 40.dp
+        val description = if (headlessResizeEnabled) {
+            "Resize headless session"
+        } else {
+            "Resize unavailable for non-headless session"
+        }
+        IconButton(
+            onClick = onResizeHeadlessNow,
+            enabled = headlessResizeEnabled,
+            modifier = Modifier
+                .size(buttonSize)
+                .testTag(TestTags.HeadlessResizeButton),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.OpenInFull,
+                contentDescription = description,
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (headlessResizeEnabled) 1f else 0.35f),
+            )
+        }
+    }
+
+    @Composable
     fun TopBarActions(compactVertical: Boolean) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(if (compactVertical) 2.dp else 4.dp),
         ) {
+            HeadlessResizeActionButton(compactVertical = compactVertical)
             WallInactivityActionButton(compactVertical = compactVertical)
             ReloadActionButton(compactVertical = compactVertical)
             MenuActionButton(compactVertical = compactVertical)

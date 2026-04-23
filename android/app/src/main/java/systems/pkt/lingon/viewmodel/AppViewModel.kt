@@ -622,6 +622,17 @@ class AppViewModel(
         _state.update { it.copy(terminalCols = cols, terminalRows = rows) }
     }
 
+    fun sendHeadlessResizeNow() {
+        val state = _state.value
+        val activeId = state.activeSessionId?.trim().orEmpty()
+        if (activeId.isBlank()) return
+        val activeSession = state.sessions.firstOrNull { it.id == activeId } ?: return
+        if (!activeSession.headless) return
+        val socket = ws ?: return
+        if (state.terminalCols <= 0 || state.terminalRows <= 0) return
+        wsClient.sendResize(socket, state.terminalCols, state.terminalRows)
+    }
+
     fun adjustScrollback(deltaRows: Int) {
         if (deltaRows == 0) return
         val live = liveSnapshot ?: return
@@ -1010,6 +1021,38 @@ class AppViewModel(
         return connectionHandled
     }
 
+    private suspend fun handleExplicitSessionClosed(sessionId: String) {
+        if (sessionId.isBlank()) return
+        val before = _state.value
+        val remaining = before.sessions.filterNot { it.id == sessionId }
+        sessionListCache.remove(sessionId)
+        missingSessionSinceMs.remove(sessionId)
+        val wasActive = before.activeSessionId == sessionId || activeConnection?.sessionId == sessionId
+        if (wasActive) {
+            stopReconnect()
+            stopSessionPoll()
+            suppressReconnect = true
+            closeWebSocket("session closed")
+            forceFullSnapshotOnNextConnect = false
+            resetCurrentSessionState()
+        }
+        _state.update {
+            it.copy(
+                sessions = remaining,
+                activeSessionId = if (wasActive) null else it.activeSessionId,
+                activeSnapshot = if (wasActive) null else it.activeSnapshot,
+                wallInactivityEnabled = if (wasActive) false else it.wallInactivityEnabled,
+                wallInactivityLabel = if (wasActive) null else it.wallInactivityLabel,
+                scrollbackOffsetRows = if (wasActive) 0 else it.scrollbackOffsetRows,
+                connectionState = if (wasActive) ConnectionState.Idle else it.connectionState,
+                hasControl = if (wasActive) false else it.hasControl,
+                sessionSyncing = false,
+            )
+        }
+        syncWallPollingSchedule()
+        ensureActiveSession(remaining)
+    }
+
     private suspend fun ensureActiveSession(sessions: List<RelaySession>): Boolean {
         val current = _state.value.activeSessionId
         val hasCurrent = current != null && sessions.any { it.id == current }
@@ -1152,8 +1195,8 @@ class AppViewModel(
             sessionId = sessionId,
             shareToken = shareToken,
             clientId = clientId,
-            cols = state.terminalCols,
-            rows = state.terminalRows,
+            cols = 0,
+            rows = 0,
             wantsControl = true,
             lastSeq = if (forceFullSnapshotOnNextConnect) 0L else lastSeq,
         )
@@ -1181,6 +1224,7 @@ class AppViewModel(
                                 id = session.id,
                                 name = session.name,
                                 status = session.status,
+                                headless = session.headless,
                             )
                         }
                         viewModelScope.launch {
@@ -1192,6 +1236,25 @@ class AppViewModel(
                                 lastFrameType = "sessions",
                                 lastFrameAtMs = System.currentTimeMillis(),
                                 lastFrameError = null,
+                            )
+                        }
+                    }
+                    frame.hasSessionClosed() -> {
+                        val closedSessionId = frame.sessionId.takeIf { it.isNotBlank() }
+                            ?: _state.value.activeSessionId
+                            ?: activeConnection?.sessionId
+                        if (!closedSessionId.isNullOrBlank()) {
+                            viewModelScope.launch {
+                                handleExplicitSessionClosed(closedSessionId.trim())
+                            }
+                        }
+                        _state.update {
+                            it.copy(
+                                lastFrameSeq = frame.seq,
+                                lastFrameType = "session_closed",
+                                lastFrameAtMs = System.currentTimeMillis(),
+                                lastFrameError = null,
+                                sessionSyncing = false,
                             )
                         }
                     }

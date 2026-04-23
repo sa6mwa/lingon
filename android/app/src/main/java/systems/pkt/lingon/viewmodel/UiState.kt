@@ -81,4 +81,7 @@ data class UiState(
             connectionState == ConnectionState.Connecting ||
             connectionState == ConnectionState.Waiting ||
             connectionState == ConnectionState.Disconnected
+
+    val activeSessionHeadless: Boolean
+        get() = activeSessionId?.let { id -> sessions.firstOrNull { it.id == id }?.headless == true } ?: false
 }

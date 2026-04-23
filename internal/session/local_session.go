@@ -876,7 +876,11 @@ func (s *localSession) ToggleOffline() bool {
 }
 
 func (s *localSession) Stop() {
-	s.notifyRemoteSessionClosed("stopped")
+	s.StopWithReason("stopped")
+}
+
+func (s *localSession) StopWithReason(reason string) {
+	s.notifyRemoteSessionClosed(reason)
 	if s.cancel != nil {
 		s.cancel()
 	}

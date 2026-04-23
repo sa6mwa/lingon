@@ -769,3 +769,76 @@ Required status values:
   - `go vet ./...`
   - `golint ./...`
   - `golangci-lint run ./...`
+
+### B-021 `lingon -x detach` leaves stale headless sessions behind across UIs
+
+- Status: `resolved`
+- Area: `headless`, `relay`, `attach`, `host-remote`, `android`
+- Summary: Force-detaching a local headless session must stop the PTY and remove the session cleanly from relay/UI state without reconnect grace or stale unreachable tabs.
+- Report:
+  `lingon -x detach` left the dead headless session behind in attach, host remote multi-client, and Android. The UI showed reconnect/lost-session behavior even though the session had been force-stopped and there was nothing to reconnect to.
+- Repro:
+  1. Start a relay-backed headless session.
+  2. View it from `lingon attach`, host remote multi-client, or the Android app.
+  3. Run `lingon -x detach`.
+  4. Observe the dead session linger with reconnect/lost-session behavior instead of disappearing cleanly.
+- Investigation notes:
+  - `detachLocalHeadlessSession` was bypassing the daemon and directly deleting local headless store state before killing the daemon/socket.
+  - That skipped the explicit `session_closed` path, so relay consumers treated the disappearance like a disconnect instead of a real close.
+  - Android also needed explicit `session_closed` handling so closed sessions are removed immediately instead of entering missing-session grace.
+- Regression coverage:
+  - `integration/pty/attach.TestRealCLIRelayHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay`
+  - `integration/pty/attach.TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay`
+  - `integration/pty/session.TestHostRemoteHeadlessDetachRemovesSessionWithoutReconnectOverlay`
+  - Android instrumentation:
+    - `headless_detach_removes_session_without_reconnect_placeholder`
+- Implementation notes:
+  - Added daemon-mediated `headless.DetachSession(...)` so detach requests go through the headless daemon first and emit a clean in-band close before shutdown.
+  - Added `/internal/headless/detach` handling in `internal/headlessd.Daemon`.
+  - Added `Runner.StopSession(...)` and `localSession.StopWithReason(...)` so detach can propagate a reasoned close through the existing session-close path.
+  - `cmd/lingon/headless_local.go` now uses `headless.DetachSession(...)`.
+  - Android `AppViewModel` now handles explicit `session_closed` frames and removes the closed session immediately instead of retaining it via missing-session grace.
+- Verification:
+  - `go test -count=1 -tags integration ./integration/pty/attach -run 'TestRealCLI(RelayHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay|LocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay)'`
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostRemoteHeadlessDetachRemovesSessionWithoutReconnectOverlay'`
+  - Android targeted e2e:
+    - `PATH=\"$HOME/Android/Sdk/platform-tools:$PATH\" LINGON_IT_ONLY=headless_detach_removes_session_without_reconnect_placeholder ./scripts/run-integration-tests.sh`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
+### B-022 Android needs explicit headless-only resize and must not auto-resize on connect
+
+- Status: `resolved`
+- Area: `android`, `relay`, `headless`
+- Summary: The Android app must never resize sessions implicitly. Only a headless session may be resized, and only through an explicit top-bar action. Non-headless sessions stay camera-only.
+- Report:
+  Android still auto-resized through the relay hello path, and there was no explicit headless-only resize action in the app.
+- Repro:
+  1. Connect the Android app to a headless session.
+  2. Observe that connect-time viewport dimensions are sent in the websocket hello and can resize the headless PTY.
+  3. Observe there is no explicit headless-only resize button in the UI.
+- Regression coverage:
+  - `AppViewModelTest.sendHeadlessResizeNow_sendsSingleResizeForActiveHeadlessSession`
+  - `AppViewModelTest.connectActiveSession_doesNotAdvertiseViewportResizeInHello`
+  - Android instrumentation:
+    - `headless_resize_button_only_enables_for_headless_sessions`
+    - `headless_resize_button_resizes_remote_headless_session`
+- Implementation notes:
+  - Relay session models and Android UI state now carry `headless` metadata.
+  - Android websocket connect now uses `cols=0, rows=0`, so the app no longer auto-resizes through relay hello.
+  - Added a top-bar `HeadlessResizeButton`:
+    - visible whenever there is an active session
+    - enabled only for headless sessions
+    - disabled/dimmed for non-headless sessions
+  - Pressing the button calls `sendHeadlessResizeNow()` and sends one explicit resize using the current viewport-derived terminal size.
+  - The Android harness gained real headless control endpoints for e2e:
+    - `start-headless`
+    - `detach-headless`
+    - `headless-size`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - Android targeted e2e:
+    - `PATH=\"$HOME/Android/Sdk/platform-tools:$PATH\" LINGON_IT_ONLY=headless_resize_button_only_enables_for_headless_sessions ./scripts/run-integration-tests.sh`
+    - `PATH=\"$HOME/Android/Sdk/platform-tools:$PATH\" LINGON_IT_ONLY=headless_resize_button_resizes_remote_headless_session ./scripts/run-integration-tests.sh`

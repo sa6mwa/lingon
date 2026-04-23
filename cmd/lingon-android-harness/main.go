@@ -23,14 +23,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coder/websocket"
+	"google.golang.org/protobuf/proto"
 	"golang.org/x/term"
 
 	"pkt.systems/lingon"
 	"pkt.systems/lingon/internal/cliwall"
+	"pkt.systems/lingon/internal/headless"
+	"pkt.systems/lingon/internal/headlessd"
+	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/session"
 	"pkt.systems/lingon/internal/tlsmgr"
+	"pkt.systems/pslog"
 )
 
 type harnessConfig struct {
@@ -58,11 +64,13 @@ type harness struct {
 	sessionsMu sync.Mutex
 	ctx        context.Context
 	baseDir    string
+	configDir  string
 	selfPath   string
 	endpoint   string
 	access     string
 	authPath   string
 	hostIndex  int
+	headlessIx int
 	cols       int
 	rows       int
 }
@@ -71,9 +79,22 @@ type harnessWallRequest struct {
 	Message string `json:"message"`
 }
 
+type harnessHeadlessRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+type harnessHeadlessResponse struct {
+	ID string `json:"id"`
+}
+
+type harnessHeadlessSizeResponse struct {
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
+}
+
 type sessionHandle struct {
-	id     string
-	cancel context.CancelFunc
+	id   string
+	stop func()
 }
 
 func main() {
@@ -236,6 +257,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 		},
 		ctx:       ctx,
 		baseDir:   root,
+		configDir: configDir,
 		selfPath:  selfPath,
 		endpoint:  endpoint,
 		access:    access.Token,
@@ -254,6 +276,9 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 
 	controlPath := ensureBasePath(opts.basePath) + "/__harness/start-host"
 	wallPath := ensureBasePath(opts.basePath) + "/__harness/send-wall"
+	startHeadlessPath := ensureBasePath(opts.basePath) + "/__harness/start-headless"
+	detachHeadlessPath := ensureBasePath(opts.basePath) + "/__harness/detach-headless"
+	headlessSizePath := ensureBasePath(opts.basePath) + "/__harness/headless-size"
 	relayHandler := server.WrapBasePath(opts.basePath, relayServer.Handler())
 	clientDelay := time.Duration(0)
 	if raw := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_CLIENT_DELAY_MS")); raw != "" {
@@ -305,6 +330,53 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "sent"})
 			return
+		case startHeadlessPath:
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			id, err := h.startHeadless()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(harnessHeadlessResponse{ID: id})
+			return
+		case detachHeadlessPath:
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req harnessHeadlessRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := headless.DetachSession(r.Context(), h.configDir, strings.TrimSpace(req.SessionID)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "detached"})
+			return
+		case headlessSizePath:
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+			cols, rows, err := h.readHeadlessSize(r.Context(), sessionID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(harnessHeadlessSizeResponse{Cols: cols, Rows: rows})
+			return
 		default:
 			if clientDelay > 0 && strings.HasSuffix(r.URL.Path, "/ws/client") {
 				time.Sleep(clientDelay)
@@ -355,7 +427,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			h.stop()
 			return nil, err
 		}
-		h.sessions = append(h.sessions, sessionHandle{id: secondID, cancel: cancel})
+		h.sessions = append(h.sessions, sessionHandle{id: secondID, stop: cancel})
 		user2.Sessions = append(user2.Sessions, secondID)
 		h.hostIndex = opts.sessionCount + 1
 	}
@@ -438,8 +510,8 @@ func harnessWallLevels() []time.Duration {
 func (h *harness) stop() {
 	h.sessionsMu.Lock()
 	for _, sess := range h.sessions {
-		if sess.cancel != nil {
-			sess.cancel()
+		if sess.stop != nil {
+			sess.stop()
 		}
 	}
 	h.sessionsMu.Unlock()
@@ -464,9 +536,155 @@ func (h *harness) startHost(token string) (string, error) {
 		return "", err
 	}
 	h.sessionsMu.Lock()
-	h.sessions = append(h.sessions, sessionHandle{id: id, cancel: cancel})
+	h.sessions = append(h.sessions, sessionHandle{id: id, stop: cancel})
 	h.sessionsMu.Unlock()
 	return id, nil
+}
+
+func (h *harness) startHeadless() (string, error) {
+	if h.ctx.Err() != nil {
+		return "", h.ctx.Err()
+	}
+	h.headlessIx++
+	id := fmt.Sprintf("headless-%d", h.headlessIx)
+	runCtx, cancelRun := context.WithCancel(h.ctx)
+	started := false
+	defer func() {
+		if !started {
+			cancelRun()
+		}
+	}()
+	daemon := headlessd.New(headlessd.Options{
+		ConfigDir:      h.configDir,
+		Endpoint:       h.endpoint,
+		Token:          h.access,
+		AuthFile:       h.authPath,
+		SessionID:      id,
+		Cols:           120,
+		Rows:           50,
+		Shell:          defaultHeadlessShell(),
+		Publish:        true,
+		PublishControl: true,
+		Logger:         pslog.NoopLogger(),
+	})
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- daemon.Run(runCtx)
+	}()
+	socketPath, err := headless.SocketPath(h.configDir, id)
+	if err != nil {
+		cancelRun()
+		return "", err
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-runErr:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				return "", err
+			}
+			return "", fmt.Errorf("headless daemon %s exited before socket ready", id)
+		default:
+		}
+		if headless.SocketExists(socketPath) {
+			h.sessionsMu.Lock()
+			h.sessions = append(h.sessions, sessionHandle{
+				id: id,
+				stop: func() {
+					cancelRun()
+					select {
+					case <-runErr:
+					case <-time.After(3 * time.Second):
+					}
+				},
+			})
+			h.sessionsMu.Unlock()
+			started = true
+			return id, nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	cancelRun()
+	return "", fmt.Errorf("headless daemon %s socket not ready", id)
+}
+
+func defaultHeadlessShell() string {
+	if _, err := os.Stat("/bin/bash"); err == nil {
+		return "/bin/bash"
+	}
+	return "/bin/sh"
+}
+
+func (h *harness) readHeadlessSize(ctx context.Context, sessionID string) (int, int, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return 0, 0, fmt.Errorf("session_id is required")
+	}
+	socketPath, err := headless.SocketPath(h.configDir, sessionID)
+	if err != nil {
+		return 0, 0, err
+	}
+	dialOptions := &websocket.DialOptions{
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					var dialer net.Dialer
+					return dialer.DialContext(ctx, "unix", socketPath)
+				},
+			},
+		},
+	}
+	ws, _, err := websocket.Dial(ctx, "ws://unix/ws/client", dialOptions)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() {
+		_ = ws.Close(websocket.StatusNormalClosure, "closing")
+		if transport, ok := dialOptions.HTTPClient.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}()
+	hello := &protocolpb.Frame{
+		SessionId: sessionID,
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "android-harness-size",
+			Cols:         1,
+			Rows:         1,
+			WantsControl: false,
+		}},
+	}
+	if err := writeProtoFrame(ctx, ws, hello); err != nil {
+		return 0, 0, err
+	}
+	frame, err := readProtoFrame(ctx, ws)
+	if err != nil {
+		return 0, 0, err
+	}
+	welcome := frame.GetWelcome()
+	if welcome == nil {
+		return 0, 0, fmt.Errorf("missing welcome frame")
+	}
+	return int(welcome.GetServerCols()), int(welcome.GetServerRows()), nil
+}
+
+func readProtoFrame(ctx context.Context, conn *websocket.Conn) (*protocolpb.Frame, error) {
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var frame protocolpb.Frame
+	if err := proto.Unmarshal(data, &frame); err != nil {
+		return nil, err
+	}
+	return &frame, nil
+}
+
+func writeProtoFrame(ctx context.Context, conn *websocket.Conn, frame *protocolpb.Frame) error {
+	data, err := proto.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, websocket.MessageBinary, data)
 }
 
 func startHostSession(ctx context.Context, endpoint, token, id, scriptPath string, cols, rows int) (context.CancelFunc, error) {

@@ -1,11 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"pkt.systems/lingon"
@@ -86,50 +85,7 @@ func localSessionsAsRelaySessions(sessions []localHeadlessSession) []lingon.Sess
 }
 
 func detachLocalHeadlessSession(configDir, sessionID string) error {
-	normalized, err := headless.NormalizeSessionID(sessionID)
-	if err != nil {
-		return err
-	}
-	store := headless.NewStore(configDir)
-	var rec headless.SessionRecord
-	err = store.WithLock(func(state *headless.State) error {
-		found, ok := state.Sessions[normalized]
-		if !ok {
-			return os.ErrNotExist
-		}
-		rec = found
-		delete(state.Sessions, normalized)
-		return nil
-	})
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("headless session %q not found", normalized)
-		}
-		return err
-	}
-
-	if rec.PID > 0 && headless.PIDAlive(rec.PID) {
-		_ = headless.TerminatePID(rec.PID)
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			if !headless.PIDAlive(rec.PID) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		if headless.PIDAlive(rec.PID) {
-			_ = headless.KillPID(rec.PID)
-		}
-	}
-
-	socketPath := strings.TrimSpace(rec.SocketPath)
-	if socketPath == "" {
-		socketPath, _ = headless.SocketPath(configDir, normalized)
-	}
-	if socketPath != "" {
-		_ = os.Remove(socketPath)
-	}
-	return nil
+	return headless.DetachSession(context.Background(), configDir, sessionID)
 }
 
 func detachAllLocalHeadlessSessions(configDir string) error {

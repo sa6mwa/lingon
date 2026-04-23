@@ -54,6 +54,23 @@ func (r *Runner) sendCtrlDSession(sessionID string) {
 	}
 }
 
+// StopSession force-stops the target local PTY session and publishes an
+// explicit session-closed reason before shutting it down.
+func (r *Runner) StopSession(sessionID, reason string) {
+	if r == nil {
+		return
+	}
+	targetID := r.resolveLocalSessionID(sessionID)
+	if targetID == "" {
+		return
+	}
+	local := r.localSession(targetID)
+	if local == nil {
+		return
+	}
+	local.StopWithReason(reason)
+}
+
 // SendCtrlDActive delivers an explicit EOF to the active local PTY session.
 func (r *Runner) SendCtrlDActive() {
 	r.sendCtrlDSession("")

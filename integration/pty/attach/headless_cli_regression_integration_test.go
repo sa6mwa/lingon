@@ -18,6 +18,7 @@ import (
 	"pkt.systems/lingon"
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
+	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/ptytest"
 )
 
@@ -347,6 +348,74 @@ func TestRealCLIRelayHeadlessExitRemovesTerminatedSessionWithoutReconnectOverlay
 	})
 }
 
+func TestRealCLIRelayHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+	const sessionA = "relay-headless-detach-survivor"
+	const sessionB = "relay-headless-detach-active"
+	stopA := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: shortConfigDir(t),
+		SessionID: sessionA,
+		Publish:   true,
+		Endpoint:  h.Endpoint(),
+		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stopA)
+	cfgB := shortConfigDir(t)
+	stopB := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: cfgB,
+		SessionID: sessionB,
+		Publish:   true,
+		Endpoint:  h.Endpoint(),
+		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stopB)
+
+	waitForSessionIDsExact(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionA, sessionB}, 8*time.Second)
+	waitForHeadlessFlags(t, h.Clock(), h.Endpoint(), h.AccessToken(), map[string]bool{sessionA: true, sessionB: true}, 8*time.Second)
+
+	attach := startLingonAttachCLI(t, h, sessionB, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+	if err := headless.DetachSession(context.Background(), cfgB, sessionB); err != nil {
+		t.Fatalf("DetachSession(%q): %v", sessionB, err)
+	}
+
+	waitForSessionIDsExact(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionA}, 8*time.Second)
+	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
+		row0 := screen.Row(0)
+		if strings.Contains(row0, "wall inactivity off") {
+			return fmt.Errorf("unexpected stale wall inactivity banner after detach: %q", row0)
+		}
+		if strings.Contains(screen.String(), "Not connected") || strings.Contains(row0, "connection lost") || strings.Contains(row0, "reconnecting") {
+			return fmt.Errorf("unexpected reconnect overlay after explicit headless detach:\n%s", screen.String())
+		}
+		if strings.Contains(row0, sessionB) {
+			return fmt.Errorf("detached relay headless tab %q still present: %q", sessionB, row0)
+		}
+		if !screen.Contains("PROMPT>") {
+			return fmt.Errorf("surviving relay headless prompt missing after detach:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	const token = "RELAY_HEADLESS_DETACH_SURVIVOR_OK"
+	attach.Send("echo " + token + "\r")
+	attach.Eventually(2*time.Second, 80*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains(token) {
+			return fmt.Errorf("surviving relay headless session was not interactive after detach:\n%s", screen.String())
+		}
+		return nil
+	})
+}
+
 func TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
@@ -410,6 +479,68 @@ func TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionSta
 	attach.Send("echo " + token + "\r")
 	if !screenContainsWithinRealTime(attach, token, 2*time.Second) {
 		t.Fatalf("surviving local headless tab did not remain interactive:\n%s", attach.Screen().String())
+	}
+}
+
+func TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	cfgDir := filepath.Join(homeDir, ".config", lingon.DefaultConfigDirName)
+	const sessionA = "local-headless-detach-survivor"
+	const sessionB = "local-headless-detach-active"
+	stopA := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: cfgDir,
+		SessionID: sessionA,
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stopA)
+	stopB := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: cfgDir,
+		SessionID: sessionB,
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stopB)
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionIDsExact(cfgDir, []string{sessionA, sessionB})
+	})
+
+	attach := startLingonAttachHeadlessCLI(t, homeDir, sessionB, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+	if err := headless.DetachSession(context.Background(), cfgDir, sessionB); err != nil {
+		t.Fatalf("DetachSession(%q): %v", sessionB, err)
+	}
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionIDsExact(cfgDir, []string{sessionA})
+	})
+	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
+		row0 := screen.Row(0)
+		if strings.Contains(row0, "wall inactivity off") {
+			return fmt.Errorf("unexpected stale wall inactivity banner after local detach: %q", row0)
+		}
+		if screen.Contains("Not connected") || screen.Contains("reconnecting") {
+			return fmt.Errorf("unexpected reconnect overlay after local detach:\n%s", screen.String())
+		}
+		if strings.Contains(row0, sessionB) {
+			return fmt.Errorf("detached local headless tab %q still present: %q", sessionB, row0)
+		}
+		if !screen.Contains("PROMPT>") {
+			return fmt.Errorf("surviving local headless prompt missing after detach:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	const token = "LOCAL_HEADLESS_DETACH_SURVIVOR_OK"
+	attach.Send("echo " + token + "\r")
+	if !screenContainsWithinRealTime(attach, token, 2*time.Second) {
+		t.Fatalf("surviving local headless session was not interactive after detach:\n%s", attach.Screen().String())
 	}
 }
 

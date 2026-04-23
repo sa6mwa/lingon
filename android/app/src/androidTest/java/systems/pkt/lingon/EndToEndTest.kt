@@ -11,6 +11,8 @@ import android.view.KeyEvent
 import androidx.core.app.NotificationManagerCompat
 import androidx.test.rule.GrantPermissionRule
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -42,6 +44,7 @@ import java.util.Locale
 import java.util.zip.CRC32
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStreamReader
 import systems.pkt.lingon.viewmodel.ConnectionState
 import java.io.FileOutputStream
 import java.util.UUID
@@ -880,6 +883,79 @@ class EndToEndTest {
         assertEquals("$title: ${activeSessionId()} inactive", text)
         resumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+    }
+
+    @Test
+    fun headless_resize_button_only_enables_for_headless_sessions() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
+
+        val headlessId = startHeadlessViaHarness()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
+        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
+
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsEnabled()
+    }
+
+    @Test
+    fun headless_resize_button_resizes_remote_headless_session() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+
+        val headlessId = startHeadlessViaHarness()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
+        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
+        waitUntilNoError(10_000L) {
+            val info = readTerminalDebugInfo()
+            info != null && info.viewCols > 0 && info.viewRows > 0
+        }
+
+        val before = readHeadlessSizeViaHarness(headlessId)
+        assertEquals(120, before.cols)
+        assertEquals(50, before.rows)
+
+        val expectedCols = stateForTest().terminalCols
+        val expectedRows = stateForTest().terminalRows
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).performClick()
+        waitUntilNoError(10_000L) {
+            val after = readHeadlessSizeViaHarness(headlessId)
+            after.cols == expectedCols && after.rows == expectedRows
+        }
+    }
+
+    @Test
+    fun headless_detach_removes_session_without_reconnect_placeholder() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+
+        val headlessId = startHeadlessViaHarness()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
+        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
+
+        detachHeadlessViaHarness(headlessId)
+
+        waitUntilNoError(20_000L) {
+            val state = stateForTest()
+            state.sessions.none { it.id == headlessId } &&
+                state.activeSessionId != headlessId &&
+                !state.sessionSyncing
+        }
+        val banner = readStatusBanner()?.message.orEmpty()
+        assertFalse("unexpected reconnect/not-connected banner: $banner", banner.contains("Not connected", ignoreCase = true))
+        assertFalse("unexpected reconnect/not-connected banner: $banner", banner.contains("connection lost", ignoreCase = true))
     }
 
     @Test
@@ -2248,6 +2324,84 @@ class EndToEndTest {
         }
     }
 
+    private fun startHeadlessViaHarness(): String {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness start-headless failed with HTTP $code")
+            }
+            val body = InputStreamReader(connection.inputStream).use { it.readText() }
+            return org.json.JSONObject(body).getString("id")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun detachHeadlessViaHarness(sessionId: String) {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/detach-headless")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            connection.outputStream.use { out ->
+                out.write("""{"session_id":${org.json.JSONObject.quote(sessionId)}}""".toByteArray())
+            }
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness detach-headless failed with HTTP $code")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun readHeadlessSizeViaHarness(sessionId: String): HeadlessSize {
+        val encodedSessionId = java.net.URLEncoder.encode(sessionId, "UTF-8")
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/headless-size?session_id=$encodedSessionId")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness headless-size failed with HTTP $code")
+            }
+            val body = InputStreamReader(connection.inputStream).use { it.readText() }
+            val json = org.json.JSONObject(body)
+            return HeadlessSize(
+                cols = json.getInt("cols"),
+                rows = json.getInt("rows"),
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun sendWallViaHarness(message: String) {
         val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/send-wall")
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -2446,6 +2600,11 @@ class EndToEndTest {
     data class StatusInfo(
         val level: String,
         val message: String,
+    )
+
+    data class HeadlessSize(
+        val cols: Int,
+        val rows: Int,
     )
 
     data class TerminalDebugInfo(

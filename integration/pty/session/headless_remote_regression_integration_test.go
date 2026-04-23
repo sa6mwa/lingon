@@ -122,6 +122,66 @@ func TestHostRemoteHeadlessExitRemovesSessionWithoutReconnectOverlay(t *testing.
 	}
 }
 
+func TestHostRemoteHeadlessDetachRemovesSessionWithoutReconnectOverlay(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	h := newHarness(t)
+	viewer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "host-remote-headless-detach-viewer",
+		SessionName: "host-remote-headless-detach-viewer",
+		Shell:       "/bin/bash",
+		Cols:        40,
+		Rows:        10,
+	})
+	t.Cleanup(viewer.Cancel)
+	viewer.Send("echo LOCAL_VIEWER_READY\n")
+	if !screenContainsWithin(viewer, "LOCAL_VIEWER_READY", 2*time.Second) {
+		t.Fatalf("local host viewer not interactive before remote switch:\n%s", viewer.Screen().String())
+	}
+
+	cfgDir := shortHeadlessConfigDir(t)
+	stop := startRelayHeadlessDaemon(t, relayHeadlessDaemonSpec{
+		ConfigDir: cfgDir,
+		SessionID: "host-remote-headless-detach-target",
+		Publish:   true,
+		Endpoint:  h.Endpoint(),
+		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBashWithPromptSession(t, "HREMOTE>"),
+		Clock:     h.Clock(),
+	})
+	t.Cleanup(stop)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 8*time.Second)
+	switchHostToHeadlessRemote(t, h, viewer, "HREMOTE>")
+
+	if err := headless.DetachSession(context.Background(), cfgDir, "host-remote-headless-detach-target"); err != nil {
+		t.Fatalf("DetachSession: %v", err)
+	}
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 1, 8*time.Second)
+
+	viewer.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
+		row0 := screen.Row(0)
+		if strings.Contains(screen.String(), "Not connected") || strings.Contains(row0, "connection lost") || strings.Contains(row0, "reconnecting") {
+			return fmt.Errorf("unexpected reconnect overlay after remote headless detach:\n%s", screen.String())
+		}
+		if strings.Contains(row0, "host-remote-headless-detach-target") {
+			return fmt.Errorf("detached remote headless tab still present: %q", row0)
+		}
+		if strings.Contains(screen.String(), "HREMOTE>") {
+			return fmt.Errorf("stale remote headless prompt remained after detach:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	const token = "HOST_REMOTE_HEADLESS_DETACH_LOCAL_OK"
+	viewer.Send("echo " + token + "\n")
+	if !screenContainsWithin(viewer, token, 2*time.Second) {
+		t.Fatalf("local host session was not interactive after remote headless detach:\n%s", viewer.Screen().String())
+	}
+}
+
 func TestHostRemoteHeadlessReacquiresControlAndResizesAfterAttachControllerDisconnects(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
