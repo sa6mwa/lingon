@@ -120,15 +120,15 @@ func normalizeReconnectDelay(delay, policyBase time.Duration) time.Duration {
 }
 
 type sessionView struct {
-	id       string
-	name     string
-	client   *Client
-	cancel   context.CancelFunc
-	done     chan error
-	visible  bool
-	hiddenAt time.Time
-	readyAt  time.Time
-	removed  bool
+	id            string
+	name          string
+	client        *Client
+	cancel        context.CancelFunc
+	done          chan error
+	visible       bool
+	hiddenAt      time.Time
+	readyAt       time.Time
+	removed       bool
 	sessionClosed bool
 
 	connecting    bool
@@ -2022,6 +2022,21 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							cmdKind = protocolpb.CommandKind_COMMAND_KIND_TOGGLE_RESPAWN
 							cmdSet = true
 						}
+					case control.ActionResizeHeadless:
+						targetView, targetClient, _, _, _ := activeViewSnapshot()
+						targetSession, ok := sessionByID(sessions, activeID)
+						if targetView == nil || targetClient == nil || !ok || !sessionAllowsResize(targetSession) {
+							showConnected("resize is headless-only", 2*time.Second)
+							return true
+						}
+						cols, rows := targetClient.terminalSize()
+						if cols == 0 || rows == 0 {
+							cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+						}
+						if err := targetClient.SendResize(ctx, cols, rows); err != nil {
+							showError("resize failed", 2*time.Second)
+						}
+						return true
 					case control.ActionToggleWallInactivity:
 						if localSessionMode {
 							cmdKind = protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY

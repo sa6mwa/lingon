@@ -29,6 +29,41 @@ Required status values:
 
 ## Active Items
 
+### B-020 Headless resize policy is inconsistent between attach and host remote multi-client
+
+- Status: `resolved`
+- Area: `attach`, `session`, `headless`
+- Summary: Headless remote sessions must resize consistently in both `lingon attach` and host remote multi-client: initial connect, local WINCH, and control acquisition resize; non-headless remains camera-only. A manual headless-only forced resize shortcut should also exist in the TUI.
+- Report:
+  `lingon attach` against headless effectively resizes on connect/WINCH/control acquisition, but host remote multi-client was only getting similar behavior indirectly through reconnect/enable side effects. The result was inconsistent headless sizing after controller handoff. The user also requested a manual headless-only forced resize shortcut, but `Ctrl+L r` was already taken by respawn, so the agreed explicit action was `Ctrl+L 0` / `Ctrl+L Ctrl+0`.
+- Repro:
+  1. Start a relay-backed headless session.
+  2. Connect to it from a host remote multi-client in a `40x10` viewport.
+  3. Connect a second controller attach in a `52x14` viewport so the headless PTY is resized away from the host remote viewport.
+  4. Disconnect the attach controller.
+  5. In the host remote tab, observe the next interaction should restore the headless PTY to the host remote viewport consistently with attach semantics.
+- Investigation notes:
+  - `lingon attach` already had three explicit headless resize triggers:
+    - `OnReady` initial connect resize in `internal/attach/multi.go`
+    - local resize/WINCH path in `internal/attach/multi.go`
+    - control acquisition resize in `internal/attach/client.go` via `controlCh`
+  - Host remote multi-client only resized headless on `Show(...).OnReady` and on explicit `Runner.ResizeActive`, with controller-handoff behavior occurring only accidentally when input caused `Enable(...) -> OnReady`.
+  - Fixed by:
+    - adding an explicit host-remote headless resize callback on controller acquisition
+    - enforcing headless-only gating inside `remoteManager.SendResize`
+    - adding `Ctrl+L 0` / `Ctrl+L NUL` as a manual headless-only resize action in both attach and host TUI paths
+- Regression coverage:
+  - `integration/pty/session.TestHostRemoteHeadlessReacquiresControlAndResizesAfterAttachControllerDisconnects`
+  - `internal/control.TestPrefixSessionActions`
+- Verification:
+  - `go test -count=1 ./internal/control ./internal/attach ./internal/session`
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay|ReacquiresControlAndResizesAfterAttachControllerDisconnects)'`
+  - `go test -count=1 -tags integration ./integration/pty/attach -run 'TestRealCLIRelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay)'`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
 ### B-019 Test/config path regression breaks real user auth lookup
 
 - Status: `resolved`

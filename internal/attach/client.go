@@ -93,52 +93,54 @@ type Client struct {
 
 	holderID string
 
-	mu               sync.RWMutex
-	lastSnapshot     *protocolpb.Snapshot
-	lastSeq          uint64
-	needsResync      bool
-	resyncRequested  bool
-	forceFreshHello  bool
+	mu                        sync.RWMutex
+	lastSnapshot              *protocolpb.Snapshot
+	lastSeq                   uint64
+	needsResync               bool
+	resyncRequested           bool
+	forceFreshHello           bool
 	suppressInitialWallStatus bool
-	wallStatusKnown  bool
-	wallStatusEnabled bool
-	renderCache      mvu.RenderCache
-	scrollbackMu     sync.RWMutex
-	scrollbackBuffer *mvu.ProtoScrollbackBuffer
-	scrollbackView   mvu.ScrollbackViewport
-	renderMu         sync.Mutex
-	writeMu          sync.Mutex
-	renderReqMu      sync.Mutex
-	renderReqCh      chan struct{}
-	renderDirty      atomic.Uint32
-	lastActivity     atomic.Int64
-	stdin            io.Reader
-	stdout           io.Writer
-	stderr           io.Writer
-	stdinCloser      io.Closer
-	errOnce          sync.Once
-	runErr           error
-	readErrMu        sync.Mutex
-	readErr          error
-	controlCh        chan struct{}
-	ws               *websocket.Conn
-	compositor       *mvu.Runtime
-	runCtx           context.Context
-	readyMu          sync.Mutex
-	ready            bool
-	renderDisabled   bool
-	forceClear       bool
-	tabSuppress      mvu.CursorTabSuppression
-	forceTabsVisible uint32
-	followInputUntil int64
-	effects          *mvu.EffectScheduler
-	viewOnlyMu       sync.Mutex
-	viewOnly         bool
-	viewOnlyMsg      string
-	viewOnlyShownAt  time.Time
-	themeName        string
+	wallStatusKnown           bool
+	wallStatusEnabled         bool
+	renderCache               mvu.RenderCache
+	scrollbackMu              sync.RWMutex
+	scrollbackBuffer          *mvu.ProtoScrollbackBuffer
+	scrollbackView            mvu.ScrollbackViewport
+	renderMu                  sync.Mutex
+	writeMu                   sync.Mutex
+	renderReqMu               sync.Mutex
+	renderReqCh               chan struct{}
+	renderDirty               atomic.Uint32
+	lastActivity              atomic.Int64
+	stdin                     io.Reader
+	stdout                    io.Writer
+	stderr                    io.Writer
+	stdinCloser               io.Closer
+	errOnce                   sync.Once
+	runErr                    error
+	readErrMu                 sync.Mutex
+	readErr                   error
+	controlCh                 chan struct{}
+	ws                        *websocket.Conn
+	compositor                *mvu.Runtime
+	runCtx                    context.Context
+	readyMu                   sync.Mutex
+	ready                     bool
+	renderDisabled            bool
+	forceClear                bool
+	tabSuppress               mvu.CursorTabSuppression
+	forceTabsVisible          uint32
+	followInputUntil          int64
+	effects                   *mvu.EffectScheduler
+	viewOnlyMu                sync.Mutex
+	viewOnly                  bool
+	viewOnlyMsg               string
+	viewOnlyShownAt           time.Time
+	themeName                 string
 
 	OnReady func()
+	// OnControllerAcquired is invoked when this client becomes the active controller.
+	OnControllerAcquired func()
 	// OnFrame is invoked for each frame received from the server.
 	OnFrame func(*protocolpb.Frame)
 	// OnSessions is invoked when a sessions update frame arrives.
@@ -1070,18 +1072,30 @@ func (c *Client) ReadErr() error {
 }
 
 func (c *Client) handleControl(holder string) {
+	var cb func()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if holder == c.holderID {
+		c.mu.Unlock()
 		return
 	}
 	c.holderID = holder
+	if c.holderID != "" && c.holderID == c.ClientID {
+		cb = c.OnControllerAcquired
+	}
 	if c.controlCh == nil {
+		c.mu.Unlock()
+		if cb != nil {
+			cb()
+		}
 		return
 	}
 	select {
 	case c.controlCh <- struct{}{}:
 	default:
+	}
+	c.mu.Unlock()
+	if cb != nil {
+		cb()
 	}
 }
 
@@ -2148,6 +2162,17 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 						}
 					} else {
 						c.showInfoStatus("offline toggle is host local-only")
+					}
+				case control.ActionResizeHeadless:
+					if c.DisableResizePropagation {
+						c.showInfoStatus("resize is headless-only")
+						return true
+					}
+					cols, rows := c.terminalSize()
+					if err := c.SendResize(ctx, cols, rows); err != nil {
+						c.Logger.Debug("attach.ws.write.failed", "err", err)
+						c.setError(err)
+						return false
 					}
 				case control.ActionNextTheme:
 					c.cycleTheme()

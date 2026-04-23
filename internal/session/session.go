@@ -670,6 +670,18 @@ func (r *Runner) Run(ctx context.Context) error {
 							return true
 						}
 						r.toggleOffline(activeID, stdout)
+					case control.ActionResizeHeadless:
+						if activeLocal || r.remoteSessions == nil {
+							r.showStatus("resize is headless-only", stdout, 2*time.Second)
+							return true
+						}
+						cols, rows := termSizeAny(stdout, stdin)
+						if cols <= 0 || rows <= 0 {
+							cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+						}
+						if err := r.remoteSessions.SendResize(sigCtx, activeID, cols, rows); err != nil {
+							r.showErrorStatus("resize failed", stdout, 2*time.Second)
+						}
 					case control.ActionToggleWallInactivity:
 						r.toggleWallInactivity(sigCtx, activeID, tokenRefresher, stdout)
 					case control.ActionNextTab:

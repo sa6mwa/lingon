@@ -590,13 +590,7 @@ func (m *remoteManager) Show(ctx context.Context, sessionID string, stdout io.Wr
 		m.mu.Unlock()
 		if visible && client != nil {
 			if headless {
-				cols, rows := 0, 0
-				if m.termSize != nil {
-					cols, rows = m.termSize()
-				}
-				if cols > 0 && rows > 0 {
-					_ = client.SendResize(ctx, cols, rows)
-				}
+				_ = m.sendHeadlessResize(ctx, sessionID)
 			}
 			client.RenderCurrent()
 		}
@@ -759,6 +753,16 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		}
 		client.OnOverlayStateChange = func() {
 			m.notifyOverlayChange(session.ID)
+		}
+		client.OnControllerAcquired = func() {
+			m.mu.Lock()
+			current := m.views[session.ID]
+			visible := current == view && view.visible
+			m.mu.Unlock()
+			if !visible {
+				return
+			}
+			_ = m.sendHeadlessResize(ctx, session.ID)
 		}
 		client.OnSessionClosed = func(_ string) {
 			m.handleExplicitSessionClosed(session.ID)
@@ -1049,6 +1053,9 @@ func (m *remoteManager) SendResize(ctx context.Context, sessionID string, cols, 
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
+	if !m.sessionAllowsResize(sessionID) {
+		return nil
+	}
 	m.mu.Lock()
 	view := m.views[sessionID]
 	m.mu.Unlock()
@@ -1056,6 +1063,31 @@ func (m *remoteManager) SendResize(ctx context.Context, sessionID string, cols, 
 		return fmt.Errorf("session %q not connected", sessionID)
 	}
 	return view.client.SendResize(ctx, cols, rows)
+}
+
+func (m *remoteManager) sessionAllowsResize(sessionID string) bool {
+	if m == nil || strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.ID == sessionID {
+			return session.Headless
+		}
+	}
+	return false
+}
+
+func (m *remoteManager) sendHeadlessResize(ctx context.Context, sessionID string) error {
+	if m == nil || !m.sessionAllowsResize(sessionID) || m.termSize == nil {
+		return nil
+	}
+	cols, rows := m.termSize()
+	if cols <= 0 || rows <= 0 {
+		return nil
+	}
+	return m.SendResize(ctx, sessionID, cols, rows)
 }
 
 func (m *remoteManager) queueInput(sessionID string, data []byte) {

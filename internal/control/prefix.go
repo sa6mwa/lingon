@@ -37,6 +37,8 @@ const (
 	ActionNextTheme
 	// ActionScrollback enters scrollback buffer mode.
 	ActionScrollback
+	// ActionResizeHeadless resizes the active headless remote session to the local viewport.
+	ActionResizeHeadless
 )
 
 // Prefix tracks ctrl+l command state.
@@ -85,6 +87,8 @@ func (p *Prefix) Feed(b byte) (Action, []byte) {
 			return ActionNextTheme, nil
 		case '[':
 			return ActionScrollback, nil
+		case '0', 0:
+			return ActionResizeHeadless, nil
 		case CtrlL:
 			return ActionNone, []byte{CtrlL}
 		default:

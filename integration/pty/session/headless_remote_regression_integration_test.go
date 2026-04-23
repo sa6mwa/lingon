@@ -122,6 +122,69 @@ func TestHostRemoteHeadlessExitRemovesSessionWithoutReconnectOverlay(t *testing.
 	}
 }
 
+func TestHostRemoteHeadlessReacquiresControlAndResizesAfterAttachControllerDisconnects(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	h := newHarness(t)
+	viewer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "host-remote-headless-reacquire-viewer",
+		SessionName: "host-remote-headless-reacquire-viewer",
+		Shell:       "/bin/bash",
+		Cols:        40,
+		Rows:        10,
+	})
+	t.Cleanup(viewer.Cancel)
+	viewer.Send("echo LOCAL_VIEWER_READY\n")
+	if !screenContainsWithin(viewer, "LOCAL_VIEWER_READY", 2*time.Second) {
+		t.Fatalf("local host viewer not interactive before remote switch:\n%s", viewer.Screen().String())
+	}
+
+	stop := startRelayHeadlessDaemon(t, relayHeadlessDaemonSpec{
+		ConfigDir: shortHeadlessConfigDir(t),
+		SessionID: "host-remote-headless-reacquire-target",
+		Publish:   true,
+		Endpoint:  h.Endpoint(),
+		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBashWithPromptSession(t, "HREMOTE>"),
+		Clock:     h.Clock(),
+	})
+	t.Cleanup(stop)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 8*time.Second)
+	switchHostToHeadlessRemote(t, h, viewer, "HREMOTE>")
+	assertRemoteHeadlessPTYSize(t, viewer, "10 40", "initial-host-remote-size")
+
+	controller := h.StartMultiAttach(ptytest.MultiAttachOptions{
+		SessionID: "host-remote-headless-reacquire-target",
+		Cols:      52,
+		Rows:      14,
+	})
+	t.Cleanup(controller.Cancel)
+	controller.Eventually(4*time.Second, 80*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains("HREMOTE>") {
+			return fmt.Errorf("waiting for attach controller prompt:\n%s", screen.String())
+		}
+		return nil
+	})
+	controller.Send("stty size; echo __ATTACH_REACQUIRE_SIZE__\n")
+	controller.Eventually(4*time.Second, 80*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains("__ATTACH_REACQUIRE_SIZE__") {
+			return fmt.Errorf("waiting for attach controller size marker:\n%s", screen.String())
+		}
+		if !screen.Contains("14 52") {
+			return fmt.Errorf("expected attach controller to resize headless PTY to 14 52, got:\n%s", screen.String())
+		}
+		return nil
+	})
+
+	controller.Cancel()
+	advanceTestClock(h.Clock(), 500*time.Millisecond)
+
+	assertRemoteHeadlessPTYSize(t, viewer, "10 40", "post-attach-disconnect-reacquire")
+}
+
 type relayHeadlessDaemonSpec struct {
 	ConfigDir string
 	SessionID string

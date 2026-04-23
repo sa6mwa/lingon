@@ -2,6 +2,7 @@ package attach
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -76,19 +77,19 @@ func TestAttachRenderingDoesNotUseOverlayOnlyComposePaths(t *testing.T) {
 	if !strings.Contains(clientSrc, ".RenderDisabledFrame(") {
 		t.Fatalf("expected attach disabled renderer to delegate to mvu.Runtime.RenderDisabledFrame")
 	}
-	if !strings.Contains(clientSrc, "renderCache      mvu.RenderCache") {
+	if !regexp.MustCompile(`renderCache\s+mvu\.RenderCache`).MatchString(clientSrc) {
 		t.Fatalf("expected attach renderer state to be centralized in mvu.RenderCache")
 	}
-	if !strings.Contains(clientSrc, "scrollbackBuffer *mvu.ProtoScrollbackBuffer") {
+	if !regexp.MustCompile(`scrollbackBuffer\s+\*mvu\.ProtoScrollbackBuffer`).MatchString(clientSrc) {
 		t.Fatalf("expected attach scrollback storage to be centralized in mvu.ProtoScrollbackBuffer")
 	}
-	if !strings.Contains(clientSrc, "scrollbackView   mvu.ScrollbackViewport") {
+	if !regexp.MustCompile(`scrollbackView\s+mvu\.ScrollbackViewport`).MatchString(clientSrc) {
 		t.Fatalf("expected attach scrollback viewport to be centralized in mvu.ScrollbackViewport")
 	}
-	if !strings.Contains(clientSrc, "effects          *mvu.EffectScheduler") {
+	if !regexp.MustCompile(`effects\s+\*mvu\.EffectScheduler`).MatchString(clientSrc) {
 		t.Fatalf("expected attach timing effects to be centralized in mvu.EffectScheduler")
 	}
-	if !strings.Contains(clientSrc, "tabSuppress      mvu.CursorTabSuppression") {
+	if !regexp.MustCompile(`tabSuppress\s+mvu\.CursorTabSuppression`).MatchString(clientSrc) {
 		t.Fatalf("expected attach tab suppression policy to be centralized in mvu.CursorTabSuppression")
 	}
 	if !strings.Contains(clientSrc, ".ApplyAction(") {
