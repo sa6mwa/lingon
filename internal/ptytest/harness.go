@@ -21,6 +21,7 @@ import (
 	"pkt.systems/lingon/internal/authstore"
 	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/clock"
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/relayclient"
@@ -292,7 +293,7 @@ func (h *Harness) StopServer() {
 
 func (h *Harness) initServer() {
 	h.home = testutil.SetXDGConfigEnv(h.t)
-	configDir := filepath.Join(h.home, "lingon")
+	configDir := filepath.Join(h.home, config.DefaultConfigDirName)
 
 	tlsDir := filepath.Join(configDir, "tls")
 	populateTLSDir(h.t, tlsDir)

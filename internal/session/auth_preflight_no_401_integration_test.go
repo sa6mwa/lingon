@@ -18,6 +18,7 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/authstore"
 	"pkt.systems/lingon/internal/backoff"
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/testutil"
@@ -30,7 +31,7 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 	}
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, config.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)

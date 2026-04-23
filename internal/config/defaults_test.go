@@ -23,7 +23,7 @@ func TestDefaultConfigUsesConstants(t *testing.T) {
 		t.Fatalf("TLS.Mode = %q, want %q", cfg.Server.TLS.Mode, DefaultTLSMode)
 	}
 
-	expectedDir := filepath.Join(root, "lingon")
+	expectedDir := filepath.Join(root, DefaultConfigDirName)
 	if cfg.Server.DataDir != expectedDir {
 		t.Fatalf("DataDir = %q, want %q", cfg.Server.DataDir, expectedDir)
 	}

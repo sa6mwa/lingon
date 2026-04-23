@@ -17,6 +17,7 @@ import (
 
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/authstore"
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/server"
@@ -35,7 +36,7 @@ func TestAttachSeparateConfigRoot(t *testing.T) {
 func runAttachScenario(t *testing.T, sharedConfig bool) {
 	waitFast := 2 * time.Second
 	hostRoot := testutil.SetXDGConfigEnv(t)
-	hostConfigDir := filepath.Join(hostRoot, "lingon")
+	hostConfigDir := filepath.Join(hostRoot, config.DefaultConfigDirName)
 	tlsDir := filepath.Join(hostConfigDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -101,7 +102,7 @@ func runAttachScenario(t *testing.T, sharedConfig bool) {
 	attachAuthPath := hostAuthPath
 	if !sharedConfig {
 		attachRoot := testutil.SetXDGConfigEnv(t)
-		attachConfigDir := filepath.Join(attachRoot, "lingon")
+		attachConfigDir := filepath.Join(attachRoot, config.DefaultConfigDirName)
 		attachAuthPath = filepath.Join(attachConfigDir, "auth.json")
 		if err := authstore.Save(attachAuthPath, authState); err != nil {
 			t.Fatalf("save attach auth: %v", err)

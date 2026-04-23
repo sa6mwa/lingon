@@ -16,7 +16,7 @@ func TestExecuteUsesExplicitEndpointAndAuthFile(t *testing.T) {
 	root := testutil.SetXDGConfigEnv(t)
 
 	now := time.Now().UTC()
-	ambientAuthPath := filepath.Join(root, "lingon", "auth.json")
+	ambientAuthPath := filepath.Join(root, lingon.DefaultConfigDirName, "auth.json")
 	explicitAuthPath := filepath.Join(root, "explicit-auth.json")
 
 	ambient := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"pkt.systems/lingon/internal/clock"
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/testutil"
@@ -31,7 +32,7 @@ func waitUntilNoErr(t *testing.T, clk clock.Clock, timeout time.Duration, cond f
 
 func TestRemoteManagerHonorsBackoffGate(t *testing.T) {
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, config.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)

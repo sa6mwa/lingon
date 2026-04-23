@@ -167,7 +167,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	if err := os.Setenv("XDG_DATA_HOME", dataRoot); err != nil {
 		return nil, err
 	}
-	configDir := filepath.Join(configRoot, "lingon")
+	configDir := filepath.Join(configRoot, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		return nil, err

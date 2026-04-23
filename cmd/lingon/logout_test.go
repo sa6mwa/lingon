@@ -16,7 +16,7 @@ import (
 
 func TestLogoutCommandRemovesEndpointAuth(t *testing.T) {
 	root := testutil.SetXDGConfigEnv(t)
-	authPath := filepath.Join(root, "lingon", "auth.json")
+	authPath := filepath.Join(root, lingon.DefaultConfigDirName, "auth.json")
 	now := time.Now().UTC()
 
 	var called bool

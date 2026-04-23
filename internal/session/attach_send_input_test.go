@@ -75,7 +75,7 @@ func waitUntilAll(t *testing.T, timeout time.Duration, cond func() bool, errChs 
 
 func runSendInputScenario(t *testing.T, sharedConfig bool) {
 	hostRoot := testutil.SetXDGConfigEnv(t)
-	hostConfigDir := filepath.Join(hostRoot, "lingon")
+	hostConfigDir := filepath.Join(hostRoot, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(hostConfigDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -137,7 +137,7 @@ func runSendInputScenario(t *testing.T, sharedConfig bool) {
 
 	if !sharedConfig {
 		attachRoot := testutil.SetXDGConfigEnv(t)
-		attachConfigDir := filepath.Join(attachRoot, "lingon")
+		attachConfigDir := filepath.Join(attachRoot, lingon.DefaultConfigDirName)
 		attachAuthPath := filepath.Join(attachConfigDir, "auth.json")
 		if err := authstore.Save(attachAuthPath, authState); err != nil {
 			t.Fatalf("save attach auth: %v", err)

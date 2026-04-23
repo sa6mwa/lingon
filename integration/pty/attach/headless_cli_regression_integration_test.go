@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"pkt.systems/lingon"
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/ptytest"
@@ -196,7 +197,7 @@ func TestRealCLILocalHeadlessResizeMatrixRendersExpectedViewport(t *testing.T) {
 	}
 
 	homeDir := shortHomeDir(t)
-	cfgDir := filepath.Join(homeDir, ".config", "lingon")
+	cfgDir := filepath.Join(homeDir, ".config", lingon.DefaultConfigDirName)
 	const sessionID = "local-headless-realcli-matrix"
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -352,7 +353,7 @@ func TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionSta
 	}
 
 	homeDir := shortHomeDir(t)
-	cfgDir := filepath.Join(homeDir, ".config", "lingon")
+	cfgDir := filepath.Join(homeDir, ".config", lingon.DefaultConfigDirName)
 	const sessionA = "local-headless-survivor"
 	const sessionB = "local-headless-dead"
 	stopB := startHeadlessDaemon(t, headlessDaemonSpec{

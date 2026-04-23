@@ -10,7 +10,7 @@ import (
 func TestDefaultPaths(t *testing.T) {
 	root := testutil.SetXDGConfigEnv(t)
 
-	expectedDir := filepath.Join(root, "lingon")
+	expectedDir := filepath.Join(root, DefaultConfigDirName)
 	if got := DefaultConfigDir(); got != expectedDir {
 		t.Fatalf("DefaultConfigDir() = %q, want %q", got, expectedDir)
 	}
@@ -37,5 +37,16 @@ func TestDefaultPaths(t *testing.T) {
 	expectedCache := filepath.Join(expectedTLSDir, DefaultTLSCacheDirName)
 	if got := DefaultTLSCacheDir(); got != expectedCache {
 		t.Fatalf("DefaultTLSCacheDir() = %q, want %q", got, expectedCache)
+	}
+}
+
+func TestDefaultPathsPreserveLegacyDotDirWhenXDGIsSet(t *testing.T) {
+	root := testutil.SetXDGConfigEnv(t)
+	want := filepath.Join(root, ".lingon")
+	if got := DefaultConfigDir(); got != want {
+		t.Fatalf("DefaultConfigDir() = %q, want %q", got, want)
+	}
+	if got := DefaultAuthPath(); got != filepath.Join(want, DefaultAuthFileName) {
+		t.Fatalf("DefaultAuthPath() = %q, want %q", got, filepath.Join(want, DefaultAuthFileName))
 	}
 }

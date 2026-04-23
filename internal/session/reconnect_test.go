@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/testutil"
@@ -18,7 +19,7 @@ import (
 
 func TestHostReconnectsAfterServerRestart(t *testing.T) {
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, config.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)

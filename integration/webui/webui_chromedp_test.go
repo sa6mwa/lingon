@@ -28,6 +28,7 @@ import (
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
+	"pkt.systems/lingon"
 	attachpkg "pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/host"
@@ -46,7 +47,7 @@ func TestWebUIControlFlow(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -317,7 +318,7 @@ func TestWebUIAccountSeparation(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -506,7 +507,7 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -676,7 +677,7 @@ func TestWebUIWebSocketBackoff(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -797,7 +798,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -1078,7 +1079,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -1267,7 +1268,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -1989,7 +1990,7 @@ func TestWebUIResizeDoesNotBypassReconnectBackoff(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -2145,7 +2146,7 @@ func TestWebUISwitchesToNewActiveSessionAfterNoHost(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -2283,7 +2284,7 @@ func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -2393,7 +2394,7 @@ func TestWebUIConnectAndReloadDoNotRearmWallInactivityWithoutTerminalInput(t *te
 	clk := newTestClock()
 
 	root := testutil.SetXDGConfigEnv(t)
-	configDir := filepath.Join(root, "lingon")
+	configDir := filepath.Join(root, lingon.DefaultConfigDirName)
 	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)

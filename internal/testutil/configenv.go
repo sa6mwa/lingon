@@ -9,6 +9,7 @@ import (
 func SetXDGConfigEnv(t *testing.T) string {
 	t.Helper()
 	root := TempDir(t)
+	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", root)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, ".cache"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, ".state"))

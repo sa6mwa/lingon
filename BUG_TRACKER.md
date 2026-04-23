@@ -29,6 +29,41 @@ Required status values:
 
 ## Active Items
 
+### B-019 Test/config path regression breaks real user auth lookup
+
+- Status: `resolved`
+- Area: `config`, `tests`, `auth`
+- Summary: Test-isolation work must not change Lingon's real config/auth lookup path, and tests must never fall back to the developer's real `HOME` or real `~/.lingon` / XDG config tree.
+- Report:
+  After recent test/config changes, Lingon started failing with:
+  `auth file not found at /home/mike/.config/lingon/auth.json; run lingon login -e https://pkt.systems/.4XU3RecE`
+  The developer reported this as tests having broken the personal `.lingon` config/auth state.
+- Repro:
+  1. Run the code after the `test(config): isolate XDG-backed test state` tranche.
+  2. In an environment with `XDG_CONFIG_HOME=/home/mike/.config`, run a normal Lingon CLI path that resolves default auth.
+  3. Observe Lingon now looks for `/home/mike/.config/lingon/auth.json` instead of the existing hidden-dir path.
+- Investigation notes:
+  - The direct destructive test-delete smoking gun was not present in the CLI tests that were first suspected.
+  - The actual root cause was a runtime path regression introduced in `internal/config/paths.go`:
+    - under `XDG_CONFIG_HOME`, Lingon had been changed to use `XDG_CONFIG_HOME/lingon`
+    - previous behavior, and the user's real stored state, used `XDG_CONFIG_HOME/.lingon`
+  - That path change exactly matched the observed broken lookup.
+  - The same tranche also rewrote many tests and shared test harnesses around the wrong `root/lingon` assumption, which masked the runtime regression and caused follow-on TLS/auth failures in unrelated tests.
+  - Test isolation is now hardened further by setting `HOME` as well as all XDG dirs inside `testutil.SetXDGConfigEnv`, so fallback `os.UserHomeDir()` paths cannot ever reach the developer's real home config during tests.
+- Regression coverage:
+  - `internal/config.TestDefaultPaths`
+  - `internal/config.TestDefaultPathsPreserveLegacyDotDirWhenXDGIsSet`
+  - `internal/config.TestDefaultConfigUsesConstants`
+  - `cmd/lingon` command tests revalidated against the restored hidden-dir path
+  - `internal/ptytest.Harness` and affected webui/session tests updated to the restored hidden-dir config location
+- Verification:
+  - `go test -count=1 ./internal/config ./cmd/lingon ./internal/cliwall`
+  - `go test -count=5 ./internal/host -run TestHostHonorsRetryAfter -v`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
 ### B-017 Attach startup connected banner wipes row-1 prompt/body
 
 - Status: `resolved`
