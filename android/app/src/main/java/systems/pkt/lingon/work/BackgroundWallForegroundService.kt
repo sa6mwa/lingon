@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,10 +34,11 @@ class BackgroundWallForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
-        startForeground(notificationId, buildNotification())
+        promoteToForeground()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        promoteToForeground()
         if (pollJob?.isActive != true) {
             pollJob = serviceScope.launch {
                 runPollLoop()
@@ -118,6 +120,20 @@ class BackgroundWallForegroundService : Service() {
             .setGroup(notificationGroupID)
             .setContentIntent(pendingIntent)
             .build()
+    }
+
+    private fun promoteToForeground() {
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceCompat.startForeground(
+                this,
+                notificationId,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+            return
+        }
+        startForeground(notificationId, notification)
     }
 
     private fun ensureChannel() {

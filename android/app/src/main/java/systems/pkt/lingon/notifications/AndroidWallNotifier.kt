@@ -10,7 +10,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import java.util.concurrent.atomic.AtomicInteger
 import systems.pkt.lingon.MainActivity
 import systems.pkt.lingon.R
 import systems.pkt.lingon.viewmodel.WallNotification
@@ -53,10 +52,11 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setGroup(notificationGroupID)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(pendingIntent)
             .build()
-        NotificationManagerCompat.from(context).notify(nextID.incrementAndGet(), notification)
+        NotificationManagerCompat.from(context).notify(notificationId, notification)
     }
 
     private fun ensureChannel() {
@@ -79,8 +79,7 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
 
     private companion object {
         const val channelID = "lingon_wall"
-        const val notificationGroupID = "lingon_wall_group"
-        val nextID = AtomicInteger(1000)
+        const val notificationId = 1002
     }
 }
 

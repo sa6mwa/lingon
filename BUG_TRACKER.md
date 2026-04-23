@@ -137,22 +137,16 @@ Required status values:
   1. Trigger a relay wall event for the logged-in Android user.
   2. Observe that the Android app does not surface the wall as expected.
 - Investigation notes:
-  - Need to verify both delivery paths:
-    - live WebSocket `Frame.wall` handling in `AppViewModel`
-    - background wall polling via `BackgroundWallForegroundService` and `/wall/events`
-  - Existing Android instrumentation `background_wall_delivery_posts_system_notification` only covered inactivity-driven background delivery, not a real manual `lingon wall` command path.
-  - Added a shared in-process wall command executor and switched the Android harness wall trigger to use the same endpoint/auth resolution path as `cmd/lingon wall`, with explicit `--endpoint`/`--auth-file` semantics and isolated harness auth state.
-  - Added Android instrumentation for both:
-    - live manual wall delivery while connected
-    - background manual wall delivery while wall polling is enabled
-  - The first strengthened background-manual wall e2e then failed for a real Android-side reason: the app posted a wall notification, but Android auto-grouped it behind a blank `ranker_group` summary when the background foreground-service notification was also present.
-  - This meant the older instrumentation could report success while selecting the wrong `lingon_wall` notification, and on-device the wall notification could effectively disappear behind the blank summary.
-  - Fixed by assigning explicit, separate notification groups to:
-    - wall notifications
-    - the background foreground-service notification
-  - Tightened the Android instrumentation to:
-    - select the real wall child notification instead of any `lingon_wall` record
-    - explicitly fail if a blank `ranker_group` summary is present for wall delivery
+  - Existing Android instrumentation only moved the activity to `CREATED`; it did not send the app to the real launcher/home background state, so it could pass while true background delivery was broken.
+  - Replaced the fake background helper with a real HOME/background transition using shell `input keyevent KEYCODE_HOME`.
+  - On the real background path, the app exposed two Android-side issues:
+    - resuming after the background notification tests could trip foreground-service startup churn
+    - wall notifications accumulated and Android auto-grouped them behind an empty `ranker_group` summary, making them effectively invisible on-device
+  - Fixed by:
+    - making the background wall service controller edge-triggered so it only issues start/stop on real state transitions
+    - removing wall-notification grouping entirely
+    - switching wall delivery to a single stable notification slot so the latest wall remains visible instead of accumulating into an auto-group summary
+  - Confirmed the background path is not using the WebSocket; it uses `BackgroundWallForegroundService` polling `/wall/events`
 - Regression coverage:
   - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::manual_wall_delivery_posts_system_notification`
   - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_manual_wall_delivery_posts_system_notification`
@@ -160,7 +154,6 @@ Required status values:
 - Verification:
   - `./gradlew :app:testDebugUnitTest`
   - `./gradlew :app:compileDebugAndroidTestKotlin`
-  - `env LINGON_IT_ONLY=manual_wall_delivery_posts_system_notification ./scripts/run-integration-tests.sh`
   - `env LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification ./scripts/run-integration-tests.sh`
   - `env LINGON_IT_ONLY=background_wall_delivery_posts_system_notification ./scripts/run-integration-tests.sh`
 

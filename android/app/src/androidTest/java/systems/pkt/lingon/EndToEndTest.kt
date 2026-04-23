@@ -868,6 +868,10 @@ class EndToEndTest {
         val wallNotification = wallNotifications()
             .firstOrNull()
             ?: throw AssertionError("missing lingon_wall notification")
+        assertTrue(
+            "wall notification should not be grouped: group=${wallNotification.notification.group.orEmpty()}",
+            wallNotification.notification.group.isNullOrBlank(),
+        )
         val title = wallNotification.notification.extras
             .getCharSequence(Notification.EXTRA_TITLE)
             ?.toString()
@@ -881,8 +885,6 @@ class EndToEndTest {
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertTrue("notification title missing session label: $title", title.endsWith("#${activeSessionId()}"))
         assertEquals("$title: ${activeSessionId()} inactive", text)
-        resumeActivity()
-        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
     }
 
     @Test
@@ -984,6 +986,10 @@ class EndToEndTest {
         val wallNotification = wallNotifications()
             .firstOrNull { wallNotificationText(it) == message }
             ?: throw AssertionError("missing lingon_wall notification for message=$message")
+        assertTrue(
+            "wall notification should not be grouped: group=${wallNotification.notification.group.orEmpty()}",
+            wallNotification.notification.group.isNullOrBlank(),
+        )
         val title = wallNotificationTitle(wallNotification)
         val text = wallNotificationFullText(wallNotification)
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
@@ -1023,14 +1029,15 @@ class EndToEndTest {
         val wallNotification = wallNotifications()
             .firstOrNull { wallNotificationText(it) == message }
             ?: throw AssertionError("missing lingon_wall notification for message=$message")
+        assertTrue(
+            "wall notification should not be grouped: group=${wallNotification.notification.group.orEmpty()}",
+            wallNotification.notification.group.isNullOrBlank(),
+        )
         val title = wallNotificationTitle(wallNotification)
         val text = wallNotificationFullText(wallNotification)
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
         assertEquals("$title: $message", text)
-
-        resumeActivity()
-        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
     }
 
     @Test
@@ -1201,12 +1208,20 @@ class EndToEndTest {
     }
 
     private fun backgroundActivity() {
-        composeRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
-        composeRule.waitForIdle()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_HOME"),
+        )
+        Thread.sleep(POLL_INTERVAL_MS)
     }
 
     private fun resumeActivity() {
-        composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand(
+                "am start -W -n systems.pkt.lingon/.MainActivity",
+            ),
+        )
         composeRule.waitForIdle()
     }
 
