@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.ParcelFileDescriptor
 import android.view.KeyEvent
+import androidx.core.app.NotificationManagerCompat
 import androidx.test.rule.GrantPermissionRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -33,6 +34,7 @@ import android.view.ViewGroup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Base64
@@ -838,6 +840,7 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureWallInactivityOff()
+        syncWallCursorToLatest()
 
         composeRule.activity.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
@@ -887,27 +890,26 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(false)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { !appViewModel().state.value.backgroundWallEnabled }
+        ensureWallInactivityOff()
+        syncWallCursorToLatest()
 
         val message = "manual wall ${System.currentTimeMillis()}"
         sendWallViaHarness(message)
 
         waitUntilNoError(10_000L) {
-            wallNotifications().isNotEmpty()
+            wallNotifications().any { wallNotificationText(it) == message }
         }
         assertNoWallNotificationAutogroupSummary()
         val wallNotification = wallNotifications()
-            .firstOrNull()
-            ?: throw AssertionError("missing lingon_wall notification")
-        val title = wallNotification.notification.extras
-            .getCharSequence(Notification.EXTRA_TITLE)
-            ?.toString()
-            ?.trim()
-            .orEmpty()
-        val text = wallNotification.notification.extras
-            .getCharSequence(Notification.EXTRA_TEXT)
-            ?.toString()
-            ?.trim()
-            .orEmpty()
+            .firstOrNull { wallNotificationText(it) == message }
+            ?: throw AssertionError("missing lingon_wall notification for message=$message")
+        val title = wallNotificationTitle(wallNotification)
+        val text = wallNotificationFullText(wallNotification)
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
         assertEquals("$title: $message", text)
@@ -921,6 +923,8 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureWallInactivityOff()
+        syncWallCursorToLatest()
 
         composeRule.activity.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
@@ -937,22 +941,14 @@ class EndToEndTest {
         sendWallViaHarness(message)
 
         waitUntilNoError(15_000L) {
-            wallNotifications().isNotEmpty()
+            wallNotifications().any { wallNotificationText(it) == message }
         }
         assertNoWallNotificationAutogroupSummary()
         val wallNotification = wallNotifications()
-            .firstOrNull()
-            ?: throw AssertionError("missing lingon_wall notification")
-        val title = wallNotification.notification.extras
-            .getCharSequence(Notification.EXTRA_TITLE)
-            ?.toString()
-            ?.trim()
-            .orEmpty()
-        val text = wallNotification.notification.extras
-            .getCharSequence(Notification.EXTRA_TEXT)
-            ?.toString()
-            ?.trim()
-            .orEmpty()
+            .firstOrNull { wallNotificationText(it) == message }
+            ?: throw AssertionError("missing lingon_wall notification for message=$message")
+        val title = wallNotificationTitle(wallNotification)
+        val text = wallNotificationFullText(wallNotification)
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
         assertEquals("$title: $message", text)
@@ -970,6 +966,7 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureWallInactivityOff()
+        syncWallCursorToLatest()
 
         composeRule.activity.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
@@ -982,7 +979,10 @@ class EndToEndTest {
             activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
         }
 
-        revokeNotificationPermission()
+        assumeTrue(
+            "runtime notification gating toggle unsupported on this device",
+            setNotificationDeliveryEnabled(false),
+        )
         clearWallNotifications()
 
         val blockedMessage = "permission blocked wall ${System.currentTimeMillis()}"
@@ -993,7 +993,7 @@ class EndToEndTest {
             activeNotifications().any { it.notification.channelId == "lingon_wall" },
         )
 
-        grantNotificationPermission()
+        assertTrue("failed to re-enable notifications", setNotificationDeliveryEnabled(true))
         val recoveredMessage = "permission restored wall ${System.currentTimeMillis()}"
         sendWallViaHarness(recoveredMessage)
         waitUntilNoError(15_000L) {
@@ -1199,22 +1199,54 @@ class EndToEndTest {
         composeRule.waitForIdle()
     }
 
-    private fun revokeNotificationPermission() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        consumeShellCommand(
-            instrumentation.uiAutomation.executeShellCommand(
-                "pm revoke systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
-            ),
-        )
+    private fun syncWallCursorToLatest() {
+        val app = composeRule.activity.application as LingonApplication
+        val endpoint = appViewModel().state.value.endpoint.trim()
+        if (endpoint.isBlank()) {
+            return
+        }
+        val latest = runBlocking {
+            var since = 0L
+            while (true) {
+                val page = app.repository.listWallEvents(sinceId = since, limit = 500)
+                if (page.nextId > since) {
+                    since = page.nextId
+                }
+                if (!page.hasMore) {
+                    break
+                }
+            }
+            since
+        }
+        runBlocking {
+            app.wallDeliveryCoordinator.advanceCursor(endpoint, latest)
+        }
     }
 
-    private fun grantNotificationPermission() {
+    private fun setNotificationDeliveryEnabled(enabled: Boolean): Boolean {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         consumeShellCommand(
             instrumentation.uiAutomation.executeShellCommand(
-                "pm grant systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
+                if (enabled) {
+                    "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION allow"
+                } else {
+                    "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION deny"
+                },
             ),
         )
+        val deadline = System.currentTimeMillis() + 5_000L
+        while (System.currentTimeMillis() < deadline) {
+            if (notificationsEnabled() == enabled) {
+                return true
+            }
+            composeRule.waitForIdle()
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        return notificationsEnabled() == enabled
+    }
+
+    private fun notificationsEnabled(): Boolean {
+        return NotificationManagerCompat.from(composeRule.activity).areNotificationsEnabled()
     }
 
     private fun ensureWallInactivityOff() {
@@ -1249,6 +1281,31 @@ class EndToEndTest {
                 it.notification.channelId == "lingon_wall" &&
                     it.tag != "ranker_group"
             }
+    }
+
+    private fun wallNotificationTitle(notification: StatusBarNotification): String {
+        return notification.notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+    }
+
+    private fun wallNotificationText(notification: StatusBarNotification): String {
+        return notification.notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+            .substringAfter(": ", "")
+    }
+
+    private fun wallNotificationFullText(notification: StatusBarNotification): String {
+        return notification.notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
     }
 
     private fun assertNoWallNotificationAutogroupSummary() {

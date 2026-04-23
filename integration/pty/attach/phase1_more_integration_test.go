@@ -124,20 +124,22 @@ func TestMultiHostSwitchWhileReconnect(t *testing.T) {
 }
 
 func TestAttachScrollbackDuringDisconnect(t *testing.T) {
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
 	}
 
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID: "host-scroll",
-		Shell:     shell,
+		Shell:     writeAttachPromptShell(t),
 		Cols:      120,
 		Rows:      30,
 	})
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"host-scroll"})
+	if !screenContainsWithin(host, "PROMPT>", 3*time.Second) {
+		t.Fatalf("expected host prompt before scrollback test")
+	}
 
 	attachSess, active, views := startTrackedAttach(t, h, "host-scroll")
 	t.Cleanup(attachSess.Cancel)
@@ -162,7 +164,9 @@ func TestAttachScrollbackDuringDisconnect(t *testing.T) {
 		t, h, attachSess, active, views, "attach-scroll", "host-scroll", 10*time.Second,
 	)
 	attachSess.Send("q")
-	h.Advance(100 * time.Millisecond)
+	if !screenContainsWithin(attachSess, "PROMPT>", 2*time.Second) {
+		t.Fatalf("expected prompt restored after leaving scrollback on reconnect, got:\n%s", attachSess.Screen().String())
+	}
 
 	attachSess.Send("echo SCROLL_BACK\n")
 	if !screenContainsWithin(attachSess, "SCROLL_BACK", 5*time.Second) {

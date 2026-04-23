@@ -131,23 +131,25 @@ func TestMultiAttachResizeDoesNotResizeRelayHostPTY(t *testing.T) {
 }
 
 func TestMultiAttachViewportCropsWideHostOutputInsteadOfWrapping(t *testing.T) {
-	h := newHarness(t)
-
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
 	}
+
+	h := newHarness(t)
 
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "attach-camera-crop",
 		SessionName: "attach-camera-crop",
-		Shell:       shell,
+		Shell:       writeAttachPromptShell(t),
 		Cols:        120,
 		Rows:        40,
 	})
 	t.Cleanup(host.Cancel)
 
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-camera-crop"})
+	if !screenContainsWithin(host, "PROMPT>", 3*time.Second) {
+		t.Fatalf("expected host prompt before crop assertion")
+	}
 
 	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: "attach-camera-crop",
