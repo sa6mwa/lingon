@@ -47,8 +47,20 @@ class WallWorkStateStoreTest {
 
         assertEquals(true, store.shouldDeliverAndAdvance("https://a.example/v1", 42L))
         assertEquals(false, store.shouldDeliverAndAdvance("https://a.example/v1", 42L))
-        assertEquals(false, store.shouldDeliverAndAdvance("https://a.example/v1", 41L))
+        assertEquals(true, store.shouldDeliverAndAdvance("https://a.example/v1", 41L))
         assertEquals(true, store.shouldDeliverAndAdvance("https://a.example/v1", 43L))
+    }
+
+    @Test
+    fun clearCursorRemovesOnlyRequestedEndpoint() = runTest {
+        val store = newStore()
+        store.saveCursor("https://a.example/v1", 7L)
+        store.saveCursor("https://b.example/v1", 9L)
+
+        store.clearCursor("https://a.example/v1")
+
+        assertEquals(0L, store.loadCursor("https://a.example/v1"))
+        assertEquals(9L, store.loadCursor("https://b.example/v1"))
     }
 
     private fun newStore(): WallWorkStateStore {

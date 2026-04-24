@@ -131,6 +131,31 @@ func TestWallServiceSendUserWallSanitizesMessage(t *testing.T) {
 	}
 }
 
+func TestWallServiceListEventsReturnsCurrentHighWatermarkWhenCursorIsAhead(t *testing.T) {
+	store := NewStore()
+	hub := NewHub(nil)
+	now := time.Now().UTC()
+	svc := newWallService(store, hub, nil, 5*time.Second, []time.Duration{5 * time.Minute})
+
+	if _, err := svc.sendUserWall("alice", "alice@127.0.0.1", "hello", now); err != nil {
+		t.Fatalf("sendUserWall first: %v", err)
+	}
+	if _, err := svc.sendUserWall("alice", "alice@127.0.0.1", "world", now.Add(time.Second)); err != nil {
+		t.Fatalf("sendUserWall second: %v", err)
+	}
+
+	events, nextID, hasMore := svc.listEvents("alice", 36, 10, now.Add(2*time.Second))
+	if len(events) != 0 {
+		t.Fatalf("events len = %d, want 0", len(events))
+	}
+	if nextID != 2 {
+		t.Fatalf("nextID = %d, want 2", nextID)
+	}
+	if hasMore {
+		t.Fatalf("hasMore = true, want false")
+	}
+}
+
 func TestWallServiceInactivityFiresAfterEachActivityWhileEnabled(t *testing.T) {
 	store := NewStore()
 	hub := NewHub(nil)

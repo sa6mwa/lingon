@@ -1,5 +1,4 @@
 package systems.pkt.lingon.notifications
-
 import systems.pkt.lingon.data.WallWorkStateStore
 import systems.pkt.lingon.viewmodel.WallNotification
 import systems.pkt.lingon.viewmodel.WallNotifier

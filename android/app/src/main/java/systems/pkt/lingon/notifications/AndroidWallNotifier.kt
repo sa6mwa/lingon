@@ -17,9 +17,6 @@ import systems.pkt.lingon.viewmodel.WallNotifier
 
 class AndroidWallNotifier(private val context: Context) : WallNotifier {
     override fun notifyWall(notification: WallNotification) {
-        if (!notificationsEnabled(context)) {
-            return
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
             if (!granted) {
@@ -82,9 +79,6 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
         const val notificationId = 1002
     }
 }
-
-internal fun notificationsEnabled(context: Context): Boolean =
-    NotificationManagerCompat.from(context).areNotificationsEnabled()
 
 internal fun formatWallSource(sender: String, sourceSessionName: String): String {
     val cleanSender = sender.trim()

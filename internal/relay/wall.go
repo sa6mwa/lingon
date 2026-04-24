@@ -398,11 +398,12 @@ func (s *WallService) listEvents(username string, sinceID uint64, limit int, now
 	defer s.mu.Unlock()
 	s.pruneEventsLocked(username, now)
 	events := s.eventsByUser[username]
+	currentMaxID := s.nextEventID
 	if len(events) == 0 {
-		return []wallEvent{}, sinceID, false
+		return []wallEvent{}, currentMaxID, false
 	}
 	out := make([]wallEvent, 0, limit)
-	nextID := sinceID
+	nextID := currentMaxID
 	more := false
 	for _, event := range events {
 		if event.ID <= sinceID {

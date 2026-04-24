@@ -1041,6 +1041,41 @@ class EndToEndTest {
     }
 
     @Test
+    fun background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureWallInactivityOff()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilNoError(10_000L) {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        advanceWallCursorAheadOfRelay()
+
+        val message = "background wall cursor reset ${System.currentTimeMillis()}"
+        sendWallViaHarness(message)
+
+        waitUntilNoError(20_000L) {
+            wallNotifications().any { wallNotificationText(it) == message }
+        }
+        val wallNotification = wallNotifications()
+            .firstOrNull { wallNotificationText(it) == message }
+            ?: throw AssertionError("missing lingon_wall notification for message=$message")
+        assertEquals(message, wallNotificationText(wallNotification))
+    }
+
+    @Test
     fun background_wall_delivery_stops_without_notification_permission_and_recovers_after_grant() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -1311,6 +1346,30 @@ class EndToEndTest {
         }
         runBlocking {
             app.wallDeliveryCoordinator.advanceCursor(endpoint, latest)
+        }
+    }
+
+    private fun advanceWallCursorAheadOfRelay() {
+        val app = composeRule.activity.application as LingonApplication
+        val endpoint = appViewModel().state.value.endpoint.trim()
+        if (endpoint.isBlank()) {
+            return
+        }
+        val latest = runBlocking {
+            var since = 0L
+            while (true) {
+                val page = app.repository.listWallEvents(sinceId = since, limit = 500)
+                if (page.nextId > since) {
+                    since = page.nextId
+                }
+                if (!page.hasMore) {
+                    break
+                }
+            }
+            since
+        }
+        runBlocking {
+            app.wallDeliveryCoordinator.advanceCursor(endpoint, latest + 100)
         }
     }
 

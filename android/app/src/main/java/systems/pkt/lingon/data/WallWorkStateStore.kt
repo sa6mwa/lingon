@@ -52,9 +52,26 @@ class WallWorkStateStore(
                 cursorMap[cleaned] = eventId
                 prefs[cursorsKey] = encodeCursorMap(cursorMap)
                 shouldDeliver = true
+            } else if (eventId < current) {
+                cursorMap[cleaned] = eventId
+                prefs[cursorsKey] = encodeCursorMap(cursorMap)
+                shouldDeliver = true
             }
         }
         return shouldDeliver
+    }
+
+    suspend fun clearCursor(endpoint: String) {
+        val cleaned = endpoint.trim()
+        if (cleaned.isBlank()) {
+            return
+        }
+        dataStore.edit { prefs ->
+            val cursorMap = parseCursorMap(prefs[cursorsKey])
+            if (cursorMap.remove(cleaned) != null) {
+                prefs[cursorsKey] = encodeCursorMap(cursorMap)
+            }
+        }
     }
 
     suspend fun clear() {

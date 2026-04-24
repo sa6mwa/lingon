@@ -1,0 +1,22 @@
+package systems.pkt.lingon.work
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class BackgroundWallForegroundServiceTest {
+    @Test
+    fun shouldResetCursorWhenRelayWatermarkFallsBehindStoredCursor() {
+        assertTrue(shouldResetWallCursor(since = 36L, nextId = 6L, eventCount = 0))
+    }
+
+    @Test
+    fun shouldNotResetCursorWhenNoNewWallsExist() {
+        assertFalse(shouldResetWallCursor(since = 36L, nextId = 36L, eventCount = 0))
+    }
+
+    @Test
+    fun shouldNotResetCursorWhenEventsAreReturned() {
+        assertFalse(shouldResetWallCursor(since = 36L, nextId = 6L, eventCount = 1))
+    }
+}

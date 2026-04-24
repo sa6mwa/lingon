@@ -147,15 +147,33 @@ Required status values:
     - removing wall-notification grouping entirely
     - switching wall delivery to a single stable notification slot so the latest wall remains visible instead of accumulating into an auto-group summary
   - Confirmed the background path is not using the WebSocket; it uses `BackgroundWallForegroundService` polling `/wall/events`
+  - Real physical-phone repro on 2026-04-24 exposed the remaining live bug:
+    - the phone was polling `/wall/events`, but persisted `since=36`
+    - the relay had restarted/reset wall IDs and was serving new real walls as IDs `6`, `7`, `8`
+    - Android permanently suppressed those walls as duplicates
+  - Root cause was a cursor contract mismatch:
+    - relay `wall/events` echoed the caller cursor when the client cursor was ahead, so the app could not detect relay wall-ID reset
+    - Android wall delivery treated any lower event ID as replay forever
 - Regression coverage:
   - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::manual_wall_delivery_posts_system_notification`
   - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_manual_wall_delivery_posts_system_notification`
+  - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay`
   - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_wall_delivery_posts_system_notification`
+  - `android/app/src/test/java/systems/pkt/lingon/data/WallWorkStateStoreTest.kt`
+  - `android/app/src/test/java/systems/pkt/lingon/work/BackgroundWallForegroundServiceTest.kt`
+  - `internal/relay/wall_test.go::TestWallServiceListEventsReturnsCurrentHighWatermarkWhenCursorIsAhead`
 - Verification:
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
   - `./gradlew :app:testDebugUnitTest`
   - `./gradlew :app:compileDebugAndroidTestKotlin`
-  - `env LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification ./scripts/run-integration-tests.sh`
-  - `env LINGON_IT_ONLY=background_wall_delivery_posts_system_notification ./scripts/run-integration-tests.sh`
+  - Physical phone end-to-end over `adb` with the signed release installed:
+    - background real `lingon wall ...` produced `lingon_wall` notification `id=1002`
+    - foreground real `lingon wall ...` produced `lingon_wall` notification `id=1002`
+    - verified via `dumpsys notification` and phone-side app logs
+  - Note: targeted emulator instrumentation is currently awkward with a signed release installed on the connected physical phone because `connectedDebugAndroidTest` tries to install the debug app to every connected device. The exact phone-truth bug was reproduced and verified directly on the physical device instead.
 
 ### B-014 Wall inactivity banner leaks onto disconnected remote tab switch
 

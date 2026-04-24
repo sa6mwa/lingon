@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -66,6 +67,11 @@ class BackgroundWallForegroundService : Service() {
             val since = app.wallWorkStateStore.loadCursor(endpoint)
             try {
                 val page = app.repository.listWallEvents(sinceId = since, limit = servicePageLimit)
+                if (shouldResetWallCursor(since, page.nextId, page.events.size)) {
+                    Log.w(logTag, "poll cursor reset detected endpoint=$endpoint since=$since next=${page.nextId}")
+                    app.wallWorkStateStore.clearCursor(endpoint)
+                    continue
+                }
                 var next = since
                 page.events.forEach { event ->
                     if (event.message.isBlank()) {
@@ -91,11 +97,13 @@ class BackgroundWallForegroundService : Service() {
                     app.wallDeliveryCoordinator.advanceCursor(endpoint, next)
                 }
             } catch (err: ApiException) {
+                Log.w(logTag, "poll api failed endpoint=$endpoint since=$since status=${err.statusCode}", err)
                 if (err.statusCode == 401) {
                     stopSelf()
                     return
                 }
-            } catch (_: Exception) {
+            } catch (err: Exception) {
+                Log.w(logTag, "poll failed endpoint=$endpoint since=$since", err)
             }
             delay(pollIntervalMs)
         }
@@ -158,7 +166,12 @@ class BackgroundWallForegroundService : Service() {
         private const val channelID = "lingon_background_wall"
         private const val notificationGroupID = "lingon_background_wall_group"
         private const val notificationId = 2001
-        private const val pollIntervalMs = 5_000L
+        private const val pollIntervalMs = 15_000L
         private const val servicePageLimit = 100
+        private const val logTag = "lingon-wall-bg"
+
     }
 }
+
+internal fun shouldResetWallCursor(since: Long, nextId: Long, eventCount: Int): Boolean =
+    since > 0L && eventCount == 0 && nextId in 0 until since
