@@ -29,6 +29,80 @@ Required status values:
 
 ## Active Items
 
+### B-023 Android wall notifications replay previous message with next message
+
+- Status: `resolved`
+- Area: `android`, `notifications`
+- Summary: Android wall notification dedupe must be monotonic and must serialize foreground/background delivery so an already-delivered or older wall event is not posted again with the next event.
+- Report:
+  The Android app repeats each wall message as a double notification; after some time, the previous notification is sent again with the next notification, so wall delivery is not deduped correctly.
+- Repro:
+  1. Deliver wall event `N`.
+  2. Deliver wall event `N+1` or allow foreground websocket and background polling to process overlapping wall pages.
+  3. Observe event `N` can be posted again because the state check treats any event id different from the current cursor as deliverable, and concurrent deliveries can both pass the read-side check before either records the cursor.
+- Regression coverage:
+  - `WallWorkStateStoreTest.deliveryChecksAndRecordsAreMonotonic`
+  - `WallWorkStateStoreTest.shouldDeliverAndAdvanceSuppressesReplayForSameEndpoint`
+  - `WallDeliveryCoordinatorTest.olderEventAfterNewerEventDoesNotReplayOrMoveCursorBackward`
+  - `WallDeliveryCoordinatorTest.concurrentDeliveryOfSameEventPostsOnlyOnce`
+  - `EndToEndTest.background_manual_wall_delivery_does_not_repost_previous_message`
+- Verification:
+  - `./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest --tests systems.pkt.lingon.data.WallWorkStateStoreTest`
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_does_not_repost_previous_message make test-android`
+  - `git diff --check`
+
+### B-021 Attach async rendering races with read-side render state
+
+- Status: `resolved`
+- Area: `attach`, `desktopnotify`, `windows`
+- Summary: Async attach rendering must not race with websocket/read-side bookkeeping over shared render state, and the desktop notification package must remain buildable for Windows.
+- Report:
+  Reviewer flagged two issues: attach render requests now run on a render goroutine while websocket reads can still access `renderCache`/compositor state, and the Windows desktop notifier stub redeclares the common noop notifier.
+- Repro:
+  1. Inspect attach paths where `startRenderLoop` enables rendering outside the websocket read goroutine.
+  2. Receive scrollback or other read-side frames while a render is pending; read-side helpers can read `renderCache` without `renderMu`.
+  3. Run `GOOS=windows GOARCH=amd64 go test -c ./internal/desktopnotify`.
+- Verification:
+  - Added `internal/attach.TestAttachRenderCacheReadsUseSerializedHelpers` to prevent direct read-side `renderCache` reads from bypassing serialized helpers.
+  - `GOOS=windows GOARCH=amd64 go test -c ./internal/desktopnotify`
+  - `go test ./internal/desktopnotify`
+  - `go test ./internal/attach -run 'TestAttachRenderCacheReadsUseSerializedHelpers|TestAttachRenderingDoesNotUseOverlayOnlyComposePaths'`
+  - `go test ./internal/attach`
+  - `go test -race ./internal/session -run 'TestAttachSendInputSharedConfig|TestAttachSendInputSeparateConfig'`
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - Remaining note: broader race runs still expose separate pre-existing race-detector failures in test buffers/session PTY lifecycle paths, outside the attach `renderCache`/Windows notifier fixes tracked here.
+
+### B-022 Android wall notification delivery and integration isolation regressions
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `integration-tests`
+- Summary: Android wall notification delivery must not consume events that Android did not actually post, and Android integration tests must run in larger instrumentation batches without leaking app-op, activity, notification, or harness headless-session state between tests.
+- Report:
+  During the full Android integration sweep, `background_manual_wall_delivery_posts_system_notification` timed out after the app received a wall frame (`lastFrameType=wall`) but no `lingon_wall` system notification became visible. The old test runner also ran one Gradle instrumentation invocation per test, which made the suite slow and hid real state leaks behind per-test process/app resets.
+- Repro:
+  1. Run the full Android integration target after prior wall notification tests have toggled notification delivery.
+  2. Observe the background manual wall notification test receive the relay wall frame but fail to observe the expected Android system notification.
+  3. Batch Android tests into shared instrumentation invocations; stale headless sessions and notification/app-op state then leak into later visual/tab tests unless teardown is explicit.
+- Investigation notes:
+  - `NotificationManagerCompat.notify(...)` can return without throwing even when the app cannot later observe the posted notification; treating that call as delivery success advanced the wall cursor too early.
+  - The permission-toggle test could leave notification app-op state behind for later tests because the old reset path depended on reinstall/clear behavior rather than an explicit test invariant.
+  - Headless sessions created through the harness persisted at the relay/harness layer and polluted later tests once they shared an instrumentation process.
+  - The integration runner now batches tests by harness mode: normal tests before the zero-session case, that special case, the next normal batch, the quiet-host case, and the final normal batch.
+- Regression coverage:
+  - `WallDeliveryCoordinatorTest.failedNotificationDoesNotAdvanceCursor`
+  - `WallDeliveryCoordinatorTest.successfulNotificationAdvancesCursorAndSuppressesReplay`
+  - Android instrumentation teardown now restores notification delivery, foregrounds/logs out the app, clears notifications, and detaches harness-created headless sessions.
+  - Android integration runner now proves batched execution instead of one Gradle/instrumentation invocation per test.
+- Verification:
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+  - `make test-android` passed with 3-test, 17-test, and 19-test instrumentation batches plus two required single-test harness-mode cases. One pre-existing permission-toggle case skipped via its existing `assumeTrue` because the emulator did not support that runtime app-op toggle.
+
 ### B-020 Headless resize policy is inconsistent between attach and host remote multi-client
 
 - Status: `resolved`

@@ -40,6 +40,10 @@ class BackgroundWallForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         promoteToForeground()
+        if (intent?.action == actionStop) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         if (pollJob?.isActive != true) {
             pollJob = serviceScope.launch {
                 runPollLoop()
@@ -73,11 +77,15 @@ class BackgroundWallForegroundService : Service() {
                     continue
                 }
                 var next = since
-                page.events.forEach { event ->
+                var blocked = false
+                for (event in page.events) {
                     if (event.message.isBlank()) {
-                        return@forEach
+                        if (event.id > next) {
+                            next = event.id
+                        }
+                        continue
                     }
-                    app.wallDeliveryCoordinator.deliver(
+                    val consumed = app.wallDeliveryCoordinator.deliver(
                         WallNotification(
                             endpoint = endpoint,
                             eventId = event.id,
@@ -86,11 +94,15 @@ class BackgroundWallForegroundService : Service() {
                             message = event.message,
                         ),
                     )
+                    if (!consumed) {
+                        blocked = true
+                        break
+                    }
                     if (event.id > next) {
                         next = event.id
                     }
                 }
-                if (page.nextId > next) {
+                if (!blocked && page.nextId > next) {
                     next = page.nextId
                 }
                 if (next > since) {
@@ -162,7 +174,8 @@ class BackgroundWallForegroundService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    private companion object {
+    internal companion object {
+        const val actionStop = "systems.pkt.lingon.work.BackgroundWallForegroundService.STOP"
         private const val channelID = "lingon_background_wall"
         private const val notificationGroupID = "lingon_background_wall_group"
         private const val notificationId = 2001

@@ -18,7 +18,8 @@ class AndroidBackgroundWallServiceController(
         if (enabled) {
             ContextCompat.startForegroundService(appContext, intent)
         } else {
-            appContext.stopService(intent)
+            intent.action = BackgroundWallForegroundService.actionStop
+            ContextCompat.startForegroundService(appContext, intent)
         }
     }
 }

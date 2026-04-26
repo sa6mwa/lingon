@@ -173,3 +173,36 @@ func TestAttachRenderingDoesNotUseOverlayOnlyComposePaths(t *testing.T) {
 		t.Fatalf("expected attach multi connection status formatting to delegate to mvu.ConnectedToMessage")
 	}
 }
+
+func TestAttachRenderCacheReadsUseSerializedHelpers(t *testing.T) {
+	clientSrcBytes, err := os.ReadFile("client.go")
+	if err != nil {
+		t.Fatalf("read client.go: %v", err)
+	}
+	clientSrc := string(clientSrcBytes)
+
+	requiredHelpers := []string{
+		"func (c *Client) renderSnapshotRows() int",
+		"func (c *Client) renderHelpVisible() bool",
+		"func (c *Client) applyCompositorAction(action mvu.Action) mvu.ActionResult",
+		"func (c *Client) readCompositorState() mvu.State",
+	}
+	for _, needle := range requiredHelpers {
+		if !strings.Contains(clientSrc, needle) {
+			t.Fatalf("missing serialized attach render-state helper %q", needle)
+		}
+	}
+
+	if got := strings.Count(clientSrc, "c.renderCache.SnapshotRows()"); got != 1 {
+		t.Fatalf("expected renderCache SnapshotRows reads to be isolated in renderSnapshotRows helper, got %d direct reads", got)
+	}
+	if got := strings.Count(clientSrc, "c.renderCache.HelpVisible()"); got != 1 {
+		t.Fatalf("expected renderCache HelpVisible reads to be isolated in renderHelpVisible helper, got %d direct reads", got)
+	}
+	if !regexp.MustCompile(`func \(c \*Client\) renderSnapshotRows\(\) int \{\s*c\.renderMu\.Lock\(\)`).MatchString(clientSrc) {
+		t.Fatalf("expected renderSnapshotRows to serialize on renderMu")
+	}
+	if !regexp.MustCompile(`func \(c \*Client\) renderHelpVisible\(\) bool \{\s*c\.renderMu\.Lock\(\)`).MatchString(clientSrc) {
+		t.Fatalf("expected renderHelpVisible to serialize on renderMu")
+	}
+}

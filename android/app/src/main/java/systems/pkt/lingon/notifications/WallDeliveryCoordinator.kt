@@ -1,10 +1,12 @@
 package systems.pkt.lingon.notifications
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import systems.pkt.lingon.data.WallWorkStateStore
 import systems.pkt.lingon.viewmodel.WallNotification
 import systems.pkt.lingon.viewmodel.WallNotifier
 
 interface WallDeliveryCoordinator {
-    suspend fun deliver(notification: WallNotification)
+    suspend fun deliver(notification: WallNotification): Boolean
     suspend fun advanceCursor(endpoint: String, cursor: Long)
 }
 
@@ -12,15 +14,23 @@ class MonotonicWallDeliveryCoordinator(
     private val stateStore: WallWorkStateStore,
     private val notifier: WallNotifier,
 ) : WallDeliveryCoordinator {
-    override suspend fun deliver(notification: WallNotification) {
-        val body = notification.message.trim()
-        if (body.isBlank()) {
-            return
+    private val deliveryMu = Mutex()
+
+    override suspend fun deliver(notification: WallNotification): Boolean {
+        return deliveryMu.withLock {
+            val body = notification.message.trim()
+            if (body.isBlank()) {
+                return@withLock true
+            }
+            if (!stateStore.shouldDeliver(notification.endpoint, notification.eventId)) {
+                return@withLock true
+            }
+            if (notifier.notifyWall(notification.copy(message = body))) {
+                stateStore.recordDelivered(notification.endpoint, notification.eventId)
+                return@withLock true
+            }
+            false
         }
-        if (!stateStore.shouldDeliverAndAdvance(notification.endpoint, notification.eventId)) {
-            return
-        }
-        notifier.notifyWall(notification.copy(message = body))
     }
 
     override suspend fun advanceCursor(endpoint: String, cursor: Long) {
@@ -29,7 +39,7 @@ class MonotonicWallDeliveryCoordinator(
 }
 
 object NoopWallDeliveryCoordinator : WallDeliveryCoordinator {
-    override suspend fun deliver(notification: WallNotification) {}
+    override suspend fun deliver(notification: WallNotification): Boolean = false
 
     override suspend fun advanceCursor(endpoint: String, cursor: Long) {}
 }

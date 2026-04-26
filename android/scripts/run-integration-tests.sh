@@ -176,6 +176,8 @@ reset_test_apps() {
   "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell am force-stop "${TEST_APP_ID}" >/dev/null 2>&1 || true
   "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell pm clear "${APP_ID}" >/dev/null 2>&1 || true
   "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell pm clear "${TEST_APP_ID}" >/dev/null 2>&1 || true
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell pm grant "${APP_ID}" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
+  "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell cmd appops set "${APP_ID}" POST_NOTIFICATION allow >/dev/null 2>&1 || true
   "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell rm -rf "/sdcard/Android/data/${APP_ID}/files/test-artifacts" >/dev/null 2>&1 || true
   "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell rm -rf "/sdcard/Android/data/${TEST_APP_ID}/files/test-artifacts" >/dev/null 2>&1 || true
 }
@@ -237,29 +239,30 @@ set +e
     exit 1
   fi
   TEST_EXIT=0
-  for test_name in "${TESTS[@]}"; do
-    if [[ -n "${ONLY_TEST}" ]] && [[ "${test_name}" != "${ONLY_TEST}" ]]; then
-      continue
+
+  run_test_batch() {
+    local test_names=("$@")
+    if [[ "${#test_names[@]}" -eq 0 ]]; then
+      return 0
     fi
-    if [[ "${test_name}" == "${SPECIAL_TEST}" ]]; then
-      stop_harness
-      start_harness 0
-      ensure_adb_reverse
-    fi
-    if [[ "${test_name}" == "${QUIET_HOST_TEST}" ]]; then
-      stop_harness
-      export LINGON_ANDROID_HARNESS_HOST_SHELL=/bin/sh
-      start_harness 2
-      ensure_adb_reverse
-    else
-      unset LINGON_ANDROID_HARNESS_HOST_SHELL
-    fi
+    local class_arg=""
+    local test_name
+    for test_name in "${test_names[@]}"; do
+      if [[ -n "${class_arg}" ]]; then
+        class_arg+=","
+      fi
+      class_arg+="systems.pkt.lingon.EndToEndTest#${test_name}"
+    done
     reset_test_apps
     ensure_adb_reverse
-    echo "Running ${test_name}..."
+    if [[ "${#test_names[@]}" -eq 1 ]]; then
+      echo "Running ${test_names[0]}..."
+    else
+      echo "Running ${#test_names[@]} Android tests in one instrumentation batch..."
+    fi
     ./gradlew :app:connectedDebugAndroidTest \
       --no-configuration-cache \
-      -Plingon.it.class="systems.pkt.lingon.EndToEndTest#${test_name}" \
+      -Plingon.it.class="${class_arg}" \
       -Plingon.it.endpoint="${DEVICE_ENDPOINT}" \
       -Plingon.it.username="${USERNAME}" \
       -Plingon.it.password="${PASSWORD}" \
@@ -280,21 +283,55 @@ set +e
     TEST_EXIT=$?
     CURRENT_TEST_PID=""
     CURRENT_TEST_PGID=""
-    if [[ "${TEST_EXIT}" -ne 0 ]]; then
-      break
+    return "${TEST_EXIT}"
+  }
+
+  BATCH=()
+  flush_batch() {
+    if [[ "${#BATCH[@]}" -eq 0 ]]; then
+      return 0
+    fi
+    run_test_batch "${BATCH[@]}"
+    local status=$?
+    BATCH=()
+    return "${status}"
+  }
+
+  for test_name in "${TESTS[@]}"; do
+    if [[ -n "${ONLY_TEST}" ]] && [[ "${test_name}" != "${ONLY_TEST}" ]]; then
+      continue
     fi
     if [[ "${test_name}" == "${SPECIAL_TEST}" ]]; then
+      flush_batch || break
+      stop_harness
+      start_harness 0
+      ensure_adb_reverse
+      run_test_batch "${test_name}" || break
       stop_harness
       start_harness 2
       ensure_adb_reverse
+      continue
     fi
     if [[ "${test_name}" == "${QUIET_HOST_TEST}" ]]; then
+      flush_batch || break
+      stop_harness
+      export LINGON_ANDROID_HARNESS_HOST_SHELL=/bin/sh
+      start_harness 2
+      ensure_adb_reverse
+      unset LINGON_ANDROID_HARNESS_HOST_SHELL
+      run_test_batch "${test_name}" || break
       stop_harness
       unset LINGON_ANDROID_HARNESS_HOST_SHELL
       start_harness 2
       ensure_adb_reverse
+      continue
     fi
+    BATCH+=("${test_name}")
   done
+  if [[ "${TEST_EXIT}" -eq 0 ]]; then
+    flush_batch
+    TEST_EXIT=$?
+  fi
   stop_harness
   exit "${TEST_EXIT}"
 )

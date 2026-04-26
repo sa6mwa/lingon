@@ -16,11 +16,15 @@ import systems.pkt.lingon.viewmodel.WallNotification
 import systems.pkt.lingon.viewmodel.WallNotifier
 
 class AndroidWallNotifier(private val context: Context) : WallNotifier {
-    override fun notifyWall(notification: WallNotification) {
+    override fun notifyWall(notification: WallNotification): Boolean {
+        val notificationManager = NotificationManagerCompat.from(context)
+        if (!notificationManager.areNotificationsEnabled()) {
+            return false
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
             if (!granted) {
-                return
+                return false
             }
         }
         ensureChannel()
@@ -53,7 +57,19 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(pendingIntent)
             .build()
-        NotificationManagerCompat.from(context).notify(notificationId, notification)
+        return try {
+            notificationManager.notify(notificationId, notification)
+            isWallNotificationVisible()
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    private fun isWallNotificationVisible(): Boolean {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return false
+        return manager.activeNotifications.any {
+            it.id == notificationId && it.notification.channelId == channelID
+        }
     }
 
     private fun ensureChannel() {

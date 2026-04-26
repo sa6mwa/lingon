@@ -659,6 +659,8 @@ func (c *Client) SetCompositor(ui *mvu.Runtime) {
 
 // Compositor returns the overlay compositor in use.
 func (c *Client) Compositor() *mvu.Runtime {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
 	return c.ensureCompositor()
 }
 
@@ -991,16 +993,17 @@ func (c *Client) handleScrollback(scrollback *protocolpb.Scrollback) {
 	if scrollback == nil {
 		return
 	}
+	snapshotRows := c.renderSnapshotRows()
 	c.scrollbackMu.Lock()
 	if c.scrollbackBuffer == nil {
 		c.scrollbackBuffer = mvu.NewProtoScrollbackBuffer(config.DefaultScrollbackLines)
 	}
 	c.scrollbackBuffer.Apply(scrollback)
-	viewRows := c.renderCache.SnapshotRows()
+	viewRows := snapshotRows
 	if viewRows <= 0 {
 		viewRows = config.DefaultTerminalRows
 	}
-	totalRows := c.scrollbackBuffer.Len() + c.renderCache.SnapshotRows()
+	totalRows := c.scrollbackBuffer.Len() + snapshotRows
 	c.scrollbackView.Normalize(totalRows, viewRows, protoScrollbackContentWidthLocked(c), c.scrollbackViewCols())
 	c.scrollbackMu.Unlock()
 }
@@ -1036,13 +1039,14 @@ func (c *Client) setScrollbackActive(active bool) {
 }
 
 func (c *Client) scrollbackPage(delta int, stepRows int) bool {
+	snapshotRows := c.renderSnapshotRows()
 	c.scrollbackMu.Lock()
 	defer c.scrollbackMu.Unlock()
 	viewRows := c.scrollbackViewRows()
 	if viewRows <= 0 {
 		return false
 	}
-	totalRows := c.renderCache.SnapshotRows()
+	totalRows := snapshotRows
 	if c.scrollbackBuffer != nil {
 		totalRows += c.scrollbackBuffer.Len()
 	}
@@ -1051,9 +1055,10 @@ func (c *Client) scrollbackPage(delta int, stepRows int) bool {
 }
 
 func (c *Client) scrollbackPanX(delta int) bool {
+	snapshotRows := c.renderSnapshotRows()
 	c.scrollbackMu.Lock()
 	defer c.scrollbackMu.Unlock()
-	totalRows := c.renderCache.SnapshotRows()
+	totalRows := snapshotRows
 	if c.scrollbackBuffer != nil {
 		totalRows += c.scrollbackBuffer.Len()
 	}
@@ -1414,9 +1419,10 @@ func (c *Client) ScrollbackPanX(delta int) bool {
 
 // ScrollbackTop jumps to the start of the scrollback buffer.
 func (c *Client) ScrollbackTop(viewRows int) {
+	snapshotRows := c.renderSnapshotRows()
 	c.scrollbackMu.Lock()
 	defer c.scrollbackMu.Unlock()
-	totalRows := c.renderCache.SnapshotRows()
+	totalRows := snapshotRows
 	if c.scrollbackBuffer != nil {
 		totalRows += c.scrollbackBuffer.Len()
 	}
@@ -1431,9 +1437,10 @@ func (c *Client) ScrollbackTop(viewRows int) {
 
 // ScrollbackBottom jumps back to the live view position.
 func (c *Client) ScrollbackBottom() {
+	snapshotRows := c.renderSnapshotRows()
 	c.scrollbackMu.Lock()
 	defer c.scrollbackMu.Unlock()
-	totalRows := c.renderCache.SnapshotRows()
+	totalRows := snapshotRows
 	if c.scrollbackBuffer != nil {
 		totalRows += c.scrollbackBuffer.Len()
 	}
@@ -1477,8 +1484,8 @@ func (c *Client) scrollbackViewRows() int {
 	if rows > 0 {
 		return rows
 	}
-	if c.renderCache.SnapshotRows() > 0 {
-		return c.renderCache.SnapshotRows()
+	if snapshotRows := c.renderSnapshotRows(); snapshotRows > 0 {
+		return snapshotRows
 	}
 	return config.DefaultTerminalRows
 }
@@ -1697,14 +1704,13 @@ func (c *Client) handleWall(wall *protocolpb.Wall) {
 		return
 	}
 	c.notifyDesktop(wall)
-	compositor := c.ensureCompositor()
 	sender := desktopnotify.FormatWallSource(wall)
 	title := "Broadcast:"
 	if sender != "" {
 		title = fmt.Sprintf("Broadcast from %s:", sender)
 	}
 	timeout := wallTimeout(wall)
-	effect := compositor.ApplyAction(mvu.WallAction{Input: mvu.WallInput{
+	effect := c.applyCompositorAction(mvu.WallAction{Input: mvu.WallInput{
 		Visible:  true,
 		Title:    title,
 		Message:  strings.TrimSpace(wall.Message),
@@ -1902,6 +1908,8 @@ func (c *Client) toggleWallInactivity(ctx context.Context) {
 
 func (c *Client) setTheme(name string) {
 	resolved := resolveThemeName(name)
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
 	c.themeName = resolved
 	c.ensureCompositor().ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{Theme: theme.TUI(resolved)}})
 }
@@ -1932,7 +1940,7 @@ func (c *Client) showStatusBanner(input mvu.StatusInput) {
 	if strings.TrimSpace(input.Message) == "" {
 		return
 	}
-	effect := c.ensureCompositor().ApplyAction(mvu.StatusAction{Input: input})
+	effect := c.applyCompositorAction(mvu.StatusAction{Input: input})
 	c.RenderCurrent()
 	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
 		Scheduler: c.effects,
@@ -1949,13 +1957,35 @@ func (c *Client) showStatusBanner(input mvu.StatusInput) {
 }
 
 func (c *Client) helpVisible() bool {
-	if c.ensureCompositor().Read().HelpVisible {
+	state := c.readCompositorState()
+	if state.HelpVisible {
 		return true
 	}
+	return c.renderHelpVisible()
+}
+
+func (c *Client) renderSnapshotRows() int {
 	c.renderMu.Lock()
-	visible := c.renderCache.HelpVisible()
-	c.renderMu.Unlock()
-	return visible
+	defer c.renderMu.Unlock()
+	return c.renderCache.SnapshotRows()
+}
+
+func (c *Client) renderHelpVisible() bool {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
+	return c.renderCache.HelpVisible()
+}
+
+func (c *Client) applyCompositorAction(action mvu.Action) mvu.ActionResult {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
+	return c.ensureCompositor().ApplyAction(action)
+}
+
+func (c *Client) readCompositorState() mvu.State {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
+	return c.ensureCompositor().Read()
 }
 
 func (c *Client) error() error {
@@ -2085,7 +2115,7 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 		processNormalByte := func(b byte) bool {
 			helpVisible := c.helpVisible()
 			if action, ok := mvu.ActionForHelpDismissKey(helpVisible, b); ok {
-				c.ensureCompositor().ApplyAction(action)
+				c.applyCompositorAction(action)
 				c.renderCurrent()
 				return true
 			}
@@ -2107,16 +2137,16 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				}
 				switch action {
 				case control.ActionHelp:
-					c.ensureCompositor().ApplyAction(mvu.HelpVisibleAction{Visible: true})
+					c.applyCompositorAction(mvu.HelpVisibleAction{Visible: true})
 					c.renderCurrent()
 					return true
 				case control.ActionToggleTabBar:
-					c.ensureCompositor().ApplyAction(mvu.TabToggleAction{})
+					c.applyCompositorAction(mvu.TabToggleAction{})
 					c.renderCurrent()
 					return true
 				}
 				if uiAction, ok := mvu.ActionForControl(action); ok {
-					c.ensureCompositor().ApplyAction(uiAction)
+					c.applyCompositorAction(uiAction)
 					c.renderCurrent()
 					return true
 				}

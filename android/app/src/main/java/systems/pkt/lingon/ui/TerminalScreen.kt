@@ -520,6 +520,7 @@ private fun TerminalPanel(
                     }
                     Lifecycle.Event.ON_START -> {
                         lifecycleRestoreNonce += 1
+                        focusInput()
                     }
                     else -> Unit
                 }

@@ -29,11 +29,15 @@ class WallPollWorker(
                 return Result.retry()
             }
             var next = since
-            page.events.forEach { event ->
+            var blocked = false
+            for (event in page.events) {
                 if (event.message.isBlank()) {
-                    return@forEach
+                    if (event.id > next) {
+                        next = event.id
+                    }
+                    continue
                 }
-                app.wallDeliveryCoordinator.deliver(
+                val consumed = app.wallDeliveryCoordinator.deliver(
                     WallNotification(
                         endpoint = endpoint,
                         eventId = event.id,
@@ -42,11 +46,15 @@ class WallPollWorker(
                         message = event.message,
                     ),
                 )
+                if (!consumed) {
+                    blocked = true
+                    break
+                }
                 if (event.id > next) {
                     next = event.id
                 }
             }
-            if (page.nextId > next) {
+            if (!blocked && page.nextId > next) {
                 next = page.nextId
             }
             if (next > since) {

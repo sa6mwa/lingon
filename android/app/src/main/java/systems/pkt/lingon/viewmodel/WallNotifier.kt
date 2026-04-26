@@ -9,9 +9,9 @@ data class WallNotification(
 )
 
 interface WallNotifier {
-    fun notifyWall(notification: WallNotification)
+    fun notifyWall(notification: WallNotification): Boolean
 }
 
 object NoopWallNotifier : WallNotifier {
-    override fun notifyWall(notification: WallNotification) {}
+    override fun notifyWall(notification: WallNotification): Boolean = false
 }

@@ -2133,9 +2133,10 @@ private fun testWallWorkStateStore(): WallWorkStateStore {
 private class RecordingWallNotifier : WallNotifier {
     val deliveries = mutableListOf<Pair<String, String>>()
 
-    override fun notifyWall(notification: WallNotification) {
+    override fun notifyWall(notification: WallNotification): Boolean {
         deliveries += "${notification.endpoint.trim()}#${notification.eventId}" to
             "${notification.sender.trim()}\n${notification.message.trim()}"
+        return true
     }
 }
 

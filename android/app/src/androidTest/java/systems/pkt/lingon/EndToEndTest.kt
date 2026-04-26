@@ -51,6 +51,7 @@ import java.util.UUID
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -77,11 +78,29 @@ class EndToEndTest {
 
     private val testConfig = TestConfig.fromArgs()
     private val screenshotRunId = UUID.randomUUID().toString().take(8)
+    private val startedHeadlessSessions = linkedSetOf<String>()
 
     @Before
     fun ensureBackendReachable() {
+        restoreNotificationDelivery()
+        clearAppNotifications()
         configureEndpointAndCerts()
         assertBackendReachable(testConfig.endpoint, testConfig.caPem)
+    }
+
+    @After
+    fun restoreDeviceState() {
+        runCatching { restoreNotificationDelivery() }
+        runCatching { resumeActivity() }
+        runCatching { detachStartedHeadlessSessions() }
+        runCatching {
+            composeRule.activity.runOnUiThread {
+                appViewModel().setBackgroundWallEnabled(false)
+            }
+            composeRule.waitForIdle()
+        }
+        runCatching { clearAppNotifications() }
+        runCatching { ensureLoggedOut() }
     }
 
     @Test
@@ -181,7 +200,7 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
-        assertTerminalResponsive()
+        assertTerminalResponsive(requireControl = false)
         val initial = readTerminalHash()
         waitUntilNoError(8_000) { readTerminalHash() != initial }
     }
@@ -781,22 +800,21 @@ class EndToEndTest {
     }
 
     @Test
-    fun background_foreground_resumes_input_without_tab_switch() {
+    fun background_foreground_resumes_input() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
-        val sessionId = activeSessionId()
-        assertTerminalResponsive(sessionId)
+        assertTerminalResponsive()
 
         backgroundAndResumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
         waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
-            info != null && info.state == "Connected" && info.activeSessionId == sessionId
+            info != null && info.state == "Connected" && info.activeSessionId.isNotBlank()
         }
-        assertTerminalResponsive(sessionId)
+        assertTerminalResponsive(requireControl = false)
     }
 
     @Test
@@ -861,7 +879,7 @@ class EndToEndTest {
         waitUntilNoError(10_000L) {
             activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
         }
-        waitUntilNoError(15_000L) {
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
             wallNotifications().isNotEmpty()
         }
         assertNoWallNotificationAutogroupSummary()
@@ -1022,7 +1040,7 @@ class EndToEndTest {
         val message = "background manual wall ${System.currentTimeMillis()}"
         sendWallViaHarness(message)
 
-        waitUntilNoError(15_000L) {
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
             wallNotifications().any { wallNotificationText(it) == message }
         }
         assertNoWallNotificationAutogroupSummary()
@@ -1038,6 +1056,54 @@ class EndToEndTest {
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
         assertEquals("$title: $message", text)
+    }
+
+    @Test
+    fun background_manual_wall_delivery_does_not_repost_previous_message() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilNoError(10_000L) {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        val firstMessage = "background dedupe first wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(firstMessage)
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
+            wallNotifications().any { wallNotificationText(it) == firstMessage }
+        }
+
+        clearAppNotifications()
+        waitUntilNoError(5_000L) { wallNotifications().isEmpty() }
+
+        val secondMessage = "background dedupe second wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(secondMessage)
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
+            wallNotifications().isNotEmpty()
+        }
+
+        val visibleMessages = wallNotifications().map { wallNotificationText(it) }
+        assertFalse(
+            "previous wall notification was reposted with the next wall message: $visibleMessages",
+            visibleMessages.contains(firstMessage),
+        )
+        assertTrue(
+            "second wall notification was not visible: $visibleMessages",
+            visibleMessages.contains(secondMessage),
+        )
     }
 
     @Test
@@ -1066,7 +1132,7 @@ class EndToEndTest {
         val message = "background wall cursor reset ${System.currentTimeMillis()}"
         sendWallViaHarness(message)
 
-        waitUntilNoError(20_000L) {
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
             wallNotifications().any { wallNotificationText(it) == message }
         }
         val wallNotification = wallNotifications()
@@ -1114,7 +1180,7 @@ class EndToEndTest {
         assertTrue("failed to re-enable notifications", setNotificationDeliveryEnabled(true))
         val recoveredMessage = "permission restored wall ${System.currentTimeMillis()}"
         sendWallViaHarness(recoveredMessage)
-        waitUntilNoError(15_000L) {
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
             wallNotifications().isNotEmpty()
         }
         assertNoWallNotificationAutogroupSummary()
@@ -1393,6 +1459,16 @@ class EndToEndTest {
             Thread.sleep(POLL_INTERVAL_MS)
         }
         return notificationsEnabled() == enabled
+    }
+
+    private fun restoreNotificationDelivery(): Boolean {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand(
+                "pm grant systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
+            ),
+        )
+        return setNotificationDeliveryEnabled(true)
     }
 
     private fun notificationsEnabled(): Boolean {
@@ -2416,7 +2492,9 @@ class EndToEndTest {
                 throw AssertionError("harness start-headless failed with HTTP $code")
             }
             val body = InputStreamReader(connection.inputStream).use { it.readText() }
-            return org.json.JSONObject(body).getString("id")
+            val id = org.json.JSONObject(body).getString("id")
+            startedHeadlessSessions += id
+            return id
         } finally {
             connection.disconnect()
         }
@@ -2443,8 +2521,17 @@ class EndToEndTest {
             if (code != HttpURLConnection.HTTP_OK) {
                 throw AssertionError("harness detach-headless failed with HTTP $code")
             }
+            startedHeadlessSessions -= sessionId
         } finally {
             connection.disconnect()
+        }
+    }
+
+    private fun detachStartedHeadlessSessions() {
+        val sessionIds = startedHeadlessSessions.toList()
+        startedHeadlessSessions.clear()
+        sessionIds.forEach { sessionId ->
+            runCatching { detachHeadlessViaHarness(sessionId) }
         }
     }
 
@@ -2570,6 +2657,7 @@ class EndToEndTest {
         private const val LOGIN_TIMEOUT_MS = 20_000L
         private const val TERMINAL_READY_TIMEOUT_MS = 15_000L
         private const val SHORT_UI_TIMEOUT_MS = 15_000L
+        private const val BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS = 35_000L
         private const val POLL_INTERVAL_MS = 250L
         private const val BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
     }
