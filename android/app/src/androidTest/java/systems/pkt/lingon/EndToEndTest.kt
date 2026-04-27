@@ -1127,7 +1127,8 @@ class EndToEndTest {
             activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
         }
 
-        advanceWallCursorAheadOfRelay()
+        val latestBeforeReset = advanceWallCursorAheadOfRelay()
+        waitForWallCursorAtMost(latestBeforeReset)
 
         val message = "background wall cursor reset ${System.currentTimeMillis()}"
         sendWallViaHarness(message)
@@ -1415,11 +1416,11 @@ class EndToEndTest {
         }
     }
 
-    private fun advanceWallCursorAheadOfRelay() {
+    private fun advanceWallCursorAheadOfRelay(): Long {
         val app = composeRule.activity.application as LingonApplication
         val endpoint = appViewModel().state.value.endpoint.trim()
         if (endpoint.isBlank()) {
-            return
+            return 0L
         }
         val latest = runBlocking {
             var since = 0L
@@ -1436,6 +1437,20 @@ class EndToEndTest {
         }
         runBlocking {
             app.wallDeliveryCoordinator.advanceCursor(endpoint, latest + 100)
+        }
+        return latest
+    }
+
+    private fun waitForWallCursorAtMost(maxCursor: Long) {
+        val app = composeRule.activity.application as LingonApplication
+        val endpoint = appViewModel().state.value.endpoint.trim()
+        if (endpoint.isBlank()) {
+            return
+        }
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
+            runBlocking {
+                app.wallWorkStateStore.loadCursor(endpoint) <= maxCursor
+            }
         }
     }
 

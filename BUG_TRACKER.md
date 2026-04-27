@@ -29,6 +29,24 @@ Required status values:
 
 ## Active Items
 
+### B-024 Android cursor-ahead recovery instrumentation race
+
+- Status: `resolved`
+- Area: `android`, `integration-tests`, `notifications`
+- Summary: The cursor-ahead recovery instrumentation test must not send the post-reset wall before the background service has actually observed and repaired the ahead cursor.
+- Report:
+  Release smoke `make test-android` failed in `background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay`. Logcat showed `lingon-wall-bg: poll cursor reset detected endpoint=... since=193 next=94`, but the test had already sent or was racing the post-reset wall against the service's 15s poll cadence, and the app timed out waiting for the target wall notification.
+- Repro:
+  1. Run the full Android integration sweep.
+  2. In the final notification batch, advance the app wall cursor ahead of the relay and immediately send a wall.
+  3. If the send races the service's cursor repair poll, the test can time out with `lastFrameType=diff` and no target `lingon_wall` notification.
+- Regression coverage:
+  - `EndToEndTest.background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay` now waits for the foreground service to repair the ahead cursor before sending the post-reset wall message.
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay make test-android`
+  - `make test-android`
+
 ### B-023 Android wall notifications replay previous message with next message
 
 - Status: `resolved`
