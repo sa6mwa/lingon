@@ -29,6 +29,72 @@ Required status values:
 
 ## Active Items
 
+### B-026 Local host PTY gpg output leaves underline enabled
+
+- Status: `resolved`
+- Area: `host`, `terminal`, `pty`
+- Summary: Local host PTY rendering must not treat private CSI terminal mode controls as SGR underline.
+- Report:
+  Running an interactive signing/amend workflow from a Lingon host local PTY session left subsequent command output and prompts visually underlined. The same workflow did not leave underline enabled in a normal terminal session.
+- Repro:
+  1. Start a Lingon host local PTY session.
+  2. Run an interactive full-screen editor/signing workflow that exits through xterm private mode restore sequences.
+  3. Observe subsequent shell output remains underlined.
+- Investigation notes:
+  - The terminal parser treated `CSI 4:0 m` as the numeric parameter `40`, so the SGR underline-style reset did not clear `ModeUnderline`.
+  - 2026-04-28: User retested the interactive signing/amend flow in a Lingon host local PTY and the underline still reproduced, so the first fix covered a related parser bug but not the reported path.
+  - The remaining repro is full-screen-program shaped: the non-interactive path did not reproduce because it avoids the alternate-screen program before printing the summary.
+  - Root cause: Lingon's `?1049` alternate-screen save/restore path restored only cursor coordinates, not the saved graphic rendition attributes. If a less-like full-screen program left underline active when switching back to the main screen, following normal-screen output inherited underline.
+  - Added a closer reproduction with a fake full-screen program that emits editor/full-screen underline and italic attributes before printing a summary.
+  - User clarified the repro happens on every interactive amend flow, with or without signing, and suspected terminal query/control leakage. Hardened delta rendering so every changed span starts with an explicit SGR reset, preventing a corrupted outer-terminal rendition state from carrying into later cursor-addressed summary spans.
+  - 2026-04-28: User retested again and clarified there is no real underline in the full-screen editor, pager, prompts, or summary output; the visible underline is garbled/corrupted output, likely from leaked or misrouted terminal control/query traffic. The reproduction must avoid real editors and use deterministic control-sequence fixtures.
+  - 2026-04-28: Reopened because the existing harness-level fixture did not reproduce the actual host/local PTY path from the screenshots. Replaced external-program-dependent coverage with deterministic control-sequence fixtures.
+  - Additional leak reproduced: late OSC 10/11/12 outer-terminal color responses were forwarded into the active local PTY once the startup pending/grace window expired. The failing integration repro sent a late OSC response before `echo AFTER_LATE_OSC`; the shell received corrupted input and reported `/bin/sh: 1: echo: not found`. `filterOuterOSC` now consumes complete OSC 10/11/12 responses even outside the pending/grace window, while still passing incomplete/split fragments through immediately so ordinary keyboard input is not buffered.
+  - Root cause reproduced for the screenshot underline: a full-screen terminal program can emit `CSI > 4 ; m` (`ESC[>4;m`) while restoring xterm modifyOtherKeys state. Lingon's emulator dispatched every final `m` as SGR even when the CSI private marker was `>`, so it interpreted the parameter `4` as SGR underline and marked subsequent summary cells underlined. Real terminals treat `CSI > ... m` as a private control sequence, not SGR.
+  - Fix: SGR handling now only runs for non-private CSI `m`; private CSI `m` sequences are ignored as private/unhandled instead of mutating rendition attributes.
+- Regression coverage:
+  - `TestSGRColonUnderlineStyleResetClearsUnderline`
+  - `TestSGRColonUnderlineStyleEnablesUnderline`
+  - `TestPrivateCSIGreaterMDoesNotEnableUnderline`
+  - `TestAltScreen1049RestoresSavedAttributes`
+  - `TestHostLocalPTYColonUnderlineResetClearsFollowingOutput`
+  - `TestHostLocalPTYAltScreenExitRestoresAttributesForLessLikePrograms`
+  - `TestHostLocalPTYPrivateCSIGreaterMDoesNotRenderUnderlined`
+  - `TestHostLocalPTYLateOuterOSCResponseDoesNotCorruptNextCommand`
+  - `TestSnapshotViewportDeltaResetsAttributesBeforeEveryChangedSpan`
+- Verification:
+  - `go test -count=1 ./internal/terminal/emu ./internal/session -run 'TestPrivateCSIGreaterMDoesNotEnableUnderline|TestSGR|TestFilterOuterOSC|TestLocalSessionRespondsToDSR|TestLocalSessionOSCQueryDoesNotSelfSustainPublish|TestLocalSessionRepeatedOSCQueriesBoundedAfterProcessIdle'`
+  - `go test -count=1 ./internal/session ./internal/terminal/emu ./internal/render`
+  - `go test ./internal/terminal/emu`
+  - `go test ./internal/terminal/... ./internal/session`
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostLocalPTY(AltScreenExitRestoresAttributesForLessLikePrograms|ColonUnderlineResetClearsFollowingOutput)'`
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostLocalPTY(PrivateCSIGreaterMDoesNotRenderUnderlined|LateOuterOSCResponseDoesNotCorruptNextCommand|AltScreenExitRestoresAttributesForLessLikePrograms|ColonUnderlineResetClearsFollowingOutput)'`
+  - `go test ./internal/render`
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
+### B-025 Android foreground app still posts wall notifications
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `lifecycle`
+- Summary: Wall events must not post Android system notifications while the app is foregrounded, even when background wall notifications are enabled.
+- Report:
+  When the Android app is brought back into focus, wall notifications still appear despite background notifications being enabled. Expected behavior is that system wall notifications are only for the app-not-in-focus case.
+- Repro:
+  1. Enable background wall notifications in the Android app.
+  2. Background the app so the foreground service starts.
+  3. Bring the app back to the foreground.
+  4. Send or receive a wall message and observe a `lingon_wall` system notification while the app is in focus.
+- Regression coverage:
+  - `WallDeliveryCoordinatorTest.foregroundSuppressionConsumesEventWithoutPostingNotification`
+  - `EndToEndTest.foreground_resume_suppresses_background_wall_notifications`
+- Verification:
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=foreground_resume_suppresses_background_wall_notifications make test-android`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+
 ### B-024 Android cursor-ahead recovery instrumentation race
 
 - Status: `resolved`

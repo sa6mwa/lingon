@@ -1,6 +1,8 @@
 package emu
 
 import (
+	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -401,13 +403,15 @@ func (e *Emulator) setCursor(reason string, x, y int) {
 }
 
 func (e *Emulator) saveCursor(reason string) {
-	e.scr.savedCursor = e.scr.cursor
+	e.scr.saveCursor(e.attr)
 	e.lastSavedReason = reason
 }
 
 func (e *Emulator) restoreCursor(reason string) {
 	old := e.scr.cursor
-	e.scr.cursor = e.scr.savedCursor
+	if attr, ok := e.scr.restoreCursor(); ok {
+		e.attr = attr
+	}
 	if reason == "" && e.lastSavedReason != "" {
 		reason = "RESTORE(" + e.lastSavedReason + ")"
 	}
@@ -493,9 +497,9 @@ func (e *Emulator) handleEscape(b byte) {
 func (e *Emulator) handleCSIByte(b byte) {
 	if b >= 0x40 && b <= 0x7e {
 		private := e.parser.private
-		params := e.parser.finalizeParams()
+		params, rawParams := e.parser.finalizeParams()
 		e.parser.state = stateGround
-		e.handleCSI(b, params, private)
+		e.handleCSI(b, params, private, rawParams)
 		return
 	}
 	if (b == '?' || b == '>' || b == '<' || b == '=' || b == '!') && !e.parser.paramSeen && e.parser.private == 0 {
@@ -503,10 +507,17 @@ func (e *Emulator) handleCSIByte(b byte) {
 		return
 	}
 	if b >= '0' && b <= '9' {
+		e.parser.addParamByte(b)
 		e.parser.addDigit(int(b - '0'))
 		return
 	}
 	if b == ';' {
+		e.parser.addParamByte(b)
+		e.parser.nextParam()
+		return
+	}
+	if b == ':' {
+		e.parser.addParamByte(b)
 		e.parser.nextParam()
 		return
 	}
@@ -633,7 +644,7 @@ func (e *Emulator) handleCharsetByte(b byte) {
 	e.parser.state = stateGround
 }
 
-func (e *Emulator) handleCSI(final byte, params []int, private byte) {
+func (e *Emulator) handleCSI(final byte, params []int, private byte, rawParams string) {
 	old := e.snapshotState()
 	switch final {
 	case 'A':
@@ -692,8 +703,12 @@ func (e *Emulator) handleCSI(final byte, params []int, private byte) {
 		e.scrollDown(param(params, 0, 1))
 		e.traceEvent("SD", final, private, params, old, 0)
 	case 'm':
-		e.selectGraphicRendition(params)
-		e.traceEvent("SGR", final, private, params, old, 0)
+		if private == 0 {
+			e.selectGraphicRendition(params, rawParams)
+			e.traceEvent("SGR", final, private, params, old, 0)
+		} else {
+			e.traceEvent("CSI_PRIVATE_UNHANDLED", final, private, params, old, 0)
+		}
 	case 'r':
 		e.setScrollRegion(params)
 		e.traceEvent("DECSTBM", final, private, params, old, 0)
@@ -1281,22 +1296,27 @@ func (e *Emulator) setMode(params []int, private byte, enable bool) {
 func (e *Emulator) setAltScreen(enable bool, saveCursor bool) {
 	if enable {
 		if saveCursor {
-			e.main.saveCursor()
+			e.main.saveCursor(e.attr)
 		}
 		e.alt.clearAll(e.eraseCell())
 		e.scr = &e.alt
 		e.setCursor("ALTSCREEN", 0, 0)
 	} else {
 		if saveCursor {
-			old := e.main.cursor
-			e.main.restoreCursor()
-			e.traceCursorWithScreen("ALTRESTORE", old, e.main.cursor, "main")
+			e.scr = &e.main
+			old := e.scr.cursor
+			if attr, ok := e.scr.restoreCursor(); ok {
+				e.attr = attr
+			}
+			e.traceCursorWithScreen("ALTRESTORE", old, e.scr.cursor, "main")
+		} else {
+			e.scr = &e.main
 		}
-		e.scr = &e.main
 	}
 }
 
-func (e *Emulator) selectGraphicRendition(params []int) {
+func (e *Emulator) selectGraphicRendition(params []int, rawParams string) {
+	params = normalizeSGRParams(params, rawParams)
 	if len(params) == 0 {
 		params = []int{0}
 	} else {
@@ -1370,6 +1390,66 @@ func (e *Emulator) selectGraphicRendition(params []int) {
 			}
 		}
 	}
+}
+
+func normalizeSGRParams(params []int, rawParams string) []int {
+	if !strings.Contains(rawParams, ":") {
+		return params
+	}
+	fields := strings.Split(rawParams, ";")
+	normalized := make([]int, 0, len(params))
+	for _, field := range fields {
+		if field == "" {
+			normalized = append(normalized, -1)
+			continue
+		}
+		parts := strings.Split(field, ":")
+		code, ok := parseSGRParamPart(parts[0])
+		if !ok {
+			normalized = append(normalized, -1)
+			continue
+		}
+		if code == 4 && len(parts) > 1 {
+			style, ok := firstSGRSubParam(parts[1:])
+			if ok && style == 0 {
+				normalized = append(normalized, 24)
+			} else {
+				normalized = append(normalized, 4)
+			}
+			continue
+		}
+		normalized = append(normalized, code)
+		for _, part := range parts[1:] {
+			value, ok := parseSGRParamPart(part)
+			if ok {
+				normalized = append(normalized, value)
+			}
+		}
+	}
+	if len(normalized) == 0 {
+		return params
+	}
+	return normalized
+}
+
+func firstSGRSubParam(parts []string) (int, bool) {
+	for _, part := range parts {
+		if value, ok := parseSGRParamPart(part); ok {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func parseSGRParamPart(part string) (int, bool) {
+	if part == "" {
+		return 0, false
+	}
+	value, err := strconv.Atoi(part)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 func (e *Emulator) eraseCell() terminal.Cell {

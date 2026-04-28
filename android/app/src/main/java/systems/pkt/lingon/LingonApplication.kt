@@ -46,6 +46,9 @@ class LingonApplication : Application() {
     lateinit var backgroundWallServiceController: BackgroundWallServiceController
         private set
 
+    @Volatile
+    private var appInForeground = false
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -67,6 +70,7 @@ class LingonApplication : Application() {
         wallDeliveryCoordinator = MonotonicWallDeliveryCoordinator(
             wallWorkStateStore,
             AndroidWallNotifier(this),
+            shouldPostNotification = { !isAppInForeground() },
         )
         wallWorkScheduler = WorkManagerWallWorkScheduler(this, wallWorkStateStore, appScope)
         backgroundWallServiceController = AndroidBackgroundWallServiceController(this)
@@ -83,4 +87,10 @@ class LingonApplication : Application() {
             appLockStore,
         )
     }
+
+    fun setAppInForeground(value: Boolean) {
+        appInForeground = value
+    }
+
+    fun isAppInForeground(): Boolean = appInForeground
 }

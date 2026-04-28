@@ -80,12 +80,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        (application as LingonApplication).setAppInForeground(true)
         viewModel.onAppForeground()
     }
 
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) {
+            (application as LingonApplication).setAppInForeground(false)
             viewModel.onAppBackground()
         }
     }

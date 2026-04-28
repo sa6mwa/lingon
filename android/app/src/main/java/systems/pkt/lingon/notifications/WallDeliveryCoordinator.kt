@@ -13,6 +13,7 @@ interface WallDeliveryCoordinator {
 class MonotonicWallDeliveryCoordinator(
     private val stateStore: WallWorkStateStore,
     private val notifier: WallNotifier,
+    private val shouldPostNotification: () -> Boolean = { true },
 ) : WallDeliveryCoordinator {
     private val deliveryMu = Mutex()
 
@@ -23,6 +24,10 @@ class MonotonicWallDeliveryCoordinator(
                 return@withLock true
             }
             if (!stateStore.shouldDeliver(notification.endpoint, notification.eventId)) {
+                return@withLock true
+            }
+            if (!shouldPostNotification()) {
+                stateStore.recordDelivered(notification.endpoint, notification.eventId)
                 return@withLock true
             }
             if (notifier.notifyWall(notification.copy(message = body))) {

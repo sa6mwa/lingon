@@ -75,6 +75,24 @@ class WallDeliveryCoordinatorTest {
         assertEquals(1, notifier.deliveries.get())
     }
 
+    @Test
+    fun foregroundSuppressionConsumesEventWithoutPostingNotification() = runTest {
+        val store = newStore()
+        val notifier = RecordingNotifier(succeeds = true)
+        val coordinator = MonotonicWallDeliveryCoordinator(
+            store,
+            notifier,
+            shouldPostNotification = { false },
+        )
+        val notification = notification(eventId = 42L)
+
+        assertEquals(true, coordinator.deliver(notification))
+        assertEquals(true, coordinator.deliver(notification))
+
+        assertEquals(42L, store.loadCursor(notification.endpoint))
+        assertEquals(0, notifier.deliveries.size)
+    }
+
     private fun notification(eventId: Long): WallNotification {
         return WallNotification(
             endpoint = "https://relay.example/v1",

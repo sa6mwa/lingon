@@ -1059,6 +1059,48 @@ class EndToEndTest {
     }
 
     @Test
+    fun foreground_resume_suppresses_background_wall_notifications() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilNoError(10_000L) {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        resumeActivity()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        clearWallNotifications()
+
+        val frameSeqBeforeWall = appViewModel().state.value.lastFrameSeq
+        val message = "foreground suppressed wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(message)
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
+            val state = appViewModel().state.value
+            state.lastFrameType == "wall" && state.lastFrameSeq > frameSeqBeforeWall
+        }
+        Thread.sleep(3_000L)
+
+        val visibleMessages = wallNotifications().map { wallNotificationText(it) }
+        assertFalse(
+            "wall notification appeared while app was foregrounded: $visibleMessages",
+            visibleMessages.contains(message),
+        )
+    }
+
+    @Test
     fun background_manual_wall_delivery_does_not_repost_previous_message() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()

@@ -1091,6 +1091,9 @@ func writeDeltaRun(snap *protocolpb.Snapshot, row, x0, start, end, viewCols, col
 		clearTail = true
 	}
 	if drawEnd >= drawStart {
+		if _, err := io.WriteString(w, ansiReset); err != nil {
+			return err
+		}
 		span := buildRowSpan(snap, row, x0, drawStart, drawEnd, cols, rows, defaultAttr)
 		if _, err := io.WriteString(w, span); err != nil {
 			return err

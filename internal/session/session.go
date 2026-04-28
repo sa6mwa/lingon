@@ -2205,12 +2205,13 @@ func (r *Runner) filterOuterOSC(data []byte) []byte {
 	hadPending := pending != nil && len(pending) > 0
 	if !hadPending && grace.IsZero() {
 		// Keyboard input must never be delayed by OSC parsing.
-		// Only filter while an explicit OSC query response is pending/in-grace.
+		// Without an explicit query window, only consume complete OSC color
+		// responses already present in this read; do not retain partial input.
 		if r.outerOscParser.state != 0 || len(r.outerOscParser.passthrough) > 0 {
 			r.outerOscParser.resetAll()
 		}
 		r.outerOscMu.Unlock()
-		return data
+		return r.filterCompleteOuterOSCResponses(data)
 	}
 	now := time.Now()
 	if r.clock != nil {
@@ -2261,6 +2262,28 @@ func (r *Runner) filterOuterOSC(data []byte) []byte {
 		r.outerOscGraceUntil = time.Time{}
 	}
 	r.outerOscMu.Unlock()
+	return out
+}
+
+func (r *Runner) filterCompleteOuterOSCResponses(data []byte) []byte {
+	var parser oscStreamParser
+	out := make([]byte, 0, len(data))
+	for _, b := range data {
+		code, payload, raw, ok := parser.Feed(b)
+		if ok {
+			if code == 10 || code == 11 || code == 12 {
+				r.updateOuterDefaults(code, payload, "late")
+			} else {
+				parser.AddPassthrough(raw)
+			}
+		}
+		if chunk := parser.DrainPassthrough(); len(chunk) > 0 {
+			out = append(out, chunk...)
+		}
+	}
+	if chunk := parser.FlushPassthrough(); len(chunk) > 0 {
+		out = append(out, chunk...)
+	}
 	return out
 }
 
