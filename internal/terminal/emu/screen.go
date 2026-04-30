@@ -9,6 +9,7 @@ type screen struct {
 	cells        []terminal.Cell
 	cursor       terminal.Cursor
 	savedCursor  terminal.Cursor
+	savedAttr    cellAttr
 	scrollTop    int
 	scrollBottom int
 }
@@ -57,12 +58,14 @@ func (s screen) resize(cols, rows int) screen {
 	return next
 }
 
-func (s *screen) saveCursor() {
+func (s *screen) saveCursor(attr cellAttr) {
 	s.savedCursor = s.cursor
+	s.savedAttr = attr
 }
 
-func (s *screen) restoreCursor() {
+func (s *screen) restoreCursor() (cellAttr, bool) {
 	s.cursor = s.savedCursor
+	return s.savedAttr, true
 }
 
 func (s *screen) inBounds(x, y int) bool {

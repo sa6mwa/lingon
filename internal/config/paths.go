@@ -3,10 +3,14 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DefaultConfigDir returns the default Lingon config directory.
 func DefaultConfigDir() string {
+	if dir := strings.TrimSpace(os.Getenv(ConfigDirEnv)); dir != "" {
+		return filepath.Clean(dir)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return DefaultConfigDirName

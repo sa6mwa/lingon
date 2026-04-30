@@ -33,17 +33,20 @@ data class UiState(
     val activeSessionId: String? = null,
     val activeSnapshot: TerminalSnapshot? = null,
     val status: StatusMessage? = null,
+    val transientStatus: StatusMessage? = null,
     val theme: String? = null,
     val isBusy: Boolean = false,
     val showSettings: Boolean = false,
     val showThemePicker: Boolean = false,
-    val showZoom: Boolean = false,
     val showAppLockTimeoutDialog: Boolean = false,
     val showShareToken: Boolean = false,
     val showCertificates: Boolean = false,
     val fontSizeSp: Int = DefaultTerminalFontSizeSp,
     val zoomFactor: Float = DefaultTerminalZoom,
     val resizeHostEnabled: Boolean = false,
+    val backgroundWallEnabled: Boolean = false,
+    val wallInactivityEnabled: Boolean = false,
+    val wallInactivityLabel: String? = null,
     val shareToken: String? = null,
     val shareTokenError: String? = null,
     val certificateError: String? = null,
@@ -60,12 +63,25 @@ data class UiState(
     val lastFrameAtMs: Long = 0,
     val lastFrameError: String? = null,
     val panResetNonce: Int = 0,
+    val sessionSyncing: Boolean = false,
     val isRefreshing: Boolean = false,
     val lastManualRefreshAtMs: Long = 0,
     val appLockTimeoutMinutes: Int = 30,
     val requiresAppUnlock: Boolean = false,
     val unlockPromptPending: Boolean = false,
 ) {
+    val bannerStatus: StatusMessage?
+        get() = transientStatus ?: status
+
     val canAttach: Boolean
         get() = loggedIn || !shareToken.isNullOrBlank()
+
+    val showsSyncingIndicator: Boolean
+        get() = sessionSyncing ||
+            connectionState == ConnectionState.Connecting ||
+            connectionState == ConnectionState.Waiting ||
+            connectionState == ConnectionState.Disconnected
+
+    val activeSessionHeadless: Boolean
+        get() = activeSessionId?.let { id -> sessions.firstOrNull { it.id == id }?.headless == true } ?: false
 }

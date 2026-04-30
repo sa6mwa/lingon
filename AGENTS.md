@@ -49,6 +49,21 @@ You are collaborating with a highly opinionated Go architect. Optimize for Go-id
 - `go vet ./...`
 - `golint ./...`
 - `golangci-lint run ./...`
+- All test failures must be addressed before the task is considered done, even if a failure appears unrelated to the current change.
+- Do not leave the repo with known failing tests and describe them as “unrelated”; fix them in the same task or explicitly stop and escalate if they cannot be resolved safely.
+
+## Android verification policy (mandatory)
+- Do not run the full connected Android instrumentation suite on every change by default.
+- Use a tiered verification policy:
+  - Always run `./gradlew :app:testDebugUnitTest` for Android-touching changes.
+  - Always run `./gradlew :app:compileDebugAndroidTestKotlin` for Android-touching changes so `src/androidTest` stays buildable.
+  - Run targeted `:app:connectedDebugAndroidTest` cases for the specific Android-visible behavior that changed:
+    - UI/layout/render/pan/zoom
+    - notifications
+    - lifecycle/reconnect/background behavior
+    - relay/app/session interactions visible in the app
+  - Run the full Android integration sweep before release, and after broad terminal/render/session/relay changes that can affect multiple Android-visible behaviors at once.
+- An Android-visible bug is not considered fixed without a passing targeted instrumentation or end-to-end verification for that exact behavior.
 
 ## Repo hygiene
 - If `.golangci.yml` does not exist in repo root, create and seed it with the contents below.
@@ -82,9 +97,37 @@ linters:
 ## Regression discipline (mandatory)
 - Every user-reported bug must be converted into a failing regression test before the fix is merged.
 - For TUI/attach/headless flows, regressions must be real PTY integration tests (`ptytest`) that drive actual keypresses and assert observable screen/state outcomes.
+- For Android app behavior, prefer instrumentation or end-to-end verification when the bug is visible at the UI, notification, lifecycle, or relay boundary.
 - For timing-sensitive behavior, tests must use injected `clock.Clock` and explicitly advance mock time; do not rely on wall-clock sleeps or polling loops as proof of correctness.
 - A bug is not marked resolved until:
   - the new regression test fails before the fix,
   - passes after the fix,
   - and relevant existing suites still pass.
 - If a report contains multiple failure modes, add one explicit assertion per failure mode (or separate tests) so coverage is auditable.
+
+## Terminal isolation (mandatory, non-negotiable)
+- Tests, harnesses, and ad hoc verification commands must never mutate the inherited terminal/tty/pty of the shell, tmux client, or Lingon session they were launched from.
+- Any test or helper that needs raw mode, resize events, or PTY control must create and use its own dedicated PTY/TTY, fully isolated from the user's terminal.
+- Process-level window-change signaling is prohibited in tests and test helpers:
+  - do not send `SIGWINCH` to the process, process group, parent process, or inherited tty owner
+  - do not rely on process-global `signal.Notify(..., SIGWINCH)` as a test stimulus
+- If resize behavior must be tested, drive it only through PTY-local mechanisms owned by the test, such as resizing the dedicated PTY created for that test.
+- Do not use `/dev/tty`, inherited stdin/stdout terminals, or shell wrappers that alter the caller terminal state as part of test setup.
+- When any illicit inherited-tty or process-level resize behavior is discovered in the test codebase, remove or refactor it immediately; do not preserve it as legacy coverage.
+
+## Bug tracking and post-fix verification (mandatory)
+- Track active user-reported bugs in [BUG_TRACKER.md](BUG_TRACKER.md).
+- Add or update the tracker entry before or during investigation; do not rely on thread memory alone.
+- A bug fix is not considered trustworthy just because code was written.
+- After implementing a fix, perform an explicit review of the changed code paths and confirm they actually enforce the intended behavior.
+- Record verification evidence in the tracker entry:
+  - concrete repro steps,
+  - regression coverage added,
+  - tests or end-to-end checks run,
+  - any remaining gaps or blocked verification.
+- Use these tracker statuses consistently:
+  - `open`
+  - `in_progress`
+  - `needs_verification`
+  - `resolved`
+  - `blocked`

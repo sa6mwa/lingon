@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -22,11 +23,11 @@ type wsConn struct {
 	conn      *websocket.Conn
 	logger    pslog.Logger
 
-	sendMu sync.Mutex
-	sendCh chan *protocolpb.Frame
-	ctrlCh chan *protocolpb.Frame
-	done   chan struct{}
-	closed sync.Once
+	sendMu       sync.Mutex
+	lastActivity atomic.Int64
+	sendCh       chan *protocolpb.Frame
+	done         chan struct{}
+	closed       sync.Once
 }
 
 func newWSConn(id string, role Role, sessionID string, scope ShareScope, conn *websocket.Conn, logger pslog.Logger) *wsConn {
@@ -41,9 +42,9 @@ func newWSConn(id string, role Role, sessionID string, scope ShareScope, conn *w
 		conn:      conn,
 		logger:    logger,
 		sendCh:    make(chan *protocolpb.Frame, 128),
-		ctrlCh:    make(chan *protocolpb.Frame, 64),
 		done:      make(chan struct{}),
 	}
+	ws.touchActivity()
 	go ws.writeLoop()
 	return ws
 }
@@ -57,11 +58,7 @@ func (c *wsConn) Send(ctx context.Context, frame *protocolpb.Frame) error {
 	if frame == nil {
 		return nil
 	}
-	ch := c.sendCh
-	if isControlFrame(frame) {
-		ch = c.ctrlCh
-	}
-	return c.enqueue(ctx, ch, frame)
+	return c.enqueue(ctx, c.sendCh, frame)
 }
 
 func (c *wsConn) SendImmediate(ctx context.Context, frame *protocolpb.Frame) error {
@@ -74,7 +71,11 @@ func (c *wsConn) SendImmediate(ctx context.Context, frame *protocolpb.Frame) err
 	}
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	return c.conn.Write(ctx, websocket.MessageBinary, data)
+	if err := c.conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+		return err
+	}
+	c.touchActivity()
+	return nil
 }
 
 func (c *wsConn) Close(ctx context.Context, reason string) error {
@@ -87,9 +88,48 @@ func (c *wsConn) Close(ctx context.Context, reason string) error {
 }
 
 func (c *wsConn) Ping(ctx context.Context) error {
-	c.sendMu.Lock()
+	return c.PingIfIdle(ctx, 0)
+}
+
+func (c *wsConn) PingIfIdle(ctx context.Context, minIdle time.Duration) error {
+	if minIdle > 0 && c.idleFor() < minIdle {
+		return nil
+	}
+	if !c.sendMu.TryLock() {
+		return nil
+	}
 	defer c.sendMu.Unlock()
-	return c.conn.Ping(ctx)
+	if minIdle > 0 && c.idleFor() < minIdle {
+		return nil
+	}
+	err := c.conn.Ping(ctx)
+	if err == nil {
+		c.touchActivity()
+	}
+	return err
+}
+
+func (c *wsConn) touchActivity() {
+	if c == nil {
+		return
+	}
+	c.lastActivity.Store(time.Now().UTC().UnixNano())
+}
+
+func (c *wsConn) idleFor() time.Duration {
+	if c == nil {
+		return 0
+	}
+	nanos := c.lastActivity.Load()
+	if nanos <= 0 {
+		return 0
+	}
+	last := time.Unix(0, nanos)
+	now := time.Now().UTC()
+	if now.After(last) {
+		return now.Sub(last)
+	}
+	return 0
 }
 
 func (c *wsConn) enqueue(ctx context.Context, ch chan *protocolpb.Frame, frame *protocolpb.Frame) error {
@@ -108,23 +148,6 @@ func (c *wsConn) writeLoop() {
 		select {
 		case <-c.done:
 			return
-		default:
-		}
-		select {
-		case frame := <-c.ctrlCh:
-			if frame != nil {
-				_ = c.writeFrame(frame)
-			}
-			continue
-		default:
-		}
-		select {
-		case <-c.done:
-			return
-		case frame := <-c.ctrlCh:
-			if frame != nil {
-				_ = c.writeFrame(frame)
-			}
 		case frame := <-c.sendCh:
 			if frame != nil {
 				_ = c.writeFrame(frame)
@@ -140,17 +163,11 @@ func (c *wsConn) writeFrame(frame *protocolpb.Frame) error {
 	}
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	return c.conn.Write(context.Background(), websocket.MessageBinary, data)
-}
-
-func isControlFrame(frame *protocolpb.Frame) bool {
-	if frame == nil {
-		return false
+	if err := c.conn.Write(context.Background(), websocket.MessageBinary, data); err != nil {
+		return err
 	}
-	if frame.GetControl() != nil || frame.GetWelcome() != nil || frame.GetError() != nil || frame.GetSessions() != nil {
-		return true
-	}
-	return false
+	c.touchActivity()
+	return nil
 }
 
 func readFrame(ctx context.Context, conn *websocket.Conn, readLimit int64) (*protocolpb.Frame, error) {

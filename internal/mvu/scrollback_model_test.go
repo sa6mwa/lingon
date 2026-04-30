@@ -36,12 +36,12 @@ func TestScrollbackViewportPagingAndBounds(t *testing.T) {
 	if got := view.Offset(); got != 180 {
 		t.Fatalf("expected max offset=180, got %d", got)
 	}
-	view.Normalize(50, 20)
+	view.Normalize(50, 20, 80, 20)
 	if got := view.Offset(); got != 30 {
 		t.Fatalf("expected normalized offset=30, got %d", got)
 	}
 	view.Exit()
-	if view.Active() || view.Offset() != 0 {
+	if view.Active() || view.Offset() != 0 || view.Column() != 0 {
 		t.Fatalf("expected exit to clear scrollback view state")
 	}
 }
@@ -55,6 +55,31 @@ func TestScrollbackViewportPercent(t *testing.T) {
 	view.Bottom()
 	if got := view.Percent(200, 20); got != 100 {
 		t.Fatalf("expected bottom percentage=100, got %d", got)
+	}
+}
+
+func TestScrollbackViewportHorizontalPanAndResets(t *testing.T) {
+	var view ScrollbackViewport
+	view.EnterAt(200, 20, 15, 120, 20, 7)
+	if got := view.Offset(); got != 15 {
+		t.Fatalf("expected offset preserved on enter, got %d", got)
+	}
+	if got := view.Column(); got != 7 {
+		t.Fatalf("expected col preserved on enter, got %d", got)
+	}
+	if !view.PanX(120, 20, 5) || view.Column() != 12 {
+		t.Fatalf("expected horizontal pan to move to 12, got %d", view.Column())
+	}
+	view.Normalize(200, 20, 25, 20)
+	if got := view.Column(); got != 5 {
+		t.Fatalf("expected normalize to clamp column to 5, got %d", got)
+	}
+	if !view.Top(200, 20) || view.Column() != 0 {
+		t.Fatalf("expected top to reset horizontal pan")
+	}
+	view.SetColumn(120, 20, 9)
+	if !view.Bottom() || view.Column() != 0 {
+		t.Fatalf("expected bottom to reset horizontal pan")
 	}
 }
 

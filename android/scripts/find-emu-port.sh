@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ADB_BIN="${ADB:-adb}"
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
 PORT_START=5554
 PORT_END=5584
 

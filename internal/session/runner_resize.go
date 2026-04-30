@@ -35,3 +35,33 @@ func (r *Runner) ResizeActive(cols, rows int) {
 		_ = r.remoteSessions.SendResize(context.Background(), activeID, cols, rows)
 	}
 }
+
+// ResizeActiveIfChanged applies a size update only when the active session has
+// not already observed the requested dimensions.
+func (r *Runner) ResizeActiveIfChanged(cols, rows int) bool {
+	if r == nil || cols <= 0 || rows <= 0 {
+		return false
+	}
+	activeID, activeLocal := r.activeSession()
+	if activeLocal {
+		targetID := strings.TrimSpace(activeID)
+		if targetID == "" {
+			targetID = r.firstLocalID()
+		}
+		local := r.localSession(targetID)
+		if local == nil {
+			return false
+		}
+		curCols, curRows := local.Size()
+		if curCols == cols && curRows == rows {
+			return false
+		}
+		r.ResizeActive(cols, rows)
+		return true
+	}
+	if r.opts.Cols == cols && r.opts.Rows == rows {
+		return false
+	}
+	r.ResizeActive(cols, rows)
+	return true
+}

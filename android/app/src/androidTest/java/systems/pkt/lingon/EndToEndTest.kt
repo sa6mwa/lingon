@@ -1,16 +1,25 @@
 package systems.pkt.lingon
 
 import android.Manifest
+import android.app.Notification
+import android.app.NotificationManager
+import android.service.notification.StatusBarNotification
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.ParcelFileDescriptor
+import android.view.KeyEvent
+import androidx.core.app.NotificationManagerCompat
 import androidx.test.rule.GrantPermissionRule
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performImeAction
-import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
@@ -23,16 +32,27 @@ import androidx.test.platform.app.InstrumentationRegistry
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
+import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Base64
 import java.util.Locale
 import java.util.zip.CRC32
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStreamReader
+import systems.pkt.lingon.viewmodel.ConnectionState
+import java.io.FileOutputStream
+import java.util.UUID
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -42,8 +62,12 @@ import systems.pkt.lingon.test.FailureCaptureRule
 import systems.pkt.lingon.ui.TestTags
 import systems.pkt.lingon.viewmodel.AppViewModel
 import systems.pkt.lingon.viewmodel.AppViewModelFactory
-import systems.pkt.lingon.MaxTerminalZoom
-import systems.pkt.lingon.MinTerminalZoom
+import systems.pkt.lingon.terminal.TerminalGridView
+import systems.pkt.lingon.terminal.TerminalPalette
+import systems.pkt.lingon.terminal.TerminalSnapshot
+import systems.pkt.lingon.terminal.TerminalViewportState
+import systems.pkt.lingon.terminal.buildScrollbackSnapshot
+import systems.pkt.lingon.protocol.ScrollbackRow
 import kotlin.math.min
 import kotlin.math.max
 
@@ -60,11 +84,30 @@ class EndToEndTest {
         .around(FailureCaptureRule(composeRule))
 
     private val testConfig = TestConfig.fromArgs()
+    private val screenshotRunId = UUID.randomUUID().toString().take(8)
+    private val startedHeadlessSessions = linkedSetOf<String>()
 
     @Before
     fun ensureBackendReachable() {
+        restoreNotificationDelivery()
+        clearAppNotifications()
         configureEndpointAndCerts()
         assertBackendReachable(testConfig.endpoint, testConfig.caPem)
+    }
+
+    @After
+    fun restoreDeviceState() {
+        runCatching { restoreNotificationDelivery() }
+        runCatching { resumeActivity() }
+        runCatching { detachStartedHeadlessSessions() }
+        runCatching {
+            composeRule.activity.runOnUiThread {
+                appViewModel().setBackgroundWallEnabled(false)
+            }
+            composeRule.waitForIdle()
+        }
+        runCatching { clearAppNotifications() }
+        runCatching { ensureLoggedOut() }
     }
 
     @Test
@@ -164,7 +207,7 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
-        assertTerminalResponsive()
+        assertTerminalResponsive(requireControl = false)
         val initial = readTerminalHash()
         waitUntilNoError(8_000) { readTerminalHash() != initial }
     }
@@ -180,28 +223,35 @@ class EndToEndTest {
     }
 
     @Test
-    fun zoom_menu_adjusts_view_and_resets() {
+    fun keyboard_input_backspace_updates_remote_session() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
 
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
-        val initial = readTerminalDebugInfo()
-            ?: throw AssertionError("missing terminal debug info")
 
-        openZoomDialog()
-        setZoomSlider(1.5f)
-        composeRule.onNodeWithTag(TestTags.ZoomSave, useUnmergedTree = true).performClick()
-        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
-            val info = readTerminalDebugInfo()
-            info != null && info.viewCols < initial.viewCols
-        }
+        val sessionId = activeSessionId()
+        val expectedSequence = arrayOf(
+            "ECHO_${sessionId} 66",
+            "ECHO_${sessionId} 6f",
+            "ECHO_${sessionId} 6f",
+            "ECHO_${sessionId} 7f",
+            "ECHO_${sessionId} 62",
+            "ECHO_${sessionId} 61",
+            "ECHO_${sessionId} 72",
+        )
 
-        resetZoomPan()
-        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
-            val info = readTerminalDebugInfo()
-            info != null && info.viewCols >= initial.viewCols
+        sendTerminalInput("foo")
+        sendTerminalBackspace()
+        sendTerminalInput("bar")
+        sendTerminalEnter()
+
+        waitUntilNoError(20_000L) { snapshotContainsSequence(*expectedSequence) }
+        waitUntilNoError(5_000L) {
+            val cr = "ECHO_${sessionId} 0d"
+            val lf = "ECHO_${sessionId} 0a"
+            snapshotContainsToken(cr) || snapshotContainsToken(lf)
         }
     }
 
@@ -213,20 +263,419 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
-        val initial = readTerminalDebugInfo()
+        resetZoomPan()
+        val baseline = waitForTerminalDebugInfo { info ->
+            info.viewCols > 0 && info.viewRows > 0 && info.renderScaleX > 0f
+        }
+        val initial = baseline
             ?: throw AssertionError("missing terminal debug info")
 
         performPinchZoom(zoomIn = true)
-        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
-            val info = readTerminalDebugInfo()
-            info != null && info.viewCols < initial.viewCols
-        }
+        val zoomedIn = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+            info.renderScaleX > initial.renderScaleX + 0.05f
+        } ?: throw AssertionError("missing zoomed-in terminal debug info")
+        assertTrue(zoomedIn.renderScaleX > initial.renderScaleX)
 
         resetZoomPan()
         waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
             val info = readTerminalDebugInfo()
-            info != null && info.viewCols >= initial.viewCols
+            info != null &&
+                kotlin.math.abs(info.renderScaleX - initial.renderScaleX) <= 0.03f
         }
+    }
+
+    @Test
+    fun zoomed_viewport_does_not_reset_after_frame_and_resume() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        resetZoomPan()
+        val baseline = waitForTerminalDebugInfo { info ->
+            info.viewCols > 0 && info.viewRows > 0 && info.renderScaleX > 0f
+        } ?: throw AssertionError("missing baseline terminal debug info")
+
+        var zoomed = baseline
+        repeat(2) {
+            setZoomFactor(zoomed.zoomFactor + 0.35f)
+            zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+                    info.viewCols > 0 &&
+                    info.viewRows > 0
+            } ?: throw AssertionError("missing zoomed terminal debug info")
+        }
+
+        sendTerminalInput("echo ZOOM-STABILITY")
+        sendTerminalEnter()
+        val afterFrame = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > zoomed.lastFrameSeq &&
+                info.hash != zoomed.hash &&
+                kotlin.math.abs(info.renderScaleX - zoomed.renderScaleX) <= 0.03f &&
+                kotlin.math.abs(info.viewCols - zoomed.viewCols) <= 2 &&
+                kotlin.math.abs(info.viewRows - zoomed.viewRows) <= 2
+        } ?: throw AssertionError("zoomed viewport changed after a new terminal frame")
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        val beforeBackground = waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == afterFrame.activeSessionId &&
+                kotlin.math.abs(info.zoomFactor - afterFrame.zoomFactor) <= 0.03f &&
+                info.viewCols > 0 &&
+                info.viewRows > 0 &&
+                info.renderScaleX > 0f
+        } ?: throw AssertionError("missing keyboard-hidden zoomed terminal debug info")
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == beforeBackground.activeSessionId &&
+                kotlin.math.abs(info.zoomFactor - beforeBackground.zoomFactor) <= 0.03f &&
+                kotlin.math.abs(info.renderScaleX - beforeBackground.renderScaleX) <= 0.03f &&
+                kotlin.math.abs(info.viewCols - beforeBackground.viewCols) <= 2 &&
+                kotlin.math.abs(info.viewRows - beforeBackground.viewRows) <= 2 &&
+                info.visibleStartRow == beforeBackground.visibleStartRow &&
+                info.visibleEndRowExclusive == beforeBackground.visibleEndRowExclusive
+        } ?: throw AssertionError("zoomed viewport reset after background/foreground cycle")
+    }
+
+    @Test
+    fun zoomed_scrollback_live_reentry_waits_for_matching_snapshot() {
+        lateinit var view: TerminalGridView
+        var scrollbackDelta = 0
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                setOnScrollback { scrollbackDelta += it }
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                val live = terminalSnapshotForViewTest(rows = 30, cols = 20)
+                update(
+                    snapshot = buildScrollbackSnapshot(
+                        live = live,
+                        scrollback = scrollbackRowsForViewTest(rows = 4, cols = 20),
+                        offset = 4,
+                    ),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 30,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 4,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    cameraOffsetYPx = cellHeight * 3.5f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                ),
+            )
+            val beforeReentry = view.getCameraOffsetYForTesting()
+
+            dispatchSinglePointerDrag(view, startX = 120f, startY = 120f, endX = 119f, endY = 120f)
+
+            assertTrue("expected pan to request live reentry rows", scrollbackDelta < 0)
+            assertEquals(
+                "camera moved before the matching scrollback snapshot arrived",
+                beforeReentry,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+
+            val live = terminalSnapshotForViewTest(rows = 30, cols = 20)
+            view.update(
+                snapshot = buildScrollbackSnapshot(
+                    live = live,
+                    scrollback = scrollbackRowsForViewTest(rows = 4, cols = 20),
+                    offset = 4 + scrollbackDelta,
+                ),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 30,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 0.8f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 4 + scrollbackDelta,
+                imeVisible = false,
+                isLoading = false,
+            )
+            assertEquals(
+                beforeReentry + (scrollbackDelta * cellHeight),
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
+        lateinit var view: TerminalGridView
+        var scrollbackDelta = 0
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                setOnScrollback { scrollbackDelta += it }
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
+                layout(0, 0, 480, 240)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 30, cols = 20),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 30,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val live = terminalSnapshotForViewTest(rows = 30, cols = 20)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                ),
+            )
+            val partialPanPx = cellHeight * 0.35f
+            dispatchSinglePointerDrag(
+                view,
+                startX = 120f,
+                startY = 120f,
+                endX = 120f,
+                endY = 120f + partialPanPx,
+            )
+
+            assertEquals(
+                "partial overflow into scrollback must request a row immediately so panning can stay pixel-continuous",
+                1,
+                scrollbackDelta,
+            )
+
+            view.update(
+                snapshot = buildScrollbackSnapshot(
+                    live = live,
+                    scrollback = scrollbackRowsForViewTest(rows = 1, cols = 20),
+                    offset = 1,
+                ),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 30,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 0.8f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 1,
+                imeVisible = false,
+                isLoading = false,
+            )
+            assertEquals(
+                cellHeight - partialPanPx,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun zoomed_scrollback_entry_reverse_before_snapshot_preserves_live_position() {
+        assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
+            imeVisible = false,
+            fitToViewWidth = false,
+        )
+    }
+
+    @Test
+    fun keyboard_visible_scrollback_entry_reverse_before_snapshot_preserves_live_position() {
+        assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
+            imeVisible = true,
+            fitToViewWidth = true,
+        )
+    }
+
+    @Test
+    fun keyboard_visible_zoomed_scrollback_entry_without_width_fit_preserves_live_position() {
+        assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
+            imeVisible = true,
+            fitToViewWidth = false,
+        )
+    }
+
+    private fun assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
+        imeVisible: Boolean,
+        fitToViewWidth: Boolean,
+    ) {
+        lateinit var view: TerminalGridView
+        var scrollbackDelta = 0
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                setOnScrollback { scrollbackDelta += it }
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
+                layout(0, 0, 480, 240)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 30, cols = 20),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 30,
+                    fitToViewWidth = fitToViewWidth,
+                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = imeVisible,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val live = terminalSnapshotForViewTest(rows = 30, cols = 20)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                ),
+            )
+            val partialPanPx = cellHeight * 0.35f
+            dispatchSinglePointerDrag(
+                view,
+                startX = 120f,
+                startY = 120f,
+                endX = 120f,
+                endY = 120f + partialPanPx,
+            )
+            assertEquals(1, scrollbackDelta)
+
+            dispatchSinglePointerDrag(
+                view,
+                startX = 120f,
+                startY = 120f,
+                endX = 120f,
+                endY = 120f - partialPanPx,
+            )
+            assertEquals(
+                "reversing before the scrollback snapshot arrives should move within the live snapshot",
+                partialPanPx,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+
+            view.update(
+                snapshot = buildScrollbackSnapshot(
+                    live = live,
+                    scrollback = scrollbackRowsForViewTest(rows = 1, cols = 20),
+                    offset = 1,
+                ),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 30,
+                fitToViewWidth = fitToViewWidth,
+                zoomFactor = DefaultTerminalZoom + 0.8f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 1,
+                imeVisible = imeVisible,
+                isLoading = false,
+            )
+            assertEquals(
+                "late scrollback snapshot must preserve the live position reached after reversing direction",
+                cellHeight + partialPanPx,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun terminal_fills_from_top_before_live_scrolling() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        resetZoomPan()
+        val baseline = waitForTerminalDebugInfo(TERMINAL_READY_TIMEOUT_MS) { info ->
+            info.viewRows > 0 &&
+                info.visibleStartRow == 0 &&
+                info.visibleEndRowExclusive > info.visibleStartRow &&
+                info.renderScaleX > 0f
+        } ?: throw AssertionError("missing baseline terminal debug info")
+        var zoomed = baseline
+        for (attempt in 0 until 3) {
+            setZoomFactor(zoomed.zoomFactor + 0.35f)
+            zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+                    info.visibleStartRow == 0 &&
+                    info.viewRows > 0
+            } ?: throw AssertionError("missing zoomed terminal debug info")
+            val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
+            if (visibleRows < zoomed.rows) {
+                break
+            }
+        }
+        val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
+        if (visibleRows >= zoomed.rows) {
+            throw AssertionError(
+                "zoomed viewport still fits the whole host screen " +
+                    "(visibleRows=$visibleRows, rows=${zoomed.rows})",
+            )
+        }
+
+        val partialCount = max(3, visibleRows - 4)
+        val partialEnd = 100 + partialCount
+        sendTerminalInput("seq 101 $partialEnd")
+        sendTerminalEnter()
+        val partial = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > zoomed.lastFrameSeq &&
+                info.hash != zoomed.hash
+        } ?: throw AssertionError("partial terminal output did not render")
+        assertTrue(
+            "invalid visible range ${partial.visibleStartRow}..${partial.visibleEndRowExclusive}",
+            partial.visibleEndRowExclusive > partial.visibleStartRow,
+        )
+
     }
 
     @Test
@@ -252,14 +701,22 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val render = waitForTerminalRenderInfo()
+            ?: throw AssertionError("terminal view did not render visible output")
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
-        if (info.viewCols < testConfig.hostCols) {
+        assertEquals(testConfig.hostCols, info.cols)
+        assertEquals(testConfig.hostRows, info.rows)
+        if (info.viewCols <= 0 || info.viewRows <= 0) {
             throw AssertionError(
-                "terminal view cols ${info.viewCols} < host cols ${testConfig.hostCols}; " +
-                    "host width should be authoritative",
+                "terminal viewport was not measured: cols=${info.viewCols} rows=${info.viewRows}",
             )
         }
+        assertTrue(
+            "expected minimum zoom to fit the host width into the viewport " +
+                "(viewCols=${info.viewCols}, hostCols=${info.cols}, ink=${render.inkLeft},${render.inkTop}..${render.inkRight},${render.inkBottom})",
+            info.viewCols == info.cols,
+        )
     }
 
     @Test
@@ -269,38 +726,41 @@ class EndToEndTest {
         setResizeHostEnabled(false)
 
         attachViaShareToken(token)
+        val render = waitForTerminalRenderInfo()
+            ?: throw AssertionError("terminal view did not render visible output")
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
-        if (info.viewCols < testConfig.hostCols) {
+        assertEquals(testConfig.hostCols, info.cols)
+        assertEquals(testConfig.hostRows, info.rows)
+        if (info.viewCols <= 0 || info.viewRows <= 0) {
             throw AssertionError(
-                "terminal view cols ${info.viewCols} < host cols ${testConfig.hostCols}; " +
-                    "host width should be authoritative",
+                "terminal viewport was not measured: cols=${info.viewCols} rows=${info.viewRows}",
             )
         }
+        assertTrue(
+            "expected minimum zoom to fit the share-token host width into the viewport " +
+                "(viewCols=${info.viewCols}, hostCols=${info.cols}, ink=${render.inkLeft},${render.inkTop}..${render.inkRight},${render.inkBottom})",
+            info.viewCols == info.cols,
+        )
     }
 
     @Test
-    fun resize_toggle_does_not_block_input_without_control() {
+    fun resize_menu_absent_and_input_remains_blocked_without_control() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         setResizeHostEnabled(false)
 
         loginWithConfiguredUser()
-        waitUntilNoError(5_000) {
-            val info = readTerminalDebugInfo()
-            info != null && info.hasControl
-        }
         openMenu()
-        waitUntilNoError(5_000) { isNodeEnabled(TestTags.ResizeHostToggle) }
-        composeRule.onNodeWithTag(TestTags.ResizeHostToggle, useUnmergedTree = true).performClick()
+        composeRule.onAllNodesWithTag(TestTags.ResizeHostMenuItem, useUnmergedTree = true).assertCountEquals(0)
         composeRule.runOnIdle {
             appViewModel().setHasControlForTesting(false)
         }
-        assertTerminalResponsive(requireControl = false)
+        assertTerminalInputBlocked()
     }
 
     @Test
-    fun resize_setting_on_resizes_host_when_in_control() {
+    fun resize_setting_override_still_does_not_resize_host_when_in_control() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         setResizeHostEnabled(false)
@@ -318,15 +778,11 @@ class EndToEndTest {
                 appViewModel().updateTerminalSize(state.terminalCols, state.terminalRows)
             }
         }
-        waitUntilNoError(5_000) {
-            val info = readTerminalDebugInfo()
-            info != null && info.resizeEnabled
-        }
-        // Reset host size so later tests see the expected baseline rows/cols.
-        composeRule.runOnIdle {
-            appViewModel().updateTerminalSize(testConfig.hostCols, testConfig.hostRows)
-        }
-        setResizeHostEnabled(false)
+        val info = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info")
+        assertEquals(testConfig.hostCols, info.cols)
+        assertEquals(testConfig.hostRows, info.rows)
+        assertFalse(info.resizeEnabled)
     }
 
     @Test
@@ -341,11 +797,11 @@ class EndToEndTest {
             info != null && !info.hasControl
         }
         openMenu()
-        composeRule.onNodeWithTag(TestTags.ResizeHostMenuItem).assertIsNotEnabled()
+        composeRule.onAllNodesWithTag(TestTags.ResizeHostMenuItem, useUnmergedTree = true).assertCountEquals(0)
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
-        assertEquals(testConfig.hostCols, info.cols)
-        assertEquals(testConfig.hostRows, info.rows)
+        assertTrue("view cols=${info.viewCols}", info.viewCols > 0)
+        assertTrue("view rows=${info.viewRows}", info.viewRows > 0)
         assertTerminalInputBlocked()
     }
 
@@ -378,6 +834,297 @@ class EndToEndTest {
 
         selectSessionTab(first, timeoutMs = 10_000L)
         assertTerminalResponsive(first)
+    }
+
+    @Test
+    fun tab_switch_does_not_rearm_wall_inactivity_without_terminal_input() {
+        if (testConfig.sessions.size < 2) return
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        val first = activeSessionId()
+        val second = testConfig.sessions.firstOrNull { it != first } ?: return
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+
+        val baselineWalls = wallEventCount()
+        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        waitUntilNoError(5_000L) {
+            appViewModel().state.value.wallInactivityEnabled &&
+                appViewModel().state.value.wallInactivityLabel == "250ms"
+        }
+        waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
+
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == second }
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first }
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+
+        SystemClock.sleep(1500L)
+        assertEquals(baselineWalls + 1, wallEventCount())
+    }
+
+    @Test
+    fun wall_inactivity_banner_auto_dismisses_without_tab_switch() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+
+        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        waitUntilNoError(5_000L) {
+            readStatusBanner()?.message == "wall 250ms"
+        }
+        waitUntilNoError(6_000L) {
+            readStatusBanner() == null
+        }
+    }
+
+    @Test
+    fun keyboard_tab_switch_preserves_bottom_anchor_visual() {
+        if (testConfig.sessions.size < 2) return
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearScreenshotArtifacts()
+
+        loginWithConfiguredUser()
+        val first = activeSessionId()
+        val second = testConfig.sessions.firstOrNull { it != first } ?: return
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        assertTerminalResponsive(first)
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == second }
+        assertTerminalResponsive(second)
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first }
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        composeRule.waitForIdle()
+        val firstBeforeLoad = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info before loading first tab")
+        sendTerminalInput("seq 1 60")
+        sendTerminalEnter()
+        waitUntilNoError(20_000L) {
+            val info = readTerminalDebugInfo()
+            info != null &&
+                info.activeSessionId == first &&
+                info.lastFrameSeq > firstBeforeLoad.lastFrameSeq &&
+                info.hash != firstBeforeLoad.hash
+        }
+
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        captureScreenshot("tab-first-loaded")
+        val firstLoaded = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info for first loaded tab")
+
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == second }
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        composeRule.waitForIdle()
+        val secondBeforeLoad = readTerminalDebugInfo() ?: throw AssertionError("missing terminal debug info before loading second tab")
+        sendTerminalInput("seq 1001 1060")
+        sendTerminalEnter()
+        waitUntilNoError(20_000L) {
+            val info = readTerminalDebugInfo()
+            info != null &&
+                info.activeSessionId == second &&
+                info.lastFrameSeq > secondBeforeLoad.lastFrameSeq &&
+                info.hash != secondBeforeLoad.hash
+        }
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        captureScreenshot("tab-second-loaded")
+
+        var firstRestored: TerminalDebugInfo? = null
+        repeat(20) { hop ->
+            val hopNumber = hop + 1
+
+            selectSessionTab(first, timeoutMs = 10_000L)
+            waitUntilNoError(10_000L) {
+                val info = readTerminalDebugInfo()
+                info != null && info.activeSessionId == first
+            }
+            composeRule.waitForIdle()
+            Thread.sleep(150)
+            captureScreenshot("tab-first-hop-${hopNumber}-immediate")
+            waitUntilNoError(10_000L) {
+                val info = readTerminalDebugInfo()
+                info != null && info.activeSessionId == first && !stateForTest().sessionSyncing
+            }
+            composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+            waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            captureScreenshot("tab-first-hop-${hopNumber}-settled")
+            if (hop == 0) {
+                firstRestored = readTerminalDebugInfo()
+            }
+
+            selectSessionTab(second, timeoutMs = 10_000L)
+            waitUntilNoError(10_000L) {
+                val info = readTerminalDebugInfo()
+                info != null && info.activeSessionId == second
+            }
+            composeRule.waitForIdle()
+            Thread.sleep(150)
+            captureScreenshot("tab-second-hop-${hopNumber}-immediate")
+            waitUntilNoError(10_000L) {
+                val info = readTerminalDebugInfo()
+                info != null && info.activeSessionId == second && !stateForTest().sessionSyncing
+            }
+            composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+            waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            captureScreenshot("tab-second-hop-${hopNumber}-settled")
+        }
+
+        val restored = firstRestored ?: throw AssertionError("missing terminal debug info after restoring first tab")
+        assertEquals(first, restored.activeSessionId)
+        assertTrue(
+            "visible terminal content changed across tab switch: before=${firstLoaded.hash} after=${restored.hash}",
+            firstLoaded.hash == restored.hash || restored.lastFrameSeq >= firstLoaded.lastFrameSeq,
+        )
+    }
+
+    @Test
+    fun keyboard_hide_show_preserves_bottom_anchor_visual() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearScreenshotArtifacts()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        activeSessionId()
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        composeRule.waitForIdle()
+
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before loading keyboard hide/show fixture")
+        sendTerminalInput("seq 1 60")
+        sendTerminalEnter()
+        waitUntilNoError(20_000L) {
+            val info = readTerminalDebugInfo()
+            info != null &&
+                info.lastFrameSeq > beforeLoad.lastFrameSeq &&
+                info.hash != beforeLoad.hash
+        }
+        captureScreenshot("keyboard-precheck")
+
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        captureScreenshot("keyboard-visible-initial")
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        captureScreenshot("keyboard-hidden")
+
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        captureScreenshot("keyboard-visible-restored")
+    }
+
+    @Test
+    fun keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before loading scrollback fixture")
+        sendTerminalInput("seq 1 180")
+        sendTerminalEnter()
+        val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > beforeLoad.lastFrameSeq && info.hash != beforeLoad.hash
+        } ?: throw AssertionError("scrollback fixture did not render")
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+
+        setZoomFactor(3.2f)
+        val zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+            info.renderScaleY > loaded.renderScaleY + 0.1f &&
+                info.scaledCellHeightPx > 0f &&
+                info.viewRows > 0 &&
+                info.visibleEndRowExclusive > info.visibleStartRow
+        } ?: throw AssertionError("zoomed keyboard-visible terminal debug info did not settle")
+
+        val stepRows = 0.35f
+        val stepPx = (zoomed.scaledCellHeightPx * stepRows).coerceAtLeast(8f)
+        val olderMoveCount = kotlin.math.ceil((zoomed.liveTopRows() + 3f) / stepRows)
+            .toInt()
+            .coerceIn(20, 60)
+        val moves = List(olderMoveCount) { stepPx } + List(olderMoveCount + 8) { -stepPx }
+        val samples = dispatchTerminalDragPulses(moves)
+        assertTrue(
+            "test never entered scrollback while keyboard was visible: ${samples.describePanSamples()}",
+            samples.any { it.scrollbackOffsetRows > 0 },
+        )
+        assertTrue(
+            "test never panned back toward live after entering scrollback: ${samples.describePanSamples()}",
+            samples.dropWhile { it.scrollbackOffsetRows <= 0 }.any { it.scrollbackOffsetRows == 0 },
+        )
+
+        for (i in 1 until samples.size) {
+            val previous = samples[i - 1]
+            val current = samples[i]
+            if (previous.scaledCellHeightPx <= 0f || current.scaledCellHeightPx <= 0f) continue
+            val previousLiveTopRows = previous.liveTopRows()
+            val currentLiveTopRows = current.liveTopRows()
+            val expectedMoveRows = kotlin.math.abs(moves[i]) / current.scaledCellHeightPx
+            val actualMoveRows = kotlin.math.abs(currentLiveTopRows - previousLiveTopRows)
+            assertTrue(
+                "pan jumped at move $i: actualRows=$actualMoveRows expectedRows=$expectedMoveRows " +
+                    "previous=$previous current=$current all=${samples.describePanSamples()}",
+                actualMoveRows <= expectedMoveRows + 0.65f,
+            )
+        }
+    }
+
+    @Test
+    fun tab_switch_after_heavy_output_renders_latest_frame_without_input() {
+        if (testConfig.sessions.size < 2) return
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        val first = activeSessionId()
+        val second = testConfig.sessions.firstOrNull { it != first } ?: return
+        assertTerminalResponsive(first)
+
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before heavy output")
+        sendTerminalInput("seq 1 120")
+        sendTerminalEnter()
+        val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.activeSessionId == first &&
+                info.lastFrameSeq > beforeLoad.lastFrameSeq &&
+                info.hash != beforeLoad.hash
+        } ?: throw AssertionError("latest frame did not render before tab switch")
+
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(1_000L) { activeSessionId() == second }
+
+        composeRule.runOnIdle {
+            appViewModel().selectSession(first)
+        }
+        waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.activeSessionId == first &&
+                (info.hash == loaded.hash || info.lastFrameSeq >= loaded.lastFrameSeq)
+        } ?: throw AssertionError("latest frame did not render after tab switch without input")
     }
 
     @Test
@@ -418,6 +1165,445 @@ class EndToEndTest {
             val info = readTerminalDebugInfo()
             info != null && info.state == "Connected" && info.activeSessionId == target
         }
+    }
+
+    @Test
+    fun background_foreground_resumes_input() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        assertTerminalResponsive()
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val info = readTerminalDebugInfo()
+            info != null && info.state == "Connected" && info.activeSessionId.isNotBlank()
+        }
+        assertTerminalResponsive(requireControl = false)
+    }
+
+    @Test
+    fun background_foreground_preserves_bottom_anchor_visual() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val sessionId = activeSessionId()
+        assertTerminalResponsive(sessionId)
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        composeRule.waitForIdle()
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before background/foreground fixture")
+        sendTerminalInput("seq 1 60")
+        sendTerminalEnter()
+        val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.activeSessionId == sessionId &&
+                info.lastFrameSeq > beforeLoad.lastFrameSeq &&
+                info.hash != beforeLoad.hash &&
+                info.visibleEndRowExclusive > info.visibleStartRow
+        } ?: throw AssertionError("terminal fixture did not render before background/foreground cycle")
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == sessionId &&
+                info.visibleStartRow == loaded.visibleStartRow &&
+                info.visibleEndRowExclusive == loaded.visibleEndRowExclusive &&
+                (info.hash == loaded.hash || info.lastFrameSeq >= loaded.lastFrameSeq)
+        } ?: throw AssertionError("viewport anchor changed across background/foreground cycle")
+    }
+
+    @Test
+    fun background_wall_delivery_posts_system_notification() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        waitUntilNoError(5_000L) {
+            appViewModel().state.value.wallInactivityEnabled &&
+                appViewModel().state.value.wallInactivityLabel == "250ms"
+        }
+
+        backgroundActivity()
+        waitUntilDeviceCondition(10_000L, "background wall service notification") {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+        waitUntilDeviceCondition(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS, "wall inactivity notification") {
+            wallNotifications().isNotEmpty()
+        }
+        assertNoWallNotificationAutogroupSummary()
+        val wallNotification = wallNotifications()
+            .firstOrNull()
+            ?: throw AssertionError("missing lingon_wall notification")
+        assertTrue(
+            "wall notification should not be grouped: group=${wallNotification.notification.group.orEmpty()}",
+            wallNotification.notification.group.isNullOrBlank(),
+        )
+        val title = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        val text = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
+        assertTrue("notification title missing session label: $title", title.endsWith("#${activeSessionId()}"))
+        assertEquals("${activeSessionId()} inactive", text)
+    }
+
+    @Test
+    fun headless_resize_button_only_enables_for_headless_sessions() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
+
+        val headlessId = startHeadlessViaHarness()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
+        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
+
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsEnabled()
+    }
+
+    @Test
+    fun headless_resize_button_resizes_remote_headless_session() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+
+        val headlessId = startHeadlessViaHarness()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
+        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
+        waitUntilNoError(10_000L) {
+            val info = readTerminalDebugInfo()
+            info != null && info.viewCols > 0 && info.viewRows > 0
+        }
+
+        val before = readHeadlessSizeViaHarness(headlessId)
+        assertEquals(120, before.cols)
+        assertEquals(50, before.rows)
+
+        val expectedCols = stateForTest().terminalCols
+        val expectedRows = stateForTest().terminalRows
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).performClick()
+        waitUntilNoError(10_000L) {
+            val after = readHeadlessSizeViaHarness(headlessId)
+            after.cols == expectedCols && after.rows == expectedRows
+        }
+    }
+
+    @Test
+    fun headless_detach_removes_session_without_reconnect_placeholder() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+
+        val headlessId = startHeadlessViaHarness()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
+        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
+
+        detachHeadlessViaHarness(headlessId)
+
+        waitUntilNoError(20_000L) {
+            val state = stateForTest()
+            state.sessions.none { it.id == headlessId } &&
+                state.activeSessionId != headlessId &&
+                !state.sessionSyncing
+        }
+        val banner = readStatusBanner()?.message.orEmpty()
+        assertFalse("unexpected reconnect/not-connected banner: $banner", banner.contains("Not connected", ignoreCase = true))
+        assertFalse("unexpected reconnect/not-connected banner: $banner", banner.contains("connection lost", ignoreCase = true))
+    }
+
+    @Test
+    fun foreground_manual_wall_delivery_does_not_post_system_notification() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(false)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { !appViewModel().state.value.backgroundWallEnabled }
+        ensureAllWallInactivityOff()
+        syncWallCursorToLatest()
+        val baselineWalls = wallEventCount()
+
+        val message = "manual wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(message)
+
+        waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
+        waitUntilNoError(5_000L) {
+            readStatusBanner()?.message?.contains(message) == true
+        }
+        SystemClock.sleep(3_000L)
+        assertNoWallNotificationAutogroupSummary()
+        val visibleMessages = wallNotifications().map { wallNotificationFullText(it) }
+        assertFalse(
+            "foreground wall notification appeared while background wall was disabled: $visibleMessages",
+            visibleMessages.contains(message),
+        )
+    }
+
+    @Test
+    fun background_manual_wall_delivery_posts_system_notification() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilDeviceCondition(10_000L, "background wall service notification") {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        val message = "background manual wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(message)
+
+        waitForWallNotificationBody(message, "background manual wall notification")
+        assertNoWallNotificationAutogroupSummary()
+        val wallNotification = wallNotifications()
+            .firstOrNull { wallNotificationFullText(it) == message }
+            ?: throw AssertionError("missing lingon_wall notification for message=$message")
+        assertTrue(
+            "wall notification should not be grouped: group=${wallNotification.notification.group.orEmpty()}",
+            wallNotification.notification.group.isNullOrBlank(),
+        )
+        val title = wallNotificationTitle(wallNotification)
+        val text = wallNotificationFullText(wallNotification)
+        assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
+        assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
+        assertEquals(message, text)
+    }
+
+    @Test
+    fun foreground_resume_suppresses_background_wall_notifications() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilDeviceCondition(10_000L, "background wall service notification") {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        resumeActivity()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        clearWallNotifications()
+
+        val wallEventsBefore = wallEventCount()
+        val message = "foreground suppressed wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(message)
+        waitUntilNoError(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS) {
+            wallEventCount() > wallEventsBefore
+        }
+        Thread.sleep(3_000L)
+
+        val visibleMessages = wallNotifications().map { wallNotificationFullText(it) }
+        assertFalse(
+            "wall notification appeared while app was foregrounded: $visibleMessages",
+            visibleMessages.contains(message),
+        )
+    }
+
+    @Test
+    fun background_manual_wall_delivery_does_not_repost_previous_message() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilDeviceCondition(10_000L, "background wall service notification") {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        val firstMessage = "background dedupe first wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(firstMessage)
+        waitForWallNotificationBody(firstMessage, "first background wall notification")
+
+        clearAppNotifications()
+        waitUntilDeviceCondition(5_000L, "wall notifications cleared") { wallNotifications().isEmpty() }
+
+        val secondMessage = "background dedupe second wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(secondMessage)
+        waitUntilDeviceCondition(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS, "second background wall notification") {
+            wallNotifications().isNotEmpty()
+        }
+
+        val visibleMessages = wallNotifications().map { wallNotificationFullText(it) }
+        assertFalse(
+            "previous wall notification was reposted with the next wall message: $visibleMessages",
+            visibleMessages.contains(firstMessage),
+        )
+        assertTrue(
+            "second wall notification was not visible: $visibleMessages",
+            visibleMessages.contains(secondMessage),
+        )
+    }
+
+    @Test
+    fun background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilDeviceCondition(10_000L, "background wall service notification") {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        val latestBeforeReset = advanceWallCursorAheadOfRelay()
+        waitForWallCursorAtMost(latestBeforeReset)
+        clearWallNotifications()
+        syncWallCursorToLatest()
+
+        val message = "background wall cursor reset ${System.currentTimeMillis()}"
+        sendWallViaHarness(message)
+
+        waitForWallNotificationBody(message, "background cursor reset wall notification")
+        val wallNotification = wallNotifications()
+            .firstOrNull { wallNotificationFullText(it) == message }
+            ?: throw AssertionError("missing lingon_wall notification for message=$message")
+        assertEquals(message, wallNotificationFullText(wallNotification))
+    }
+
+    @Test
+    fun background_wall_delivery_stops_without_notification_permission_and_recovers_after_grant() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilDeviceCondition(10_000L, "background wall service notification") {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        assumeTrue(
+            "runtime notification gating toggle unsupported on this device",
+            setNotificationDeliveryEnabled(false),
+        )
+        clearWallNotifications()
+
+        val blockedMessage = "permission blocked wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(blockedMessage)
+        Thread.sleep(3_000L)
+        assertFalse(
+            "wall notification should be suppressed when POST_NOTIFICATIONS is revoked",
+            activeNotifications().any { it.notification.channelId == "lingon_wall" },
+        )
+
+        assertTrue("failed to re-enable notifications", setNotificationDeliveryEnabled(true))
+        val recoveredMessage = "permission restored wall ${System.currentTimeMillis()}"
+        sendWallViaHarness(recoveredMessage)
+        waitUntilDeviceCondition(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS, "permission restored wall notification") {
+            wallNotifications().isNotEmpty()
+        }
+        assertNoWallNotificationAutogroupSummary()
+        val wallNotification = wallNotifications()
+            .firstOrNull()
+            ?: throw AssertionError("missing lingon_wall notification after restoring permission")
+        val title = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        val text = wallNotification.notification.extras
+            .getCharSequence(Notification.EXTRA_TEXT)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+        assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
+        assertEquals(recoveredMessage, text)
+
+        resumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
     }
 
     @Test
@@ -520,9 +1706,31 @@ class EndToEndTest {
     }
 
     private fun backgroundAndResumeActivity() {
-        composeRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
-        composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        backgroundActivity()
+        resumeActivity()
+    }
+
+    private fun backgroundActivity() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_HOME"),
+        )
+        waitUntilDeviceCondition(5_000L, "app backgrounded") {
+            !(composeRule.activity.application as LingonApplication).isAppInForeground()
+        }
+    }
+
+    private fun resumeActivity() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand(
+                "am start -W -n systems.pkt.lingon/.MainActivity",
+            ),
+        )
         composeRule.waitForIdle()
+        waitUntilDeviceCondition(5_000L, "app foregrounded") {
+            (composeRule.activity.application as LingonApplication).isAppInForeground()
+        }
     }
 
     private fun attachViaShareToken(token: String) {
@@ -563,9 +1771,243 @@ class EndToEndTest {
         composeRule.waitForIdle()
     }
 
+    private fun wallEventCount(): Int {
+        val app = composeRule.activity.application as LingonApplication
+        return runBlocking {
+            app.repository.listWallEvents(sinceId = 0, limit = 32).events.size
+        }
+    }
+
+    private fun clearAppNotifications() {
+        notificationManager()?.cancelAll()
+    }
+
+    private fun clearWallNotifications() {
+        val manager = notificationManager() ?: return
+        manager.activeNotifications
+            .filter {
+                it.notification.channelId == "lingon_wall" ||
+                    it.notification.channelId == "lingon_background_wall"
+            }
+            .forEach { manager.cancel(it.id) }
+    }
+
+    private fun syncWallCursorToLatest() {
+        val app = composeRule.activity.application as LingonApplication
+        val endpoint = appViewModel().state.value.endpoint.trim()
+        if (endpoint.isBlank()) {
+            return
+        }
+        val latest = runBlocking {
+            var since = 0L
+            while (true) {
+                val page = app.repository.listWallEvents(sinceId = since, limit = 500)
+                if (page.nextId > since) {
+                    since = page.nextId
+                }
+                if (!page.hasMore) {
+                    break
+                }
+            }
+            since
+        }
+        runBlocking {
+            app.wallDeliveryCoordinator.advanceCursor(endpoint, latest)
+        }
+    }
+
+    private fun advanceWallCursorAheadOfRelay(): Long {
+        val app = composeRule.activity.application as LingonApplication
+        val endpoint = appViewModel().state.value.endpoint.trim()
+        if (endpoint.isBlank()) {
+            return 0L
+        }
+        val latest = runBlocking {
+            var since = 0L
+            while (true) {
+                val page = app.repository.listWallEvents(sinceId = since, limit = 500)
+                if (page.nextId > since) {
+                    since = page.nextId
+                }
+                if (!page.hasMore) {
+                    break
+                }
+            }
+            since
+        }
+        runBlocking {
+            app.wallDeliveryCoordinator.advanceCursor(endpoint, latest + 100)
+        }
+        return latest
+    }
+
+    private fun waitForWallCursorAtMost(maxCursor: Long) {
+        val app = composeRule.activity.application as LingonApplication
+        val endpoint = appViewModel().state.value.endpoint.trim()
+        if (endpoint.isBlank()) {
+            return
+        }
+        waitUntilDeviceCondition(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS, "wall cursor <= $maxCursor") {
+            runBlocking {
+                app.wallWorkStateStore.loadCursor(endpoint) <= maxCursor
+            }
+        }
+    }
+
+    private fun waitUntilDeviceCondition(
+        timeoutMs: Long,
+        description: String,
+        condition: () -> Boolean,
+    ) {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (condition()) return
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        if (condition()) return
+        val active = activeNotifications().joinToString(",") {
+            val title = wallNotificationTitle(it)
+            val text = wallNotificationFullText(it)
+            "${it.notification.channelId}:${it.id}:$title:$text"
+        }
+        throw AssertionError("Timed out waiting for $description after ${timeoutMs}ms (notifications=[$active])")
+    }
+
+    private fun waitForWallNotificationBody(message: String, description: String) {
+        waitUntilDeviceCondition(
+            BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS,
+            "$description '$message'",
+        ) {
+            val notifications = wallNotifications()
+            if (notifications.any { wallNotificationFullText(it) == message }) {
+                return@waitUntilDeviceCondition true
+            }
+            if (notifications.isNotEmpty()) {
+                clearWallNotifications()
+            }
+            false
+        }
+    }
+
+    private fun setNotificationDeliveryEnabled(enabled: Boolean): Boolean {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand(
+                if (enabled) {
+                    "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION allow"
+                } else {
+                    "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION deny"
+                },
+            ),
+        )
+        val deadline = System.currentTimeMillis() + 5_000L
+        while (System.currentTimeMillis() < deadline) {
+            if (notificationsEnabled() == enabled) {
+                return true
+            }
+            composeRule.waitForIdle()
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        return notificationsEnabled() == enabled
+    }
+
+    private fun restoreNotificationDelivery(): Boolean {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        consumeShellCommand(
+            instrumentation.uiAutomation.executeShellCommand(
+                "pm grant systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
+            ),
+        )
+        return setNotificationDeliveryEnabled(true)
+    }
+
+    private fun notificationsEnabled(): Boolean {
+        return NotificationManagerCompat.from(InstrumentationRegistry.getInstrumentation().targetContext)
+            .areNotificationsEnabled()
+    }
+
+    private fun ensureWallInactivityOff() {
+        waitUntilNoError(5_000L) { appViewModel().state.value.connectionState == ConnectionState.Connected }
+        repeat(4) {
+            val state = appViewModel().state.value
+            if (!state.wallInactivityEnabled) {
+                return
+            }
+            val previousLabel = state.wallInactivityLabel
+            composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+            waitUntilNoError(5_000L) {
+                val updated = appViewModel().state.value
+                !updated.wallInactivityEnabled || updated.wallInactivityLabel != previousLabel
+            }
+        }
+        val state = appViewModel().state.value
+        throw AssertionError(
+            "failed to reset wall inactivity to off: enabled=${state.wallInactivityEnabled} label=${state.wallInactivityLabel}",
+        )
+    }
+
+    private fun ensureAllWallInactivityOff() {
+        val sessions = testConfig.sessions.ifEmpty { listOf(activeSessionId()) }
+        setWallInactivityViaHarness(sessions, enabled = false)
+    }
+
+    private fun activeNotifications(): Array<StatusBarNotification> {
+        return notificationManager()?.activeNotifications ?: emptyArray()
+    }
+
+    private fun notificationManager(): NotificationManager? {
+        return InstrumentationRegistry.getInstrumentation().targetContext
+            .getSystemService(NotificationManager::class.java)
+    }
+
+    private fun wallNotifications(): List<StatusBarNotification> {
+        return activeNotifications()
+            .filter {
+                it.notification.channelId == "lingon_wall" &&
+                    it.tag != "ranker_group"
+            }
+    }
+
+    private fun wallNotificationTitle(notification: StatusBarNotification): String {
+        return notification.notification.extras
+            .getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+    }
+
+    private fun wallNotificationFullText(notification: StatusBarNotification): String {
+        val extras = notification.notification.extras
+        return (extras.getCharSequence(Notification.EXTRA_BIG_TEXT)
+            ?: extras.getCharSequence(Notification.EXTRA_TEXT))
+            ?.toString()
+            ?.trim()
+            .orEmpty()
+    }
+
+    private fun assertNoWallNotificationAutogroupSummary() {
+        val summary = activeNotifications().firstOrNull {
+            it.notification.channelId == "lingon_wall" &&
+                it.tag == "ranker_group"
+        }
+        if (summary != null) {
+            val title = summary.notification.extras
+                .getCharSequence(Notification.EXTRA_TITLE)
+                ?.toString()
+                ?.trim()
+                .orEmpty()
+            val text = summary.notification.extras
+                .getCharSequence(Notification.EXTRA_TEXT)
+                ?.toString()
+                ?.trim()
+                .orEmpty()
+            throw AssertionError("unexpected lingon_wall auto-group summary title=$title text=$text")
+        }
+    }
+
     private fun assertTerminalResponsive(sessionId: String? = null, requireControl: Boolean = true) {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
-        val echoChar = "Z"
+        val echoChar = "z"
         val echoHex = echoChar[0].code.toString(16).padStart(2, '0')
         val effectiveSessionId = sessionId ?: activeSessionId()
         if (requireControl) {
@@ -579,7 +2021,7 @@ class EndToEndTest {
         val expected = "ECHO_${effectiveSessionId} $echoHex"
         var echoed = false
         repeat(3) {
-            sendTerminalInputWithFallback(echoChar)
+            sendTerminalInput(echoChar)
             val success = runCatching {
                 waitUntilNoError(5_000L) { snapshotContainsToken(expected) }
             }.isSuccess
@@ -597,7 +2039,7 @@ class EndToEndTest {
         val newlineEchoLf = "ECHO_${effectiveSessionId} 0a"
         var newlineEchoed = false
         repeat(2) {
-            sendTerminalEnterWithFallback()
+            sendTerminalEnter()
             val success = runCatching {
                 waitUntilNoError(5_000L) {
                     snapshotContainsToken(newlineEchoCr) || snapshotContainsToken(newlineEchoLf)
@@ -621,8 +2063,8 @@ class EndToEndTest {
         val echoChar = "Z"
         val echoHex = echoChar[0].code.toString(16).padStart(2, '0')
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
-        sendTerminalInputWithFallback(echoChar)
-        sendTerminalEnterWithFallback()
+        sendTerminalInput(echoChar)
+        sendTerminalEnter()
         val deadline = System.currentTimeMillis() + 1_000
         while (System.currentTimeMillis() < deadline) {
             val info = readTerminalDebugInfo()
@@ -644,30 +2086,85 @@ class EndToEndTest {
         composeRule.waitForIdle()
     }
 
-    private fun sendTerminalInputWithFallback(text: String) {
-        val sentByIme = runCatching {
-            val inputNode = composeRule.onNodeWithTag(TestTags.TerminalInput, useUnmergedTree = true)
-            inputNode.performClick()
-            inputNode.performTextInput(text)
-        }.isSuccess
-        if (sentByIme) return
-
-        composeRule.runOnIdle {
-            appViewModel().sendRawInput(text)
+    private fun sendTerminalInput(text: String) {
+        focusTerminalInput()
+        text.forEach { ch ->
+            val lower = ch.lowercaseChar()
+            val (keyCode, shift) = when (lower) {
+                '0' -> KeyEvent.KEYCODE_0 to false
+                '1' -> KeyEvent.KEYCODE_1 to false
+                '2' -> KeyEvent.KEYCODE_2 to false
+                '3' -> KeyEvent.KEYCODE_3 to false
+                '4' -> KeyEvent.KEYCODE_4 to false
+                '5' -> KeyEvent.KEYCODE_5 to false
+                '6' -> KeyEvent.KEYCODE_6 to false
+                '7' -> KeyEvent.KEYCODE_7 to false
+                '8' -> KeyEvent.KEYCODE_8 to false
+                '9' -> KeyEvent.KEYCODE_9 to false
+                '$' -> KeyEvent.KEYCODE_4 to true
+                '(' -> KeyEvent.KEYCODE_9 to true
+                ')' -> KeyEvent.KEYCODE_0 to true
+                ';' -> KeyEvent.KEYCODE_SEMICOLON to false
+                '|' -> KeyEvent.KEYCODE_BACKSLASH to true
+                '-' -> KeyEvent.KEYCODE_MINUS to false
+                'a' -> KeyEvent.KEYCODE_A to false
+                'b' -> KeyEvent.KEYCODE_B to false
+                'c' -> KeyEvent.KEYCODE_C to false
+                'd' -> KeyEvent.KEYCODE_D to false
+                'e' -> KeyEvent.KEYCODE_E to false
+                'f' -> KeyEvent.KEYCODE_F to false
+                'g' -> KeyEvent.KEYCODE_G to false
+                'h' -> KeyEvent.KEYCODE_H to false
+                'i' -> KeyEvent.KEYCODE_I to false
+                'j' -> KeyEvent.KEYCODE_J to false
+                'k' -> KeyEvent.KEYCODE_K to false
+                'l' -> KeyEvent.KEYCODE_L to false
+                'm' -> KeyEvent.KEYCODE_M to false
+                'n' -> KeyEvent.KEYCODE_N to false
+                'o' -> KeyEvent.KEYCODE_O to false
+                'p' -> KeyEvent.KEYCODE_P to false
+                'q' -> KeyEvent.KEYCODE_Q to false
+                'r' -> KeyEvent.KEYCODE_R to false
+                's' -> KeyEvent.KEYCODE_S to false
+                't' -> KeyEvent.KEYCODE_T to false
+                'u' -> KeyEvent.KEYCODE_U to false
+                'v' -> KeyEvent.KEYCODE_V to false
+                'w' -> KeyEvent.KEYCODE_W to false
+                'x' -> KeyEvent.KEYCODE_X to false
+                'y' -> KeyEvent.KEYCODE_Y to false
+                'z' -> KeyEvent.KEYCODE_Z to false
+                ' ' -> KeyEvent.KEYCODE_SPACE to false
+                else -> throw IllegalArgumentException("unsupported terminal test character: $ch")
+            }
+            sendKeyStroke(keyCode, shift || ch.isUpperCase())
         }
     }
 
-    private fun sendTerminalEnterWithFallback() {
-        val sentByIme = runCatching {
-            composeRule
-                .onNodeWithTag(TestTags.TerminalInput, useUnmergedTree = true)
-                .performImeAction()
-        }.isSuccess
-        if (sentByIme) return
-
-        composeRule.runOnIdle {
-            appViewModel().sendRawBytes(byteArrayOf('\r'.code.toByte()))
+    private fun sendKeyStroke(keyCode: Int, shift: Boolean = false) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (shift) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SHIFT_LEFT))
         }
+        instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        if (shift) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SHIFT_LEFT))
+        }
+    }
+
+    private fun sendTerminalEnter() {
+        focusTerminalInput()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER)
+    }
+
+    private fun sendTerminalBackspace() {
+        focusTerminalInput()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DEL)
+    }
+
+    private fun focusTerminalInput() {
+        composeRule.onNodeWithTag(TestTags.TerminalInput, useUnmergedTree = true).performClick()
+        composeRule.waitForIdle()
     }
 
     private fun setEndpointViaUi(endpoint: String) {
@@ -693,7 +2190,13 @@ class EndToEndTest {
 
     private fun appViewModel(): AppViewModel {
         val app = composeRule.activity.application as LingonApplication
-        val factory = AppViewModelFactory(app.repository, app.wsClient, app.wallNotifier, app.wallWorkScheduler)
+        val factory = AppViewModelFactory(
+            app.repository,
+            app.wsClient,
+            app.wallDeliveryCoordinator,
+            app.wallWorkScheduler,
+            app.backgroundWallServiceController,
+        )
         return ViewModelProvider(composeRule.activity, factory)[AppViewModel::class.java]
     }
 
@@ -741,6 +2244,12 @@ class EndToEndTest {
         waitUntil(timeoutMs) { !hasTag(tag) }
     }
 
+    private fun hasTextNode(text: String): Boolean {
+        return runCatching {
+            composeRule.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isNotEmpty()
+        }.getOrDefault(false)
+    }
+
     private fun hasTag(tag: String): Boolean {
         return composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
     }
@@ -782,8 +2291,9 @@ class EndToEndTest {
     private fun readTerminalDebugInfo(): TerminalDebugInfo? {
         var info: TerminalDebugInfo? = null
         composeRule.runOnIdle {
-            val state = appViewModel().state.value
+            val state = stateForTest()
             val snap = state.activeSnapshot
+            val terminalView = findTerminalView() as? systems.pkt.lingon.terminal.TerminalGridView
             val rows = snap?.rows ?: 0
             val cols = snap?.cols ?: 0
             val row0 = snap?.let { snapshotRow(it, 0).trimEnd() } ?: ""
@@ -821,6 +2331,9 @@ class EndToEndTest {
                 cols = cols,
                 state = state.connectionState.toString(),
                 activeSessionId = state.activeSessionId.orEmpty(),
+                lastFrameSeq = state.lastFrameSeq,
+                lastFrameType = state.lastFrameType,
+                scrollbackOffsetRows = state.scrollbackOffsetRows,
                 hash = snapshotHash(snap),
                 row0 = row0,
                 prevLine = prevLine,
@@ -828,12 +2341,96 @@ class EndToEndTest {
                 cursorLine = cursorLine,
                 hasControl = state.hasControl,
                 resizeEnabled = state.resizeHostEnabled,
-                viewCols = state.terminalCols,
-                viewRows = state.terminalRows,
+                viewCols = terminalView?.getViewCols() ?: state.terminalCols,
+                viewRows = terminalView?.getViewRows() ?: state.terminalRows,
+                renderScaleX = terminalView?.getRenderScaleX() ?: 0f,
+                renderScaleY = terminalView?.getRenderScaleY() ?: 0f,
+                cameraOffsetYPx = terminalView?.getCameraOffsetYForTesting() ?: 0f,
+                scaledCellHeightPx = terminalView?.getScaledCellHeightForTesting() ?: 0f,
+                visibleStartRow = terminalView?.getVisibleStartRow() ?: 0,
+                visibleEndRowExclusive = terminalView?.getVisibleEndRowExclusive() ?: 0,
+                zoomFactor = state.zoomFactor,
             )
         }
         return info
     }
+
+    private fun waitForTerminalDebugInfo(
+        timeoutMs: Long = SHORT_UI_TIMEOUT_MS,
+        predicate: (TerminalDebugInfo) -> Boolean,
+    ): TerminalDebugInfo? {
+        var match: TerminalDebugInfo? = null
+        waitUntilNoError(timeoutMs) {
+            val info = readTerminalDebugInfo()
+            if (info != null && predicate(info)) {
+                match = info
+                true
+            } else {
+                false
+            }
+        }
+        return match
+    }
+
+    private fun readTerminalRenderInfo(): TerminalRenderInfo? {
+        var info: TerminalRenderInfo? = null
+        composeRule.runOnIdle {
+            val terminalView = findTerminalView() as? systems.pkt.lingon.terminal.TerminalGridView
+                ?: return@runOnIdle
+            val width = terminalView.width
+            val height = terminalView.height
+            if (width <= 0 || height <= 0) return@runOnIdle
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            try {
+                terminalView.draw(Canvas(bitmap))
+                val bgColor = bitmap.getPixel((width - 1).coerceAtLeast(0), (height - 1).coerceAtLeast(0))
+                var left = width
+                var top = height
+                var right = -1
+                var bottom = -1
+                for (y in 0 until height) {
+                    for (x in 0 until width) {
+                        if (bitmap.getPixel(x, y) == bgColor) continue
+                        if (x < left) left = x
+                        if (y < top) top = y
+                        if (x > right) right = x
+                        if (y > bottom) bottom = y
+                    }
+                }
+                info = if (right >= left && bottom >= top) {
+                    TerminalRenderInfo(
+                        widthPx = width,
+                        heightPx = height,
+                        inkLeft = left,
+                        inkTop = top,
+                        inkRight = right,
+                        inkBottom = bottom,
+                    )
+                } else {
+                    null
+                }
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        return info
+    }
+
+    private fun waitForTerminalRenderInfo(timeoutMs: Long = SHORT_UI_TIMEOUT_MS): TerminalRenderInfo? {
+        var match: TerminalRenderInfo? = null
+        waitUntilNoError(timeoutMs) {
+            val info = readTerminalRenderInfo()
+            if (info != null) {
+                match = info
+                true
+            } else {
+                false
+            }
+        }
+        return match
+    }
+
+    private fun stateForTest() = appViewModel().state.value
 
     private fun snapshotContainsToken(token: String): Boolean {
         var found = false
@@ -849,6 +2446,51 @@ class EndToEndTest {
                     return@runOnIdle
                 }
             }
+        }
+        return found
+    }
+
+    private fun snapshotTokenCount(token: String): Int {
+        var count = 0
+        composeRule.runOnIdle {
+            val snap = appViewModel().state.value.activeSnapshot ?: return@runOnIdle
+            if (snap.rows <= 0 || snap.cols <= 0) return@runOnIdle
+            for (row in 0 until snap.rows) {
+                val text = snapshotRow(snap, row)
+                var index = text.indexOf(token)
+                while (index >= 0) {
+                    count++
+                    index = text.indexOf(token, index + token.length)
+                }
+            }
+        }
+        return count
+    }
+
+    private fun snapshotContainsSequence(vararg tokens: String): Boolean {
+        var found = false
+        composeRule.runOnIdle {
+            val snap = appViewModel().state.value.activeSnapshot
+            if (snap == null || snap.rows <= 0 || snap.cols <= 0) {
+                found = false
+                return@runOnIdle
+            }
+            val text = buildString {
+                for (row in 0 until snap.rows) {
+                    if (row > 0) append('\n')
+                    append(snapshotRow(snap, row))
+                }
+            }
+            var cursor = 0
+            for (token in tokens) {
+                val index = text.indexOf(token, cursor)
+                if (index < 0) {
+                    found = false
+                    return@runOnIdle
+                }
+                cursor = index + token.length
+            }
+            found = true
         }
         return found
     }
@@ -925,18 +2567,18 @@ class EndToEndTest {
 
     private fun readStatusBanner(): StatusInfo? {
         var status: systems.pkt.lingon.viewmodel.StatusMessage? = null
-        composeRule.runOnIdle {
-            status = appViewModel().state.value.status
-        }
+        if (!safeRunOnIdle {
+            status = appViewModel().state.value.bannerStatus
+        }) return null
         val current = status ?: return null
         return StatusInfo(level = current.level.name, message = current.message)
     }
 
     private fun readLoginError(): String? {
         var message: String? = null
-        composeRule.runOnIdle {
+        if (!safeRunOnIdle {
             message = appViewModel().state.value.loginError
-        }
+        }) return null
         return message?.takeIf { it.isNotBlank() }
     }
 
@@ -965,7 +2607,7 @@ class EndToEndTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return
-            composeRule.waitForIdle()
+            safeWaitForIdle()
             Thread.sleep(POLL_INTERVAL_MS)
         }
         throw AssertionError("Timed out waiting for UI condition after ${timeoutMs}ms")
@@ -983,7 +2625,7 @@ class EndToEndTest {
                 throw AssertionError("status error: ${status.message}")
             }
             if (condition()) return
-            composeRule.waitForIdle()
+            safeWaitForIdle()
             Thread.sleep(POLL_INTERVAL_MS)
         }
         val debug = readTerminalDebugInfo()
@@ -993,40 +2635,181 @@ class EndToEndTest {
             "Timed out waiting for UI condition after ${timeoutMs}ms " +
                 "(connection=${state.connectionState}, active=${state.activeSessionId}, " +
                 "shareToken=${state.shareToken}, " +
-                "sessions=[${sessions}], rows=${debug?.rows ?: 0}, cols=${debug?.cols ?: 0})",
+                "sessions=[${sessions}], rows=${debug?.rows ?: 0}, cols=${debug?.cols ?: 0}, " +
+                "lastFrameSeq=${debug?.lastFrameSeq ?: 0}, lastFrameType=${debug?.lastFrameType}, " +
+                "scrollbackOffset=${debug?.scrollbackOffsetRows ?: 0}, " +
+                "viewCols=${debug?.viewCols ?: 0}, viewRows=${debug?.viewRows ?: 0}, " +
+                "renderScaleX=${debug?.renderScaleX ?: 0f}, renderScaleY=${debug?.renderScaleY ?: 0f}, " +
+                "visibleStartRow=${debug?.visibleStartRow ?: 0}, " +
+                "visibleEndRowExclusive=${debug?.visibleEndRowExclusive ?: 0}, " +
+                "zoomFactor=${debug?.zoomFactor ?: 0f})",
         )
     }
 
-    private fun openZoomDialog() {
-        openMenu()
-        composeRule.onNodeWithTag(TestTags.ZoomButton).performClick()
-        waitForTag(TestTags.ZoomSlider)
-        waitForTagUnmerged(TestTags.ZoomSave)
-    }
-
-    private fun setZoomSlider(value: Float) {
-        val fraction = ((value - MinTerminalZoom) / (MaxTerminalZoom - MinTerminalZoom)).coerceIn(0f, 1f)
-        composeRule.onNodeWithTag(TestTags.ZoomSlider, useUnmergedTree = true).performTouchInput {
-            val x = width * fraction
-            val y = height / 2f
-            down(0, Offset(x, y))
-            up(0)
+    private fun safeRunOnIdle(block: () -> Unit): Boolean {
+        return try {
+            composeRule.runOnIdle(block)
+            true
+        } catch (err: RuntimeException) {
+            if (!isTransientComposeIdleRace(err)) throw err
+            false
         }
     }
 
-    private fun waitForTagUnmerged(tag: String, timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
-        waitUntil(timeoutMs) { hasTagUnmerged(tag) }
+    private fun safeWaitForIdle() {
+        try {
+            composeRule.waitForIdle()
+        } catch (err: RuntimeException) {
+            if (!isTransientComposeIdleRace(err)) throw err
+        }
     }
 
-    private fun hasTagUnmerged(tag: String): Boolean {
-        return composeRule.onAllNodesWithTag(tag, useUnmergedTree = true)
-            .fetchSemanticsNodes()
-            .isNotEmpty()
+    private fun isTransientComposeIdleRace(err: Throwable): Boolean {
+        return generateSequence(err) { it.cause }.any { cause ->
+            cause.message.orEmpty().contains("performMeasureAndLayout called during measure layout")
+        }
+    }
+
+    private fun captureScreenshot(name: String) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val baseDir = context.getExternalFilesDir(null) ?: context.filesDir
+        val outDir = File(baseDir, "test-artifacts").apply { mkdirs() }
+        val safeName = "${screenshotRunId}_${name.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
+        val bitmap = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            ?: throw AssertionError("failed to capture screenshot for $safeName")
+        writePng(File(outDir, "${safeName}.png"), bitmap)
+        writeShellScreenshot("/sdcard/Download/lingon-test-artifacts/${safeName}.png")
+    }
+
+    private fun clearScreenshotArtifacts() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val clear = instrumentation.uiAutomation.executeShellCommand(
+            "rm -rf /sdcard/Download/lingon-test-artifacts && mkdir -p /sdcard/Download/lingon-test-artifacts",
+        )
+        consumeShellCommand(clear)
+    }
+
+    private fun writePng(file: File, bitmap: Bitmap) {
+        FileOutputStream(file).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+    }
+
+    private fun writeShellScreenshot(path: String) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val mkdir = instrumentation.uiAutomation.executeShellCommand(
+            "mkdir -p ${File(path).parent}",
+        )
+        consumeShellCommand(mkdir)
+        val screencap = instrumentation.uiAutomation.executeShellCommand(
+            "screencap -p $path",
+        )
+        consumeShellCommand(screencap)
+    }
+
+    private fun consumeShellCommand(descriptor: ParcelFileDescriptor?) {
+        descriptor ?: return
+        descriptor.use { pfd ->
+            FileInputStream(pfd.fileDescriptor).use { input ->
+                while (input.read() != -1) {
+                    // Drain shell output so the command completes before the test continues.
+                }
+            }
+        }
     }
 
     private fun resetZoomPan() {
         openMenu()
         composeRule.onNodeWithTag(TestTags.ZoomResetButton).performClick()
+    }
+
+    private fun setZoomFactor(value: Float) {
+        composeRule.activity.runOnUiThread { appViewModel().updateZoomFactor(value) }
+        composeRule.waitForIdle()
+    }
+
+    private fun exactlyMeasureSpec(size: Int): Int {
+        return View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY)
+    }
+
+    private fun terminalSnapshotForViewTest(rows: Int, cols: Int): TerminalSnapshot {
+        val size = rows * cols
+        return TerminalSnapshot(
+            cols = cols,
+            rows = rows,
+            runes = IntArray(size) { ' '.code },
+            modes = IntArray(size),
+            fg = IntArray(size),
+            bg = IntArray(size),
+            graphemes = null,
+            cursorX = 0,
+            cursorY = rows - 1,
+            cursorVisible = true,
+            mode = 0,
+            title = "",
+        )
+    }
+
+    private fun scrollbackRowsForViewTest(rows: Int, cols: Int): List<ScrollbackRow> {
+        return (0 until rows).map { row ->
+            val builder = ScrollbackRow.newBuilder()
+            repeat(cols) {
+                builder.addRunes('A'.code + (row % 26))
+                builder.addModes(0)
+                builder.addFg(0)
+                builder.addBg(0)
+            }
+            builder.build()
+        }
+    }
+
+    private fun dispatchSinglePointerDrag(
+        view: View,
+        startX: Float,
+        startY: Float,
+        endX: Float,
+        endY: Float,
+    ) {
+        val startTime = SystemClock.uptimeMillis()
+        view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime, MotionEvent.ACTION_DOWN, startX, startY, 0))
+        view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime + 16, MotionEvent.ACTION_MOVE, endX, endY, 0))
+        view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime + 32, MotionEvent.ACTION_UP, endX, endY, 0))
+    }
+
+    private fun dispatchTerminalDragPulses(deltaYs: List<Float>): List<TerminalDebugInfo> {
+        var view: View? = null
+        composeRule.runOnIdle {
+            view = findTerminalView()
+        }
+        val terminalView = view ?: throw AssertionError("missing terminal view")
+        val width = terminalView.width
+        val height = terminalView.height
+        if (width <= 0 || height <= 0) {
+            throw AssertionError("terminal view was not measured: ${width}x$height")
+        }
+        val samples = mutableListOf<TerminalDebugInfo>()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val x = width / 2f
+        val startY = height / 2f
+        deltaYs.forEach { deltaY ->
+            val startTime = SystemClock.uptimeMillis()
+            val endY = (startY + deltaY).coerceIn(4f, height - 4f)
+            instrumentation.runOnMainSync {
+                terminalView.dispatchTouchEvent(
+                    MotionEvent.obtain(startTime, startTime, MotionEvent.ACTION_DOWN, x, startY, 0),
+                )
+                terminalView.dispatchTouchEvent(
+                    MotionEvent.obtain(startTime, startTime + 16, MotionEvent.ACTION_MOVE, x, endY, 0),
+                )
+                terminalView.dispatchTouchEvent(
+                    MotionEvent.obtain(startTime, startTime + 32, MotionEvent.ACTION_UP, x, endY, 0),
+                )
+            }
+            composeRule.waitForIdle()
+            samples += readTerminalDebugInfo()
+                ?: throw AssertionError("missing terminal debug info during drag")
+        }
+        return samples
     }
 
     private fun performPinchZoom(zoomIn: Boolean) {
@@ -1257,6 +3040,155 @@ class EndToEndTest {
         }
     }
 
+    private fun startHeadlessViaHarness(): String {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness start-headless failed with HTTP $code")
+            }
+            val body = InputStreamReader(connection.inputStream).use { it.readText() }
+            val id = org.json.JSONObject(body).getString("id")
+            startedHeadlessSessions += id
+            return id
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun detachHeadlessViaHarness(sessionId: String) {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/detach-headless")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            connection.outputStream.use { out ->
+                out.write("""{"session_id":${org.json.JSONObject.quote(sessionId)}}""".toByteArray())
+            }
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness detach-headless failed with HTTP $code")
+            }
+            startedHeadlessSessions -= sessionId
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun detachStartedHeadlessSessions() {
+        val sessionIds = startedHeadlessSessions.toList()
+        startedHeadlessSessions.clear()
+        sessionIds.forEach { sessionId ->
+            runCatching { detachHeadlessViaHarness(sessionId) }
+        }
+    }
+
+    private fun readHeadlessSizeViaHarness(sessionId: String): HeadlessSize {
+        val encodedSessionId = java.net.URLEncoder.encode(sessionId, "UTF-8")
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/headless-size?session_id=$encodedSessionId")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness headless-size failed with HTTP $code")
+            }
+            val body = InputStreamReader(connection.inputStream).use { it.readText() }
+            val json = org.json.JSONObject(body)
+            return HeadlessSize(
+                cols = json.getInt("cols"),
+                rows = json.getInt("rows"),
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun sendWallViaHarness(message: String) {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/send-wall")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            connection.outputStream.use { out ->
+                out.write("""{"message":${org.json.JSONObject.quote(message)}}""".toByteArray())
+            }
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness send-wall failed with HTTP $code")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun setWallInactivityViaHarness(sessions: List<String>, enabled: Boolean) {
+        val cleanSessions = sessions.map { it.trim() }.filter { it.isNotBlank() }
+        if (cleanSessions.isEmpty()) {
+            return
+        }
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/wall-inactivity")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            val payload = org.json.JSONObject()
+                .put("enabled", enabled)
+                .put("sessions", org.json.JSONArray(cleanSessions))
+                .toString()
+            connection.outputStream.use { out ->
+                out.write(payload.toByteArray())
+            }
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness wall-inactivity failed with HTTP $code")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun trustContextFor(caPem: String): javax.net.ssl.SSLContext {
         val certFactory = java.security.cert.CertificateFactory.getInstance("X.509")
         val cert = certFactory.generateCertificate(java.io.ByteArrayInputStream(caPem.toByteArray()))
@@ -1325,6 +3257,7 @@ class EndToEndTest {
         private const val LOGIN_TIMEOUT_MS = 20_000L
         private const val TERMINAL_READY_TIMEOUT_MS = 15_000L
         private const val SHORT_UI_TIMEOUT_MS = 15_000L
+        private const val BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS = 35_000L
         private const val POLL_INTERVAL_MS = 250L
         private const val BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
     }
@@ -1431,11 +3364,19 @@ class EndToEndTest {
         val message: String,
     )
 
+    data class HeadlessSize(
+        val cols: Int,
+        val rows: Int,
+    )
+
     data class TerminalDebugInfo(
         val rows: Int,
         val cols: Int,
         val state: String,
         val activeSessionId: String,
+        val lastFrameSeq: Long,
+        val lastFrameType: String?,
+        val scrollbackOffsetRows: Int,
         val hash: Long,
         val row0: String,
         val prevLine: String,
@@ -1445,5 +3386,39 @@ class EndToEndTest {
         val resizeEnabled: Boolean,
         val viewCols: Int,
         val viewRows: Int,
+        val renderScaleX: Float,
+        val renderScaleY: Float,
+        val cameraOffsetYPx: Float,
+        val scaledCellHeightPx: Float,
+        val visibleStartRow: Int,
+        val visibleEndRowExclusive: Int,
+        val zoomFactor: Float,
+    ) {
+        fun liveTopRows(): Float {
+            if (scaledCellHeightPx <= 0f) return 0f
+            return (cameraOffsetYPx / scaledCellHeightPx) - scrollbackOffsetRows.toFloat()
+        }
+    }
+
+    private fun List<TerminalDebugInfo>.describePanSamples(): String {
+        return joinToString(prefix = "[", postfix = "]") { info ->
+            val liveTop = if (info.scaledCellHeightPx > 0f) {
+                String.format(Locale.US, "%.2f", info.liveTopRows())
+            } else {
+                "nan"
+            }
+            "off=${info.scrollbackOffsetRows},cam=${String.format(Locale.US, "%.1f", info.cameraOffsetYPx)}," +
+                "cell=${String.format(Locale.US, "%.1f", info.scaledCellHeightPx)},live=$liveTop," +
+                "vis=${info.visibleStartRow}-${info.visibleEndRowExclusive}"
+        }
+    }
+
+    data class TerminalRenderInfo(
+        val widthPx: Int,
+        val heightPx: Int,
+        val inkLeft: Int,
+        val inkTop: Int,
+        val inkRight: Int,
+        val inkBottom: Int,
     )
 }

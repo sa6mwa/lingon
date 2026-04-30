@@ -17,10 +17,8 @@ import (
 )
 
 func TestHostReconnectsAfterServerRestart(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -29,7 +27,7 @@ func TestHostReconnectsAfterServerRestart(t *testing.T) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -48,7 +46,7 @@ func TestHostReconnectsAfterServerRestart(t *testing.T) {
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 
@@ -92,6 +90,7 @@ func TestHostReconnectsAfterServerRestart(t *testing.T) {
 
 	runner := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_reconnect",
 		Cols:       80,
@@ -135,7 +134,7 @@ func TestHostReconnectsAfterServerRestart(t *testing.T) {
 	hub2 := relay.NewHub(nil)
 	relayServer2 := relay.NewHTTPServer(store, users, auth, nil, hub2)
 	relayServer2.UsersFile = usersPath
-	relayServer2.DataDir = filepath.Join(home, ".lingon")
+	relayServer2.DataDir = configDir
 	handler2 := server.WrapBasePath("/v1", relayServer2.Handler())
 	server2 := &http.Server{Handler: handler2, TLSConfig: tlsCfg}
 	tlsListener2 := tls.NewListener(listener2, tlsCfg)

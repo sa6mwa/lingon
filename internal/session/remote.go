@@ -16,6 +16,7 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/netgate"
@@ -29,6 +30,7 @@ import (
 type remoteSessionInfo struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name,omitempty"`
+	Headless     bool      `json:"headless,omitempty"`
 	Status       string    `json:"status"`
 	LastActiveAt time.Time `json:"last_active_at"`
 }
@@ -52,9 +54,11 @@ type remoteView struct {
 	cancel          context.CancelFunc
 	visible         bool
 	hiddenAt        time.Time
+	missingSince    time.Time
 	disabled        bool
 	awaiting        bool
 	running         bool
+	sessionClosed   bool
 	restart         bool
 	needsFullRender bool
 	stdout          io.Writer
@@ -64,59 +68,66 @@ type remoteView struct {
 }
 
 type remoteOptions struct {
-	Endpoint        string
-	Token           string
-	TokenRefresher  func(context.Context) (string, error)
-	HostnameOnly    bool
-	LocalID         string
-	LocalName       string
-	TLSDir          string
-	Insecure        bool
-	Theme           string
-	Logger          pslog.Logger
-	Compositor      *mvu.Runtime
-	TermSize        func() (int, int)
-	Clock           clock.Clock
-	InactiveTTL     time.Duration
-	RefreshInterval time.Duration
-	Gate            *netgate.Gate
-	OnSessions      func([]remoteSessionInfo)
-	OnViewClosed    func(string, error)
-	OnOverlayChange func()
+	DisableDesktopNotifications bool
+	DesktopNotifier             desktopnotify.Notifier
+	Endpoint                    string
+	Token                       string
+	TokenRefresher              func(context.Context) (string, error)
+	HostnameOnly                bool
+	LocalID                     string
+	LocalName                   string
+	TLSDir                      string
+	Insecure                    bool
+	Theme                       string
+	Logger                      pslog.Logger
+	Compositor                  *mvu.Runtime
+	TermSize                    func() (int, int)
+	Clock                       clock.Clock
+	InactiveTTL                 time.Duration
+	RefreshInterval             time.Duration
+	Gate                        *netgate.Gate
+	OnSessions                  func([]remoteSessionInfo)
+	OnViewClosed                func(string, error)
+	OnOverlayChange             func()
 }
 
 type remoteManager struct {
-	endpoint        string
-	endpointLabel   string
-	token           string
-	tokenRefresher  func(context.Context) (string, error)
-	localID         string
-	localName       string
-	tlsDir          string
-	insecure        bool
-	logger          pslog.Logger
-	compositor      *mvu.Runtime
-	themeName       string
-	termSize        func() (int, int)
-	clock           clock.Clock
-	inactiveTTL     time.Duration
-	refreshInterval time.Duration
-	onSessions      func([]remoteSessionInfo)
-	onViewClosed    func(string, error)
-	onOverlayChange func()
-	gate            *netgate.Gate
+	endpoint                    string
+	endpointLabel               string
+	token                       string
+	tokenRefresher              func(context.Context) (string, error)
+	localID                     string
+	localName                   string
+	tlsDir                      string
+	insecure                    bool
+	logger                      pslog.Logger
+	compositor                  *mvu.Runtime
+	themeName                   string
+	disableDesktopNotifications bool
+	desktopNotifier             desktopnotify.Notifier
+	termSize                    func() (int, int)
+	clock                       clock.Clock
+	inactiveTTL                 time.Duration
+	refreshInterval             time.Duration
+	onSessions                  func([]remoteSessionInfo)
+	onViewClosed                func(string, error)
+	onOverlayChange             func()
+	gate                        *netgate.Gate
 
 	mu           sync.Mutex
 	refreshMu    sync.Mutex
 	sessions     []remoteSessionInfo
 	lastNonEmpty time.Time
 	views        map[string]*remoteView
+	retained     map[string]time.Time
 	disabled     map[string]bool
 	httpClient   *http.Client
 	httpTr       *http.Transport
 }
 
 var remoteSessionsRequestTimeout = 12 * time.Second
+
+const missingSessionGrace = 5 * time.Second
 
 func newRemoteManager(opts remoteOptions) *remoteManager {
 	logger := opts.Logger
@@ -146,27 +157,30 @@ func newRemoteManager(opts remoteOptions) *remoteManager {
 		Theme:    theme.TUI(themeName),
 	}})
 	return &remoteManager{
-		endpoint:        opts.Endpoint,
-		endpointLabel:   config.EndpointDisplay(opts.Endpoint, opts.HostnameOnly),
-		token:           opts.Token,
-		tokenRefresher:  opts.TokenRefresher,
-		localID:         opts.LocalID,
-		localName:       opts.LocalName,
-		tlsDir:          opts.TLSDir,
-		insecure:        opts.Insecure,
-		logger:          logger,
-		compositor:      compositor,
-		themeName:       themeName,
-		termSize:        opts.TermSize,
-		clock:           clk,
-		inactiveTTL:     inactive,
-		refreshInterval: refresh,
-		gate:            opts.Gate,
-		onSessions:      opts.OnSessions,
-		onViewClosed:    opts.OnViewClosed,
-		onOverlayChange: opts.OnOverlayChange,
-		views:           make(map[string]*remoteView),
-		disabled:        make(map[string]bool),
+		endpoint:                    opts.Endpoint,
+		endpointLabel:               config.EndpointDisplay(opts.Endpoint, opts.HostnameOnly),
+		token:                       opts.Token,
+		tokenRefresher:              opts.TokenRefresher,
+		localID:                     opts.LocalID,
+		localName:                   opts.LocalName,
+		tlsDir:                      opts.TLSDir,
+		insecure:                    opts.Insecure,
+		logger:                      logger,
+		compositor:                  compositor,
+		themeName:                   themeName,
+		disableDesktopNotifications: opts.DisableDesktopNotifications,
+		desktopNotifier:             opts.DesktopNotifier,
+		termSize:                    opts.TermSize,
+		clock:                       clk,
+		inactiveTTL:                 inactive,
+		refreshInterval:             refresh,
+		gate:                        opts.Gate,
+		onSessions:                  opts.OnSessions,
+		onViewClosed:                opts.OnViewClosed,
+		onOverlayChange:             opts.OnOverlayChange,
+		views:                       make(map[string]*remoteView),
+		retained:                    make(map[string]time.Time),
+		disabled:                    make(map[string]bool),
 	}
 }
 
@@ -317,6 +331,23 @@ func (m *remoteManager) DisabledSessions() map[string]bool {
 		return nil
 	}
 	return out
+}
+
+func (m *remoteManager) HasSession(sessionID string) bool {
+	if m == nil || sessionID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.ID == sessionID {
+			return true
+		}
+	}
+	if view := m.views[sessionID]; view != nil {
+		return true
+	}
+	return m.disabled[sessionID]
 }
 
 func (m *remoteManager) IsDisabled(sessionID string) bool {
@@ -545,11 +576,22 @@ func (m *remoteManager) Show(ctx context.Context, sessionID string, stdout io.Wr
 		view := m.views[sessionID]
 		visible := view != nil && view.visible
 		client := (*attach.Client)(nil)
+		headless := false
 		if view != nil {
 			client = view.client
+			view.sessionClosed = false
+		}
+		for _, info := range m.sessions {
+			if info.ID == sessionID {
+				headless = info.Headless
+				break
+			}
 		}
 		m.mu.Unlock()
 		if visible && client != nil {
+			if headless {
+				_ = m.sendHeadlessResize(ctx, sessionID)
+			}
 			client.RenderCurrent()
 		}
 	}
@@ -656,9 +698,18 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 	m.mu.Lock()
 	view.ctx = ctx
 	viewRunning := view.running
+	var seedFrom *attach.Client
+	if view.client != nil && !viewRunning {
+		seedFrom = view.client
+		if view.missingSince.IsZero() {
+			view.missingSince = m.clock.Now()
+		}
+		m.retained[view.id] = view.missingSince
+		view.client = nil
+	}
 	if viewRunning {
 		view.restart = true
-		if view.client != nil && !view.client.Connected() {
+		if seedFrom != nil {
 			if view.cancel != nil {
 				view.cancel()
 			}
@@ -683,19 +734,38 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 			tokenRefresher = m.refreshTokenErr
 		}
 		client := &attach.Client{
-			Endpoint:       m.endpoint,
-			SessionID:      session.ID,
-			AccessToken:    m.token,
-			RequestControl: true,
-			TLSDir:         m.tlsDir,
-			TermSize:       m.termSize,
-			Theme:          m.themeName,
-			Logger:         m.logger,
-			TokenRefresher: tokenRefresher,
-			Clock:          m.clock,
+			Endpoint:                    m.endpoint,
+			SessionID:                   session.ID,
+			AccessToken:                 m.token,
+			RequestControl:              true,
+			DisableResizePropagation:    true,
+			DisableDesktopNotifications: m.disableDesktopNotifications,
+			DesktopNotifier:             m.desktopNotifier,
+			TLSDir:                      m.tlsDir,
+			TermSize:                    m.termSize,
+			Theme:                       m.themeName,
+			Logger:                      m.logger,
+			TokenRefresher:              tokenRefresher,
+			Clock:                       m.clock,
+		}
+		if seedFrom != nil {
+			client.SeedFrom(seedFrom)
 		}
 		client.OnOverlayStateChange = func() {
 			m.notifyOverlayChange(session.ID)
+		}
+		client.OnControllerAcquired = func() {
+			m.mu.Lock()
+			current := m.views[session.ID]
+			visible := current == view && view.visible
+			m.mu.Unlock()
+			if !visible {
+				return
+			}
+			_ = m.sendHeadlessResize(ctx, session.ID)
+		}
+		client.OnSessionClosed = func(_ string) {
+			m.handleExplicitSessionClosed(session.ID)
 		}
 		client.SetCompositor(m.compositor)
 		view.client = client
@@ -724,6 +794,19 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		}(view, runID)
 	}
 	m.mu.Unlock()
+	if seedFrom != nil && view.client != nil && view.visible {
+		m.clock.AfterFunc(250*time.Millisecond, func() {
+			m.mu.Lock()
+			current := m.views[view.id]
+			client := view.client
+			visible := view.visible
+			m.mu.Unlock()
+			if current != view || client == nil || !visible || !client.Connected() {
+				return
+			}
+			client.RenderCurrentFull()
+		})
+	}
 	return nil
 }
 
@@ -816,6 +899,16 @@ func (m *remoteManager) ScrollbackPage(sessionID string, delta int, viewRows int
 		}
 	}
 	m.logViewState("scrollback_page", view, nil)
+}
+
+func (m *remoteManager) ScrollbackPanX(sessionID string, delta int) bool {
+	m.mu.Lock()
+	view := m.views[sessionID]
+	m.mu.Unlock()
+	if view != nil && view.client != nil {
+		return view.client.ScrollbackPanX(delta)
+	}
+	return false
 }
 
 func (m *remoteManager) ScrollbackTop(sessionID string, viewRows int) {
@@ -960,6 +1053,9 @@ func (m *remoteManager) SendResize(ctx context.Context, sessionID string, cols, 
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
+	if !m.sessionAllowsResize(sessionID) {
+		return nil
+	}
 	m.mu.Lock()
 	view := m.views[sessionID]
 	m.mu.Unlock()
@@ -967,6 +1063,31 @@ func (m *remoteManager) SendResize(ctx context.Context, sessionID string, cols, 
 		return fmt.Errorf("session %q not connected", sessionID)
 	}
 	return view.client.SendResize(ctx, cols, rows)
+}
+
+func (m *remoteManager) sessionAllowsResize(sessionID string) bool {
+	if m == nil || strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.ID == sessionID {
+			return session.Headless
+		}
+	}
+	return false
+}
+
+func (m *remoteManager) sendHeadlessResize(ctx context.Context, sessionID string) error {
+	if m == nil || !m.sessionAllowsResize(sessionID) || m.termSize == nil {
+		return nil
+	}
+	cols, rows := m.termSize()
+	if cols <= 0 || rows <= 0 {
+		return nil
+	}
+	return m.SendResize(ctx, sessionID, cols, rows)
 }
 
 func (m *remoteManager) queueInput(sessionID string, data []byte) {
@@ -1035,19 +1156,31 @@ func (m *remoteManager) handleViewClosed(view *remoteView, runID uint64, err err
 	if current == view && view.runID == runID {
 		view.running = false
 		view.cancel = nil
-		if view.restart {
+		if view.sessionClosed {
+			delete(m.retained, view.id)
+			delete(m.views, view.id)
+			delete(m.disabled, view.id)
+		} else if view.restart {
 			restart = true
 			view.restart = false
 			ctx = view.ctx
-		} else if view.disabled || view.awaiting {
-			view.visible = false
-			view.hiddenAt = m.clock.Now()
+		} else if view.client != nil || view.visible || view.awaiting || view.disabled || shouldRetainRemoteView(view) {
+			if view.missingSince.IsZero() {
+				view.missingSince = m.clock.Now()
+			}
+			m.retained[view.id] = view.missingSince
+			view.visible = true
+			view.hiddenAt = time.Time{}
 		} else {
+			delete(m.retained, view.id)
 			delete(m.views, view.id)
 		}
 	}
 	m.mu.Unlock()
 	m.logViewState("view_closed", view, err)
+	if view.ctx != nil && view.ctx.Err() == nil && !view.sessionClosed && err != nil {
+		_ = m.refreshSessions(view.ctx)
+	}
 	if restart && ctx != nil && ctx.Err() == nil {
 		_ = m.connectView(ctx, view, io.Discard, func() {
 			m.markReady(view.id)
@@ -1092,39 +1225,167 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 	mvu.SortSessionsByLastActive(sessions)
 
 	m.mu.Lock()
+	now := m.clock.Now()
 	if rawCount > 0 {
-		m.lastNonEmpty = m.clock.Now()
+		m.lastNonEmpty = now
 	}
 	changed := sessionsKey(m.sessions) != sessionsKey(sessions)
-	m.sessions = sessions
-	m.dropMissingViewsLocked(sessions)
+	allIDs := make(map[string]struct{}, len(sessions))
+	prevSessions := make(map[string]remoteSessionInfo, len(m.sessions))
+	for _, session := range sessions {
+		allIDs[session.ID] = struct{}{}
+	}
+	for _, session := range m.sessions {
+		prevSessions[session.ID] = session
+	}
+	retainedSessions := make([]remoteSessionInfo, 0)
+	reconnectViews := make([]*remoteView, 0)
+	for id, view := range m.views {
+		if _, ok := allIDs[id]; ok {
+			delete(m.retained, id)
+			view.missingSince = time.Time{}
+			view.sessionClosed = false
+			if view.visible && view.cancel == nil && !view.awaiting && !view.disabled && !view.running {
+				view.awaiting = true
+				reconnectViews = append(reconnectViews, view)
+			}
+			continue
+		}
+		if !shouldRetainRemoteView(view) {
+			if view.cancel != nil {
+				view.cancel()
+			}
+			delete(m.views, id)
+			delete(m.disabled, id)
+			delete(m.retained, id)
+			continue
+		}
+		if view.sessionClosed {
+			if view.cancel != nil {
+				view.cancel()
+			}
+			delete(m.views, id)
+			delete(m.disabled, id)
+			delete(m.retained, id)
+			continue
+		}
+		if view.missingSince.IsZero() {
+			view.missingSince = now
+		}
+		m.retained[id] = now
+		if now.Sub(view.missingSince) >= missingSessionGrace {
+			if view.cancel != nil {
+				view.cancel()
+			}
+			delete(m.views, id)
+			delete(m.disabled, id)
+			delete(m.retained, id)
+			continue
+		}
+		if prev, ok := prevSessions[id]; ok {
+			retainedSessions = append(retainedSessions, prev)
+		} else {
+			retainedSessions = append(retainedSessions, remoteSessionInfo{
+				ID:           id,
+				Name:         view.name,
+				Status:       "reconnecting",
+				LastActiveAt: now,
+			})
+		}
+	}
+	m.sessions = append(sessions, retainedSessions...)
+	if len(m.sessions) > 0 {
+		mvu.SortSessionsByLastActive(m.sessions)
+	}
 	callback := m.onSessions
+	nextSessions := copySessions(m.sessions)
 	m.mu.Unlock()
 
+	for _, view := range reconnectViews {
+		if view == nil || view.ctx == nil {
+			continue
+		}
+		if err := m.connectView(view.ctx, view, view.stdout, func() {
+			m.markReady(view.id)
+		}); err != nil {
+			m.logger.Debug("session.remote.reconnect.failed", "session", view.id, "err", err)
+		}
+	}
+
 	if changed && callback != nil {
-		callback(copySessions(sessions))
+		callback(nextSessions)
 	}
 }
 
-func (m *remoteManager) dropMissingViewsLocked(sessions []remoteSessionInfo) {
-	alive := make(map[string]struct{}, len(sessions))
-	for _, session := range sessions {
-		alive[session.ID] = struct{}{}
+func (m *remoteManager) handleExplicitSessionClosed(sessionID string) {
+	if sessionID == "" {
+		return
 	}
-	for id, view := range m.views {
-		if _, ok := alive[id]; ok {
+	m.mu.Lock()
+	view := m.views[sessionID]
+	var cancel context.CancelFunc
+	if view != nil {
+		view.sessionClosed = true
+		cancel = view.cancel
+		delete(m.views, sessionID)
+	}
+	delete(m.retained, sessionID)
+	delete(m.disabled, sessionID)
+	nextSessions := make([]remoteSessionInfo, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		if session.ID == sessionID {
 			continue
 		}
-		if view.cancel != nil {
-			view.cancel()
-		}
-		delete(m.views, id)
+		nextSessions = append(nextSessions, session)
 	}
-	for id := range m.disabled {
-		if _, ok := alive[id]; !ok {
-			delete(m.disabled, id)
-		}
+	changed := sessionsKey(m.sessions) != sessionsKey(nextSessions)
+	m.sessions = nextSessions
+	callback := m.onSessions
+	closeCallback := m.onViewClosed
+	copied := copySessions(m.sessions)
+	m.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
+	if changed && callback != nil {
+		callback(copied)
+	}
+	if closeCallback != nil {
+		closeCallback(sessionID, fmt.Errorf("session closed"))
+	}
+}
+
+func shouldRetainRemoteView(view *remoteView) bool {
+	if view == nil {
+		return false
+	}
+	return view.visible || view.awaiting || view.running || view.client != nil || view.disabled
+}
+
+func (m *remoteManager) IsRetained(sessionID string) bool {
+	if m == nil || sessionID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if retainedAt, ok := m.retained[sessionID]; ok {
+		if m.clock.Now().Sub(retainedAt) < missingSessionGrace {
+			return true
+		}
+		delete(m.retained, sessionID)
+	}
+	view := m.views[sessionID]
+	if view == nil {
+		return false
+	}
+	if shouldRetainRemoteView(view) {
+		return true
+	}
+	if view.missingSince.IsZero() {
+		return false
+	}
+	return m.clock.Now().Sub(view.missingSince) < missingSessionGrace
 }
 
 func (m *remoteManager) fetchSessions(ctx context.Context, httpURL string) ([]remoteSessionInfo, error) {
@@ -1273,6 +1534,7 @@ func toRemoteSessions(sessions []attach.SessionInfo) []remoteSessionInfo {
 		out = append(out, remoteSessionInfo{
 			ID:           session.ID,
 			Name:         session.Name,
+			Headless:     session.Headless,
 			Status:       session.Status,
 			LastActiveAt: session.LastActiveAt,
 		})
@@ -1293,6 +1555,7 @@ func toRemoteSessionsFromProto(infos []*protocolpb.SessionInfo) []remoteSessionI
 		out = append(out, remoteSessionInfo{
 			ID:           info.Id,
 			Name:         info.Name,
+			Headless:     info.Headless,
 			Status:       info.Status,
 			LastActiveAt: time.Unix(info.LastActiveUnix, 0).UTC(),
 		})

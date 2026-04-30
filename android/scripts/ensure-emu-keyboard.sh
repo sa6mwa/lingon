@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ADB_BIN="${ADB:-adb}"
+ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
 ADB_SERIAL="${ADB_SERIAL:-}"
 BOOT_TIMEOUT_SECS="${BOOT_TIMEOUT_SECS:-120}"
 ADB_REVERSE_PORT="${ADB_REVERSE_PORT:-12843}"

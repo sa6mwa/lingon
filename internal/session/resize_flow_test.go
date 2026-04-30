@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -60,10 +59,8 @@ func (s *sizeProvider) Set(cols, rows int) {
 }
 
 func TestResizeKeepsSessionResponsive(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -72,7 +69,7 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -91,7 +88,7 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -138,8 +135,10 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 	ptyOut := &lockedBuffer{}
 	frameOut := &lockedBuffer{}
 	snapOut := &lockedBuffer{}
+	resizeCh := make(chan struct{}, 1)
 	runner := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_test",
 		Cols:       80,
@@ -163,6 +162,7 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 				_, _ = snapOut.Write([]byte("two"))
 			}
 		},
+		ResizeEvents: resizeCh,
 	})
 
 	runErr := make(chan error, 1)
@@ -177,15 +177,17 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 	out := &lockedBuffer{}
 	size := &sizeProvider{cols: 80, rows: 24}
 	attachClient := &attach.Client{
-		Endpoint:       endpoint,
-		SessionID:      "session_test",
-		AccessToken:    access.Token,
-		RequestControl: false,
-		ClientID:       "attach1",
-		Stdin:          strings.NewReader(""),
-		Stdout:         out,
-		Stderr:         io.Discard,
-		TermSize:       size.Size,
+		Endpoint:            endpoint,
+		TLSDir:              tlsDir,
+		SessionID:           "session_test",
+		AccessToken:         access.Token,
+		RequestControl:      false,
+		ClientID:            "attach1",
+		Stdin:               strings.NewReader(""),
+		Stdout:              out,
+		Stderr:              io.Discard,
+		TermSize:            size.Size,
+		DisableSignalResize: true,
 	}
 	attachCtx, attachCancel := context.WithCancel(context.Background())
 	t.Cleanup(attachCancel)
@@ -196,7 +198,10 @@ func TestResizeKeepsSessionResponsive(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 	_ = pty.Setsize(stdoutMaster, &pty.Winsize{Cols: 100, Rows: 30})
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
+	select {
+	case resizeCh <- struct{}{}:
+	default:
+	}
 
 	if !waitForOutput(t, out, "two") {
 		t.Fatalf("attach missing 'two'; attach=%q pty=%q frames=%q snaps=%q", out.String(), ptyOut.String(), frameOut.String(), snapOut.String())

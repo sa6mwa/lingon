@@ -23,10 +23,8 @@ import (
 )
 
 func TestSessionsStreamRemovesExitedHost(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -35,7 +33,7 @@ func TestSessionsStreamRemovesExitedHost(t *testing.T) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -54,7 +52,7 @@ func TestSessionsStreamRemovesExitedHost(t *testing.T) {
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -109,6 +107,7 @@ func TestSessionsStreamRemovesExitedHost(t *testing.T) {
 
 	runnerA := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_a",
 		Cols:       80,
@@ -121,6 +120,7 @@ func TestSessionsStreamRemovesExitedHost(t *testing.T) {
 	})
 	runnerB := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_b",
 		Cols:       80,

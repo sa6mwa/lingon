@@ -104,6 +104,8 @@ type PTYSession struct {
 	lastReadErr error
 
 	clock clock.Clock
+
+	onResize func()
 }
 
 func newPTYSession(t *testing.T, master, slave *os.File, emu terminal.Emulator) *PTYSession {
@@ -278,6 +280,22 @@ func (s *PTYSession) Resize(cols, rows int) {
 	if s.size != nil {
 		s.size.Set(cols, rows)
 	}
+	if s.onResize != nil {
+		s.onResize()
+	}
+}
+
+// TTYSize returns the current PTY window size reported by the slave.
+func (s *PTYSession) TTYSize() (cols, rows int) {
+	s.t.Helper()
+	if s.slave == nil {
+		return 0, 0
+	}
+	rows, cols, err := pty.Getsize(s.slave)
+	if err != nil {
+		s.t.Fatalf("pty.Getsize: %v", err)
+	}
+	return cols, rows
 }
 
 // Wait sleeps for the provided duration.

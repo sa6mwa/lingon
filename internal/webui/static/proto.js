@@ -741,7 +741,7 @@ function decodeSessions(bytes) {
 }
 
 function decodeWall(bytes) {
-  const out = { sender: "", message: "", timeoutSeconds: 0 };
+  const out = { sender: "", message: "", timeoutSeconds: 0, sourceSessionName: "" };
   let offset = 0;
   while (offset < bytes.length) {
     const tag = readVarint(bytes, offset);
@@ -763,6 +763,12 @@ function decodeWall(bytes) {
     if (field === 3 && wire === WIRE_VARINT) {
       const res = readVarint(bytes, offset);
       out.timeoutSeconds = res.value;
+      offset = res.offset;
+      continue;
+    }
+    if (field === 7 && wire === WIRE_BYTES) {
+      const res = readString(bytes, offset);
+      out.sourceSessionName = res.value;
       offset = res.offset;
       continue;
     }

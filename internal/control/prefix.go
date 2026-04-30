@@ -3,6 +3,7 @@ package control
 // CtrlL is the control-L (form feed) prefix byte.
 const (
 	CtrlL byte = 0x0c
+	CtrlW byte = 0x17
 )
 
 // Action represents a handled control action.
@@ -36,15 +37,24 @@ const (
 	ActionNextTheme
 	// ActionScrollback enters scrollback buffer mode.
 	ActionScrollback
+	// ActionResizeHeadless resizes the active headless remote session to the local viewport.
+	ActionResizeHeadless
 )
 
 // Prefix tracks ctrl+l command state.
 type Prefix struct {
-	pending bool
+	pending    bool
+	repeatWall bool
 }
 
 // Feed consumes a byte and returns an action plus passthrough bytes.
 func (p *Prefix) Feed(b byte) (Action, []byte) {
+	if p.repeatWall {
+		if b == CtrlW {
+			return ActionToggleWallInactivity, nil
+		}
+		p.repeatWall = false
+	}
 	if p.pending {
 		p.pending = false
 		switch b {
@@ -60,6 +70,9 @@ func (p *Prefix) Feed(b byte) (Action, []byte) {
 			return ActionToggleRespawn, nil
 		case 'w', 'W':
 			return ActionToggleWallInactivity, nil
+		case CtrlW:
+			p.repeatWall = true
+			return ActionToggleWallInactivity, nil
 		case 'o', 'O':
 			return ActionToggleOffline, nil
 		case 'h', 'H':
@@ -74,6 +87,8 @@ func (p *Prefix) Feed(b byte) (Action, []byte) {
 			return ActionNextTheme, nil
 		case '[':
 			return ActionScrollback, nil
+		case '0', 0:
+			return ActionResizeHeadless, nil
 		case CtrlL:
 			return ActionNone, []byte{CtrlL}
 		default:
@@ -82,6 +97,7 @@ func (p *Prefix) Feed(b byte) (Action, []byte) {
 	}
 	if b == CtrlL {
 		p.pending = true
+		p.repeatWall = false
 		return ActionNone, nil
 	}
 	return ActionNone, []byte{b}

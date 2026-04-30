@@ -58,23 +58,25 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	var termName string
 	var respawn bool
 	var offline bool
+	var disableDesktopNotifications bool
 	var hostnameOnly bool
 	var themeName string
 	var logFile string
 	var traceEnabled bool
 	var traceFile string
+	var configDir string
 	headlessDefault := headlessAliasEnabled(os.Args[0])
 	var headlessMode bool
 
 	v := loader.Viper()
+	setConfigRootDefaults(v)
 	v.SetDefault("client.endpoint", lingon.DefaultClientEndpoint)
-	v.SetDefault("client.auth_file", lingon.DefaultAuthPath())
-	v.SetDefault("client.log_file", lingon.DefaultLogPath())
 	v.SetDefault("terminal.term", lingon.DefaultTerminalTermValue())
 	v.SetDefault("terminal.scrollback_lines", lingon.DefaultScrollbackLines)
 	v.SetDefault("terminal.respawn", lingon.DefaultTerminalRespawn)
 	v.SetDefault("terminal.theme", lingon.DefaultTerminalTheme)
 	v.SetDefault("terminal.hostname_only", lingon.DefaultTerminalHostnameOnly)
+	v.SetDefault("terminal.disable_desktop_notifications", lingon.DefaultTerminalDisableDesktopNotifications)
 	v.SetDefault("terminal.wall_inactive_after", lingon.DefaultWallInactiveAfterCSV)
 
 	cmd := &cobra.Command{
@@ -84,6 +86,9 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if err := startPprofServer(); err != nil {
+				return err
+			}
+			if err := applyConfigRoot(configDir, loader, cmd.Root()); err != nil {
 				return err
 			}
 			if configFile != "" {
@@ -119,17 +124,16 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 				return err
 			}
 
-			endpointValue := endpoint
-			if !cmd.Flags().Changed("endpoint") {
-				endpointValue = cfg.Client.Endpoint
-			}
-			if endpointValue == "" {
-				return fmt.Errorf("endpoint is required")
-			}
-
 			authPath := authFile
 			if !cmd.Flags().Changed("auth-file") {
 				authPath = cfg.Client.AuthFile
+			}
+			endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint, authPath)
+			if err != nil {
+				return err
+			}
+			if endpointValue == "" {
+				return fmt.Errorf("endpoint is required")
 			}
 			logPath := logFile
 			if !cmd.Flags().Changed("log-file") {
@@ -149,6 +153,10 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 			hostnameOnlyValue := hostnameOnly
 			if !cmd.Flags().Changed("hostname-only") {
 				hostnameOnlyValue = cfg.Terminal.HostnameOnly
+			}
+			disableDesktopNotificationsValue := disableDesktopNotifications
+			if !cmd.Flags().Changed("disable-desktop-notifications") {
+				disableDesktopNotificationsValue = cfg.Terminal.DisableDesktopNotifications
 			}
 			themeValue := themeName
 			if !cmd.Flags().Changed("theme") {
@@ -212,25 +220,26 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 				}()
 			}
 			return lingon.Interactive(ctx, lingon.InteractiveOptions{
-				Endpoint:        endpointValue,
-				Token:           tokenValue,
-				AuthFile:        authPathValue,
-				SessionID:       sessionID,
-				Cols:            colsValue,
-				Rows:            rowsValue,
-				Shell:           shellPath,
-				Term:            termValue,
-				Respawn:         respawnValue,
-				Offline:         offline,
-				Theme:           resolvedTheme,
-				Publish:         endpointValue != "",
-				PublishControl:  true,
-				HostnameOnly:    hostnameOnlyValue,
-				ScrollbackLines: scrollbackValue,
-				TLSDir:          tlsDir,
-				Insecure:        insecure,
-				Logger:          logger,
-				Trace:           traceWriter,
+				Endpoint:                    endpointValue,
+				Token:                       tokenValue,
+				AuthFile:                    authPathValue,
+				SessionID:                   sessionID,
+				Cols:                        colsValue,
+				Rows:                        rowsValue,
+				Shell:                       shellPath,
+				Term:                        termValue,
+				Respawn:                     respawnValue,
+				Offline:                     offline,
+				Theme:                       resolvedTheme,
+				Publish:                     endpointValue != "",
+				PublishControl:              true,
+				HostnameOnly:                hostnameOnlyValue,
+				DisableDesktopNotifications: disableDesktopNotificationsValue,
+				ScrollbackLines:             scrollbackValue,
+				TLSDir:                      tlsDir,
+				Insecure:                    insecure,
+				Logger:                      logger,
+				Trace:                       traceWriter,
 				OnExit: func(id string, startedAt time.Time, err error) {
 					if err != nil {
 						return
@@ -247,6 +256,7 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	}
 
 	cmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "config file path")
+	cmd.PersistentFlags().StringVarP(&configDir, "config-dir", "C", lingon.DefaultConfigDir(), "Lingon config root directory")
 	cmd.PersistentFlags().BoolP("insecure", "k", false, "skip TLS verification")
 	cmd.PersistentFlags().BoolVarP(&headlessMode, "headless", "x", headlessDefault, "use local headless session mode")
 
@@ -264,6 +274,7 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	flags.BoolVarP(&respawn, "respawn", "r", lingon.DefaultTerminalRespawn, "respawn shell on exit (host sessions only)")
 	flags.BoolVarP(&offline, "offline", "o", false, "start host sessions offline (no relay publish/connect until Ctrl+L o)")
 	flags.BoolVar(&hostnameOnly, "hostname-only", lingon.DefaultTerminalHostnameOnly, "show only hostname in connect/disconnect banners")
+	flags.BoolVar(&disableDesktopNotifications, "disable-desktop-notifications", lingon.DefaultTerminalDisableDesktopNotifications, "disable best-effort desktop notifications for inactivity walls")
 	flags.StringVar(&themeName, "theme", lingon.DefaultTerminalTheme, "theme for TUI chrome (use `lingon themes` to list)")
 	flags.StringVar(&logFile, "log-file", "", "path to client log file (disabled if empty)")
 	flags.BoolVar(&traceEnabled, "trace", false, "write a JSONL trace for host/attach TUIs")

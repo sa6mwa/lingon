@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"pkt.systems/lingon/internal/authstore"
 	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/clock"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/server"
@@ -45,6 +47,7 @@ type Harness struct {
 	usersPath   string
 	dataDir     string
 	authPath    string
+	tlsDir      string
 
 	users        *relay.UserStore
 	store        *relay.Store
@@ -52,6 +55,8 @@ type Harness struct {
 	recorder     *WSRecorder
 	onRequest    func(*http.Request)
 	connectLimit *relay.ConnectLimitConfig
+	wallTimeout  time.Duration
+	wallLevels   []time.Duration
 	clock        clock.Clock
 	tracePath    string
 	trace        *trace.Writer
@@ -98,6 +103,18 @@ func WithRequestHook(fn func(*http.Request)) HarnessOption {
 func WithConnectLimiter(cfg relay.ConnectLimitConfig) HarnessOption {
 	return func(h *Harness) {
 		h.connectLimit = &cfg
+	}
+}
+
+// WithWallConfig sets relay wall timeout and inactivity levels for the harness server.
+func WithWallConfig(timeout time.Duration, inactiveAfterLevels []time.Duration) HarnessOption {
+	return func(h *Harness) {
+		h.wallTimeout = timeout
+		if len(inactiveAfterLevels) == 0 {
+			h.wallLevels = nil
+			return
+		}
+		h.wallLevels = append([]time.Duration(nil), inactiveAfterLevels...)
 	}
 }
 
@@ -275,10 +292,11 @@ func (h *Harness) StopServer() {
 }
 
 func (h *Harness) initServer() {
-	h.home = testutil.TempDir(h.t)
-	h.t.Setenv("HOME", h.home)
+	configDir := testutil.SetLingonConfigEnv(h.t)
+	h.home = configDir
 
-	tlsDir := filepath.Join(h.home, ".lingon", "tls")
+	tlsDir := filepath.Join(configDir, "tls")
+	h.tlsDir = tlsDir
 	populateTLSDir(h.t, tlsDir)
 	cert, err := tlsmgr.LoadLocalServerCert(tlsDir)
 	if err != nil {
@@ -289,7 +307,7 @@ func (h *Harness) initServer() {
 		Certificates: []tls.Certificate{cert},
 	}
 
-	usersPath := filepath.Join(h.home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	h.usersPath = usersPath
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
@@ -313,7 +331,7 @@ func (h *Harness) initServer() {
 	auth := relay.NewAuthenticator(users)
 	h.auth = auth
 
-	h.dataDir = filepath.Join(h.home, ".lingon")
+	h.dataDir = configDir
 	h.users = users
 	h.store = store
 
@@ -330,7 +348,7 @@ func (h *Harness) initServer() {
 	}
 	h.accessToken = access.Token
 	h.refresh = refresh
-	h.authPath = filepath.Join(h.home, ".lingon", "auth.json")
+	h.authPath = filepath.Join(configDir, "auth.json")
 	state := authstore.State{
 		Endpoint:         h.endpoint,
 		AccessToken:      access.Token,
@@ -382,6 +400,9 @@ func (h *Harness) startServer(listener net.Listener) {
 	relayServer := relay.NewHTTPServer(h.store, h.users, h.auth, nil, hub)
 	relayServer.UsersFile = h.usersPath
 	relayServer.DataDir = h.dataDir
+	if h.wallTimeout > 0 || len(h.wallLevels) > 0 {
+		relayServer.ConfigureWall(h.wallTimeout, h.wallLevels)
+	}
 	if h.connectLimit != nil {
 		relayServer.ConnectLimiter = relay.NewConnectLimiter(*h.connectLimit)
 	}
@@ -420,17 +441,47 @@ func (h *Harness) startProxy() {
 
 // HostOptions configures a PTY-backed host session.
 type HostOptions struct {
-	SessionID   string
-	SessionName string
-	Shell       string
-	Cols        int
-	Rows        int
-	Clock       clock.Clock
-	DisableRaw  bool
+	SessionID                   string
+	SessionName                 string
+	Shell                       string
+	Cols                        int
+	Rows                        int
+	Clock                       clock.Clock
+	OnPTYRead                   func([]byte)
+	DisableRaw                  bool
+	DisablePublish              bool
+	DisableDesktopNotifications bool
+	DesktopNotifier             desktopnotify.Notifier
 	// AccessToken overrides the harness default access token.
 	AccessToken string
 	// AuthFile is the path to the auth state file used for refresh.
 	AuthFile string
+}
+
+type noopNotifier struct{}
+
+func (noopNotifier) Notify(context.Context, desktopnotify.Request) error {
+	return nil
+}
+
+func effectiveHostDesktopNotificationConfig(opts HostOptions) (bool, desktopnotify.Notifier) {
+	if opts.DisableDesktopNotifications {
+		return true, opts.DesktopNotifier
+	}
+	if opts.DesktopNotifier != nil {
+		return false, opts.DesktopNotifier
+	}
+	return false, noopNotifier{}
+}
+
+func effectiveAttachDesktopNotificationConfig(disabled bool, notifier desktopnotify.Notifier) (bool, desktopnotify.Notifier) {
+	if disabled {
+		return true, notifier
+	}
+	if notifier != nil {
+		return false, notifier
+	}
+	return false, noopNotifier{}
 }
 
 // StartHost launches a host session attached to a PTY.
@@ -474,21 +525,29 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 	if authFile == "" && opts.AccessToken == "" {
 		authFile = h.authPath
 	}
+	disableDesktopNotifications, desktopNotifier := effectiveHostDesktopNotificationConfig(opts)
+	resizeCh := make(chan struct{}, 1)
 	runner := session.New(session.Options{
-		Endpoint:    h.endpoint,
-		Token:       token,
-		AuthFile:    authFile,
-		SessionID:   opts.SessionID,
-		SessionName: opts.SessionName,
-		Cols:        opts.Cols,
-		Rows:        opts.Rows,
-		Shell:       opts.Shell,
-		Publish:     true,
-		Stdin:       slave,
-		Stdout:      slave,
-		DisableRaw:  opts.DisableRaw,
-		Clock:       clk,
-		Trace:       h.trace,
+		Endpoint:                    h.endpoint,
+		Token:                       token,
+		AuthFile:                    authFile,
+		TLSDir:                      h.tlsDir,
+		SessionID:                   opts.SessionID,
+		SessionName:                 opts.SessionName,
+		Cols:                        opts.Cols,
+		Rows:                        opts.Rows,
+		Shell:                       opts.Shell,
+		Publish:                     !opts.DisablePublish,
+		Stdin:                       slave,
+		Stdout:                      slave,
+		DisableRaw:                  opts.DisableRaw,
+		Clock:                       clk,
+		OnPTYRead:                   opts.OnPTYRead,
+		DisableDesktopNotifications: disableDesktopNotifications,
+		DesktopNotifier:             desktopNotifier,
+		Trace:                       h.trace,
+		ResizeEvents:                resizeCh,
+		DisableSignalResize:         true,
 	})
 
 	go func() {
@@ -498,6 +557,12 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 	sess.cleanup = func() {
 		_ = master.Close()
 		_ = slave.Close()
+	}
+	sess.onResize = func() {
+		select {
+		case resizeCh <- struct{}{}:
+		default:
+		}
 	}
 
 	return sess
@@ -511,6 +576,14 @@ type AttachOptions struct {
 	Cols           int
 	Rows           int
 	Clock          clock.Clock
+	// Endpoint overrides the harness relay endpoint. Supports local headless endpoints in tests.
+	Endpoint string
+	// UnixSocket overrides the transport socket used by attach client tests.
+	UnixSocket string
+	// DisableDesktopNotifications suppresses desktop notifications in the attach client.
+	DisableDesktopNotifications bool
+	// DesktopNotifier overrides the attach client's notifier.
+	DesktopNotifier desktopnotify.Notifier
 	// NoHostTimeout controls how long to wait for a host before failing.
 	NoHostTimeout time.Duration
 	// AccessToken overrides the harness default access token.
@@ -561,6 +634,7 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 	sess.clock = clk
 	size := &sizeProvider{cols: opts.Cols, rows: opts.Rows}
 	sess.size = size
+	resizeCh := make(chan struct{}, 1)
 
 	clientID := opts.ClientID
 	if clientID == "" {
@@ -575,22 +649,35 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 	if authFile == "" && opts.AccessToken == "" {
 		authFile = h.authPath
 	}
+	disableDesktopNotifications, desktopNotifier := effectiveAttachDesktopNotificationConfig(
+		opts.DisableDesktopNotifications,
+		opts.DesktopNotifier,
+	)
 	client := &attach.Client{
-		Endpoint:       h.endpoint,
-		SessionID:      opts.SessionID,
-		AccessToken:    token,
-		ShareToken:     opts.ShareToken,
-		RequestControl: opts.RequestControl,
-		ClientID:       clientID,
-		Stdin:          slave,
-		Stdout:         slave,
-		Stderr:         io.Discard,
-		TermSize:       size.Size,
-		Clock:          clk,
-		NoHostTimeout:  opts.NoHostTimeout,
+		Endpoint:                    h.endpoint,
+		SessionID:                   opts.SessionID,
+		AccessToken:                 token,
+		ShareToken:                  opts.ShareToken,
+		TLSDir:                      h.tlsDir,
+		RequestControl:              opts.RequestControl,
+		ClientID:                    clientID,
+		DisableDesktopNotifications: disableDesktopNotifications,
+		DesktopNotifier:             desktopNotifier,
+		Stdin:                       slave,
+		Stdout:                      slave,
+		Stderr:                      io.Discard,
+		TermSize:                    size.Size,
+		ResizeEvents:                resizeCh,
+		DisableSignalResize:         true,
+		Clock:                       clk,
+		NoHostTimeout:               opts.NoHostTimeout,
+		UnixSocket:                  opts.UnixSocket,
+	}
+	if endpoint := strings.TrimSpace(opts.Endpoint); endpoint != "" {
+		client.Endpoint = endpoint
 	}
 	if authFile != "" {
-		client.TokenRefresher = relayclient.TokenRefresher(h.endpoint, authFile, "", false, func(token string) {
+		client.TokenRefresher = relayclient.TokenRefresher(h.endpoint, authFile, h.tlsDir, false, func(token string) {
 			client.AccessToken = token
 		})
 	}
@@ -606,6 +693,12 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 		_ = master.Close()
 		_ = slave.Close()
 	}
+	sess.onResize = func() {
+		select {
+		case resizeCh <- struct{}{}:
+		default:
+		}
+	}
 
 	return sess
 }
@@ -615,6 +708,10 @@ type MultiAttachOptions struct {
 	SessionID string
 	Cols      int
 	Rows      int
+	// DisableDesktopNotifications suppresses desktop notifications in child attach views.
+	DisableDesktopNotifications bool
+	// DesktopNotifier overrides the notifier used by child attach views.
+	DesktopNotifier desktopnotify.Notifier
 	// Endpoint overrides the harness relay endpoint.
 	Endpoint string
 	// AccessToken overrides the harness default access token.
@@ -677,6 +774,7 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 	sess.clock = clk
 	size := &sizeProvider{cols: opts.Cols, rows: opts.Rows}
 	sess.size = size
+	resizeCh := make(chan struct{}, 1)
 
 	token := opts.AccessToken
 	if token == "" {
@@ -689,27 +787,36 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 	if endpoint == "" {
 		endpoint = h.endpoint
 	}
+	disableDesktopNotifications, desktopNotifier := effectiveAttachDesktopNotificationConfig(
+		opts.DisableDesktopNotifications,
+		opts.DesktopNotifier,
+	)
 	client := &attach.MultiClient{
-		Endpoint:           endpoint,
-		AccessToken:        token,
-		SessionID:          opts.SessionID,
-		Stdin:              slave,
-		Stdout:             slave,
-		Stderr:             io.Discard,
-		TermSize:           size.Size,
-		AuthFile:           opts.AuthFile,
-		AllowOfflineToggle: opts.AllowOfflineToggle,
-		SessionSource:      opts.SessionSource,
-		SocketResolver:     opts.SocketResolver,
-		SessionEvents:      opts.SessionEvents,
-		Clock:              clk,
-		OnView:             opts.OnView,
-		OnReconnect:        opts.OnReconnect,
-		OnViewClosed:       opts.OnViewClosed,
-		OnActive:           opts.OnActive,
-		BackoffPolicy:      opts.BackoffPolicy,
-		InactiveTTL:        opts.InactiveTTL,
-		RefreshInterval:    opts.RefreshInterval,
+		Endpoint:                    endpoint,
+		TLSDir:                      h.tlsDir,
+		AccessToken:                 token,
+		SessionID:                   opts.SessionID,
+		DisableDesktopNotifications: disableDesktopNotifications,
+		DesktopNotifier:             desktopNotifier,
+		Stdin:                       slave,
+		Stdout:                      slave,
+		Stderr:                      io.Discard,
+		TermSize:                    size.Size,
+		ResizeEvents:                resizeCh,
+		DisableSignalResize:         true,
+		AuthFile:                    opts.AuthFile,
+		AllowOfflineToggle:          opts.AllowOfflineToggle,
+		SessionSource:               opts.SessionSource,
+		SocketResolver:              opts.SocketResolver,
+		SessionEvents:               opts.SessionEvents,
+		Clock:                       clk,
+		OnView:                      opts.OnView,
+		OnReconnect:                 opts.OnReconnect,
+		OnViewClosed:                opts.OnViewClosed,
+		OnActive:                    opts.OnActive,
+		BackoffPolicy:               opts.BackoffPolicy,
+		InactiveTTL:                 opts.InactiveTTL,
+		RefreshInterval:             opts.RefreshInterval,
 	}
 	requestControl := true
 	if opts.RequestControl != nil {
@@ -725,6 +832,12 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 		_ = master.Close()
 		_ = slave.Close()
 	}
+	sess.onResize = func() {
+		select {
+		case resizeCh <- struct{}{}:
+		default:
+		}
+	}
 
 	return sess
 }
@@ -732,6 +845,11 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 // AuthFile returns the auth state file path used by the harness.
 func (h *Harness) AuthFile() string {
 	return h.authPath
+}
+
+// TLSDir returns the local CA directory used by the harness.
+func (h *Harness) TLSDir() string {
+	return h.tlsDir
 }
 
 type sizeProvider struct {

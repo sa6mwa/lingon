@@ -9,7 +9,7 @@ import (
 )
 
 func TestServeNoBannerShorthand(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetLingonConfigEnv(t)
 
 	loader := lingon.NewLoader()
 	cmd := NewServeCommand(loader)
@@ -27,7 +27,7 @@ func TestServeNoBannerShorthand(t *testing.T) {
 }
 
 func TestServeWallFlags(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetLingonConfigEnv(t)
 
 	loader := lingon.NewLoader()
 	cmd := NewServeCommand(loader)
@@ -48,7 +48,7 @@ func TestServeWallFlags(t *testing.T) {
 }
 
 func TestServeWallInactiveAfterEmptyString(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetLingonConfigEnv(t)
 
 	loader := lingon.NewLoader()
 	cmd := NewServeCommand(loader)
@@ -62,5 +62,23 @@ func TestServeWallInactiveAfterEmptyString(t *testing.T) {
 	}
 	if cfg.Server.Wall.InactiveAfter != "" {
 		t.Fatalf("Server.Wall.InactiveAfter = %q, want empty", cfg.Server.Wall.InactiveAfter)
+	}
+}
+
+func TestServeReplayHistoryBytesFlag(t *testing.T) {
+	testutil.SetLingonConfigEnv(t)
+
+	loader := lingon.NewLoader()
+	cmd := NewServeCommand(loader)
+	if err := cmd.ParseFlags([]string{"--replay-history-bytes", "262144"}); err != nil {
+		t.Fatalf("ParseFlags error = %v", err)
+	}
+
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load error = %v", err)
+	}
+	if cfg.Server.ReplayHistoryBytes != 262144 {
+		t.Fatalf("Server.ReplayHistoryBytes = %d, want %d", cfg.Server.ReplayHistoryBytes, 262144)
 	}
 }

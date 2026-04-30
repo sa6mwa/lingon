@@ -22,7 +22,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import systems.pkt.lingon.share.ShareTokens
 import systems.pkt.lingon.ui.dialogs.AppLockTimeoutDialog
 import systems.pkt.lingon.ui.dialogs.EndpointDialog
-import systems.pkt.lingon.ui.dialogs.ZoomDialog
 import systems.pkt.lingon.ui.dialogs.ShareTokenDialog
 import systems.pkt.lingon.ui.dialogs.ThemeDialog
 import systems.pkt.lingon.ui.theme.LingonTheme
@@ -52,15 +51,20 @@ fun LingonApp(viewModel: AppViewModel) {
                         onDismissMenu = { menuExpanded = false },
                         onShowSettings = { viewModel.showSettings(true) },
                         onShowTheme = { viewModel.showThemePicker(true) },
-                        onShowZoom = { viewModel.showZoom(true) },
                         onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
                         onResetZoomPan = { viewModel.resetZoomAndPan() },
+                        wallInactivityEnabled = state.wallInactivityEnabled,
+                        wallInactivityLabel = state.wallInactivityLabel,
+                        wallInactivityAvailable = false,
+                        onToggleWallInactivity = { viewModel.toggleWallInactivity() },
+                        headlessResizeAvailable = false,
+                        headlessResizeEnabled = false,
+                        onResizeHeadlessNow = {},
                         onReload = { viewModel.manualRefresh() },
                         onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
                         onShowCertificates = { viewModel.showCertificates(true) },
-                        resizeHostEnabled = state.resizeHostEnabled,
-                        resizeHostAvailable = state.hasControl,
-                        onToggleResizeHost = { enabled -> viewModel.setResizeHostEnabled(enabled) },
+                        backgroundWallEnabled = state.backgroundWallEnabled,
+                        onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
                         onLogout = { viewModel.logout() },
                         compact = false,
                         vertical = false,
@@ -103,17 +107,6 @@ fun LingonApp(viewModel: AppViewModel) {
                 onSave = { theme ->
                     viewModel.setTheme(theme)
                     viewModel.showThemePicker(false)
-                },
-            )
-        }
-
-        if (state.showZoom) {
-            ZoomDialog(
-                zoomFactor = state.zoomFactor,
-                onDismiss = { viewModel.showZoom(false) },
-                onSave = { value ->
-                    viewModel.updateZoomFactor(value)
-                    viewModel.showZoom(false)
                 },
             )
         }

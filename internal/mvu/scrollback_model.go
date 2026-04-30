@@ -6,15 +6,28 @@ import "pkt.systems/lingon/internal/protocolpb"
 type ScrollbackViewport struct {
 	active bool
 	offset int
+	col    int
 }
 
-// Enter enables scrollback view and resets offset.
+// Enter enables scrollback view and resets offsets.
 func (v *ScrollbackViewport) Enter() {
 	if v == nil {
 		return
 	}
 	v.active = true
 	v.offset = 0
+	v.col = 0
+}
+
+// EnterAt enables scrollback view at the provided preserved live viewport
+// origin clamped to the available scrollback bounds.
+func (v *ScrollbackViewport) EnterAt(totalRows, viewRows, rowOffset, contentCols, viewCols, colOffset int) {
+	if v == nil {
+		return
+	}
+	v.active = true
+	v.SetOffset(totalRows, viewRows, rowOffset)
+	v.SetColumn(contentCols, viewCols, colOffset)
 }
 
 // Exit disables scrollback view and resets offset.
@@ -24,6 +37,7 @@ func (v *ScrollbackViewport) Exit() {
 	}
 	v.active = false
 	v.offset = 0
+	v.col = 0
 }
 
 // SetActive enables or disables scrollback view.
@@ -37,6 +51,7 @@ func (v *ScrollbackViewport) SetActive(active bool) {
 	}
 	v.active = false
 	v.offset = 0
+	v.col = 0
 }
 
 // Active reports whether scrollback view mode is enabled.
@@ -63,8 +78,8 @@ func (v *ScrollbackViewport) Visible() bool {
 	return v.active || v.offset > 0
 }
 
-// Normalize clamps current offset to available range.
-func (v *ScrollbackViewport) Normalize(totalRows, viewRows int) {
+// Normalize clamps current offsets to available range.
+func (v *ScrollbackViewport) Normalize(totalRows, viewRows, contentCols, viewCols int) {
 	if v == nil {
 		return
 	}
@@ -74,6 +89,13 @@ func (v *ScrollbackViewport) Normalize(totalRows, viewRows int) {
 	}
 	if v.offset > max {
 		v.offset = max
+	}
+	maxCol := scrollbackMaxColumn(contentCols, viewCols)
+	if v.col < 0 {
+		v.col = 0
+	}
+	if v.col > maxCol {
+		v.col = maxCol
 	}
 }
 
@@ -92,6 +114,31 @@ func (v *ScrollbackViewport) SetOffset(totalRows, viewRows, offset int) bool {
 	}
 	v.offset = offset
 	return prev != v.offset
+}
+
+// Column reports the current horizontal pan offset.
+func (v *ScrollbackViewport) Column() int {
+	if v == nil {
+		return 0
+	}
+	return v.col
+}
+
+// SetColumn sets an explicit horizontal pan clamped to available range.
+func (v *ScrollbackViewport) SetColumn(contentCols, viewCols, col int) bool {
+	if v == nil {
+		return false
+	}
+	max := scrollbackMaxColumn(contentCols, viewCols)
+	prev := v.col
+	if col < 0 {
+		col = 0
+	}
+	if col > max {
+		col = max
+	}
+	v.col = col
+	return prev != v.col
 }
 
 // Page adjusts offset by stepRows*delta and reports whether state changed.
@@ -128,9 +175,14 @@ func (v *ScrollbackViewport) Top(totalRows, viewRows int) bool {
 	}
 	max := scrollbackMaxOffset(totalRows, viewRows)
 	if v.offset == max {
-		return false
+		if v.col == 0 {
+			return false
+		}
+		v.col = 0
+		return true
 	}
 	v.offset = max
+	v.col = 0
 	return true
 }
 
@@ -140,10 +192,33 @@ func (v *ScrollbackViewport) Bottom() bool {
 		return false
 	}
 	if v.offset == 0 {
-		return false
+		if v.col == 0 {
+			return false
+		}
+		v.col = 0
+		return true
 	}
 	v.offset = 0
+	v.col = 0
 	return true
+}
+
+// PanX adjusts horizontal pan and reports whether state changed.
+func (v *ScrollbackViewport) PanX(contentCols, viewCols, delta int) bool {
+	if v == nil || delta == 0 {
+		return false
+	}
+	max := scrollbackMaxColumn(contentCols, viewCols)
+	prev := v.col
+	next := v.col + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > max {
+		next = max
+	}
+	v.col = next
+	return next != prev
 }
 
 // Percent reports current scrollback percent.
@@ -160,6 +235,14 @@ func scrollbackMaxOffset(totalRows, viewRows int) int {
 		return 0
 	}
 	return maxOffset
+}
+
+func scrollbackMaxColumn(contentCols, viewCols int) int {
+	maxCol := contentCols - viewCols
+	if maxCol < 0 {
+		return 0
+	}
+	return maxCol
 }
 
 // ProtoScrollbackBuffer owns attach-side protocol scrollback rows.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/protocolpb"
 )
 
@@ -118,6 +120,50 @@ func TestHubViewOnlyDeniedCommand(t *testing.T) {
 	}
 }
 
+func TestHubRegisterClientReplacesSameClientID(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	oldConn := &fakeConn{id: "conn-old", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	granted, holder, _, _ := hub.RegisterClient(oldConn, "s1", "android-1", true)
+	if !granted {
+		t.Fatalf("expected initial client to be granted control")
+	}
+	if holder != "android-1" {
+		t.Fatalf("holder = %q, want android-1", holder)
+	}
+	if got := hub.ClientCount("s1"); got != 1 {
+		t.Fatalf("client count = %d, want 1", got)
+	}
+	if oldConn.closed != 0 {
+		t.Fatalf("old connection should remain open before reconnect, closed=%d", oldConn.closed)
+	}
+
+	newConn := &fakeConn{id: "conn-new", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	granted, holder, _, _ = hub.RegisterClient(newConn, "s1", "android-1", true)
+	if !granted {
+		t.Fatalf("expected reconnecting client to be granted control")
+	}
+	if holder != "android-1" {
+		t.Fatalf("holder = %q, want android-1", holder)
+	}
+	if got := hub.ClientCount("s1"); got != 1 {
+		t.Fatalf("client count = %d, want 1 after reconnect replace", got)
+	}
+	if !hub.HasClientID("s1", "android-1") {
+		t.Fatalf("expected client ID to remain registered")
+	}
+	if oldConn.closed != 0 {
+		t.Fatalf("RegisterClient should not close the replaced client directly; closed=%d", oldConn.closed)
+	}
+	if got := hub.ControllerID("s1"); got != "android-1" {
+		t.Fatalf("controller = %q, want android-1", got)
+	}
+}
+
 func TestHubBroadcastFromHost(t *testing.T) {
 	hub := NewHub(nil)
 	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
@@ -138,14 +184,50 @@ func TestHubBroadcastFromHost(t *testing.T) {
 	}
 }
 
+func TestHubSessionClosedDoesNotBroadcastHostDisconnected(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	hub.RegisterHost(host, "s1", 80, 24)
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	frame := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_SessionClosed{SessionClosed: &protocolpb.SessionClosed{
+			Reason: "terminated",
+		}},
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, frame); err != errHostSessionClosed {
+		t.Fatalf("HandleHostFrame(session_closed) err = %v, want %v", err, errHostSessionClosed)
+	}
+	if len(client.sent) != 1 {
+		t.Fatalf("client frames = %d, want 1", len(client.sent))
+	}
+	if client.sent[0].GetSessionClosed() == nil {
+		t.Fatalf("expected session_closed frame, got %#v", client.sent[0].Payload)
+	}
+
+	hub.Unregister(host)
+	if len(client.sent) != 1 {
+		t.Fatalf("unexpected extra client frame after unregister: %d", len(client.sent))
+	}
+	if client.closed != 1 {
+		t.Fatalf("client closed = %d, want 1", client.closed)
+	}
+}
+
 func TestHubBroadcastSessionFrame(t *testing.T) {
 	hub := NewHub(nil)
+	if got := hub.replayHistoryBytes; got != config.DefaultReplayHistoryBytes {
+		t.Fatalf("default replayHistoryBytes = %d, want %d", got, config.DefaultReplayHistoryBytes)
+	}
 	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
 	hub.RegisterHost(host, "s1", 80, 24)
 	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
 	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
 
-	frame := frameWall("s1", "alice@127.0.0.1", "hello", 5)
+	frame := frameWall("s1", 42, "alice@127.0.0.1", "hello", 5, protocolpb.WallKind_WALL_KIND_UNSPECIFIED, "", "")
 	if !hub.BroadcastSessionFrame(context.Background(), "s1", frame, true) {
 		t.Fatalf("expected broadcast success")
 	}
@@ -157,6 +239,34 @@ func TestHubBroadcastSessionFrame(t *testing.T) {
 	}
 	if client.sent[0].Seq == 0 || host.sent[0].Seq == 0 {
 		t.Fatalf("expected assigned frame sequence")
+	}
+}
+
+func TestHubReplayHistoryBytesSetterTrimsHistory(t *testing.T) {
+	hub := NewHub(nil)
+	hub.SetReplayHistoryBytes(1)
+
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), host, hostSnapshotFrame("alpha")); err != nil {
+		t.Fatalf("HandleHostFrame(snapshot): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("beta")); err != nil {
+		t.Fatalf("HandleHostFrame(diff): %v", err)
+	}
+
+	state := hub.session("s1")
+	if state == nil {
+		t.Fatal("expected session state")
+	}
+	if got := hub.replayHistoryBytes; got != 1 {
+		t.Fatalf("replayHistoryBytes = %d, want 1", got)
+	}
+	if len(state.history) != 1 {
+		t.Fatalf("history length = %d, want 1 after trim", len(state.history))
 	}
 }
 
@@ -202,5 +312,292 @@ func TestHubHandleHostFrameRejectsStaleHost(t *testing.T) {
 	}
 	if len(client.sent) != 0 {
 		t.Fatalf("stale host should not broadcast frames; got %d", len(client.sent))
+	}
+}
+
+func TestHubReplaysMissingFramesToReconnectingClient(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), host, hostSnapshotFrame("alpha-1")); err != nil {
+		t.Fatalf("HandleHostFrame(snapshot): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("alpha-2")); err != nil {
+		t.Fatalf("HandleHostFrame(diff1): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("alpha-3")); err != nil {
+		t.Fatalf("HandleHostFrame(diff2): %v", err)
+	}
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	hello := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "client",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			LastSeq:      2,
+			ClientType:   "android",
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, hello); err != nil {
+		t.Fatalf("HandleClientFrame(hello): %v", err)
+	}
+
+	if len(host.sent) != 1 {
+		t.Fatalf("expected replay reconnect to forward one resize to host, got %d frames", len(host.sent))
+	}
+	if got := host.sent[0].GetResize(); got == nil || got.Cols != 80 || got.Rows != 24 {
+		t.Fatalf("forwarded resize = %+v, want cols=80 rows=24", got)
+	}
+	if len(client.sent) != 1 {
+		t.Fatalf("expected 1 replay frame, got %d", len(client.sent))
+	}
+	if got := client.sent[0].Seq; got != 3 {
+		t.Fatalf("replay seq = %d, want 3", got)
+	}
+	if got := client.sent[0].GetDiff(); got == nil || got.Title != "alpha-3" {
+		t.Fatalf("replay diff = %+v, want title alpha-3", got)
+	}
+}
+
+func TestHubFallsBackToHelloWhenReplayHistoryIsTooOld(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	state := hub.session("s1")
+	state.seq = 10
+	state.history = []*protocolpb.Frame{
+		hostSnapshotFrame("alpha-9"),
+		hostDiffFrame("alpha-10"),
+	}
+	state.history[0].Seq = 9
+	state.history[1].Seq = 10
+	state.historyBytes = proto.Size(state.history[0]) + proto.Size(state.history[1])
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	hello := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "client",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			LastSeq:      7,
+			ClientType:   "android",
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, hello); err != nil {
+		t.Fatalf("HandleClientFrame(hello): %v", err)
+	}
+
+	if len(client.sent) != 0 {
+		t.Fatalf("expected no replay frames when history is too old, got %d", len(client.sent))
+	}
+	if len(host.sent) != 1 {
+		t.Fatalf("expected hello to be forwarded to host, got %d", len(host.sent))
+	}
+	if got := host.sent[0].GetHello(); got == nil || got.LastSeq != 7 {
+		t.Fatalf("hello forwarded with last_seq=%+v, want 7", got)
+	}
+}
+
+func TestHubFallsBackToHelloWhenReplayIsEmptyAtCurrentSequence(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), host, hostSnapshotFrame("alpha-1")); err != nil {
+		t.Fatalf("HandleHostFrame(snapshot): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("alpha-2")); err != nil {
+		t.Fatalf("HandleHostFrame(diff): %v", err)
+	}
+	_, _, _, currentSeq := hub.SessionState("s1")
+	if currentSeq == 0 {
+		t.Fatalf("current sequence = 0, want recorded host frames")
+	}
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	hello := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "client",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			LastSeq:      currentSeq,
+			ClientType:   "go",
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, hello); err != nil {
+		t.Fatalf("HandleClientFrame(hello): %v", err)
+	}
+
+	if len(client.sent) == 0 {
+		t.Fatalf("expected one lightweight control frame at current sequence, got 0; host frames=%d", len(host.sent))
+	}
+	if len(client.sent) != 1 {
+		t.Fatalf("expected one lightweight control frame at current sequence, got %d", len(client.sent))
+	}
+	if got := client.sent[0].GetControl(); got == nil {
+		t.Fatalf("empty replay response = %+v, want control frame", client.sent[0].Payload)
+	}
+	if len(host.sent) != 1 {
+		t.Fatalf("expected empty replay to forward only resize to host, got %d host frames", len(host.sent))
+	}
+	if got := host.sent[0].GetHello(); got != nil {
+		t.Fatalf("empty replay forwarded hello to host: %+v", got)
+	}
+	if got := host.sent[0].GetResize(); got == nil || got.Cols != 80 || got.Rows != 24 {
+		t.Fatalf("forwarded host frame = %+v, want resize cols=80 rows=24", host.sent[0].Payload)
+	}
+}
+
+func TestHubPendingReconnectDoesNotReceiveLiveFrameBeforeReplay(t *testing.T) {
+	hub := NewHub(nil)
+	host := &fakeConn{id: "host", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(host, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), host, hostSnapshotFrame("alpha-1")); err != nil {
+		t.Fatalf("HandleHostFrame(snapshot): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("alpha-2")); err != nil {
+		t.Fatalf("HandleHostFrame(diff1): %v", err)
+	}
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _, _ = hub.registerClient(client, "s1", "client", false, true)
+
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("alpha-3")); err != nil {
+		t.Fatalf("HandleHostFrame(diff2): %v", err)
+	}
+	if len(client.sent) != 0 {
+		t.Fatalf("pending reconnect received live frame before replay: got %d frames", len(client.sent))
+	}
+
+	hello := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "client",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			LastSeq:      2,
+			ClientType:   "go",
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, hello); err != nil {
+		t.Fatalf("HandleClientFrame(hello): %v", err)
+	}
+	if len(client.sent) != 1 {
+		t.Fatalf("expected exactly one replay frame after pending reconnect, got %d", len(client.sent))
+	}
+	if got := client.sent[0]; got.Seq != 3 || got.GetDiff() == nil || got.GetDiff().Title != "alpha-3" {
+		t.Fatalf("replay frame = seq %d payload %+v, want seq 3 diff alpha-3", got.Seq, got.Payload)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), host, hostDiffFrame("alpha-4")); err != nil {
+		t.Fatalf("HandleHostFrame(diff3): %v", err)
+	}
+	if len(client.sent) != 2 {
+		t.Fatalf("activated reconnect did not receive subsequent live frame, got %d frames", len(client.sent))
+	}
+	if got := client.sent[1]; got.Seq != 4 || got.GetDiff() == nil || got.GetDiff().Title != "alpha-4" {
+		t.Fatalf("live frame = seq %d payload %+v, want seq 4 diff alpha-4", got.Seq, got.Payload)
+	}
+}
+
+func TestHubClearsReplayHistoryWhenHostIsReplaced(t *testing.T) {
+	hub := NewHub(nil)
+	hostA := &fakeConn{id: "host-a", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	hostB := &fakeConn{id: "host-b", role: RoleHost, sessionID: "s1", scope: ShareScopeControl}
+	if err := hub.RegisterHost(hostA, "s1", 80, 24); err != nil {
+		t.Fatalf("RegisterHost(hostA): %v", err)
+	}
+
+	if err := hub.HandleHostFrame(context.Background(), hostA, hostSnapshotFrame("alpha-1")); err != nil {
+		t.Fatalf("HandleHostFrame(snapshot): %v", err)
+	}
+	if err := hub.HandleHostFrame(context.Background(), hostA, hostDiffFrame("alpha-2")); err != nil {
+		t.Fatalf("HandleHostFrame(diff): %v", err)
+	}
+
+	replaced := hub.registerHost(hostB, "s1", 80, 24)
+	if replaced == nil || replaced.ID() != hostA.ID() {
+		t.Fatalf("registerHost(hostB): replaced=%v, want host-a", replaced)
+	}
+
+	state := hub.session("s1")
+	if len(state.history) != 0 {
+		t.Fatalf("history length after takeover = %d, want 0", len(state.history))
+	}
+	if state.historyBytes != 0 {
+		t.Fatalf("historyBytes after takeover = %d, want 0", state.historyBytes)
+	}
+
+	client := &fakeConn{id: "client", role: RoleClient, sessionID: "s1", scope: ShareScopeControl}
+	_, _, _, _ = hub.RegisterClient(client, "s1", "client", false)
+
+	hello := &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "client",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			LastSeq:      2,
+			ClientType:   "android",
+		}},
+	}
+	if err := hub.HandleClientFrame(context.Background(), client, hello); err != nil {
+		t.Fatalf("HandleClientFrame(hello): %v", err)
+	}
+
+	if len(client.sent) != 0 {
+		t.Fatalf("expected no stale replay after host takeover, got %d frames", len(client.sent))
+	}
+	if len(hostB.sent) != 1 {
+		t.Fatalf("expected hello to be forwarded to replacement host, got %d frames", len(hostB.sent))
+	}
+	if got := hostB.sent[0].GetHello(); got == nil || got.LastSeq != 2 {
+		t.Fatalf("forwarded hello last_seq=%+v, want 2", got)
+	}
+}
+
+func hostSnapshotFrame(title string) *protocolpb.Frame {
+	return &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Snapshot{Snapshot: &protocolpb.Snapshot{
+			Cols:  80,
+			Rows:  24,
+			Title: title,
+		}},
+	}
+}
+
+func hostDiffFrame(title string) *protocolpb.Frame {
+	return &protocolpb.Frame{
+		SessionId: "s1",
+		Payload: &protocolpb.Frame_Diff{Diff: &protocolpb.Diff{
+			Title: title,
+		}},
 	}
 }

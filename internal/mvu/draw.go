@@ -221,7 +221,7 @@ func wrapLines(lines []string, width int) []string {
 }
 
 // DrawWallBox renders a centered non-blocking wall notification.
-// Message content is wrapped and truncated to at most two lines.
+// Message content is wrapped and truncated to at most three lines.
 func DrawWallBox(w *bytes.Buffer, cols, rows int, ui theme.TUITheme, title, message string) {
 	title = strings.TrimSpace(title)
 	message = strings.TrimSpace(message)
@@ -237,11 +237,11 @@ func DrawWallBox(w *bytes.Buffer, cols, rows int, ui theme.TUITheme, title, mess
 		return
 	}
 	wrapped := wrapLines([]string{message}, contentWidth)
-	msgLines := make([]string, 0, 2)
-	for i := 0; i < len(wrapped) && i < 2; i++ {
+	msgLines := make([]string, 0, 3)
+	for i := 0; i < len(wrapped) && i < 3; i++ {
 		msgLines = append(msgLines, wrapped[i])
 	}
-	if len(wrapped) > 2 && len(msgLines) > 0 {
+	if len(wrapped) > 3 && len(msgLines) > 0 {
 		msgLines[len(msgLines)-1] = trimWithEllipsis(msgLines[len(msgLines)-1], contentWidth)
 	}
 	lines := []string{title}
@@ -279,6 +279,8 @@ const (
 	BannerRed BannerStyle = iota
 	// BannerGreen renders a green background banner.
 	BannerGreen
+	// BannerYellow renders a yellow background banner.
+	BannerYellow
 )
 
 // DrawBanner draws a status banner on the top row, right-aligned.
@@ -315,6 +317,8 @@ func DrawBannerAtRow(w *bytes.Buffer, cols, row int, message string, style Banne
 	colorOn := "\x1b[97;41m"
 	if style == BannerGreen {
 		colorOn = "\x1b[38;2;0;0;0;42m"
+	} else if style == BannerYellow {
+		colorOn = "\x1b[38;2;0;0;0;43m"
 	}
 	colorOff := ui.Reset
 	text := message
@@ -347,6 +351,8 @@ func DrawIndicatorAtRow(w *bytes.Buffer, cols, row int, message string, style Ba
 	colorOn := "\x1b[97;41m"
 	if style == BannerGreen {
 		colorOn = "\x1b[38;2;0;0;0;42m"
+	} else if style == BannerYellow {
+		colorOn = "\x1b[38;2;0;0;0;43m"
 	}
 	colorOff := ui.Reset
 	text := message

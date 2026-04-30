@@ -1,0 +1,1423 @@
+# Bug Tracker
+
+This file is the working ledger for user-reported bugs and feature regressions uncovered during iterative development and testing.
+
+## Verification Rules
+
+Do not treat a change as fixed just because code was written.
+
+For every reported bug or requested behavior change:
+
+1. Record the report here before or while investigating.
+2. Capture a concrete repro path.
+3. Add a regression test at the strongest reasonable layer.
+   For Android app behavior, prefer instrumentation or end-to-end coverage when practical.
+   For TUI, attach, host, and PTY behavior, prefer PTY integration tests.
+4. Implement the fix.
+5. Review the actual changed code paths after implementation instead of trusting intent.
+6. Run the relevant verification:
+   Unit tests, integration tests, lint, and end-to-end tests as appropriate.
+7. Mark the item resolved only after the repro is no longer reproducible and the regression passes.
+
+Required status values:
+
+- `open`: reported or reproduced, not fixed
+- `in_progress`: actively being investigated or implemented
+- `needs_verification`: code changed, but proof is incomplete
+- `resolved`: repro closed and verification recorded
+- `blocked`: cannot yet verify because of an external dependency or missing environment
+
+## Active Items
+
+### B-040 Android ANSI blue is still too dark
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `palette`
+- Summary: Normal non-bold ANSI blue in the Android terminal remains hard to see against the dark terminal background.
+- Report:
+  After the earlier palette lightening, normal non-bold blue text in the Android app is still too dark and difficult to read.
+- Repro:
+  1. Render terminal text using normal ANSI blue, index 4.
+  2. Compare legibility against the Android terminal's black/dark background.
+  3. Observe that normal, non-bold blue is hard to see.
+- Investigation notes:
+  - Android's default ANSI palette mapped normal blue to `#6A9BFF`.
+  - Bright blue still used raw `#0000FF`, which is also poor on the Android terminal background.
+  - Follow-up candidates `#9AB6FF`/`#B4C8FF` and `#7CC7FF`/`#B8E0FF` still read too dark or not blue enough in terminal samples.
+  - The palette now maps normal blue to `#78B4FF` and bright blue to `#A0CDFF`.
+- Regression coverage:
+  - `TerminalPaletteTest.defaultAnsiPaletteUsesBrighterReadableBaseColors`
+  - `TerminalPaletteTest.resolveColorUsesReadableAnsiBlue`
+  - `TerminalPaletteTest.defaultAnsiPaletteUsesReadableBrightBlue`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalPaletteTest`
+  - `cd android && ./gradlew :app:testDebugUnitTest`
+
+### B-039 Wall modal repaint ignores scrollback viewport
+
+- Status: `resolved`
+- Area: `host`, `attach`, `tui`, `scrollback`, `wall`
+- Summary: Showing a modal wall notification while browsing scrollback repaints the underlying terminal content from the live/end viewport instead of the current scrollback position.
+- Report:
+  When a modal wall notification appears while browsing the scrollbuffer in a Lingon host or attach session, the content behind the modal appears to jump to the end/live content. The scrollback cursor is still at the original position; after navigating again, the viewed position becomes apparent, so the bug is in the modal/background render rather than scrollback state.
+- Repro:
+  1. Open a Lingon host or attach TUI session with enough output to browse scrollback.
+  2. Navigate into the scrollback buffer away from live output.
+  3. Receive a modal wall notification.
+  4. Observe the terminal content behind the modal displays live/end content instead of the scrollback viewport currently being viewed.
+  5. Continue navigating scrollback and observe the cursor/position was not actually reset.
+- Investigation notes:
+  - Host wall display used `forceRedrawWithMode` directly after applying `WallAction`.
+  - That path renders the active local session's live snapshot and bypasses `forceRedraw`, which is the scrollback-aware entry point.
+  - The scrollback viewport state was not reset; only the wall modal repaint was composed over the wrong base snapshot, matching the reported pseudo-jump.
+  - Attach already routed wall display through `RenderCurrent`, which rebuilds the scrollback view before composing overlays. A dedicated attach regression now asserts this behavior stays intact.
+  - Host wall show and wall expiry redraw now use `forceRedrawRespectingScrollback`, which renders the current scrollback viewport when active and preserves the existing force-full behavior for live views.
+- Regression coverage:
+  - `TestRunnerShowWallPreservesScrollbackViewport` reproduces the host bug using an isolated test PTY: it first renders an active scrollback viewport, then shows a wall modal and asserts the repaint does not emit the live-only token.
+  - `TestRunnerShowWallPreservesMixedScrollbackAndLiveViewport` covers the boundary case where history and live rows are visible together and asserts the modal repaint does not drift to deeper live/end content outside the viewed range.
+  - `TestWallOverlayPreservesScrollbackViewport` covers the attach path so wall overlays remain composed over the active scrollback viewport there too.
+  - `TestWallOverlayPreservesMixedScrollbackAndLiveViewport` applies the same mixed history/live viewport assertion to attach.
+- Verification:
+  - `go test -count=1 ./internal/session -run TestRunnerShowWallPreservesScrollbackViewport` failed before the fix with `LIVE-END-TOKEN` emitted during the wall repaint.
+  - `go test -count=1 ./internal/session ./internal/attach -run 'TestRunnerShowWallPreservesScrollbackViewport|TestWallOverlayPreservesScrollbackViewport|TestWallAutoHideDoesNotForceFullRedraw'`
+  - `go test -count=1 ./internal/session ./internal/attach -run 'TestRunnerShowWallPreservesScrollbackViewport|TestRunnerShowWallPreservesMixedScrollbackAndLiveViewport|TestWallOverlayPreservesScrollbackViewport|TestWallOverlayPreservesMixedScrollbackAndLiveViewport'`
+  - `go test -count=1 ./internal/session ./internal/attach ./internal/mvu`
+
+### B-038 Android scrollback pan jumps and switches to row stepping
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `scrollback`, `gestures`
+- Summary: Android terminal panning jumps when crossing between the live viewport and scrollback, and scrollback movement becomes line-by-line instead of pixel-continuous.
+- Report:
+  The Android app still jumps when panning back toward the live screen. Panning is smooth while moving around the live screen, but once the gesture hits scrollback it transitions to row-stepped movement, making the boundary visibly discontinuous.
+- Repro:
+  1. Open an Android terminal session with enough output to have scrollback.
+  2. Zoom in so vertical pan is pixel-continuous in the live screen.
+  3. Pan past the live screen into scrollback.
+  4. Observe the view advances by whole rows instead of continuing pixel-by-pixel.
+  5. Pan back toward the live screen.
+  6. Observe a visible jump or loss of position at the scrollback/live handoff.
+- Investigation notes:
+  - The view already pans by pixels inside the currently rendered snapshot, but entering older scrollback was gated by a whole-cell overflow accumulator.
+  - `buildScrollbackSnapshot` returned a fixed-height live-sized window, so even when the app fetched another scrollback row there was no extra rendered row available for fractional movement across the boundary.
+  - The fix makes positive scrollback offsets render the requested history rows plus the full live snapshot, keeps fit-to-view scaling based on the live host row count, and requests the first scrollback row as soon as a fractional pan crosses the top boundary.
+  - The viewport then applies the pending fractional overflow when the matching scrollback snapshot arrives, preserving pixel position instead of snapping to the next whole row.
+  - A second reproduced failure mode happened when the user crossed the live/scrollback boundary, requested a scrollback row, then reversed direction before that scrollback snapshot arrived. The stale pending scrollback-entry amount was still applied to the late snapshot, which shifted the camera back to the earlier boundary position and produced the visible jump.
+  - The view now reduces pending scrollback-entry pixels when a later drag moves back down inside the still-live snapshot. If the delayed scrollback snapshot then arrives, only the remaining pending entry amount is applied, so the current visual position is preserved.
+  - A third reproduced failure mode required the actual keyboard-visible, manually zoomed Android UI path. When panning back from one loaded scrollback row into live output, the scrollback offset dropped from `1` to `0`; that render frame made the cursor look moved and re-enabled cursor auto-follow, snapping the zoomed camera to the live bottom.
+  - The view now suppresses cursor auto-follow for the render frame that consumes pending live re-entry rows. Normal input-driven cursor follow remains intact, but scrollback row removal can no longer turn a pan-back gesture into a bottom snap.
+- Regression coverage:
+  - Added `zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary` to the Android integration suite. It drags less than one cell into scrollback and asserts a row is requested immediately, then verifies the camera lands at `cellHeight - partialPanPx` after the scrollback snapshot arrives.
+  - Added `zoomed_scrollback_entry_reverse_before_snapshot_preserves_live_position`, which reproduces the reverse-before-snapshot jump. It failed before the fix with `expected:<117.8793> but was:<87.318>`, then passed after pending scrollback-entry cancellation was added.
+  - Added `keyboard_visible_scrollback_entry_reverse_before_snapshot_preserves_live_position`, which runs the same reverse-before-snapshot scenario with `imeVisible = true` and width-fit scaling enabled so the keyboard-visible render path is covered explicitly.
+  - Added `keyboard_visible_zoomed_scrollback_entry_without_width_fit_preserves_live_position`, which keeps `imeVisible = true`, `fitToViewWidth = false`, and manual zoom enabled to match the reported keyboard-up/manual-zoom case.
+  - Added `keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous`, which drives the real Android UI with keyboard visible, manual zoom enabled, enough output for scrollback, and pan pulses across the live/scrollback boundary. It failed before the fix with a jump from live row `-0.09` to `9.36`, then passed after suppressing cursor follow during live re-entry.
+  - Updated `zoomed_scrollback_live_reentry_waits_for_matching_snapshot` to use a real scrollback-expanded snapshot so the live re-entry side remains covered.
+  - Added `ScrollbackSnapshotTest` coverage proving scrollback snapshots prepend requested history while preserving the full live snapshot.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.ScrollbackSnapshotTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest`
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin`
+  - `cd android && LINGON_IT_ONLY=zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary make integration-test`
+  - `cd android && LINGON_IT_ONLY=zoomed_scrollback_live_reentry_waits_for_matching_snapshot make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `cd android && LINGON_IT_ONLY=zoomed_scrollback_entry_reverse_before_snapshot_preserves_live_position make integration-test`
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_scrollback_entry_reverse_before_snapshot_preserves_live_position make integration-test`
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_zoomed_scrollback_entry_without_width_fit_preserves_live_position make integration-test`
+  - `cd android && LINGON_IT_ONLY=zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary make integration-test`
+  - `cd android && LINGON_IT_ONLY=zoomed_scrollback_live_reentry_waits_for_matching_snapshot make integration-test`
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous make integration-test` failed before the fix, then passed after the fix.
+
+### B-037 Android integration harness temp roots leak after test runs
+
+- Status: `resolved`
+- Area: `android`, `integration-tests`, `harness`
+- Summary: Android integration test runs left `/tmp/lingon-android-harness-*` directories behind after successful smoke runs.
+- Report:
+  After `make test-android`, temporary harness roots remained under `/tmp`. Manual cleanup removes the symptom, but the runner must clean up after itself.
+- Repro:
+  1. Run `make test-android`.
+  2. Check `/tmp` for `lingon-android-harness-*` directories.
+  3. No harness temp roots should remain after the script exits.
+- Investigation notes:
+  - The harness binary attempts to remove its own root from `h.stop()`, but the shell runner only signaled the harness and assumed the process cleanup completed.
+  - The runner now derives each active harness root from the generated CA path in the harness config.
+  - The runner removes the active root after each `stop_harness` call and also removes all remembered harness roots in the global `EXIT` cleanup.
+  - Removal is constrained to directories named `lingon-android-harness-*` under `/tmp` or `/var/tmp`.
+- Regression coverage:
+  - `TestHarnessStopRemovesTempRoot` covers the binary cleanup path.
+  - Shell syntax and end-to-end Android smoke verify the runner cleanup path.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh`
+  - `make test-android`
+  - `find /tmp -maxdepth 1 -type d -name 'lingon-android-harness-*' -print` returned no directories after the run.
+
+### B-036 Attach reconnect replay cursor and live broadcast race
+
+- Status: `resolved`
+- Area: `attach`, `relay`, `reconnect`
+- Summary: Reconnecting attach clients must never drop unsequenced readiness frames, replay too much terminal history, or receive duplicate live/replayed frames during the reconnect handshake.
+- Report:
+  Review found two replay/reconnect risks. First, cached reconnects use a nonzero replay cursor, so welcome/control readiness frames with `seq=0` must not be rejected by receive-side sequence filtering. Second, the relay registers a reconnecting websocket as a live broadcast recipient before replay has completed, allowing a host frame to be delivered live and then replayed for the same `last_seq`.
+- Repro:
+  1. Seed an attach client with a cached snapshot and nonzero `lastSeq`.
+  2. Deliver an unsequenced control or welcome readiness frame.
+  3. The client must accept the frame and become ready rather than treating it as stale replay data.
+  4. Register a reconnecting relay client with `last_seq=N`, publish host frame `N+1` before replay completes, and process hello replay.
+  5. The reconnecting client must receive frame `N+1` exactly once.
+- Investigation notes:
+  - `acceptSeq(0)` already accepted unsequenced readiness frames before consulting `lastSeq`; a regression test now locks that invariant so cached reconnects can keep a replay cursor without dropping welcome/control readiness.
+  - The relay websocket handler now registers handshake clients as pending. Pending clients remain known for replacement/control bookkeeping, but live host/session/control broadcasts skip them until their hello handling completes.
+  - `HandleClientFrame` activates pending clients under the hub lock after the replay decision is fenced and before live broadcasts can observe the client, so frames recorded before the decision are replayed and frames recorded after it are delivered live.
+  - This keeps replay bounded to frames after `last_seq`; the fix does not widen replay or replay from zero.
+- Regression coverage:
+  - `TestUnsequencedReadinessFramesBypassReplaySequenceCursor`
+  - `TestHubPendingReconnectDoesNotReceiveLiveFrameBeforeReplay`
+- Verification:
+  - `go test -count=1 ./internal/attach ./internal/relay`
+  - `make test`
+  - `make test-webui`
+  - `go test -count=1 -tags integration ./integration/...`
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `make test-android` (one expected notification-permission recovery skip; zero failures)
+  - `go vet ./...`
+  - `golangci-lint run ./...`
+  - `golint ./...`
+
+### B-035 WebUI integration suite fails under concurrent smoke load
+
+- Status: `resolved`
+- Area: `webui`, `integration-tests`
+- Summary: `make test-webui` exited nonzero during release smoke when run concurrently with the full Go test suite, even though a standalone rerun passed.
+- Report:
+  The release smoke run reported a webui failure while `make test` and `make test-webui` were running in parallel. The visible tail showed only passing tests, so the failing test or package output was hidden by truncation.
+- Repro:
+  1. Run `make test` and `make test-webui` concurrently.
+  2. Observe `make test-webui` may exit nonzero.
+  3. Rerun `make test-webui` alone; it may pass, suggesting a test isolation or resource-contention issue.
+- Investigation notes:
+  - The exact failure from the release smoke was not recoverable from the truncated visible output.
+  - `make test` and `make test-webui` both write to `TEST_LOG` by default, so concurrent manual smoke runs can obscure diagnostics in `test.log`.
+  - Reproduced the concurrent load pattern with isolated `TEST_LOG` files across three runs; both the broad Go suite and webui suite passed each time.
+  - Reproduced the concurrent load pattern with the default shared `test.log` across three runs; both suites passed each time.
+  - Ran the webui integration package ten times in one process; all iterations passed.
+  - Searched the current webui JSON/text logs for failing actions and `FAIL`; no failures were present.
+- Regression coverage:
+  - No code change was made because the failure was not reproducible and no broken webui test was found.
+- Verification:
+  - `make TEST_LOG=/tmp/lingon-go-parallel.json test` and `make TEST_LOG=/tmp/lingon-webui-parallel.json test-webui` concurrently.
+  - Three concurrent isolated-log iterations of `make test` plus `make test-webui`.
+  - Three concurrent default shared-log iterations of `make test` plus `make test-webui`.
+  - `go test -count=10 -tags integration ./integration/webui`
+
+### B-034 Android zoomed scrollback pan jumps during live reentry
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `scrollback`
+- Summary: Panning down from scrollback/history toward the live screen in the Android terminal can jump abruptly and lose the user's position.
+- Report:
+  The Android app regressed smooth panning between history and the current live screen. When dragging back down toward the live viewport, the pan position makes a large jump instead of moving continuously.
+- Repro:
+  1. Open an Android terminal session with enough output to populate scrollback.
+  2. Zoom in so the terminal view pans inside the snapshot.
+  3. Enter scrollback/history and drag down toward the live screen.
+  4. Observe the visible position jumps during the handoff from scrollback rows back into the live snapshot.
+- Investigation notes:
+  - `TerminalGridView` asks the ViewModel to reduce `scrollbackOffsetRows` when zoomed panning crosses from history toward live output.
+  - The current view also subtracts the consumed rows from its local camera immediately. That can draw the old snapshot with the new camera before Compose delivers the matching new scrollback snapshot, creating a visible discontinuity.
+  - The fix records pending live-reentry rows when the gesture requests the ViewModel scrollback change, but leaves the current camera untouched until `update(...)` receives the matching lower `scrollbackOffsetRows`.
+  - When the matching snapshot state arrives, the view applies the camera correction and clears the pending reentry rows, so old snapshot + old camera and new snapshot + new camera remain paired.
+- Regression coverage:
+  - `EndToEndTest.zoomed_scrollback_live_reentry_waits_for_matching_snapshot`
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest`
+  - `./gradlew :app:connectedDebugAndroidTest --no-configuration-cache -Plingon.it.class=systems.pkt.lingon.terminal.TerminalGridViewTest#liveReentryWaitsForScrollbackSnapshotBeforeMovingCamera` before moving the regression into `EndToEndTest`
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=zoomed_scrollback_live_reentry_waits_for_matching_snapshot make test-android`
+  - `LINGON_IT_ONLY=zoomed_viewport_does_not_reset_after_frame_and_resume make test-android`
+
+### B-033 Empty replay reconnect and TLS config-root defaults
+
+- Status: `resolved`
+- Area: `relay`, `cli`, `config`
+- Summary: Reconnects with no replay frames must still make clients ready, and `--config-dir` must rebase TLS command defaults.
+- Report:
+  Review flagged two regressions:
+  1. A reconnecting attach client with `last_seq` equal to the relay's current sequence hit the replay fast path with zero frames, so the relay sent neither replay frames nor a normal hello to the host.
+  2. `lingon --config-dir <dir> tls new/export` still used the original home-derived `--dir` default because TLS commands use a flag named `--dir`, not `--tls-dir`.
+- Repro:
+  1. Register a host, record frames through relay history, then send client hello with `last_seq` equal to the current relay sequence.
+  2. Observe the relay does not send a replay frame and previously did not forward hello to the host.
+  3. Build a root command, apply a config root, and inspect TLS `new`, `new ca`, `new server`, and `export` `--dir` defaults.
+- Investigation notes:
+  - Replay remains a fast path only when there is at least one frame to send.
+  - Empty replay now sends a lightweight control response to the client and only forwards resize to the host when needed. It does not replay cached history and does not request a fresh host snapshot.
+  - Attach clients with a cached snapshot can mark reconnect ready from that control response; clients without cached snapshot still require a real snapshot.
+  - The command sweep found the TLS `--dir` flag as the missed config-root-derived path. Other config-root-derived CLI flags already used `auth-file`, `log-file`, `data-dir`, `users-file`, `tls-dir`, or `tls-cache-dir` and were already rebased.
+- Regression coverage:
+  - `TestHubFallsBackToHelloWhenReplayIsEmptyAtCurrentSequence`
+  - `TestControlFrameCanMarkCachedReconnectReady`
+  - `TestRootConfigDirFlagRebasesDerivedDefaults`
+- Verification:
+  - `go test ./internal/relay -run 'TestHubReplaysMissingFramesToReconnectingClient|TestHubFallsBackToHelloWhenReplayHistoryIsTooOld|TestHubFallsBackToHelloWhenReplayIsEmptyAtCurrentSequence|TestHubClearsReplayHistoryWhenHostIsReplaced'`
+  - `go test ./internal/attach -run 'TestControlFrameCanMarkCachedReconnectReady|TestControlFrameDoesNotMarkReconnectReadyWithoutSnapshot'`
+  - `env LINGON_CONFIG_DIR=/tmp/lingon-review-env go test ./cmd/lingon -run 'TestRootConfigDirFlagRebasesDerivedDefaults|TestRootDefaultAuthFileIgnoresXDGConfigHome'`
+  - `env LINGON_CONFIG_DIR=/tmp/lingon-review-env go test ./internal/config`
+  - `env LINGON_CONFIG_DIR=/tmp/lingon-review-env go test ./...`
+
+### B-032 Android harness leaves temp directories in `/tmp`
+
+- Status: `resolved`
+- Area: `android`, `integration-tests`, `harness`
+- Summary: Android harness runs must remove their `lingon-android-harness-*` temp root after each run.
+- Report:
+  Repeated Android integration runs left many `/tmp/lingon-android-harness-*` directories behind.
+- Repro:
+  1. Run Android integration tests that start and stop the harness repeatedly.
+  2. List `/tmp/lingon-android-harness-*`.
+  3. Observe stale harness config/state directories left after completed runs.
+- Investigation notes:
+  - `startHarness` created a temp root with `os.MkdirTemp("", "lingon-android-harness-")`.
+  - `harness.stop()` stopped sessions and the HTTP server but did not remove `h.baseDir`.
+  - The main process also called `h.stop()` only after the normal wait path, so config write failures could skip cleanup.
+  - The default host echo log now lives inside the harness temp root so the whole harness-owned tree is removed together.
+- Regression coverage:
+  - `TestHarnessStopRemovesTempRoot`
+- Verification:
+  - `go test ./cmd/lingon-android-harness`
+  - `cd android && go test ./cmd/lingon-android-tools`
+  - Direct smoke: start `lingon-android-harness -sessions 0`, terminate it with `SIGTERM`, and confirm no new `/tmp/lingon-android-harness-*` directory remains.
+
+### B-030 Android wall notifications duplicate sender in title and body
+
+- Status: `resolved`
+- Area: `android`, `notifications`
+- Summary: Android wall notifications must not repeat the sender/header in both notification title and body.
+- Report:
+  The Android app displays wall notification source text redundantly: the title/header is the sender, and the notification body starts with the same sender prefix, producing output like `alice@127.0.0.1` in both places.
+- Repro:
+  1. Enable Android background wall notifications.
+  2. Send a wall message while the app is backgrounded.
+  3. Observe the Android notification title contains the sender/header and `EXTRA_TEXT` repeats the same sender/header before the message body.
+- Investigation notes:
+  - `AndroidWallNotifier` sets `EXTRA_TITLE` to the formatted wall source, then calls `formatWallContent(...)`, which prefixes the message body with the same formatted source.
+  - Android surfaces title and text together, so the prefix belongs only in the title.
+  - The relay carries `sender` metadata and `message` separately; it does not prefix the message with `sender:`.
+  - The formatter now keeps the source in `EXTRA_TITLE` and no longer adds a source prefix to `EXTRA_TEXT`/big text.
+  - The manual harness wall delivery path initially exposed stale wall-inactivity state and foreground/background test idling races. Those were fixed in the Android integration harness so the manual background notification assertion now reaches the body-only formatter check.
+- Regression coverage:
+  - `AndroidWallNotifierTest.formatWallContentDoesNotRepeatSourceWhenMessagePresent`
+  - `EndToEndTest.background_wall_delivery_posts_system_notification`
+  - `EndToEndTest.background_manual_wall_delivery_posts_system_notification`
+  - `EndToEndTest.background_wall_delivery_stops_without_notification_permission_and_recovers_after_grant`
+- Verification:
+  - `./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest`
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=background_wall_delivery_posts_system_notification make test-android`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `make test-android` passed with one expected emulator capability skip for notification-permission gating
+
+### B-031 Android full integration batch Compose idling race
+
+- Status: `resolved`
+- Area: `android`, `integration-tests`
+- Summary: The full Android instrumentation sweep must not abort on a transient Compose measure/layout idle race while polling app state.
+- Report:
+  The full Android integration suite failed in a later shared instrumentation batch while `readLoginError()` called `composeRule.runOnIdle()`. Espresso reported `performMeasureAndLayout called during measure layout`, aborting the batch before product assertions could run.
+- Repro:
+  1. Run `make test-android`.
+  2. Let the suite progress into the final shared instrumentation batch.
+  3. Observe a transient Compose/Espresso idle exception from app-state polling, previously seen in different test methods depending on batch timing.
+- Investigation notes:
+  - The failing stack originated in common e2e polling helpers, not in the tested product path.
+  - The guard is intentionally narrow: only the exact Compose `performMeasureAndLayout called during measure layout` race is treated as transient. Login errors, status errors, assertion failures, and all other runtime exceptions still fail the test.
+- Regression coverage:
+  - The common `waitUntil`/`waitUntilNoError` polling helpers now use the narrow idle guard.
+  - `EndToEndTest.headless_detach_removes_session_without_reconnect_placeholder` was rerun because it was the latest batch victim.
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=headless_detach_removes_session_without_reconnect_placeholder make test-android`
+  - `make test-android` passed with one expected emulator capability skip for notification-permission gating
+
+### B-029 Resize integration smoke failures
+
+- Status: `resolved`
+- Area: `session`, `resize`, `tests`
+- Summary: Release smoke exposed viewport resize failures around immediate typing after shrink and large-viewport clear comparisons.
+- Report:
+  During the full `go test -count=1 -tags integration ./integration/...` release smoke, `integration/pty/session` failed in `TestHostResizeImmediateTypingAfterShrinkKeepsPromptOnBottomRow` and `TestHostResizeLargeViewportClearAfterExpandMatchesControl`.
+- Repro:
+  1. Run `go test -count=1 -tags integration ./integration/pty/session`.
+  2. Observe immediate post-resize input missing from the bottom prompt row in `TestHostResizeImmediateTypingAfterShrinkKeepsPromptOnBottomRow`.
+  3. Observe large-viewport clear tests depending on real `ps aux` output, which can scroll the command line out of view on a busy host.
+- Investigation notes:
+  - Input could be consumed before the resize goroutine applied the already-changed TTY size, so keystrokes immediately after a resize were written against stale active-session geometry.
+  - The large-viewport clear tests were not deterministic because host process-list length affected whether `ps aux` remained visible.
+- Regression coverage:
+  - `TestHostResizeImmediateTypingAfterShrinkKeepsPromptOnBottomRow`
+  - `TestHostResizeLargeViewportClearAfterExpandMatchesControl`
+  - `TestHostResizeLargeViewportCtrlLLClearAfterExpandMatchesControl`
+- Verification:
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostResizeImmediateTypingAfterShrinkKeepsPromptOnBottomRow|TestHostResizeLargeViewportClearAfterExpandMatchesControl|TestHostResizeLargeViewportCtrlLLClearAfterExpandMatchesControl' -v`
+  - `go test -count=1 -tags integration ./integration/...`
+  - `go test -count=1 ./internal/session`
+
+### B-028 Config default and Android foreground service review fixes
+
+- Status: `resolved`
+- Area: `config`, `android`, `notifications`
+- Summary: The default config directory must remain `$HOME/.lingon` with no XDG cutover fallback, and Android must not start the wall foreground service from the background.
+- Report:
+  Review flagged that the Android background wall foreground service was started only after the app transitioned to background, which Android 12+ can reject. The config review also surfaced that the current default path logic incorrectly allowed `XDG_CONFIG_HOME` to move Lingon's default config directory to `$XDG_CONFIG_HOME/.lingon`.
+- Repro:
+  1. Set `XDG_CONFIG_HOME` and call `DefaultConfigDir()`.
+  2. Observe the broken default points under XDG instead of `$HOME/.lingon`.
+  3. Enable Android background wall notifications while foregrounded and background the app.
+  4. Observe the service start request is scheduled from the background transition path.
+- Investigation notes:
+  - The config fix is a hard cutover back to `$HOME/.lingon`; no fallback search paths for `$XDG_CONFIG_HOME/lingon` or `$XDG_CONFIG_HOME/.lingon` are kept.
+  - Lingon now has one explicit config root override, `--config-dir`/`-C` and `LINGON_CONFIG_DIR`. All default config/data paths derive from that root: `config.yaml`, `auth.json`, server data, `users.json`, TLS dir/cache, and local headless state.
+  - Android should start or keep the foreground service while the app is still foregrounded, but the service's poll loop must skip polling while the app is foregrounded so wall notifications are not consumed under foreground suppression.
+  - The broader integration sweep exposed a remaining test-harness regression: local headless attach subprocesses were isolated with XDG-only env vars. Since Lingon no longer uses XDG for the default config dir, those subprocesses now use `LINGON_CONFIG_DIR` so they see the same headless state without mutating `HOME`.
+  - A live local PTY report still observed `$XDG_CONFIG_HOME/.lingon/auth.json.lock`. Runtime inspection showed active Lingon processes were stale installed binaries with `XDG_CONFIG_HOME` set and no explicit `LINGON_*` override. Those stale processes can keep creating the old lock path until restarted.
+- Regression coverage:
+  - `TestDefaultPathsIgnoreXDGConfigHome`
+  - `TestDefaultPathsUseLingonConfigDirEnv`
+  - `TestLoaderUsesLingonConfigDirEnvForDefaultConfigFile`
+  - `TestRootConfigDirFlagRebasesDerivedDefaults`
+  - `AppViewModelTest.shouldEnableBackgroundWallServiceWhenLoggedInUnlockedAndEnabled`
+  - `AppViewModelTest.setBackgroundWallEnabledStartsBackgroundWallServiceWhileForegrounded`
+  - `AppViewModelTest.onAppForegroundKeepsBackgroundWallServiceRunningAfterBackgroundEnable`
+  - `BackgroundWallForegroundServiceTest.shouldPollBackgroundWallOnlyWhenAppIsBackgrounded`
+  - `TestConfigDirForLoaderUsesLingonConfigDirEnv`
+  - `TestRootDefaultAuthFileIgnoresXDGConfigHome`
+- Verification:
+  - `go test ./internal/config ./cmd/lingon-android-harness`
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=foreground_resume_suppresses_background_wall_notifications make test-android`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+  - `go test -count=1 ./...`
+  - `go test -count=1 -tags integration ./integration/...`
+  - `make test-webui`
+  - `make test-android`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - `git diff --check`
+
+### B-027 Android foreground manual wall notification smoke failure
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `integration-tests`
+- Summary: Release smoke failed because the foreground/manual wall notification instrumentation test did not observe a `lingon_wall` system notification.
+- Report:
+  `make test-all` passed Go and web UI tests, then failed during the Android integration sweep in `manual_wall_delivery_posts_system_notification`. The app state at timeout was connected with active sessions and `lastFrameType=diff`, but no notification with the sent wall message appeared within 10 seconds.
+- Repro:
+  1. Run the Android release-smoke integration sweep.
+  2. In the final notification batch, run `EndToEndTest.manual_wall_delivery_posts_system_notification`.
+  3. Observe the test time out waiting for a foreground/manual `lingon_wall` notification.
+- Investigation notes:
+  - The current wall delivery coordinator applies a single foreground gate to all delivery callers. Both websocket wall frames and background wall polling/service delivery call the same `deliver(...)` method, so the foreground suppression fix for B-025 can also suppress the older foreground/manual notification behavior.
+  - This was an obsolete smoke-test expectation rather than a production delivery regression: the current product invariant is that foreground wall traffic must not post Android system notifications, while `background_manual_wall_delivery_posts_system_notification` remains the positive proof for app-backgrounded notification delivery.
+- Regression coverage:
+  - `EndToEndTest.foreground_manual_wall_delivery_does_not_post_system_notification` verifies a foreground harness wall is created and does not produce a `lingon_wall` system notification while background wall notifications are disabled.
+- Verification:
+  - `make test-all` failed in `manual_wall_delivery_posts_system_notification` after Go and web UI suites passed.
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification make test-android`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+  - `make test-all`
+
+### B-026 Local host PTY gpg output leaves underline enabled
+
+- Status: `resolved`
+- Area: `host`, `terminal`, `pty`
+- Summary: Local host PTY rendering must not treat private CSI terminal mode controls as SGR underline.
+- Report:
+  Running an interactive signing/amend workflow from a Lingon host local PTY session left subsequent command output and prompts visually underlined. The same workflow did not leave underline enabled in a normal terminal session.
+- Repro:
+  1. Start a Lingon host local PTY session.
+  2. Run an interactive full-screen editor/signing workflow that exits through xterm private mode restore sequences.
+  3. Observe subsequent shell output remains underlined.
+- Investigation notes:
+  - The terminal parser treated `CSI 4:0 m` as the numeric parameter `40`, so the SGR underline-style reset did not clear `ModeUnderline`.
+  - 2026-04-28: User retested the interactive signing/amend flow in a Lingon host local PTY and the underline still reproduced, so the first fix covered a related parser bug but not the reported path.
+  - The remaining repro is full-screen-program shaped: the non-interactive path did not reproduce because it avoids the alternate-screen program before printing the summary.
+  - Root cause: Lingon's `?1049` alternate-screen save/restore path restored only cursor coordinates, not the saved graphic rendition attributes. If a less-like full-screen program left underline active when switching back to the main screen, following normal-screen output inherited underline.
+  - Added a closer reproduction with a fake full-screen program that emits editor/full-screen underline and italic attributes before printing a summary.
+  - User clarified the repro happens on every interactive amend flow, with or without signing, and suspected terminal query/control leakage. Hardened delta rendering so every changed span starts with an explicit SGR reset, preventing a corrupted outer-terminal rendition state from carrying into later cursor-addressed summary spans.
+  - 2026-04-28: User retested again and clarified there is no real underline in the full-screen editor, pager, prompts, or summary output; the visible underline is garbled/corrupted output, likely from leaked or misrouted terminal control/query traffic. The reproduction must avoid real editors and use deterministic control-sequence fixtures.
+  - 2026-04-28: Reopened because the existing harness-level fixture did not reproduce the actual host/local PTY path from the screenshots. Replaced external-program-dependent coverage with deterministic control-sequence fixtures.
+  - Additional leak reproduced: late OSC 10/11/12 outer-terminal color responses were forwarded into the active local PTY once the startup pending/grace window expired. The failing integration repro sent a late OSC response before `echo AFTER_LATE_OSC`; the shell received corrupted input and reported `/bin/sh: 1: echo: not found`. `filterOuterOSC` now consumes complete OSC 10/11/12 responses even outside the pending/grace window, while still passing incomplete/split fragments through immediately so ordinary keyboard input is not buffered.
+  - Root cause reproduced for the screenshot underline: a full-screen terminal program can emit `CSI > 4 ; m` (`ESC[>4;m`) while restoring xterm modifyOtherKeys state. Lingon's emulator dispatched every final `m` as SGR even when the CSI private marker was `>`, so it interpreted the parameter `4` as SGR underline and marked subsequent summary cells underlined. Real terminals treat `CSI > ... m` as a private control sequence, not SGR.
+  - Fix: SGR handling now only runs for non-private CSI `m`; private CSI `m` sequences are ignored as private/unhandled instead of mutating rendition attributes.
+- Regression coverage:
+  - `TestSGRColonUnderlineStyleResetClearsUnderline`
+  - `TestSGRColonUnderlineStyleEnablesUnderline`
+  - `TestPrivateCSIGreaterMDoesNotEnableUnderline`
+  - `TestAltScreen1049RestoresSavedAttributes`
+  - `TestHostLocalPTYColonUnderlineResetClearsFollowingOutput`
+  - `TestHostLocalPTYAltScreenExitRestoresAttributesForLessLikePrograms`
+  - `TestHostLocalPTYPrivateCSIGreaterMDoesNotRenderUnderlined`
+  - `TestHostLocalPTYLateOuterOSCResponseDoesNotCorruptNextCommand`
+  - `TestSnapshotViewportDeltaResetsAttributesBeforeEveryChangedSpan`
+- Verification:
+  - `go test -count=1 ./internal/terminal/emu ./internal/session -run 'TestPrivateCSIGreaterMDoesNotEnableUnderline|TestSGR|TestFilterOuterOSC|TestLocalSessionRespondsToDSR|TestLocalSessionOSCQueryDoesNotSelfSustainPublish|TestLocalSessionRepeatedOSCQueriesBoundedAfterProcessIdle'`
+  - `go test -count=1 ./internal/session ./internal/terminal/emu ./internal/render`
+  - `go test ./internal/terminal/emu`
+  - `go test ./internal/terminal/... ./internal/session`
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostLocalPTY(AltScreenExitRestoresAttributesForLessLikePrograms|ColonUnderlineResetClearsFollowingOutput)'`
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostLocalPTY(PrivateCSIGreaterMDoesNotRenderUnderlined|LateOuterOSCResponseDoesNotCorruptNextCommand|AltScreenExitRestoresAttributesForLessLikePrograms|ColonUnderlineResetClearsFollowingOutput)'`
+  - `go test ./internal/render`
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
+### B-025 Android foreground app still posts wall notifications
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `lifecycle`
+- Summary: Wall events must not post Android system notifications while the app is foregrounded, even when background wall notifications are enabled.
+- Report:
+  When the Android app is brought back into focus, wall notifications still appear despite background notifications being enabled. Expected behavior is that system wall notifications are only for the app-not-in-focus case.
+- Repro:
+  1. Enable background wall notifications in the Android app.
+  2. Background the app so the foreground service starts.
+  3. Bring the app back to the foreground.
+  4. Send or receive a wall message and observe a `lingon_wall` system notification while the app is in focus.
+- Regression coverage:
+  - `WallDeliveryCoordinatorTest.notificationSuppressionDoesNotConsumeEvent`
+  - `WallDeliveryCoordinatorTest.inAppConsumptionAdvancesCursorAndSuppressesReplayWithoutPostingNotification`
+  - `AppViewModelTest.foregroundLiveWallFrameShowsInAppBannerAdvancesCursorAndSuppressesReplay`
+  - `EndToEndTest.foreground_manual_wall_delivery_does_not_post_system_notification`
+  - `EndToEndTest.foreground_resume_suppresses_background_wall_notifications`
+- Investigation notes:
+  - The foreground suppression fix was too broad: the shared coordinator treated `shouldPostNotification == false` as delivered and advanced the wall cursor without any in-app surface.
+  - Foreground WebSocket wall frames now use an in-app consumption path that records the cursor only after accepting the message for a visible status banner.
+  - Background polling still uses the Android notification path; if notification posting is suppressed there, the event is not consumed.
+- Verification:
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.foregroundLiveWallFrameShowsInAppBannerAdvancesCursorAndSuppressesReplay`
+  - `LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification make integration-test`
+  - `LINGON_IT_ONLY=foreground_resume_suppresses_background_wall_notifications make integration-test`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+
+### B-024 Android cursor-ahead recovery instrumentation race
+
+- Status: `resolved`
+- Area: `android`, `integration-tests`, `notifications`
+- Summary: The cursor-ahead recovery instrumentation test must not send the post-reset wall before the background service has actually observed and repaired the ahead cursor.
+- Report:
+  Release smoke `make test-android` failed in `background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay`. Logcat showed `lingon-wall-bg: poll cursor reset detected endpoint=... since=193 next=94`, but the test had already sent or was racing the post-reset wall against the service's 15s poll cadence, and the app timed out waiting for the target wall notification.
+- Repro:
+  1. Run the full Android integration sweep.
+  2. In the final notification batch, advance the app wall cursor ahead of the relay and immediately send a wall.
+  3. If the send races the service's cursor repair poll, the test can time out with `lastFrameType=diff` and no target `lingon_wall` notification.
+- Regression coverage:
+  - `EndToEndTest.background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay` now waits for the foreground service to repair the ahead cursor before sending the post-reset wall message.
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay make test-android`
+  - `make test-android`
+
+### B-023 Android wall notifications replay previous message with next message
+
+- Status: `resolved`
+- Area: `android`, `notifications`
+- Summary: Android wall notification dedupe must be monotonic and must serialize foreground/background delivery so an already-delivered or older wall event is not posted again with the next event.
+- Report:
+  The Android app repeats each wall message as a double notification; after some time, the previous notification is sent again with the next notification, so wall delivery is not deduped correctly.
+- Repro:
+  1. Deliver wall event `N`.
+  2. Deliver wall event `N+1` or allow foreground websocket and background polling to process overlapping wall pages.
+  3. Observe event `N` can be posted again because the state check treats any event id different from the current cursor as deliverable, and concurrent deliveries can both pass the read-side check before either records the cursor.
+- Regression coverage:
+  - `WallWorkStateStoreTest.deliveryChecksAndRecordsAreMonotonic`
+  - `WallWorkStateStoreTest.shouldDeliverAndAdvanceSuppressesReplayForSameEndpoint`
+  - `WallDeliveryCoordinatorTest.olderEventAfterNewerEventDoesNotReplayOrMoveCursorBackward`
+  - `WallDeliveryCoordinatorTest.concurrentDeliveryOfSameEventPostsOnlyOnce`
+  - `EndToEndTest.background_manual_wall_delivery_does_not_repost_previous_message`
+- Verification:
+  - `./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest --tests systems.pkt.lingon.data.WallWorkStateStoreTest`
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_does_not_repost_previous_message make test-android`
+  - `git diff --check`
+
+### B-021 Attach async rendering races with read-side render state
+
+- Status: `resolved`
+- Area: `attach`, `desktopnotify`, `windows`
+- Summary: Async attach rendering must not race with websocket/read-side bookkeeping over shared render state, and the desktop notification package must remain buildable for Windows.
+- Report:
+  Reviewer flagged two issues: attach render requests now run on a render goroutine while websocket reads can still access `renderCache`/compositor state, and the Windows desktop notifier stub redeclares the common noop notifier.
+- Repro:
+  1. Inspect attach paths where `startRenderLoop` enables rendering outside the websocket read goroutine.
+  2. Receive scrollback or other read-side frames while a render is pending; read-side helpers can read `renderCache` without `renderMu`.
+  3. Run `GOOS=windows GOARCH=amd64 go test -c ./internal/desktopnotify`.
+- Verification:
+  - Added `internal/attach.TestAttachRenderCacheReadsUseSerializedHelpers` to prevent direct read-side `renderCache` reads from bypassing serialized helpers.
+  - `GOOS=windows GOARCH=amd64 go test -c ./internal/desktopnotify`
+  - `go test ./internal/desktopnotify`
+  - `go test ./internal/attach -run 'TestAttachRenderCacheReadsUseSerializedHelpers|TestAttachRenderingDoesNotUseOverlayOnlyComposePaths'`
+  - `go test ./internal/attach`
+  - `go test -race ./internal/session -run 'TestAttachSendInputSharedConfig|TestAttachSendInputSeparateConfig'`
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - Remaining note: broader race runs still expose separate pre-existing race-detector failures in test buffers/session PTY lifecycle paths, outside the attach `renderCache`/Windows notifier fixes tracked here.
+
+### B-022 Android wall notification delivery and integration isolation regressions
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `integration-tests`
+- Summary: Android wall notification delivery must not consume events that Android did not actually post, and Android integration tests must run in larger instrumentation batches without leaking app-op, activity, notification, or harness headless-session state between tests.
+- Report:
+  During the full Android integration sweep, `background_manual_wall_delivery_posts_system_notification` timed out after the app received a wall frame (`lastFrameType=wall`) but no `lingon_wall` system notification became visible. The old test runner also ran one Gradle instrumentation invocation per test, which made the suite slow and hid real state leaks behind per-test process/app resets.
+- Repro:
+  1. Run the full Android integration target after prior wall notification tests have toggled notification delivery.
+  2. Observe the background manual wall notification test receive the relay wall frame but fail to observe the expected Android system notification.
+  3. Batch Android tests into shared instrumentation invocations; stale headless sessions and notification/app-op state then leak into later visual/tab tests unless teardown is explicit.
+- Investigation notes:
+  - `NotificationManagerCompat.notify(...)` can return without throwing even when the app cannot later observe the posted notification; treating that call as delivery success advanced the wall cursor too early.
+  - The permission-toggle test could leave notification app-op state behind for later tests because the old reset path depended on reinstall/clear behavior rather than an explicit test invariant.
+  - Headless sessions created through the harness persisted at the relay/harness layer and polluted later tests once they shared an instrumentation process.
+  - The integration runner now batches tests by harness mode: normal tests before the zero-session case, that special case, the next normal batch, the quiet-host case, and the final normal batch.
+- Regression coverage:
+  - `WallDeliveryCoordinatorTest.failedNotificationDoesNotAdvanceCursor`
+  - `WallDeliveryCoordinatorTest.successfulNotificationAdvancesCursorAndSuppressesReplay`
+  - Android instrumentation teardown now restores notification delivery, foregrounds/logs out the app, clears notifications, and detaches harness-created headless sessions.
+  - Android integration runner now proves batched execution instead of one Gradle/instrumentation invocation per test.
+- Verification:
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - `LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make test-android`
+  - `make test-android` passed with 3-test, 17-test, and 19-test instrumentation batches plus two required single-test harness-mode cases. One pre-existing permission-toggle case skipped via its existing `assumeTrue` because the emulator did not support that runtime app-op toggle.
+
+### B-020 Headless resize policy is inconsistent between attach and host remote multi-client
+
+- Status: `resolved`
+- Area: `attach`, `session`, `headless`
+- Summary: Headless remote sessions must resize consistently in both `lingon attach` and host remote multi-client: initial connect, local WINCH, and control acquisition resize; non-headless remains camera-only. A manual headless-only forced resize shortcut should also exist in the TUI.
+- Report:
+  `lingon attach` against headless effectively resizes on connect/WINCH/control acquisition, but host remote multi-client was only getting similar behavior indirectly through reconnect/enable side effects. The result was inconsistent headless sizing after controller handoff. The user also requested a manual headless-only forced resize shortcut, but `Ctrl+L r` was already taken by respawn, so the agreed explicit action was `Ctrl+L 0` / `Ctrl+L Ctrl+0`.
+- Repro:
+  1. Start a relay-backed headless session.
+  2. Connect to it from a host remote multi-client in a `40x10` viewport.
+  3. Connect a second controller attach in a `52x14` viewport so the headless PTY is resized away from the host remote viewport.
+  4. Disconnect the attach controller.
+  5. In the host remote tab, observe the next interaction should restore the headless PTY to the host remote viewport consistently with attach semantics.
+- Investigation notes:
+  - `lingon attach` already had three explicit headless resize triggers:
+    - `OnReady` initial connect resize in `internal/attach/multi.go`
+    - local resize/WINCH path in `internal/attach/multi.go`
+    - control acquisition resize in `internal/attach/client.go` via `controlCh`
+  - Host remote multi-client only resized headless on `Show(...).OnReady` and on explicit `Runner.ResizeActive`, with controller-handoff behavior occurring only accidentally when input caused `Enable(...) -> OnReady`.
+  - Fixed by:
+    - adding an explicit host-remote headless resize callback on controller acquisition
+    - enforcing headless-only gating inside `remoteManager.SendResize`
+    - adding `Ctrl+L 0` / `Ctrl+L NUL` as a manual headless-only resize action in both attach and host TUI paths
+- Regression coverage:
+  - `integration/pty/session.TestHostRemoteHeadlessReacquiresControlAndResizesAfterAttachControllerDisconnects`
+  - `internal/control.TestPrefixSessionActions`
+- Verification:
+  - `go test -count=1 ./internal/control ./internal/attach ./internal/session`
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay|ReacquiresControlAndResizesAfterAttachControllerDisconnects)'`
+  - `go test -count=1 -tags integration ./integration/pty/attach -run 'TestRealCLIRelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay)'`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
+### B-019 Test/config path regression breaks real user auth lookup
+
+- Status: `resolved`
+- Area: `config`, `tests`, `auth`
+- Summary: Test-isolation work must not change Lingon's real config/auth lookup path, and tests must never fall back to the developer's real `HOME` or real `~/.lingon` / XDG config tree.
+- Report:
+  After recent test/config changes, Lingon started failing with:
+  `auth file not found at $XDG_CONFIG_HOME/lingon/auth.json; run lingon login -e <endpoint>`
+  The developer reported this as tests having broken the personal `.lingon` config/auth state.
+- Repro:
+  1. Run the code after the `test(config): isolate XDG-backed test state` tranche.
+  2. In an environment with `XDG_CONFIG_HOME` set, run a normal Lingon CLI path that resolves default auth.
+  3. Observe Lingon now looks for `$XDG_CONFIG_HOME/lingon/auth.json` instead of the existing hidden-dir path.
+- Investigation notes:
+  - The direct destructive test-delete smoking gun was not present in the CLI tests that were first suspected.
+  - The actual root cause was a runtime path regression introduced in `internal/config/paths.go`:
+    - under `XDG_CONFIG_HOME`, Lingon had been changed to use `XDG_CONFIG_HOME/lingon`
+    - previous behavior, and the user's real stored state, used `XDG_CONFIG_HOME/.lingon`
+  - That path change exactly matched the observed broken lookup.
+  - The same tranche also rewrote many tests and shared test harnesses around the wrong `root/lingon` assumption, which masked the runtime regression and caused follow-on TLS/auth failures in unrelated tests.
+  - Test isolation is now hardened further by using `testutil.SetLingonConfigEnv`/`LINGON_CONFIG_DIR`, so tests can route Lingon config without mutating the process `HOME`.
+- Regression coverage:
+  - `internal/config.TestDefaultPaths`
+  - `internal/config.TestDefaultPathsIgnoreXDGConfigHome`
+  - `internal/config.TestDefaultPathsUseLingonConfigDirEnv`
+  - `internal/config.TestDefaultConfigUsesConstants`
+  - `cmd/lingon` command tests revalidated against the restored hidden-dir path
+  - `internal/ptytest.Harness` and affected webui/session tests updated to the restored hidden-dir config location
+- Verification:
+  - `go test -count=1 ./internal/config ./cmd/lingon ./internal/cliwall`
+  - `go test -count=5 ./internal/host -run TestHostHonorsRetryAfter -v`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
+### B-017 Attach startup connected banner wipes row-1 prompt/body
+
+- Status: `resolved`
+- Area: `attach`, `mvu`, `render`
+- Summary: On multi-attach startup, the green `connected to ...` banner must overlay only its own cells on row 1 and must not blank the prompt/body underneath the rest of the row.
+- Report:
+  `lingon attach` starts with only the cursor and the green connected banner visible; the prompt/body on row 1 is erased underneath the banner overlay.
+- Repro:
+  1. Start a normal non-headless host whose prompt is visible on row 1.
+  2. Start `lingon attach` / multi-attach into that session.
+  3. Observe the transient green `connected to ...` banner on row 1.
+  4. The left side of row 1 should still show the prompt/body; instead it is blanked.
+- Investigation notes:
+  - Existing attach startup tests only checked that the tab bar hides when the cursor owns row 1.
+  - Existing MVU/runtime tests cover banner composition in isolation, but not the real multi-attach startup path with a visible prompt underneath.
+  - The new real PTY regression failed exactly as reported: row 1 contained only the right-aligned `connected to ...` banner and spaces elsewhere, with the underlying prompt blanked.
+  - Root cause was in top-row overlay rendering: on attach, the renderer masked row 1 entirely and then cleared/drew the banner, so the startup snapshot never painted the underlying row-1 content first.
+  - Fixed by rendering row 1 base content first, rendering rows 2..N through the existing mask-top-row path, and then drawing the top overlay without clearing the whole row.
+- Regression coverage:
+  - `internal/attach.TestMultiAttachStartupConnectedBannerOverlaysPromptInsteadOfBlankingRow`
+  - `internal/attach.TestAttachFastReadyDoesNotLeaveLoadingBanner`
+  - `internal/mvu.TestRenderAttachConnectionBannerOwnsTopRow`
+  - `internal/mvu.TestRenderHostConnectionBannerOverwritesTopRowWithoutShiftingContent`
+- Verification:
+  - `go test -count=1 ./internal/attach -run 'TestMultiAttachStartupConnectedBannerOverlaysPromptInsteadOfBlankingRow|TestAttachFastReadyDoesNotLeaveLoadingBanner' -v`
+  - `go test -count=1 ./internal/mvu -run 'TestRenderAttachConnectionBannerOwnsTopRow|TestRenderHostConnectionBannerOverwritesTopRowWithoutShiftingContent' -v`
+
+### B-013 Android wall delivery missing
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `relay`
+- Summary: Relay wall events must surface in the Android app through the intended delivery path, including background notification delivery when enabled.
+- Report:
+  Lingon wall no longer works to the Android app.
+- Repro:
+  1. Trigger a relay wall event for the logged-in Android user.
+  2. Observe that the Android app does not surface the wall as expected.
+- Investigation notes:
+  - Existing Android instrumentation only moved the activity to `CREATED`; it did not send the app to the real launcher/home background state, so it could pass while true background delivery was broken.
+  - Replaced the fake background helper with a real HOME/background transition using shell `input keyevent KEYCODE_HOME`.
+  - On the real background path, the app exposed two Android-side issues:
+    - resuming after the background notification tests could trip foreground-service startup churn
+    - wall notifications accumulated and Android auto-grouped them behind an empty `ranker_group` summary, making them effectively invisible on-device
+  - Fixed by:
+    - making the background wall service controller edge-triggered so it only issues start/stop on real state transitions
+    - removing wall-notification grouping entirely
+    - switching wall delivery to a single stable notification slot so the latest wall remains visible instead of accumulating into an auto-group summary
+  - Confirmed the background path is not using the WebSocket; it uses `BackgroundWallForegroundService` polling `/wall/events`
+  - Real physical-phone repro on 2026-04-24 exposed the remaining live bug:
+    - the phone was polling `/wall/events`, but persisted `since=36`
+    - the relay had restarted/reset wall IDs and was serving new real walls as IDs `6`, `7`, `8`
+    - Android permanently suppressed those walls as duplicates
+  - Root cause was a cursor contract mismatch:
+    - relay `wall/events` echoed the caller cursor when the client cursor was ahead, so the app could not detect relay wall-ID reset
+    - Android wall delivery treated any lower event ID as replay forever
+- Regression coverage:
+  - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::manual_wall_delivery_posts_system_notification`
+  - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_manual_wall_delivery_posts_system_notification`
+  - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_manual_wall_delivery_recovers_when_cursor_is_ahead_of_relay`
+  - `android/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt::background_wall_delivery_posts_system_notification`
+  - `android/app/src/test/java/systems/pkt/lingon/data/WallWorkStateStoreTest.kt`
+  - `android/app/src/test/java/systems/pkt/lingon/work/BackgroundWallForegroundServiceTest.kt`
+  - `internal/relay/wall_test.go::TestWallServiceListEventsReturnsCurrentHighWatermarkWhenCursorIsAhead`
+- Verification:
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - `./gradlew :app:testDebugUnitTest`
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - Physical phone end-to-end over `adb` with the signed release installed:
+    - background real `lingon wall ...` produced `lingon_wall` notification `id=1002`
+    - foreground real `lingon wall ...` produced `lingon_wall` notification `id=1002`
+    - verified via `dumpsys notification` and phone-side app logs
+  - Note: targeted emulator instrumentation is currently awkward with a signed release installed on the connected physical phone because `connectedDebugAndroidTest` tries to install the debug app to every connected device. The exact phone-truth bug was reproduced and verified directly on the physical device instead.
+
+### B-014 Wall inactivity banner leaks onto disconnected remote tab switch
+
+- Status: `in_progress`
+- Area: `attach`, `session`, `mvu`
+- Summary: Switching to a disconnected remote session in multi-client must not show the green `wall inactivity off` top-bar banner unless the user explicitly toggled wall inactivity.
+- Report:
+  When switching to a disconnected remote session in multi-client (`lingon` host or `lingon attach`), the `wall inactivity off` green banner appears in the top bar.
+- Repro:
+  1. Open a multi-client host or attach with at least one disconnected remote session.
+  2. Switch to that disconnected remote tab.
+  3. Observe `wall inactivity off` shown in the top bar without a user toggle action.
+- Investigation notes:
+  - This banner should be event-driven from an explicit wall inactivity toggle/status update, not a generic tab-switch side effect.
+  - The user reports two concrete failure modes:
+    - switching to a never-opened/disconnected tab in multi-client shows `wall inactivity off`
+    - reconnecting back into a tab can also surface the same stale green banner
+  - One direct PTY regression now exists for the disconnected-tab switch path and passes repeatedly.
+  - The broader live symptom is still not reproduced in harness coverage, so this bug stays open until the reconnect/never-opened path is trapped red as well.
+- Regression coverage:
+  - `internal/attach.TestMultiAttachSwitchToDisconnectedRelayTabDoesNotShowWallInactivityOff`
+- Verification:
+  - `go test -count=50 ./internal/attach -run TestMultiAttachSwitchToDisconnectedRelayTabDoesNotShowWallInactivityOff -v`
+  - Remaining gap: the user-reported reconnect/never-opened banner leak still needs a red real PTY regression.
+
+### B-015 Headless headless-exit semantics are inconsistent across attach and host-remote clients
+
+- Status: `resolved`
+- Area: `attach`, `headless`, `relay`
+- Summary: When a headless session exits normally, relay-backed clients must treat it as a terminated session, not a lost connection with reconnect grace.
+- Report:
+  When `exit` is run in a headless terminal, the relay/client path treats it as connection-lost and shows reconnect grace instead of a clean terminated-session removal. This should match normal Lingon host session termination semantics.
+- Repro:
+  1. Start a headless session and connect through relay from `lingon attach` or a host remote multi-client.
+  2. Run `exit` in the headless session.
+  3. Observe a red `connection lost` banner and reconnect grace instead of clean session termination/removal.
+- Investigation notes:
+  - Previous work incorrectly treated headless as a special case and marked this resolved too early.
+  - Headless sessions are just Lingon-owned local PTYs; they should not have bespoke grace semantics.
+  - The remaining explicit-exit bug was lower in the stack than the attach/session clients:
+    - after a host sent `session_closed`, the relay still tore the host down through the generic unregister path
+    - that generic path broadcast `host disconnected` to clients
+    - this raced the queued `session_closed` frame and intermittently left clients seeing reconnect semantics instead of clean termination
+  - Fixes in this tranche:
+    - relay now sends `session_closed` to clients immediately
+    - relay marks explicit host close in session state and suppresses the generic `host disconnected` error broadcast on unregister
+    - host remote manager now forces an immediate session refresh on unexpected remote-view close while the context is still live, so a missed explicit-close frame cannot leave a stale remote view around until the normal 60s poll
+    - headless attach grace behavior remains normal for unexpected disappearance; only explicit `session_closed` removes immediately
+- Regression coverage:
+  - `internal/relay.TestHubSessionClosedDoesNotBroadcastHostDisconnected`
+  - `internal/relay.TestHostSessionClosedFrameMarksSessionInactiveImmediately`
+  - `internal/attach.TestRealCLIRelayHeadlessExitRemovesTerminatedSessionWithoutReconnectOverlay`
+  - `internal/session.TestHostRemoteHeadlessExitRemovesSessionWithoutReconnectOverlay`
+  - Existing grace regressions rechecked:
+    - `internal/attach.TestRealCLIRelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
+    - `internal/attach.TestRealCLILocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable`
+- Verification:
+  - `go test -count=1 ./internal/relay -run 'TestHubSessionClosedDoesNotBroadcastHostDisconnected|TestHostSessionClosedFrameMarksSessionInactiveImmediately'`
+  - `go test -count=5 ./internal/attach -run 'TestRealCLI(RelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay|DeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)' -v`
+  - `go test -count=10 ./internal/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay)' -v`
+  - `go test -count=1 ./...`
+  - `make test-webui`
+
+### B-016 Headless initial-connect resize is missing in relay clients
+
+- Status: `resolved`
+- Area: `attach`, `headless`, `session`
+- Summary: Relay-backed headless sessions must resize to the controlling client viewport on initial connect as well as on later WINCH changes.
+- Report:
+  `lingon attach` does resize a headless session on later WINCH, but not on initial connect, and host remote multi-client still does not resize relay headless sessions correctly.
+- Repro:
+  1. Start a headless session.
+  2. Connect via `lingon attach` or host remote multi-client with a viewport different from the current headless PTY size.
+  3. Observe the headless session does not immediately adopt the controller viewport.
+  4. In `lingon attach`, later WINCH may resize correctly, proving the connect-time path is missing.
+- Investigation notes:
+  - This is a distinct bug from non-headless camera-only behavior; headless is supposed to allow resize propagation.
+  - Existing coverage only proved later resize propagation and initial snapshot delivery on narrower paths.
+  - Fixes in this tranche:
+    - `lingon host` remote multi-client now uses the active remote-session resize path on WINCH
+    - both attach and host-remote clients now send the controller viewport to relay headless sessions on initial connect as well as later WINCH
+    - the host-side initial-connect regression helper was strengthened so it retries the actual tab-switch sequence long enough to prove the resize behavior rather than flaking on the mode switch itself
+- Regression coverage:
+  - `internal/attach.TestRealCLIRelayHeadlessInitialConnectAndWinchResizePTY`
+  - `internal/session.TestHostRemoteHeadlessInitialConnectAndWinchResizePTY`
+- Verification:
+  - `go test -count=5 ./internal/attach -run 'TestRealCLI(RelayHeadless(InitialConnectAndWinchResizePTY|ExitRemovesTerminatedSessionWithoutReconnectOverlay|DeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)|LocalHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable)' -v`
+  - `go test -count=10 ./internal/session -run 'TestHostRemoteHeadless(InitialConnectAndWinchResizePTY|ExitRemovesSessionWithoutReconnectOverlay)' -v`
+  - `go test -count=1 ./...`
+  - `make test-webui`
+
+### B-012 Multi-attach input lag/stall on real relay attach
+
+- Status: `resolved`
+- Area: `attach`, `session`, `render`
+- Summary: Normal `lingon attach` against a real non-headless host must remain camera-only and must echo typed input promptly even when the host PTY is larger than the attach viewport.
+- Report:
+  Multi-attach currently becomes useless in a real terminal against a real Lingon host local PTY: input is not sent or arrives ultra-lagged, rendering is wrong, and proper testing would have caught it.
+- Repro:
+  1. Start a normal non-headless host with a local PTY larger than the attach window.
+  2. Run authenticated `lingon attach` in a smaller local terminal and request control.
+  3. Type commands into attach.
+  4. Observe laggy or missing echo/input and broken rendering/wrapping.
+- Investigation notes:
+  - Existing multi-attach coverage was too weak for this report. It did not prove real CLI responsiveness through the relay path under smaller attach viewports, large host output, or resize churn.
+  - A valid repro was added only on harness-owned PTYs and harness relay endpoints. No live endpoint or inherited tty state is used.
+  - Root causes fixed across this tranche:
+    - relay write ordering was not FIFO: control-priority writes could send higher-sequence frames ahead of earlier sequenced frames, causing attach gap/resync churn
+    - `Sessions` frames were bypassing attach sequence accounting, which could also trigger resync churn
+    - `attach.MultiClient` treated benign PTY-close stdin errors as fatal on teardown, making package-parallel runs flaky
+    - real attach latency tests were measuring startup paint races instead of steady-state responsiveness
+    - attach render coalescing could drop the first snapshot repaint if a status-banner render was already queued, leaving the view stuck on `wall inactivity off` while input was already flowing
+  - The key user-visible lag symptom was reproduced in real external CLI PTY regressions:
+    - host echoed typed bytes promptly
+    - attach stayed stale for seconds after large host output, resize churn, or even at the first prompt under package load
+    - once rendering was unstuck, measured input/echo latency stayed within the intended bounds
+- Regression coverage:
+  - `internal/attach.TestMultiAttachRealCLIControlDoesNotSendResizeAndEchoesPromptly`
+  - `internal/attach.TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable`
+  - `internal/attach.TestMultiAttachRealCLIControlPsAuxAfterResizeMatchesHostCrop`
+  - `internal/attach.TestMultiAttachRealCLIControlBurstEnterKeepsConsecutiveBashPromptNumbers`
+  - `internal/attach.TestMultiAttachSignalResizeWithMultipleSessionsMatchesExplicitViewport`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedInputStaysResponsiveRealClock`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedSingleByteCommandsDoNotAccumulateLatencyRealClock`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedSingleByteCommandsStayResponsiveWithBackgroundSessionOutput`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedSingleByteCommandsStayResponsiveAfterLargeHostOutput`
+  - `internal/attach.TestMultiAttachExternalCLIRepeatedSingleByteCommandsStayResponsiveAfterLargeHostOutputAndResizeChurn`
+  - `internal/attach.TestMultiAttachExternalCLICommandExecutionStaysResponsiveAfterLargeHostOutput`
+  - `internal/attach.TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsiveRealClock`
+- Verification:
+  - Focused contention slice passed:
+    - `go test -p 5 -json -count=1 ./internal/attach ./internal/session ./internal/host ./internal/relay ./internal/headlessd`
+  - Full suite passed:
+    - `go test -json -count=1 ./...`
+  - Quality gates passed:
+    - `go vet ./...`
+    - `golint ./...`
+    - `golangci-lint run ./...`
+    - `make test-webui`
+
+### B-011 Multi-attach viewport/camera semantics broken
+
+- Status: `resolved`
+- Area: `attach`, `mvu`, `session`
+- Summary: Normal `lingon attach` (the multi-attach client) must behave like a camera onto the active session, not resize or reflow the underlying non-headless host session.
+- Report:
+  Multi-attach startup paint is garbled, resizing the attach viewport destroys the view, and running commands through attach wraps/reflows as if the active session were resized to the local attach terminal.
+- Repro:
+  1. Start a normal non-headless host with a wide local PTY session.
+  2. Run normal authenticated `lingon attach` (multi-attach client) into that session set.
+  3. Observe broken startup paint and tab/status overlap.
+  4. Resize the attach terminal smaller.
+  5. Observe the active session view being reflowed/wrapped instead of cropped.
+  6. Run a wide-output command such as `ps aux`.
+  7. Observe viewport wrapping/smearing instead of camera cropping.
+- Regression coverage:
+  - `internal/attach.TestMultiAttachWithoutExplicitTermSizeMatchesControlViewportAcrossStartupResizeAndCommand`
+  - `internal/attach.TestSingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput`
+  - `internal/attach.TestMultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput`
+  - `internal/attach.TestSingleAttachHeadlessResizeMatrixRendersExpectedViewport`
+  - `internal/attach.TestMultiAttachHeadlessResizeMatrixRendersExpectedViewport`
+  - Existing guard rails rechecked:
+    - `internal/attach.TestMultiAttachStartupDoesNotSendResizeToRelayHost`
+    - `internal/attach.TestMultiAttachResizeDoesNotResizeRelayHostPTY`
+    - `internal/attach.TestMultiAttachViewportCropsWideHostOutputInsteadOfWrapping`
+- Investigation notes:
+  - Normal authenticated `lingon attach` uses `attach.MultiClient`, not the single `attach.Client`.
+  - The earlier harness tests were misleading because `ptytest.StartMultiAttach` always injects an explicit `TermSize` function.
+  - The real CLI path does not. In `MultiClient.Run`, `termSize := m.TermSize` stayed nil, then child `attach.Client` instances inherited that nil `TermSize`.
+  - Once `MultiClient` swapped client stdout to the locked writer, the child client could no longer discover the real local tty size from `stdoutWriter()`, so it fell back to remote snapshot dimensions.
+  - That caused the exact user-visible failures:
+    - startup painted only against the remote snapshot footprint instead of the local viewport,
+    - resizing the local attach PTY did not update camera dimensions,
+    - wide output such as `ps aux` wrapped/garbled because rendering targeted the wrong width.
+  - The new regression starts `attach.MultiClient` in a real PTY without an explicit `TermSize`, compares it against the harness control path with the same local viewport, and fails on the visible body mismatch.
+  - The runtime fix makes `MultiClient` derive a real terminal-size provider from its own local stdin/stdout tty when `TermSize` is unset, so normal `lingon attach` now uses the real local viewport/camera dimensions.
+- Verification:
+  - Focused matrix:
+    - `go test -count=1 ./internal/attach -run 'Test(SingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|MultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|SingleAttachHeadlessResizeMatrixRendersExpectedViewport|MultiAttachHeadlessResizeMatrixRendersExpectedViewport)'`
+    - `go test -count=1 -tags webui ./internal/attach -run 'Test(SingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|MultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|SingleAttachHeadlessResizeMatrixRendersExpectedViewport|MultiAttachHeadlessResizeMatrixRendersExpectedViewport)'`
+  - `go test -count=1 ./internal/attach -run 'TestMultiAttachWithoutExplicitTermSizeMatchesControlViewportAcrossStartupResizeAndCommand'`
+  - `go test -count=1 ./internal/attach`
+  - `go test -count=1 ./internal/session -run TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen -v`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - `make test-webui`
+- Notes:
+  - During full-suite verification, `TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen` failed because its `ps aux` assertion compared the dynamic `STAT` column literally (`SN+` vs `RN+`). That was tightened by normalizing the `STAT` field along with other dynamic process columns so the regression remains about screen preservation, not scheduler timing noise.
+
+### B-001 Android non-headless host resize leak
+
+- Status: `resolved`
+- Area: `android`, `relay`, `session`
+- Summary: Android must not be able to resize a normal host session at all. Only headless Lingon-owned PTYs may accept remote resize.
+- Report:
+  Android session switching or viewport changes were still resizing a real local host session and propagating into the tmux terminal running Lingon, even with `resize host` disabled.
+- Repro:
+  1. Run a normal non-headless Lingon host in a local terminal.
+  2. Connect from Android with control.
+  3. Switch sessions or otherwise trigger Android-side size updates.
+  4. Observe local host PTY and outer terminal resizing.
+- Regression coverage:
+  - `internal/session.TestAttachControlResizeDoesNotResizeNonHeadlessHostPTY`
+  - `internal/session.TestResizeKeepsSessionResponsive`
+  - `internal/attach.TestMultiAttachHeadlessResizePropagatesToPTY`
+  - Android unit coverage ensuring app-side resize frames are not sent
+  - Connected Android instrumentation coverage partially rerun
+- Implementation notes:
+  - Android app resize sending path removed/disabled
+  - Non-headless host `publisher.OnResize` now ignores remote resize
+  - Headless Lingon-owned PTYs keep resize enabled via explicit session capability and direct emulator snapshot propagation after resize
+- Verification:
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - `make test-webui`
+  - `./gradlew :app:testDebugUnitTest`
+  - `go test -count=1 ./internal/session -run TestAttachControlResizeDoesNotResizeNonHeadlessHostPTY`
+  - `go test -count=1 ./internal/session -run TestResizeKeepsSessionResponsive`
+  - `go test -count=1 ./internal/attach -run 'TestMultiAttachHeadlessResizePropagatesToPTY|TestMultiAttachHeadlessInitialAttachSizePropagatesToPTY'`
+  - Connected Android instrumentation passed on emulator for:
+    - `resize_setting_default_off_does_not_resize_host`
+    - `resize_menu_absent_and_input_remains_blocked_without_control`
+    - `resize_setting_override_still_does_not_resize_host_when_in_control`
+    - `resize_setting_disabled_for_view_only_share_token`
+- Notes:
+  - One stale instrumentation assertion originally expected input to remain enabled after forcing `hasControl = false`; that test was corrected to reflect the real control model before final verification.
+
+### B-002 Android wall notification source/title format missing
+
+- Status: `resolved`
+- Area: `android`, `notifications`
+- Summary: Visible Android wall notifications should show the requested source format `alice@10.0.0.1#sessionname`.
+- Report:
+  Installed Android app notification does not show the expected source label format even though this was previously claimed fixed.
+- Repro:
+  1. Trigger a wall/background wall notification in the Android app.
+  2. Inspect the posted system notification.
+  3. Observe that the visible notification does not show `user@endpoint#session`.
+- Regression coverage:
+  - Existing helper-only unit test is insufficient because it validates formatter helpers, not the posted notification payload.
+  - Existing instrumentation only proved the title carried the source; it did not assert the body or expanded content also surfaced `user@addr#session`.
+- Investigation notes:
+  - Relay already emits `sender = username@ip`.
+  - Android receives `sender` and `sourceSessionName`, but `AndroidWallNotifier` currently uses the formatted source only for the title.
+  - The body shown in the notification is still just the wall message, so the requested source format is not guaranteed to appear on the visible surface the user actually sees.
+- Required fix:
+  - Make the visible notification payload surface `user@addr#session` in both title and body/expanded text.
+  - Add a regression at the actual posted-notification boundary.
+- Verification:
+  - `./gradlew :app:testDebugUnitTest`
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - Connected Android instrumentation passed on emulator for:
+    - `background_wall_delivery_posts_system_notification`
+- Notes:
+  - Reopened after user report that installed Android build still did not visibly show `username@addr#sessionname`.
+  - Fixed by making the posted notification body/expanded text include the same `sender#session` source label as the title, instead of showing only the wall message body.
+  - The instrumentation assertion now proves the actual posted notification text equals `<title>: <message>`, so the visible payload cannot silently drop the source label again.
+
+### B-003 Local PTY anti-cropping preservation still broken
+
+- Status: `in_progress`
+- Area: `session`, `scrollback`, `render`
+- Summary: Shrinking the host viewport must not destroy right-side content or garble preserved history.
+- Report:
+  After shrinking a terminal hosting a local PTY, right-side content is still destroyed. Scrollback can show garbled post-crop output.
+- Repro:
+  1. Produce wide content in a local host PTY.
+  2. Shrink the viewport.
+  3. Emit additional narrow-width output after the shrink so the old wide row scrolls into history.
+  4. Re-expand or inspect scrollback.
+  5. Observe lost right-side content and/or garbled history.
+  6. More recently reproduced on a real host PTY with this simpler sequence:
+     - draw a fixed wide screen with a prompt row,
+     - shrink,
+     - expand,
+     - press `Enter`,
+     - observe preserved right-side content collapse or smear while the prompt/cursor redraw lands on top of stale content.
+  7. Additional host-TUI sequences that were reproduced on the real host path:
+     - shrink,
+     - expand,
+     - press `Ctrl+L` twice,
+     - observe stale pre-resize content still visible and the prompt/cursor no longer on row 1.
+     - shrink,
+     - press `Enter` while still shrunk,
+     - expand,
+     - observe duplicated/cropped preserved rows instead of a cleanly advanced screen.
+     - shrink,
+     - type a normal command while still shrunk,
+     - press `Enter`,
+     - expand,
+     - observe typed command text smeared into preserved wide rows as if the preserved screen were being rewritten in the shrunk coordinate space.
+  8. Additional host-TUI sequence still reproducing after the earlier fix:
+     - render a full-height wide screen with the prompt on the bottom row,
+     - shrink,
+     - expand,
+     - observe the cursor/prompt restored one row too high while the last content row is effectively pushed below the visible window.
+  9. Additional host-TUI sequence reproduced from the latest screenshots:
+     - render a full-height wide screen,
+     - shrink,
+     - run `clear`,
+     - expand,
+     - observe a blank screen with only the cursor visible,
+     - then run a short command such as `ps aux`,
+     - observe stale pre-clear rows revived under the new output.
+  10. Additional host-TUI sequence still reproducing after the clear fix:
+      - render a wide screen with the tab bar visible,
+      - shrink and stay shrunk,
+      - type a short command without pressing `Enter`,
+      - observe the typed text land on row 1/tab chrome while the real prompt is off-screen.
+- Regression coverage:
+  - `internal/session.TestHostResizePreservesWideContentInScrollbackAfterPostShrinkOutput`
+  - `internal/session.TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
+  - `internal/session.TestHostSIGWINCHPreservesInteractiveWideOutputWithoutInput`
+  - `internal/session.TestHostResizeCtrlLClearAfterExpandClearsPreservedContent`
+  - `internal/session.TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar`
+  - `internal/session.TestHostResizeTypingWhileShrunkThenExpandPreservesCommandLine`
+  - `internal/session.TestHostResizePreservesWideScreenWithBottomCursorWithoutInput`
+  - `internal/session.TestHostResizePreservesScrolledWideOutputWithoutInput`
+  - `internal/session.TestHostResizePreservesScrolledWideOutputWithTabBarVisible`
+  - `internal/session.TestHostResizePostExpandFullScreenOutputMatchesControl`
+  - `internal/session.TestHostResizePsAuxAfterExpandKeepsPromptOnBottomRow`
+  - `internal/session.TestHostResizePlainPsAuxAfterExpandKeepsPromptOnBottomRow`
+  - `internal/session.TestHostSIGWINCHPlainPsAuxAfterExpandKeepsPromptOnBottomRow`
+  - `internal/session.TestHostSIGWINCHPlainPsAuxAfterExpandKeepsPromptOnBottomRowLargeViewport`
+  - `internal/session.TestHostSIGWINCHClearAfterExpandKeepsPromptVisible`
+  - `internal/session.TestHostSIGWINCHClearAfterMultiStepResizeKeepsPromptVisible`
+  - `internal/session.TestHostResizeLargeViewportFullScreenClearAfterExpandMatchesControl`
+  - `internal/session.TestHostResizeLargeViewportClearThenShortCommandMatchesControl`
+  - `internal/session.TestHostResizeLargeViewportCtrlLLClearThenShortCommandMatchesControl`
+  - `internal/session.TestHostResizeLargeViewportClearWhileShrunkThenExpandMatchesControl`
+  - `internal/session.TestHostResizeLargeViewportClearWhileShrunkThenExpandPsAuxMatchesControl`
+  - `internal/session.TestHostResizeBashClearWhileShrunkThenExpandMatchesControl`
+  - `internal/session.TestHostResizeWhileShrunkWithDecoratedPromptKeepsPromptVisible`
+  - `internal/session.TestHostResizeWhileShrunkAfterPsAuxKeepsPromptVisibleAcrossViewportSizes`
+  - The interactive host resize regressions now compare the full visible screen after shrink/expand/input flows, not just selected content rows.
+  - Surrounding preservation coverage reverified:
+    - `TestHostResizePreservesWideContentAcrossShrinkAndExpand`
+    - `TestHostResizePreservesWideContentInScrollbackWhileViewportIsNarrow`
+    - `TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand`
+    - `TestHostResizePreservesScrollbackHistory`
+    - `TestHostScrollbackResizeRepaintsIndicatorWithoutInput`
+- Investigation notes:
+  - The previous preservation tests were too quiet. They covered shrink/expand without the follow-up local redraws that the user was actually hitting.
+  - The exact host failure was reproduced with a real `bash` PTY using both `Ctrl+L` after expand and `Enter while shrunk -> expand`. The latter matched the screenshots: the wide content restored on expand, then a later prompt advance recropped and smeared preserved rows.
+  - Raw PTY capture showed bash only emitted a simple `\r\nPROMPT...` advance. The corruption was introduced by Lingon while merging the shrunk viewport back into the preserved framebuffer.
+  - The previous fix was incomplete. It handled quiet prompt-advance and clear cases, but it still attempted to merge shrunk local-PTY redraws into the preserved wide framebuffer in the wrong coordinate space.
+  - The new failing host regression shows the exact breakage: typing `echo TYPED-OK` while shrunk rewrites preserved wide rows with shrunk-screen content.
+  - The final fix stopped overlaying shrunk local redraws onto the preserved framebuffer directly. Instead, when preservation is active, Lingon keeps a second preserved emulator that stays in the preserved coordinate space and receives the real PTY output stream. The visible viewport is then cropped from that preserved emulator snapshot.
+  - That dual-emulator cut removes the coordinate-space corruption that caused `Enter`, `Ctrl+L`, and typed command echoes to smear/crop preserved rows after shrink/expand cycles.
+  - The regression assertions were then tightened again so the host preservation tests compare the full viewport after each operation, with only dynamic tab-title tokens normalized on row 1.
+  - There was still one leftover non-emulator shortcut in the local host read loop: newline-only and simple-prompt chunks could bypass the emulator path and synthesize preserved snapshots directly.
+  - That shortcut branch has now been removed. While preservation is active, local host snapshots now always come from the emulator-driven preservation path rather than ad hoc newline/prompt snapshot synthesis.
+  - A remaining clear-specific host failure was then reproduced at the render boundary: after a resized full-screen restore, `clear` did not force a real full-screen repaint, so the next shorter command could leave stale body rows visible on the real terminal.
+  - The host render path now forces a full MVU repaint when PTY output carries a real clear/reset sequence (`CSI 2J`, `CSI 3J`, or `RIS`), which matches the semantics the terminal needs after `clear` and `Ctrl+L l`.
+  - The latest remaining clear bug was narrower: after a shrink, Lingon armed a one-shot “ignore the next PTY redraw” guard meant to discard resize artifacts.
+  - That guard treated any escaped output as suppressible, so a real `clear` emitted after the shrink could be dropped as if it were the resize redraw.
+  - Once the clear was swallowed, the preserved screen stayed stale and the next short command overlaid new output onto old pre-clear rows, matching the blank-screen and stale-body screenshots.
+  - The fix narrows that suppression rule so real full-screen reset output (`CSI 2J`, `CSI 3J`, `RIS`) is never ignored and instead resets the preserved viewport origin normally.
+  - After the subsequent user report, the exact remaining “plain shrink leaves the prompt off-screen” screenshot still has not been trapped red under PTY harness coverage.
+  - Two harsher probes were added for that gap:
+    - decorated bash prompts with title/color escape sequences,
+    - a matrix of smaller shrunk viewport sizes after real `ps aux` output.
+  - Those new regressions are green on the current branch, so the remaining mismatch appears narrower than the current deterministic PTY cases and likely depends on a more specific host/session state sequence that still needs isolation.
+  - The current remaining bug is different: while preservation is active and the viewport stays shrunk, normal PTY output updates the preserved emulator but the visible viewport origin is not recomputed from the new preserved cursor position.
+  - That leaves the prompt/cursor off-screen and clamps the cropped cursor back onto row 1, which matches the screenshot where typed command text bleeds into the tab bar.
+- Verification:
+  - Focused signal-path preservation slice:
+  - `go test -count=1 ./internal/session -run 'TestHostSIGWINCH(PreservesScrolledWideOutputWithoutInput|PreservesInteractiveWideOutputWithoutInput|PromptRedrawDoesNotCorruptPreservedWideScreen|PromptAdvanceDoesNotCorruptPreservedScrolledScreen|PromptAdvancePreservesExpandedMixedWidthScreen|PsAuxAdvancePreservesExpandedScreen|TruncatedRedrawPreservesWideTails)'`
+  - Real host typed-command regressions:
+    - `go test -count=1 ./internal/session -run 'TestHostResize(TypingWhileShrunkThenExpandPreservesCommandLine|TypingAfterExpandPreservesPromptLine|CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
+  - `go test -count=1 ./internal/session -run 'TestHostResize(CtrlLClearAfterExpandClearsPreservedContent|PromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar)'`
+  - `go test -count=1 ./internal/session -run 'TestHostResizeLargeViewport(FullScreenClearAfterExpandMatchesControl|ClearThenShortCommandMatchesControl|CtrlLLClearThenShortCommandMatchesControl)'`
+  - `go test -count=1 ./internal/session -run 'TestHostResize(LargeViewportClearWhileShrunkThenExpandMatchesControl|LargeViewportClearWhileShrunkThenExpandPsAuxMatchesControl|BashClearWhileShrunkThenExpandMatchesControl)'`
+  - `go test -count=1 ./internal/session`
+  - `go test -count=1 ./internal/attach`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - `make test-webui`
+
+### B-004 Test and harness terminal isolation
+
+- Status: `in_progress`
+- Area: `tests`, `android`, `pty`
+- Summary: Tests and harnesses must operate only on their own PTYs and must never mutate the inherited terminal running Lingon/tmux.
+- Report:
+  Previous test and harness runs resized or reconfigured the terminal session running the tests.
+- Repro:
+  1. Run resize-driving test coverage from the normal developer shell/tmux/Lingon session.
+  2. Observe the outer tmux/Lingon terminal get resized, detached, or otherwise corrupted.
+  3. The user reported this again after a recent test run, so the item is not trustworthy as resolved.
+- Regression coverage:
+  - `cmd/lingon-android-harness.TestWriteHostScriptDoesNotTouchCallerTTY`
+  - `internal/attach.TestSubscribeResizeSignalsDisabled`
+  - `internal/attach.TestSubscribeResizeSignalsEnabled`
+  - `internal/session.TestSubscribeResizeSignalsDisabled`
+  - `internal/session.TestSubscribeResizeSignalsEnabled`
+- Verification:
+  - Reviewed the remaining resize-driving paths and removed process-global `SIGWINCH` handling from PTY-harnessed attach, multi-attach, and host session runs by wiring explicit `DisableSignalResize` boundaries through:
+    - `internal/attach/client.go`
+    - `internal/attach/multi.go`
+    - `internal/session/session.go`
+    - `internal/ptytest/harness.go`
+  - Audited direct test-owned attach clients in:
+    - `internal/session/*`
+    - `internal/headlessd/*`
+    and disabled signal-based resize there as well.
+  - Added package-level self-PTY isolation in:
+    - `internal/session.TestMain`
+    - `internal/attach.TestMain`
+    - `internal/testpty`
+    so `go test` re-execs those packages under an owned PTY from inside the test code itself, with no external wrapper.
+  - Verified narrow package execution under self-owned PTY:
+    - `go test -count=1 ./internal/session -run TestLocalSessionOSCQueryDoesNotSelfSustainPublish`
+    - `go test -count=1 ./internal/attach -run TestThemeActiveIndexHeaderColor`
+  - Verified a real resize-driving session test no longer mutated the current tmux pane:
+    - `go test -count=1 ./internal/session -run TestHostSIGWINCHPreservesScrolledWideOutputWithoutInput`
+    - pane size remained `119x62` before and after the run
+- Notes:
+  - The remaining leak was not the Android harness wrapper anymore; it was the runtime attach/session packages still subscribing to process-global `SIGWINCH` even when tests already injected PTY-local resize events.
+  - The self-PTY `TestMain` cut closes the remaining inherited-tty hole at the package boundary: helper subprocesses and `/dev/tty` fallbacks now bind to the owned test PTY instead of the outer tmux session.
+  - The resize-driving session test is still functionally red because `B-003` is not finished, but it no longer leaks terminal mutation to the outer pane.
+  - New hardening in this tranche:
+    - `AGENTS.md` now has a non-negotiable terminal-isolation section forbidding inherited-tty mutation and process-level `SIGWINCH` stimulus in tests/helpers.
+    - `internal/session/viewport_resize_signal_regression_integration_test.go` was removed so signal-driven resize regressions no longer exist in the test suite.
+  - Remaining verification gap:
+    - rerun the relevant narrow package checks after the signal-driven file removal and confirm no new inherited-tty path remains.
+
+## Recently Resolved Or Reverified
+
+### B-018 `make test-webui` reruns the whole repo under the `webui` tag
+
+- Status: `resolved`
+- Area: `build`, `tests`, `webui`
+- Summary: `make test-webui` must run the actual webui-tagged package set, not `go test -tags webui ./...`.
+- Report:
+  The current target takes far too long because it reruns the whole repository with the `webui` tag instead of only the package(s) that actually declare `//go:build webui` tests.
+- Repro:
+  1. Run `make test-webui`.
+  2. Observe that it executes `go test -count=1 -tags webui -json ./...`.
+  3. The run covers the full repo rather than the real webui-tagged package set.
+- Investigation notes:
+  - `rg` over `*_test.go` showed only `internal/attach/webui_chromedp_test.go` currently declares `//go:build webui`.
+  - The prior Make target therefore paid full-repo PTY/session coverage costs even though only `./internal/attach` needed the `webui` tag.
+  - The Make target now runs an explicit package list via `WEBUI_TEST_PKGS`, defaulting to `./internal/attach`.
+- Regression coverage:
+  - Makefile contract update only; no Go test added.
+- Verification:
+  - `make test-webui`
+  - `rg -n --glob '*_test.go' '//go:build webui|\\+build webui' .`
+
+### B-005 Android reconnect syncing indicator missing while reconnect is pending
+
+- Status: `resolved`
+- Area: `android`, `viewmodel`
+- Summary: App should continue showing syncing while reconnect is still pending.
+- Verification:
+  - Android unit tests
+  - full Android/unit/webui/go quality gates during prior fix pass
+
+### B-006 Burst Enter prompt loss in local and attach PTYs
+
+- Status: `resolved`
+- Area: `session`, `attach`, `pty`
+- Summary: Repeated `Enter` should not collapse or skip shell prompts.
+- Regression coverage:
+  - `TestHostBurstEnterKeepsConsecutiveBashPromptNumbers`
+  - `TestAttachBurstEnterKeepsConsecutiveBashPromptNumbers`
+- Investigation notes:
+  - The attach-controlled regression resurfaced after the terminal-isolation work.
+  - Raw child-PTY capture showed the bug was not a render-only issue: the shell was emitting prompts back-to-back because remote-controlled newline input was reaching the child PTY too aggressively.
+  - Local host input remained stable, so the root cause was isolated to the remote-control input delivery path.
+  - A host-side serialized remote-input worker now processes remote line bytes one at a time and waits for child PTY output before admitting the next line byte.
+- Code-path review:
+  - `Runner.handleRemoteInput` now only filters and enqueues remote bytes; it no longer writes directly to the PTY.
+  - `localSession.processRemoteInput` owns the pacing boundary for remote line-only input.
+  - PTY reader publish flow calls `notifyOutput()` after snapshot/publish, which is what releases the next queued remote line byte.
+- Verification:
+  - `go test -count=20 ./internal/session -run TestAttachBurstEnterKeepsConsecutiveBashPromptNumbers`
+  - `go test -count=20 ./internal/session -run 'TestHostBurstEnterKeepsConsecutiveBashPromptNumbers|TestAttachCtrlDDoesNotExitHost|TestAttachBurstEnterKeepsConsecutiveBashPromptNumbers'`
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+  - `make test-webui`
+
+### B-007 Android viewport still fits full host width and hides usable output
+
+- Status: `in_progress`
+- Area: `android`, `terminal`, `render`
+- Summary: Android must treat the terminal as a camera viewport, not shrink the entire host width into the phone screen.
+- Report:
+  The Android app is visibly unusable: prompts and content are misplaced or microscopic, and the current integration suite still passes.
+- Repro:
+  1. Start a host with a wide terminal size such as the current Android harness default `120x24`.
+  2. Open the Android app and connect to the host.
+  3. Observe the terminal rendered as a tiny block in the top-left because the full host width is being fit into the phone viewport.
+- Regression coverage:
+  - `systems.pkt.lingon.EndToEndTest#host_width_is_authoritative`
+  - `systems.pkt.lingon.EndToEndTest#share_token_width_is_authoritative`
+- Investigation notes:
+  - A live emulator screenshot during the integration run showed the terminal shrunk into a tiny top-left block while the suite continued to pass.
+  - The previous assertions only checked `activeSnapshot` and that `viewCols/viewRows` were positive, which does not prove the visible output is usable.
+  - The Android viewport was still configured with `fitToViewWidth = true`, which forced the host width into the phone width instead of behaving like a camera.
+- Verification in progress:
+  - `./gradlew :app:testDebugUnitTest`
+  - targeted connected Android instrumentation for:
+    - `host_width_is_authoritative`
+    - `share_token_width_is_authoritative`
+
+### B-008 Preserved shrink buffer leaks into live host and Android rendering
+
+- Status: `in_progress`
+- Area: `session`, `render`, `android`
+- Summary: Hidden preserved rows and columns must remain hidden while the local PTY is shrunk; they may only reappear after the PTY expands or through scrollback.
+- Report:
+  Host and Android both show the current cursor/prompt above stale old content after the local PTY shrinks under a larger Lingon viewport.
+- Repro:
+  1. Render content across the full local PTY height.
+  2. Shrink the local PTY while leaving the Lingon host viewport larger.
+  3. Force a redraw.
+  4. Observe preserved lower rows still painted as live content below the current cursor.
+- Regression coverage:
+  - `internal/session.TestHostShrinkHidesPreservedRowsUntilLocalPTYExpands`
+- Investigation notes:
+  - The anti-cropping work preserved old cells by merging snapshots, but the merged preserved snapshot was also being published and rendered as the live snapshot.
+  - That conflated hidden restore data with current live geometry, so both host and Android painted preserved rows as if they were active screen rows.
+- Required fix:
+  - Keep the preserved merged snapshot internal to `localSession`.
+  - Publish and render only the live cropped snapshot while the PTY is shrunk.
+  - Rehydrate from the preserved buffer when the PTY expands again.
+
+### B-009 Android integration runner repeatedly cold-boots emulators and wastes time
+
+- Status: `resolved`
+- Area: `android`, `tests`, `tooling`
+- Summary: Local Android integration runs should reuse a running emulator and reset app state between cases instead of paying repeated emulator boot cost.
+- Report:
+  The integration runner was cold-booting or forcing full environment restart cost too often, making Android verification much slower than necessary.
+- Repro:
+  1. Run `make integration-test` from `android/`.
+  2. Let the script complete.
+  3. Run it again.
+  4. Observe that the previous emulator was killed at script exit, so the next run cold-boots again.
+- Regression coverage:
+  - Script-level verification remains live-run based; there is no shell test harness for the runner.
+- Implementation notes:
+  - `android/scripts/run-integration-tests.sh` now keeps a script-started emulator alive by default.
+  - The runner resets `systems.pkt.lingon` and `systems.pkt.lingon.test` state between per-test instrumentation invocations and clears device-side test artifacts before each case.
+  - `adb reverse --remove-all` is issued before re-establishing the harness port mapping so reuse does not accumulate stale reverse mappings.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh`
+  - Code-path review confirming:
+    - cleanup only kills the emulator when `LINGON_IT_KEEP_EMULATOR=0`
+    - the per-test loop resets app state before each Gradle instrumentation invocation
+    - harness restarts remain limited to tests that actually need different backend topology
+  - Live emulator verification on `emulator-5554`:
+    - `env LINGON_IT_ONLY=top_bar_menu_is_accessible ./scripts/run-integration-tests.sh`
+    - the same command immediately after
+    - both runs passed on the same running emulator
+    - the second run did not print `Starting emulator ...`, confirming reuse
+    - the runner printed `Resetting Android app state...` before the instrumentation case on both runs
+- Remaining cost:
+  - The runner still invokes `connectedDebugAndroidTest` once per test method, so Gradle/instrumentation startup overhead remains even though emulator reboot cost is now removed by default.
+
+### B-010 Test runs leak real desktop notifications to the developer session
+
+- Status: `resolved`
+- Area: `tests`, `desktopnotify`
+- Summary: Test and end-to-end runs must never emit real desktop notifications to the developer’s desktop session.
+- Report:
+  During recent `make test-webui` runs, the developer still received real desktop notifications.
+- Repro:
+  1. Run `make test-webui`.
+  2. Observe real desktop notifications during wall/inactivity-related tests.
+- Investigation notes:
+  - The recent `make test-webui` output strongly points at wall/inactivity tests in `internal/session` and `internal/attach`, not generic chromedp/browser automation itself.
+  - `Runner.fireLocalWallNotification` still falls back to `desktopnotify.New()` whenever `Options.DesktopNotifier` is nil and `DisableDesktopNotifications` is false.
+  - PTY harness defaults use a noop notifier, so the remaining leak is likely from test paths that instantiate `Runner` or attach views without an injected notifier or explicit disable flag.
+  - A later broad `go test ./...` run still produced real desktop notifications even after package-local `TestMain` patches, which proved the real gap was broader: other package test binaries can import notifier-using code without inheriting those package-local overrides.
+- Regression coverage:
+  - `internal/desktopnotify.TestNewDefaultsToNoopNotifierUnderGoTest`
+  - `internal/desktopnotify.TestRunningUnderTestBinary`
+  - `internal/session.TestRunnerLocalWallNotificationUsesNotifierFactoryWhenUnset`
+  - `internal/attach.TestClientHandleWallUsesNotifierFactoryWhenUnset`
+  - `internal/headlessd.TestDaemonNotifyDesktopUsesNotifierFactoryWhenUnset`
+  - focused reruns of notifier fallback paths in `internal/session`, `internal/attach`, and `internal/headlessd`
+- Implementation notes:
+  - `internal/desktopnotify.New()` now defaults to `noopNotifier` automatically inside any `go test` binary, so fallback notifier allocation is silent across all package test binaries, not only packages with bespoke `TestMain` setup.
+  - Package-local notifier overrides in `internal/session`, `internal/attach`, and `internal/headlessd` are no longer required to keep tests silent.
+  - Direct regression tests cover the previously unsafe fallback paths where session or attach code reached for `desktopnotify.New()` without an injected notifier.
+  - `internal/attach.Client` now lazily resolves the notifier in the actual notification path, so the fallback is testable and consistent.
+- Verification:
+  - `go test -count=1 ./internal/desktopnotify`
+  - `go test -count=1 ./internal/session -run 'Test(RunnerLocalWallNotificationUsesNotifierFactoryWhenUnset|LocalWallInactivityShowsModalOnOtherLocalTabAndDesktopNotification|RelayBacked.*Wall.*|HostSIGWINCHPsAuxAdvancePreservesExpandedScreen|HostSIGWINCHPromptAdvancePreservesExpandedMixedWidthScreen)'`
+  - `go test -count=1 ./internal/attach -run 'Test(ClientHandleWallUsesNotifierFactoryWhenUnset|AttachHonorsRetryAfter|AttachWallModalShowsWrappedLongMessage|MultiAttachHeadlessRoutedStatusStaysOnActiveSession)'`
+  - `go test -count=1 ./...`
+  - `make test-webui`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
+### B-021 `lingon -x detach` leaves stale headless sessions behind across UIs
+
+- Status: `resolved`
+- Area: `headless`, `relay`, `attach`, `host-remote`, `android`
+- Summary: Force-detaching a local headless session must stop the PTY and remove the session cleanly from relay/UI state without reconnect grace or stale unreachable tabs.
+- Report:
+  `lingon -x detach` left the dead headless session behind in attach, host remote multi-client, and Android. The UI showed reconnect/lost-session behavior even though the session had been force-stopped and there was nothing to reconnect to.
+- Repro:
+  1. Start a relay-backed headless session.
+  2. View it from `lingon attach`, host remote multi-client, or the Android app.
+  3. Run `lingon -x detach`.
+  4. Observe the dead session linger with reconnect/lost-session behavior instead of disappearing cleanly.
+- Investigation notes:
+  - `detachLocalHeadlessSession` was bypassing the daemon and directly deleting local headless store state before killing the daemon/socket.
+  - That skipped the explicit `session_closed` path, so relay consumers treated the disappearance like a disconnect instead of a real close.
+  - Android also needed explicit `session_closed` handling so closed sessions are removed immediately instead of entering missing-session grace.
+- Regression coverage:
+  - `integration/pty/attach.TestRealCLIRelayHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay`
+  - `integration/pty/attach.TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay`
+  - `integration/pty/session.TestHostRemoteHeadlessDetachRemovesSessionWithoutReconnectOverlay`
+  - Android instrumentation:
+    - `headless_detach_removes_session_without_reconnect_placeholder`
+- Implementation notes:
+  - Added daemon-mediated `headless.DetachSession(...)` so detach requests go through the headless daemon first and emit a clean in-band close before shutdown.
+  - Added `/internal/headless/detach` handling in `internal/headlessd.Daemon`.
+  - Added `Runner.StopSession(...)` and `localSession.StopWithReason(...)` so detach can propagate a reasoned close through the existing session-close path.
+  - `cmd/lingon/headless_local.go` now uses `headless.DetachSession(...)`.
+  - Android `AppViewModel` now handles explicit `session_closed` frames and removes the closed session immediately instead of retaining it via missing-session grace.
+- Verification:
+  - `go test -count=1 -tags integration ./integration/pty/attach -run 'TestRealCLI(RelayHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay|LocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay)'`
+  - `go test -count=1 -tags integration ./integration/pty/session -run 'TestHostRemoteHeadlessDetachRemovesSessionWithoutReconnectOverlay'`
+  - Android targeted e2e:
+    - `PATH=\"$HOME/Android/Sdk/platform-tools:$PATH\" LINGON_IT_ONLY=headless_detach_removes_session_without_reconnect_placeholder ./scripts/run-integration-tests.sh`
+  - `go test -count=1 ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
+### B-022 Android needs explicit headless-only resize and must not auto-resize on connect
+
+- Status: `resolved`
+- Area: `android`, `relay`, `headless`
+- Summary: The Android app must never resize sessions implicitly. Only a headless session may be resized, and only through an explicit top-bar action. Non-headless sessions stay camera-only.
+- Report:
+  Android still auto-resized through the relay hello path, and there was no explicit headless-only resize action in the app.
+- Repro:
+  1. Connect the Android app to a headless session.
+  2. Observe that connect-time viewport dimensions are sent in the websocket hello and can resize the headless PTY.
+  3. Observe there is no explicit headless-only resize button in the UI.
+- Regression coverage:
+  - `AppViewModelTest.sendHeadlessResizeNow_sendsSingleResizeForActiveHeadlessSession`
+  - `AppViewModelTest.connectActiveSession_doesNotAdvertiseViewportResizeInHello`
+  - Android instrumentation:
+    - `headless_resize_button_only_enables_for_headless_sessions`
+    - `headless_resize_button_resizes_remote_headless_session`
+- Implementation notes:
+  - Relay session models and Android UI state now carry `headless` metadata.
+  - Android websocket connect now uses `cols=0, rows=0`, so the app no longer auto-resizes through relay hello.
+  - Added a top-bar `HeadlessResizeButton`:
+    - visible whenever there is an active session
+    - enabled only for headless sessions
+    - disabled/dimmed for non-headless sessions
+  - Pressing the button calls `sendHeadlessResizeNow()` and sends one explicit resize using the current viewport-derived terminal size.
+  - The Android harness gained real headless control endpoints for e2e:
+    - `start-headless`
+    - `detach-headless`
+    - `headless-size`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - Android targeted e2e:
+    - `PATH=\"$HOME/Android/Sdk/platform-tools:$PATH\" LINGON_IT_ONLY=headless_resize_button_only_enables_for_headless_sessions ./scripts/run-integration-tests.sh`
+    - `PATH=\"$HOME/Android/Sdk/platform-tools:$PATH\" LINGON_IT_ONLY=headless_resize_button_resizes_remote_headless_session ./scripts/run-integration-tests.sh`

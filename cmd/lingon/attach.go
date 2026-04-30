@@ -24,6 +24,7 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 	var authFile string
 	var logFile string
 	var hostnameOnly bool
+	var disableDesktopNotifications bool
 	var themeName string
 	var traceEnabled bool
 	var traceFile string
@@ -34,6 +35,7 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 	v.SetDefault("client.log_file", lingon.DefaultLogPath())
 	v.SetDefault("terminal.theme", lingon.DefaultTerminalTheme)
 	v.SetDefault("terminal.hostname_only", lingon.DefaultTerminalHostnameOnly)
+	v.SetDefault("terminal.disable_desktop_notifications", lingon.DefaultTerminalDisableDesktopNotifications)
 
 	cmd := &cobra.Command{
 		Use:   "attach [session-id]",
@@ -85,6 +87,10 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 			if !cmd.Flags().Changed("hostname-only") {
 				hostnameOnlyValue = cfg.Terminal.HostnameOnly
 			}
+			disableDesktopNotificationsValue := disableDesktopNotifications
+			if !cmd.Flags().Changed("disable-desktop-notifications") {
+				disableDesktopNotificationsValue = cfg.Terminal.DisableDesktopNotifications
+			}
 			resolvedTheme, err := resolveTheme(themeValue)
 			if err != nil {
 				return err
@@ -132,14 +138,15 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 					}
 				}
 				err = lingon.Attach(cmd.Context(), lingon.AttachOptions{
-					Endpoint:          "local://headless",
-					SessionID:         sessionID,
-					HeadlessConfigDir: configDirForLoader(loader),
-					RequestControl:    requestControl,
-					HostnameOnly:      hostnameOnlyValue,
-					Theme:             resolvedTheme,
-					Logger:            logger,
-					Trace:             traceWriter,
+					Endpoint:                    "local://headless",
+					SessionID:                   sessionID,
+					HeadlessConfigDir:           configDirForLoader(loader),
+					RequestControl:              requestControl,
+					HostnameOnly:                hostnameOnlyValue,
+					DisableDesktopNotifications: disableDesktopNotificationsValue,
+					Theme:                       resolvedTheme,
+					Logger:                      logger,
+					Trace:                       traceWriter,
 				})
 				if err != nil {
 					return err
@@ -149,14 +156,11 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 				return nil
 			}
 
-			endpointValue := endpoint
-			if !cmd.Flags().Changed("endpoint") {
-				endpointValue = cfg.Client.Endpoint
+			authPath := authFile
+			if !cmd.Flags().Changed("auth-file") {
+				authPath = cfg.Client.AuthFile
 			}
-			if endpointValue == "" {
-				return fmt.Errorf("endpoint is required")
-			}
-
+			endpointValue := ""
 			if shareToken != "" {
 				resolvedToken, tokenEndpoint, err := resolveShareToken(shareToken)
 				if err != nil {
@@ -167,9 +171,18 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 					endpointValue = tokenEndpoint
 				}
 			}
-			authPath := authFile
-			if !cmd.Flags().Changed("auth-file") {
-				authPath = cfg.Client.AuthFile
+			if endpointValue == "" {
+				if shareToken != "" || cmd.Flags().Changed("access-token") {
+					endpointValue = resolveConfiguredEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint)
+				} else {
+					endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint, authPath)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			if endpointValue == "" {
+				return fmt.Errorf("endpoint is required")
 			}
 			if pick && shareToken != "" {
 				return fmt.Errorf("cannot use --pick with a share token")
@@ -218,18 +231,19 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 				sessionID = sessions[0].ID
 			}
 			err = lingon.Attach(cmd.Context(), lingon.AttachOptions{
-				Endpoint:       endpointValue,
-				SessionID:      sessionID,
-				AccessToken:    tokenValue,
-				ShareToken:     shareToken,
-				RequestControl: requestControl,
-				HostnameOnly:   hostnameOnlyValue,
-				AuthFile:       authPathValue,
-				TLSDir:         tlsDir,
-				Insecure:       insecure,
-				Theme:          resolvedTheme,
-				Logger:         logger,
-				Trace:          traceWriter,
+				Endpoint:                    endpointValue,
+				SessionID:                   sessionID,
+				AccessToken:                 tokenValue,
+				ShareToken:                  shareToken,
+				RequestControl:              requestControl,
+				HostnameOnly:                hostnameOnlyValue,
+				DisableDesktopNotifications: disableDesktopNotificationsValue,
+				AuthFile:                    authPathValue,
+				TLSDir:                      tlsDir,
+				Insecure:                    insecure,
+				Theme:                       resolvedTheme,
+				Logger:                      logger,
+				Trace:                       traceWriter,
 			})
 			if err != nil {
 				return err
@@ -249,6 +263,7 @@ func NewAttachCommand(loader *lingon.Loader) *cobra.Command {
 	flags.StringVar(&authFile, "auth-file", lingon.DefaultAuthPath(), "path to auth file")
 	flags.StringVar(&logFile, "log-file", "", "path to client log file (disabled if empty)")
 	flags.BoolVar(&hostnameOnly, "hostname-only", lingon.DefaultTerminalHostnameOnly, "show only hostname in connect/disconnect banners")
+	flags.BoolVar(&disableDesktopNotifications, "disable-desktop-notifications", lingon.DefaultTerminalDisableDesktopNotifications, "disable best-effort desktop notifications for inactivity walls")
 	flags.StringVar(&themeName, "theme", lingon.DefaultTerminalTheme, "theme for TUI chrome (use `lingon themes` to list)")
 	flags.BoolVar(&traceEnabled, "trace", false, "write a JSONL trace for host/attach TUIs")
 	flags.StringVar(&traceFile, "trace-file", "", "path to trace output file (implies --trace)")
@@ -332,17 +347,13 @@ func attachSessionCompletion(loader *lingon.Loader, endpoint, accessToken, authF
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 
-		endpointValue := *endpoint
-		if !cmd.Flags().Changed("endpoint") {
-			endpointValue = cfg.Client.Endpoint
-		}
-		if endpointValue == "" {
-			return nil, cobra.ShellCompDirectiveNoFileComp
-		}
-
 		authPath := *authFile
 		if !cmd.Flags().Changed("auth-file") {
 			authPath = cfg.Client.AuthFile
+		}
+		endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, *endpoint, authPath)
+		if err != nil || endpointValue == "" {
+			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 
 		tokenValue := *accessToken

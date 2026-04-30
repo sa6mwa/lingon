@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,11 +21,12 @@ import (
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/session"
+	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/pslog"
 )
 
 func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-itest"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -45,19 +47,28 @@ func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
 	}()
 
 	waitUntil(t, 8*time.Second, func() bool {
+		select {
+		case err := <-runErr:
+			if err != nil && err != context.Canceled {
+				t.Fatalf("daemon run: %v", err)
+			}
+			return false
+		default:
+		}
 		return headless.SocketExists(socketPath)
 	})
 
 	var out bytes.Buffer
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         &out,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              &out,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 	}
 	ready := make(chan struct{})
 	attachClient.OnReady = func() {
@@ -114,7 +125,7 @@ func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
 }
 
 func TestDaemonRunRejectsDuplicateSessionID(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-duplicate-id"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -176,7 +187,7 @@ func TestDaemonRunRejectsDuplicateSessionID(t *testing.T) {
 }
 
 func TestDaemonOfflineTogglePersistsState(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-offline"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -230,7 +241,7 @@ func TestDaemonOfflineTogglePersistsState(t *testing.T) {
 }
 
 func TestDaemonReplaysPublishStatusToNewAttachClient(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-status-replay"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -263,14 +274,15 @@ func TestDaemonReplaysPublishStatusToNewAttachClient(t *testing.T) {
 
 	var out bytes.Buffer
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         &out,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              &out,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 	}
 	ready := make(chan struct{})
 	attachClient.OnReady = func() {
@@ -314,7 +326,7 @@ func TestDaemonReplaysPublishStatusToNewAttachClient(t *testing.T) {
 }
 
 func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-inactive-once"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -344,14 +356,15 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	var out bytes.Buffer
 	var wallCount atomic.Int32
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         &out,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              &out,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnWall: func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
@@ -385,6 +398,11 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	if err := sendHeadlessCommand(context.Background(), socketPath, sessionID, protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY); err != nil {
 		t.Fatalf("send command enable inactivity wall: %v", err)
 	}
+	waitUntil(t, 2*time.Second, func() bool {
+		return localWallState(d, func(enabled bool, after time.Duration, armed bool, _ time.Time) bool {
+			return enabled && armed && after == 2*time.Second
+		})
+	})
 
 	clk.Add(2500 * time.Millisecond)
 	waitUntil(t, 2*time.Second, func() bool {
@@ -408,6 +426,14 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SendInput activity: %v", err)
 	}
+	waitUntil(t, 2*time.Second, func() bool {
+		return strings.Contains(out.String(), "REARM_INACTIVITY_WALL")
+	})
+	waitUntil(t, 2*time.Second, func() bool {
+		return localWallState(d, func(enabled bool, after time.Duration, armed bool, lastActivity time.Time) bool {
+			return enabled && armed && after == 2*time.Second
+		})
+	})
 
 	clk.Add(2500 * time.Millisecond)
 	waitUntil(t, 2*time.Second, func() bool {
@@ -431,7 +457,7 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 }
 
 func TestDaemonModeSwitchDisablesLocalAndRelayWallInactivity(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "hd-mode-switch"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -499,14 +525,15 @@ func TestDaemonModeSwitchDisablesLocalAndRelayWallInactivity(t *testing.T) {
 
 	var wallCount atomic.Int32
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnWall: func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
@@ -614,7 +641,7 @@ func TestDaemonModeSwitchDisablesLocalAndRelayWallInactivity(t *testing.T) {
 }
 
 func TestDaemonOfflineInactivityWallPropagatesToRelay(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "hd-offline-relay"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -678,14 +705,15 @@ func TestDaemonOfflineInactivityWallPropagatesToRelay(t *testing.T) {
 
 	var localWallCount atomic.Int32
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnWall: func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
@@ -749,14 +777,15 @@ func TestDaemonOfflineInactivityWallPropagatesToRelay(t *testing.T) {
 
 func sendHeadlessCommand(ctx context.Context, socketPath, sessionID string, kind protocolpb.CommandKind) error {
 	client := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  5 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       5 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -814,4 +843,115 @@ func waitUntil(t *testing.T, timeout time.Duration, fn func() bool) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out after %v", timeout)
+}
+
+func localWallState(d *Daemon, fn func(enabled bool, after time.Duration, armed bool, lastActivity time.Time) bool) bool {
+	d.wallMu.Lock()
+	defer d.wallMu.Unlock()
+	return fn(d.wallEnabled, d.wallAfter, d.wallArmed, d.wallLastActivity)
+}
+
+func TestDaemonForwardedInternalWallPreservesKindForAttachClients(t *testing.T) {
+	cfgDir, err := os.MkdirTemp("", "hd-kind-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cfgDir) })
+	sessionID := "hdkind"
+	socketPath, err := headless.SocketPath(cfgDir, sessionID)
+	if err != nil {
+		t.Fatalf("SocketPath: %v", err)
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	d := New(Options{
+		ConfigDir: cfgDir,
+		SessionID: sessionID,
+		Publish:   false,
+		Logger:    pslog.NoopLogger(),
+	})
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- d.Run(runCtx)
+	}()
+
+	waitUntil(t, 8*time.Second, func() bool {
+		select {
+		case err := <-runErr:
+			if err != nil && err != context.Canceled {
+				t.Fatalf("daemon run: %v", err)
+			}
+			return false
+		default:
+		}
+		return headless.SocketExists(socketPath)
+	})
+
+	var gotKind protocolpb.WallKind
+	var gotMessage string
+	attachClient := &attach.Client{
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
+		OnWall: func(wall *protocolpb.Wall) {
+			if wall == nil {
+				return
+			}
+			gotKind = wall.GetKind()
+			gotMessage = wall.GetMessage()
+		},
+	}
+	ready := make(chan struct{})
+	attachClient.OnReady = func() {
+		select {
+		case <-ready:
+		default:
+			close(ready)
+		}
+	}
+	attachCtx, cancelAttach := context.WithCancel(context.Background())
+	attachErr := make(chan error, 1)
+	go func() { attachErr <- attachClient.RunDetached(attachCtx) }()
+	select {
+	case <-ready:
+	case err := <-attachErr:
+		t.Fatalf("attach exited early: %v", err)
+	case <-time.After(8 * time.Second):
+		t.Fatalf("attach did not become ready")
+	}
+
+	if err := postInternalWallEvent(socketPath, internalWallEvent{
+		SourceSessionID: "peer-session",
+		Sender:          "peer-session",
+		Message:         "peer-session inactive",
+		TimeoutSeconds:  5,
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+	}); err != nil {
+		t.Fatalf("postInternalWallEvent: %v", err)
+	}
+	waitUntil(t, 2*time.Second, func() bool {
+		return gotKind == protocolpb.WallKind_WALL_KIND_INACTIVITY && gotMessage == "peer-session inactive"
+	})
+
+	cancelAttach()
+	select {
+	case <-attachErr:
+	case <-time.After(2 * time.Second):
+	}
+	cancelRun()
+	select {
+	case err := <-runErr:
+		if err != nil && err != context.Canceled {
+			t.Fatalf("daemon run: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("daemon did not stop")
+	}
 }

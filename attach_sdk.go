@@ -8,6 +8,7 @@ import (
 
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/authstore"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/trace"
@@ -16,15 +17,17 @@ import (
 
 // AttachOptions configures an attach client session.
 type AttachOptions struct {
-	Endpoint          string
-	SessionID         string
-	UnixSocket        string
-	HeadlessConfigDir string
-	AccessToken       string
-	ShareToken        string
-	RequestControl    bool
-	HostnameOnly      bool
-	Theme             string
+	Endpoint                    string
+	SessionID                   string
+	UnixSocket                  string
+	HeadlessConfigDir           string
+	AccessToken                 string
+	ShareToken                  string
+	RequestControl              bool
+	HostnameOnly                bool
+	Theme                       string
+	DisableDesktopNotifications bool
+	DesktopNotifier             desktopnotify.Notifier
 	// AuthFile is the path to the auth state file used for refresh.
 	AuthFile string
 	TLSDir   string
@@ -44,62 +47,70 @@ func Attach(ctx context.Context, opts AttachOptions) error {
 			_ = stopWatcher()
 		}()
 		client := &attach.MultiClient{
-			Endpoint:           opts.Endpoint,
-			SessionID:          opts.SessionID,
-			RequestControl:     opts.RequestControl,
-			AllowOfflineToggle: true,
-			HostnameOnly:       opts.HostnameOnly,
-			Theme:              opts.Theme,
-			Logger:             opts.Logger,
-			Trace:              opts.Trace,
-			SessionSource:      headlessSessionSource(opts.HeadlessConfigDir),
-			SocketResolver:     headlessSocketResolver(opts.HeadlessConfigDir),
-			SessionEvents:      events,
+			Endpoint:                    opts.Endpoint,
+			SessionID:                   opts.SessionID,
+			RequestControl:              opts.RequestControl,
+			AllowOfflineToggle:          true,
+			HostnameOnly:                opts.HostnameOnly,
+			DisableDesktopNotifications: opts.DisableDesktopNotifications,
+			Theme:                       opts.Theme,
+			Logger:                      opts.Logger,
+			Trace:                       opts.Trace,
+			DesktopNotifier:             opts.DesktopNotifier,
+			SessionSource:               headlessSessionSource(opts.HeadlessConfigDir),
+			SocketResolver:              headlessSocketResolver(opts.HeadlessConfigDir),
+			SessionEvents:               events,
 		}
 		return client.Run(ctx)
 	}
 	if opts.UnixSocket != "" {
 		client := &attach.Client{
-			Endpoint:           opts.Endpoint,
-			SessionID:          opts.SessionID,
-			UnixSocket:         opts.UnixSocket,
-			RequestControl:     opts.RequestControl,
-			AllowOfflineToggle: true,
-			HostnameOnly:       opts.HostnameOnly,
-			Theme:              opts.Theme,
-			Logger:             opts.Logger,
-			Trace:              opts.Trace,
+			Endpoint:                    opts.Endpoint,
+			SessionID:                   opts.SessionID,
+			UnixSocket:                  opts.UnixSocket,
+			RequestControl:              opts.RequestControl,
+			AllowOfflineToggle:          true,
+			HostnameOnly:                opts.HostnameOnly,
+			DisableDesktopNotifications: opts.DisableDesktopNotifications,
+			Theme:                       opts.Theme,
+			Logger:                      opts.Logger,
+			Trace:                       opts.Trace,
+			DesktopNotifier:             opts.DesktopNotifier,
 		}
 		return client.Run(ctx)
 	}
 	if opts.ShareToken != "" {
 		client := &attach.Client{
-			Endpoint:       opts.Endpoint,
-			SessionID:      opts.SessionID,
-			AccessToken:    opts.AccessToken,
-			ShareToken:     opts.ShareToken,
-			RequestControl: opts.RequestControl,
-			HostnameOnly:   opts.HostnameOnly,
-			Theme:          opts.Theme,
-			TLSDir:         opts.TLSDir,
-			Insecure:       opts.Insecure,
-			Logger:         opts.Logger,
-			Trace:          opts.Trace,
+			Endpoint:                    opts.Endpoint,
+			SessionID:                   opts.SessionID,
+			AccessToken:                 opts.AccessToken,
+			ShareToken:                  opts.ShareToken,
+			RequestControl:              opts.RequestControl,
+			HostnameOnly:                opts.HostnameOnly,
+			DisableDesktopNotifications: opts.DisableDesktopNotifications,
+			Theme:                       opts.Theme,
+			TLSDir:                      opts.TLSDir,
+			Insecure:                    opts.Insecure,
+			Logger:                      opts.Logger,
+			Trace:                       opts.Trace,
+			DesktopNotifier:             opts.DesktopNotifier,
 		}
 		return client.Run(ctx)
 	}
 	client := &attach.MultiClient{
-		Endpoint:       opts.Endpoint,
-		SessionID:      opts.SessionID,
-		AccessToken:    opts.AccessToken,
-		RequestControl: opts.RequestControl,
-		HostnameOnly:   opts.HostnameOnly,
-		Theme:          opts.Theme,
-		AuthFile:       opts.AuthFile,
-		TLSDir:         opts.TLSDir,
-		Insecure:       opts.Insecure,
-		Logger:         opts.Logger,
-		Trace:          opts.Trace,
+		Endpoint:                    opts.Endpoint,
+		SessionID:                   opts.SessionID,
+		AccessToken:                 opts.AccessToken,
+		RequestControl:              opts.RequestControl,
+		HostnameOnly:                opts.HostnameOnly,
+		DisableDesktopNotifications: opts.DisableDesktopNotifications,
+		Theme:                       opts.Theme,
+		AuthFile:                    opts.AuthFile,
+		TLSDir:                      opts.TLSDir,
+		Insecure:                    opts.Insecure,
+		Logger:                      opts.Logger,
+		Trace:                       opts.Trace,
+		DesktopNotifier:             opts.DesktopNotifier,
 	}
 	return client.Run(ctx)
 }

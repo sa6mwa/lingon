@@ -102,6 +102,8 @@ func (c *RenderCache) CommitDisabled(snapshot *protocolpb.Snapshot, cols, rows i
 	c.Frame.LastConnectionVisible = false
 	c.Frame.LastConnectionLen = 0
 	c.Frame.LastConnectionStyle = BannerRed
+	c.Frame.LastLoadingVisible = false
+	c.Frame.LastLoadingLen = 0
 	c.Frame.LastScrollbackVisible = false
 	c.Frame.LastScrollbackLen = 0
 	c.Frame.LastDisconnect = false

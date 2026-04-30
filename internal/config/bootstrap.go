@@ -13,10 +13,11 @@ func BootstrapConfig() Config {
 
 	return Config{
 		Server: ServerConfig{
-			Listen:    DefaultListenAddr,
-			DataDir:   ".",
-			UsersFile: DefaultUsersFileName,
-			BasePath:  DefaultBasePath,
+			Listen:             DefaultListenAddr,
+			DataDir:            ".",
+			UsersFile:          DefaultUsersFileName,
+			BasePath:           DefaultBasePath,
+			ReplayHistoryBytes: DefaultReplayHistoryBytes,
 			TLS: TLSConfig{
 				Mode:     DefaultTLSMode,
 				Dir:      tlsDir,
@@ -43,12 +44,13 @@ func BootstrapConfig() Config {
 			LoginNonInteractive: false,
 		},
 		Terminal: TerminalConfig{
-			Term:              DefaultTerminalTermValue(),
-			Respawn:           DefaultTerminalRespawn,
-			ScrollbackLines:   DefaultScrollbackLines,
-			Theme:             DefaultTerminalTheme,
-			HostnameOnly:      DefaultTerminalHostnameOnly,
-			WallInactiveAfter: DefaultWallInactiveAfterCSV,
+			Term:                        DefaultTerminalTermValue(),
+			Respawn:                     DefaultTerminalRespawn,
+			ScrollbackLines:             DefaultScrollbackLines,
+			Theme:                       DefaultTerminalTheme,
+			HostnameOnly:                DefaultTerminalHostnameOnly,
+			DisableDesktopNotifications: DefaultTerminalDisableDesktopNotifications,
+			WallInactiveAfter:           DefaultWallInactiveAfterCSV,
 		},
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/pty"
+	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/terminal/emu"
 	"pkt.systems/lingon/internal/trace"
@@ -46,11 +47,18 @@ type localSession struct {
 	cmd     *exec.Cmd
 	writeMu sync.Mutex
 
-	emuMu    sync.Mutex
-	emulator terminal.Emulator
+	emuMu       sync.Mutex
+	emulator    terminal.Emulator
+	preserveEmu *emu.Emulator
 
-	snapMu   sync.RWMutex
-	snapshot *protocolpb.Snapshot
+	snapMu            sync.RWMutex
+	snapshot          *protocolpb.Snapshot
+	preserved         *protocolpb.Snapshot
+	preserveOriginCol int
+	preserveOriginRow int
+	scrollMu          sync.RWMutex
+	scroll            []terminal.ScrollbackRow
+	pending           []terminal.ScrollbackRow
 
 	holderMu sync.Mutex
 	holderID string
@@ -69,6 +77,8 @@ type localSession struct {
 	clock  clock.Clock
 	trace  *trace.Writer
 
+	allowRemoteResize bool
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -77,21 +87,29 @@ type localSession struct {
 	onSnapshot  func(terminal.Snapshot)
 	onExit      func(id string, err error)
 	csiState    csiParser
-	oscState    oscParser
+	oscState    oscStreamParser
 	cursorQuery func(terminal.Snapshot) (row, col int, ok bool)
 
 	oscDefaultsMu    sync.RWMutex
 	oscDefaultFg     string
 	oscDefaultBg     string
 	oscDefaultCursor string
+	oscEchoState     oscEchoParser
 
 	recentInputMu sync.Mutex
 	recentInput   []byte
+
+	remoteInputCh chan []byte
+	outputNotify  chan struct{}
+
+	resizeRedrawMu      sync.Mutex
+	ignoreNextPTYOutput bool
 }
 
 var errPTYNotReady = errors.New("pty not initialized")
 
 const recentInputLimit = 512
+const remoteLineOutputTimeout = 40 * time.Millisecond
 
 func (s *localSession) recordRecentInput(data []byte) {
 	if len(data) == 0 {
@@ -120,6 +138,81 @@ func (s *localSession) recentInputSnapshot() []byte {
 	out := make([]byte, len(s.recentInput))
 	copy(out, s.recentInput)
 	return out
+}
+
+func (s *localSession) resetOutputNotify() {
+	if s == nil || s.outputNotify == nil {
+		return
+	}
+	for {
+		select {
+		case <-s.outputNotify:
+		default:
+			return
+		}
+	}
+}
+
+func (s *localSession) notifyOutput() {
+	if s == nil || s.outputNotify == nil {
+		return
+	}
+	select {
+	case s.outputNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (s *localSession) waitForOutputWall(timeout time.Duration) bool {
+	if s == nil || s.outputNotify == nil || timeout <= 0 {
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-s.ctx.Done():
+		return false
+	case <-timer.C:
+		return false
+	case <-s.outputNotify:
+		return true
+	}
+}
+
+func (s *localSession) armIgnoreNextPTYOutput() {
+	s.resizeRedrawMu.Lock()
+	s.ignoreNextPTYOutput = true
+	s.resizeRedrawMu.Unlock()
+}
+
+func (s *localSession) clearIgnoredPTYOutput() {
+	s.resizeRedrawMu.Lock()
+	s.ignoreNextPTYOutput = false
+	s.resizeRedrawMu.Unlock()
+}
+
+func (s *localSession) shouldIgnoreNextPTYOutput(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	s.resizeRedrawMu.Lock()
+	defer s.resizeRedrawMu.Unlock()
+	if !s.ignoreNextPTYOutput {
+		return false
+	}
+	if localOutputForcesFullRedraw(data) {
+		s.ignoreNextPTYOutput = false
+		return false
+	}
+	if bytes.IndexByte(data, 0x1b) >= 0 {
+		return true
+	}
+	if bytes.ContainsAny(data, "\r\n") {
+		s.ignoreNextPTYOutput = false
+		return false
+	}
+	s.ignoreNextPTYOutput = false
+	return false
 }
 
 func (s *localSession) emuAltScreenActive() (bool, bool) {
@@ -152,6 +245,88 @@ func (s *localSession) setInlineOriginRow(row int) {
 		return
 	}
 	setter.SetInlineOriginRow(row)
+}
+
+func (s *localSession) loadEmulatorSnapshot(snap *protocolpb.Snapshot) {
+	if snap == nil {
+		return
+	}
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	if s.emulator == nil {
+		return
+	}
+	type snapshotLoader interface {
+		LoadSnapshot(terminal.Snapshot)
+	}
+	loader, ok := s.emulator.(snapshotLoader)
+	if !ok {
+		return
+	}
+	loader.LoadSnapshot(protocol.SnapshotFromProto(snap))
+}
+
+func (s *localSession) ensurePreserveEmulator(base *protocolpb.Snapshot) {
+	if base == nil {
+		return
+	}
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	if s.preserveEmu == nil {
+		s.preserveEmu = emu.New(int(base.GetCols()), int(base.GetRows()))
+		s.preserveEmu.SetScrollbackLimit(s.scrollbackLines)
+	}
+	s.preserveEmu.LoadSnapshot(protocol.SnapshotFromProto(base))
+}
+
+func (s *localSession) resizePreserveEmulatorUp(cols, rows int) *protocolpb.Snapshot {
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	if s.preserveEmu == nil {
+		return nil
+	}
+	snap, err := s.preserveEmu.Snapshot()
+	if err != nil {
+		return nil
+	}
+	nextCols := snap.Cols
+	nextRows := snap.Rows
+	if cols > nextCols {
+		nextCols = cols
+	}
+	if rows > nextRows {
+		nextRows = rows
+	}
+	if nextCols != snap.Cols || nextRows != snap.Rows {
+		s.preserveEmu.Resize(nextCols, nextRows)
+		snap, err = s.preserveEmu.Snapshot()
+		if err != nil {
+			return nil
+		}
+	}
+	return protocol.SnapshotToProto(snap)
+}
+
+func (s *localSession) preservedEmulatorActive() bool {
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	return s.preserveEmu != nil
+}
+
+func (s *localSession) writePreservedEmulator(data []byte) (*protocolpb.Snapshot, []terminal.ScrollbackRow) {
+	s.emuMu.Lock()
+	defer s.emuMu.Unlock()
+	if s.preserveEmu == nil {
+		return nil, nil
+	}
+	if err := s.preserveEmu.Write(data); err != nil {
+		return nil, nil
+	}
+	snap, err := s.preserveEmu.Snapshot()
+	if err != nil {
+		return nil, nil
+	}
+	return protocol.SnapshotToProto(snap), s.preserveEmu.DrainScrollback()
 }
 
 func inlineOriginRow(cursorRow, viewportRow, totalRows int) int {
@@ -239,26 +414,27 @@ func analyzeRecentInput(data []byte) recentInputSignals {
 }
 
 type localSessionOptions struct {
-	ID              string
-	Name            string
-	Shell           string
-	Term            string
-	Cols            int
-	Rows            int
-	ScrollbackLines int
-	Respawn         bool
-	Offline         bool
-	Logger          pslog.Logger
-	Clock           clock.Clock
-	OnOutput        func(id string, data []byte, snap *protocolpb.Snapshot)
-	OnPTYRead       func([]byte)
-	OnSnapshot      func(terminal.Snapshot)
-	OnExit          func(id string, err error)
-	CursorQuery     func(terminal.Snapshot) (row, col int, ok bool)
-	Trace           *trace.Writer
-	DefaultFg       string
-	DefaultBg       string
-	DefaultCursor   string
+	ID                string
+	Name              string
+	Shell             string
+	Term              string
+	Cols              int
+	Rows              int
+	ScrollbackLines   int
+	Respawn           bool
+	Offline           bool
+	Logger            pslog.Logger
+	Clock             clock.Clock
+	OnOutput          func(id string, data []byte, snap *protocolpb.Snapshot)
+	OnPTYRead         func([]byte)
+	OnSnapshot        func(terminal.Snapshot)
+	OnExit            func(id string, err error)
+	CursorQuery       func(terminal.Snapshot) (row, col int, ok bool)
+	Trace             *trace.Writer
+	DefaultFg         string
+	DefaultBg         string
+	DefaultCursor     string
+	AllowRemoteResize bool
 }
 
 func newLocalSession(parent context.Context, opts localSessionOptions) *localSession {
@@ -272,25 +448,28 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 		clk = clock.New()
 	}
 	session := &localSession{
-		id:              opts.ID,
-		name:            opts.Name,
-		shell:           opts.Shell,
-		term:            opts.Term,
-		cols:            opts.Cols,
-		rows:            opts.Rows,
-		scrollbackLines: opts.ScrollbackLines,
-		respawn:         opts.Respawn,
-		offline:         opts.Offline,
-		logger:          logger,
-		clock:           clk,
-		ctx:             ctx,
-		cancel:          cancel,
-		onOutput:        opts.OnOutput,
-		onPTYRead:       opts.OnPTYRead,
-		onSnapshot:      opts.OnSnapshot,
-		onExit:          opts.OnExit,
-		cursorQuery:     opts.CursorQuery,
-		trace:           opts.Trace,
+		id:                opts.ID,
+		name:              opts.Name,
+		shell:             opts.Shell,
+		term:              opts.Term,
+		cols:              opts.Cols,
+		rows:              opts.Rows,
+		scrollbackLines:   opts.ScrollbackLines,
+		respawn:           opts.Respawn,
+		offline:           opts.Offline,
+		logger:            logger,
+		clock:             clk,
+		ctx:               ctx,
+		cancel:            cancel,
+		onOutput:          opts.OnOutput,
+		onPTYRead:         opts.OnPTYRead,
+		onSnapshot:        opts.OnSnapshot,
+		onExit:            opts.OnExit,
+		cursorQuery:       opts.CursorQuery,
+		trace:             opts.Trace,
+		allowRemoteResize: opts.AllowRemoteResize,
+		remoteInputCh:     make(chan []byte, 256),
+		outputNotify:      make(chan struct{}, 1),
 	}
 	if opts.Cols > 0 && opts.Rows > 0 {
 		session.snapshot = &protocolpb.Snapshot{
@@ -300,8 +479,10 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 			Cursor:        &protocolpb.Cursor{X: 0, Y: 0},
 			CursorVisible: true,
 		}
+		session.preserved = cloneSnapshot(session.snapshot)
 	}
 	session.setOscDefaults(opts.DefaultFg, opts.DefaultBg, opts.DefaultCursor)
+	go session.runRemoteInput()
 	return session
 }
 
@@ -313,6 +494,10 @@ func (s *localSession) Name() string {
 	return s.name
 }
 
+func (s *localSession) AllowRemoteResize() bool {
+	return s != nil && s.allowRemoteResize
+}
+
 func (s *localSession) SetPublisher(p *host.Publisher) {
 	s.publisher = p
 	if p != nil {
@@ -322,12 +507,116 @@ func (s *localSession) SetPublisher(p *host.Publisher) {
 }
 
 func (s *localSession) scrollbackSnapshot() []terminal.ScrollbackRow {
-	s.emuMu.Lock()
-	defer s.emuMu.Unlock()
-	if scrollback, ok := s.emulator.(*emu.Emulator); ok {
-		return scrollback.ScrollbackSnapshot()
+	s.scrollMu.RLock()
+	defer s.scrollMu.RUnlock()
+	if len(s.scroll) == 0 {
+		return nil
 	}
-	return nil
+	out := make([]terminal.ScrollbackRow, len(s.scroll))
+	for i, row := range s.scroll {
+		cells := make([]terminal.Cell, len(row.Cells))
+		copy(cells, row.Cells)
+		out[i] = terminal.ScrollbackRow{Cols: row.Cols, Cells: cells}
+	}
+	return out
+}
+
+func (s *localSession) appendScrollback(rows []terminal.ScrollbackRow) []terminal.ScrollbackRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	s.scrollMu.Lock()
+	defer s.scrollMu.Unlock()
+	appended := make([]terminal.ScrollbackRow, len(rows))
+	for i, row := range rows {
+		cells := make([]terminal.Cell, len(row.Cells))
+		copy(cells, row.Cells)
+		appended[i] = terminal.ScrollbackRow{Cols: row.Cols, Cells: cells}
+	}
+	s.scroll = append(s.scroll, appended...)
+	if s.scrollbackLines > 0 && len(s.scroll) > s.scrollbackLines {
+		extra := len(s.scroll) - s.scrollbackLines
+		s.scroll = append([]terminal.ScrollbackRow(nil), s.scroll[extra:]...)
+	}
+	return appended
+}
+
+func cloneScrollbackRows(rows []terminal.ScrollbackRow) []terminal.ScrollbackRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]terminal.ScrollbackRow, len(rows))
+	for i, row := range rows {
+		cells := make([]terminal.Cell, len(row.Cells))
+		copy(cells, row.Cells)
+		out[i] = terminal.ScrollbackRow{Cols: row.Cols, Cells: cells}
+	}
+	return out
+}
+
+func snapshotToScrollbackRows(snap *protocolpb.Snapshot) []terminal.ScrollbackRow {
+	if snap == nil {
+		return nil
+	}
+	cols := int(snap.GetCols())
+	rows := int(snap.GetRows())
+	if cols <= 0 || rows <= 0 {
+		return nil
+	}
+	out := make([]terminal.ScrollbackRow, 0, rows)
+	for y := 0; y < rows; y++ {
+		cells := make([]terminal.Cell, cols)
+		rowStart := y * cols
+		for x := 0; x < cols; x++ {
+			idx := rowStart + x
+			cell := terminal.Cell{}
+			if idx < len(snap.Runes) {
+				cell.Rune = rune(snap.Runes[idx])
+			}
+			if idx < len(snap.Modes) {
+				cell.Mode = int16(snap.Modes[idx])
+			}
+			if idx < len(snap.Fg) {
+				cell.FG = snap.Fg[idx]
+			}
+			if idx < len(snap.Bg) {
+				cell.BG = snap.Bg[idx]
+			}
+			if idx < len(snap.Graphemes) {
+				cell.Grapheme = snap.Graphemes[idx]
+			}
+			cells[x] = cell
+		}
+		out = append(out, terminal.ScrollbackRow{Cols: cols, Cells: cells})
+	}
+	return out
+}
+
+func (s *localSession) setPendingPreservedScrollbackFromSnapshot(snap *protocolpb.Snapshot) {
+	rows := snapshotToScrollbackRows(snap)
+	s.scrollMu.Lock()
+	s.pending = rows
+	s.scrollMu.Unlock()
+}
+
+func (s *localSession) drainScrollbackRows(drained []terminal.ScrollbackRow) []terminal.ScrollbackRow {
+	if len(drained) == 0 {
+		return nil
+	}
+	s.scrollMu.Lock()
+	defer s.scrollMu.Unlock()
+	if len(s.pending) == 0 {
+		return cloneScrollbackRows(drained)
+	}
+	replace := len(drained)
+	if replace > len(s.pending) {
+		replace = len(s.pending)
+	}
+	out := make([]terminal.ScrollbackRow, 0, len(drained))
+	out = append(out, cloneScrollbackRows(s.pending[:replace])...)
+	out = append(out, cloneScrollbackRows(drained[replace:])...)
+	s.pending = append([]terminal.ScrollbackRow(nil), s.pending[replace:]...)
+	return out
 }
 
 func (s *localSession) SetLastActive(t time.Time) {
@@ -359,6 +648,19 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 		return nil, fmt.Errorf("invalid size")
 	}
 	s.emuMu.Lock()
+	prevCols := s.cols
+	prevRows := s.rows
+	if !s.allowRemoteResize && (cols != prevCols || rows != prevRows) {
+		s.armIgnoreNextPTYOutput()
+	} else {
+		s.clearIgnoredPTYOutput()
+	}
+	prevSnap := cloneSnapshot(s.Snapshot())
+	prevPreserved, prevOriginCol, prevOriginRow := func() (*protocolpb.Snapshot, int, int) {
+		s.snapMu.RLock()
+		defer s.snapMu.RUnlock()
+		return cloneSnapshot(s.preserved), s.preserveOriginCol, s.preserveOriginRow
+	}()
 	s.cols = cols
 	s.rows = rows
 	err := s.resizePTY(cols, rows)
@@ -383,15 +685,154 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	if snapErr != nil {
 		return nil, snapErr
 	}
-	snap := protocol.SnapshotToProto(rawSnap)
-	s.storeSnapshot(snap)
+	if s.allowRemoteResize {
+		if s.onSnapshot != nil {
+			s.onSnapshot(rawSnap)
+		}
+		snap := protocol.SnapshotToProto(rawSnap)
+		s.snapMu.Lock()
+		s.snapshot = snap
+		s.preserved = cloneSnapshot(snap)
+		s.preserveOriginCol = 0
+		s.preserveOriginRow = 0
+		s.snapMu.Unlock()
+		return snap, nil
+	}
+	if prevPreserved == nil {
+		if prevSnap != nil {
+			prevPreserved = cloneSnapshot(prevSnap)
+		} else {
+			prevPreserved = cloneSnapshot(protocol.SnapshotToProto(rawSnap))
+		}
+	}
+	if prevSnap == nil {
+		prevSnap = cropSnapshotToViewport(prevPreserved, prevOriginCol, prevOriginRow, prevCols, prevRows)
+	}
+	relOriginCol, relOriginRow := viewportOriginForSnapshot(prevSnap, cols, rows)
+	nextOriginCol, nextOriginRow := normalizeViewportOrigin(
+		prevPreserved,
+		prevOriginCol+relOriginCol,
+		prevOriginRow+relOriginRow,
+		cols,
+		rows,
+	)
+	if (cols < prevCols || rows < prevRows) && prevSnap != nil {
+		s.ensurePreserveEmulator(prevPreserved)
+		s.setPendingPreservedScrollbackFromSnapshot(prevSnap)
+		s.appendScrollback(hiddenRowsFromViewport(prevSnap, relOriginRow, rows))
+		preservedSnap := prevPreserved
+		if emuSnap := s.resizePreserveEmulatorUp(cols, rows); emuSnap != nil {
+			preservedSnap = emuSnap
+		}
+		s.snapMu.Lock()
+		s.preserved = preservedSnap
+		s.preserveOriginCol = nextOriginCol
+		s.preserveOriginRow = nextOriginRow
+		s.snapshot = cropSnapshotToViewport(preservedSnap, nextOriginCol, nextOriginRow, cols, rows)
+		snap := s.snapshot
+		s.snapMu.Unlock()
+		return snap, nil
+	}
+	if preservedSnap := s.resizePreserveEmulatorUp(cols, rows); preservedSnap != nil {
+		prevPreserved = preservedSnap
+	}
+	displayOriginCol, displayOriginRow := viewportOriginForSnapshot(prevPreserved, cols, rows)
+	displayOriginCol, displayOriginRow = normalizeViewportOrigin(prevPreserved, displayOriginCol, displayOriginRow, cols, rows)
+	s.snapMu.Lock()
+	s.preserved = prevPreserved
+	s.preserveOriginCol = displayOriginCol
+	s.preserveOriginRow = displayOriginRow
+	s.snapshot = cropSnapshotToViewport(prevPreserved, displayOriginCol, displayOriginRow, cols, rows)
+	snap := s.snapshot
+	s.snapMu.Unlock()
+	if cols > prevCols || rows > prevRows {
+		s.loadEmulatorSnapshot(snap)
+	}
 	return snap, nil
 }
 
-func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot) {
+func (s *localSession) storeSnapshot(snap *protocolpb.Snapshot, scrolledRows int) *protocolpb.Snapshot {
 	s.snapMu.Lock()
-	s.snapshot = snap
+	prevVisible := cloneSnapshot(s.snapshot)
+	if detected := detectViewportScrollUp(prevVisible, snap); detected > scrolledRows {
+		scrolledRows = detected
+	}
+	if scrolledRows > 0 {
+		s.preserved = scrollSnapshotUp(s.preserved, scrolledRows)
+		s.preserveOriginRow += scrolledRows
+		s.preserveOriginCol, s.preserveOriginRow = normalizeViewportOrigin(
+			s.preserved,
+			s.preserveOriginCol,
+			s.preserveOriginRow,
+			int(snap.GetCols()),
+			int(snap.GetRows()),
+		)
+	}
+	s.preserved = mergePreservedSnapshotAt(
+		s.preserved,
+		snap,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
+		int(snap.GetCols()),
+		int(snap.GetRows()),
+	)
+	s.preserveOriginCol, s.preserveOriginRow = normalizeViewportOrigin(
+		s.preserved,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
+		int(snap.GetCols()),
+		int(snap.GetRows()),
+	)
+	s.snapshot = cropSnapshotToViewport(
+		s.preserved,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
+		int(snap.GetCols()),
+		int(snap.GetRows()),
+	)
+	stored := s.snapshot
 	s.snapMu.Unlock()
+	return stored
+}
+
+func (s *localSession) storePreservedSnapshot(preserved *protocolpb.Snapshot, viewCols, viewRows int) *protocolpb.Snapshot {
+	s.snapMu.Lock()
+	s.preserved = cloneSnapshot(preserved)
+	nextOriginCol, nextOriginRow := viewportOriginForSnapshot(s.preserved, viewCols, viewRows)
+	s.preserveOriginCol, s.preserveOriginRow = normalizeViewportOrigin(
+		s.preserved,
+		nextOriginCol,
+		nextOriginRow,
+		viewCols,
+		viewRows,
+	)
+	s.snapshot = cropSnapshotToViewport(
+		s.preserved,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
+		viewCols,
+		viewRows,
+	)
+	stored := s.snapshot
+	s.snapMu.Unlock()
+	return stored
+}
+
+func (s *localSession) storeResetSnapshot(snap *protocolpb.Snapshot, viewCols, viewRows int) *protocolpb.Snapshot {
+	s.snapMu.Lock()
+	s.preserved = cloneSnapshot(snap)
+	s.preserveOriginCol = 0
+	s.preserveOriginRow = 0
+	s.snapshot = cropSnapshotToViewport(
+		s.preserved,
+		s.preserveOriginCol,
+		s.preserveOriginRow,
+		viewCols,
+		viewRows,
+	)
+	stored := s.snapshot
+	s.snapMu.Unlock()
+	return stored
 }
 
 func (s *localSession) RespawnEnabled() bool {
@@ -435,7 +876,11 @@ func (s *localSession) ToggleOffline() bool {
 }
 
 func (s *localSession) Stop() {
-	s.notifyRemoteSessionClosed("stopped")
+	s.StopWithReason("stopped")
+}
+
+func (s *localSession) StopWithReason(reason string) {
+	s.notifyRemoteSessionClosed(reason)
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -452,14 +897,33 @@ func (s *localSession) notifyRemoteSessionClosed(reason string) {
 }
 
 func (s *localSession) writePTY(data []byte) (int, error) {
+	return s.writePTYWithMode(data, false)
+}
+
+func (s *localSession) writeTerminalReply(data []byte) (int, error) {
+	return s.writePTYWithMode(data, true)
+}
+
+func (s *localSession) writePTYWithMode(data []byte, disableEcho bool) (int, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if len(data) > 0 {
+		s.clearIgnoredPTYOutput()
+	}
 	s.ptyMu.RLock()
 	ptyFile := s.pty
+	ttyFile := s.tty
 	s.ptyMu.RUnlock()
 	if ptyFile == nil {
 		return 0, errPTYNotReady
 	}
+	restoreEcho := func() {}
+	if disableEcho && ttyFile != nil {
+		if restore, err := disableTTYEcho(ttyFile); err == nil && restore != nil {
+			restoreEcho = restore
+		}
+	}
+	defer restoreEcho()
 	sleep := time.Sleep
 	if s.clock != nil {
 		sleep = s.clock.Sleep
@@ -622,6 +1086,52 @@ func (s *localSession) applyVEOF(holderID string) {
 	_ = setVEOF(ttyFile, target)
 }
 
+func (s *localSession) enqueueRemoteInput(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	payload := append([]byte(nil), data...)
+	select {
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case s.remoteInputCh <- payload:
+		return nil
+	}
+}
+
+func (s *localSession) runRemoteInput() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case data := <-s.remoteInputCh:
+			s.processRemoteInput(data)
+		}
+	}
+}
+
+func (s *localSession) processRemoteInput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	if !inputAllLines(data) {
+		if _, err := s.writePTY(data); err != nil && s.logger != nil && !errors.Is(err, errPTYNotReady) && !errors.Is(err, context.Canceled) {
+			s.logger.Debug("session.remote.input.write.failed", "err", err, "session", s.id)
+		}
+		return
+	}
+	for _, b := range data {
+		s.resetOutputNotify()
+		if _, err := s.writePTY([]byte{b}); err != nil {
+			if s.logger != nil && !errors.Is(err, errPTYNotReady) && !errors.Is(err, context.Canceled) {
+				s.logger.Debug("session.remote.input.write.failed", "err", err, "session", s.id)
+			}
+			return
+		}
+		s.waitForOutputWall(remoteLineOutputTimeout)
+	}
+}
+
 func (s *localSession) closePTY() {
 	s.ptyMu.Lock()
 	ptyFile := s.pty
@@ -742,7 +1252,7 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	rawSnap, snapErr := s.emulator.Snapshot()
 	s.emuMu.Unlock()
 	if snapErr == nil {
-		s.storeSnapshot(protocol.SnapshotToProto(rawSnap))
+		s.storeSnapshot(protocol.SnapshotToProto(rawSnap), 0)
 	}
 	_ = setNonblock(ptyFile, true)
 	defer func() {
@@ -779,9 +1289,11 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				copy(cp, data)
 				s.onPTYRead(cp)
 			}
+			filtered := s.filterOSCOutput(data)
+			suppressResizeRedraw := s.shouldIgnoreNextPTYOutput(filtered)
 			var scrollRows []terminal.ScrollbackRow
 			s.emuMu.Lock()
-			if err := s.emulator.Write(data); err != nil {
+			if err := s.emulator.Write(filtered); err != nil {
 				s.logger.Debug("session.emulator.write.failed", "err", err, "session", s.id)
 			}
 			rawSnap, err := s.emulator.Snapshot()
@@ -797,19 +1309,47 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				}
 				return
 			}
+			if suppressResizeRedraw {
+				continue
+			}
 			if s.onSnapshot != nil {
 				s.onSnapshot(rawSnap)
 			}
-			snap := protocol.SnapshotToProto(rawSnap)
-			s.storeSnapshot(snap)
-			if s.onOutput != nil {
-				s.onOutput(s.id, data, snap)
+			protoSnap := protocol.SnapshotToProto(rawSnap)
+			snap := protoSnap
+			resetViewport := !s.allowRemoteResize && localOutputForcesFullRedraw(filtered)
+			if !s.allowRemoteResize && s.preservedEmulatorActive() {
+				if preservedSnap, preservedScroll := s.writePreservedEmulator(filtered); preservedSnap != nil {
+					if resetViewport {
+						snap = s.storeResetSnapshot(preservedSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+					} else {
+						snap = s.storePreservedSnapshot(preservedSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+					}
+					scrollRows = preservedScroll
+				} else {
+					if resetViewport {
+						snap = s.storeResetSnapshot(protoSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+					} else {
+						snap = s.storeSnapshot(protoSnap, len(scrollRows))
+					}
+				}
+			} else {
+				if resetViewport {
+					snap = s.storeResetSnapshot(protoSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+				} else {
+					snap = s.storeSnapshot(protoSnap, len(scrollRows))
+				}
 			}
+			scrollRows = s.appendScrollback(s.drainScrollbackRows(scrollRows))
+			if s.onOutput != nil {
+				s.onOutput(s.id, filtered, snap)
+			}
+			s.notifyOutput()
 			if s.publisher != nil {
 				if len(scrollRows) > 0 {
 					s.publisher.PublishScrollback(scrollRows, int(snap.Cols), false)
 				}
-				s.publisher.Publish(data, snap)
+				s.publisher.Publish(filtered, snap)
 			}
 		}
 	}()
@@ -830,33 +1370,464 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	return nil
 }
 
-func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snapshot) {
-	s.recordRecentInput(data)
-	for _, b := range data {
-		if code, payload, ok := s.oscState.Feed(b); ok {
-			if payload == "?" {
-				color := s.oscQueryColor(code)
-				if color != "" {
-					resp := []byte(fmt.Sprintf("\x1b]%d;%s\x07", code, color))
-					if s.trace != nil {
-						s.trace.Event("osc_query_request", map[string]any{
-							"component":  "host",
-							"session_id": s.id,
-							"code":       code,
-						})
-					}
-					if s.trace != nil {
-						s.trace.Event("osc_query_response", map[string]any{
-							"component":  "host",
-							"session_id": s.id,
-							"code":       code,
-							"response":   trace.SummarizeBytes(resp, 120),
-						})
-					}
-					_, _ = s.writePTY(resp)
+func scrollSnapshotUp(snap *protocolpb.Snapshot, rows int) *protocolpb.Snapshot {
+	if snap == nil || rows <= 0 {
+		return cloneSnapshot(snap)
+	}
+	cols := int(snap.GetCols())
+	totalRows := int(snap.GetRows())
+	if cols <= 0 || totalRows <= 0 {
+		return cloneSnapshot(snap)
+	}
+	if rows >= totalRows {
+		out := blankSnapshot(cols, totalRows)
+		out.Mode = snap.GetMode()
+		out.Title = snap.GetTitle()
+		out.CursorVisible = snap.GetCursorVisible()
+		return out
+	}
+	out := blankSnapshot(cols, totalRows)
+	out.Mode = snap.GetMode()
+	out.Title = snap.GetTitle()
+	out.CursorVisible = snap.GetCursorVisible()
+	copySnapshotRegionFromOffset(out, snap, 0, rows, cols, totalRows-rows)
+	if snap.Cursor != nil {
+		cursorY := int(snap.Cursor.GetY()) - rows
+		if cursorY < 0 {
+			cursorY = 0
+		}
+		cursorX := int(snap.Cursor.GetX())
+		if cursorX < 0 {
+			cursorX = 0
+		}
+		if cursorX >= cols {
+			cursorX = cols - 1
+		}
+		out.Cursor = &protocolpb.Cursor{X: uint32(cursorX), Y: uint32(cursorY)}
+	}
+	return out
+}
+
+func detectViewportScrollUp(prev, current *protocolpb.Snapshot) int {
+	if prev == nil || current == nil {
+		return 0
+	}
+	if prev.GetCols() != current.GetCols() || prev.GetRows() != current.GetRows() {
+		return 0
+	}
+	rows := int(current.GetRows())
+	for shift := 1; shift < rows; shift++ {
+		match := true
+		for row := 0; row < rows-shift && match; row++ {
+			if !snapshotRowsEqual(prev, row+shift, current, row) {
+				match = false
+			}
+		}
+		if match {
+			return shift
+		}
+	}
+	return 0
+}
+
+func snapshotRowsEqual(a *protocolpb.Snapshot, aRow int, b *protocolpb.Snapshot, bRow int) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	aCols := int(a.GetCols())
+	bCols := int(b.GetCols())
+	if aCols != bCols || aRow < 0 || bRow < 0 || aRow >= int(a.GetRows()) || bRow >= int(b.GetRows()) {
+		return false
+	}
+	for col := 0; col < aCols; col++ {
+		if snapshotCellKey(a, aRow*aCols+col) != snapshotCellKey(b, bRow*bCols+col) {
+			return false
+		}
+	}
+	return true
+}
+
+func snapshotCellKey(snap *protocolpb.Snapshot, idx int) string {
+	var runeVal uint32
+	if idx < len(snap.GetRunes()) {
+		runeVal = snap.GetRunes()[idx]
+	}
+	var modeVal int32
+	if idx < len(snap.GetModes()) {
+		modeVal = snap.GetModes()[idx]
+	}
+	var fgVal uint32
+	if idx < len(snap.GetFg()) {
+		fgVal = snap.GetFg()[idx]
+	}
+	var bgVal uint32
+	if idx < len(snap.GetBg()) {
+		bgVal = snap.GetBg()[idx]
+	}
+	var grapheme string
+	if idx < len(snap.GetGraphemes()) {
+		grapheme = snap.GetGraphemes()[idx]
+	}
+	return fmt.Sprintf("%d/%d/%d/%d/%s", runeVal, modeVal, fgVal, bgVal, grapheme)
+}
+
+func mergePreservedSnapshotAt(prev, current *protocolpb.Snapshot, originCol, originRow, overlayCols, overlayRows int) *protocolpb.Snapshot {
+	if current == nil {
+		return cloneSnapshot(prev)
+	}
+	if prev == nil {
+		return cloneSnapshot(current)
+	}
+	prevAlt := prev.GetMode()&terminal.SnapshotModeAltScreen != 0
+	currAlt := current.GetMode()&terminal.SnapshotModeAltScreen != 0
+	if prevAlt != currAlt {
+		return cloneSnapshot(current)
+	}
+
+	prevCols := int(prev.GetCols())
+	prevRows := int(prev.GetRows())
+	currCols := int(current.GetCols())
+	currRows := int(current.GetRows())
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	outCols := maxInt(prevCols, originCol+currCols)
+	outRows := maxInt(prevRows, originRow+currRows)
+	out := blankSnapshot(outCols, outRows)
+	out.Mode = current.GetMode()
+	out.Title = current.GetTitle()
+	out.CursorVisible = current.GetCursorVisible()
+	if current.Cursor != nil {
+		cursorX := originCol + int(current.Cursor.GetX())
+		cursorY := originRow + int(current.Cursor.GetY())
+		if cursorX < 0 {
+			cursorX = 0
+		}
+		if cursorY < 0 {
+			cursorY = 0
+		}
+		if cursorX >= outCols {
+			cursorX = outCols - 1
+		}
+		if cursorY >= outRows {
+			cursorY = outRows - 1
+		}
+		out.Cursor = &protocolpb.Cursor{X: uint32(cursorX), Y: uint32(cursorY)}
+	}
+
+	copySnapshotRegion(out, prev, int(prev.GetCols()), int(prev.GetRows()))
+	copySnapshotRegionAtOffset(out, current, originCol, originRow, overlayCols, overlayRows)
+	return out
+}
+
+func hiddenRowsFromViewport(snap *protocolpb.Snapshot, originRow, visibleRows int) []terminal.ScrollbackRow {
+	rows := snapshotToScrollbackRows(snap)
+	if len(rows) == 0 {
+		return nil
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	if visibleRows < 0 {
+		visibleRows = 0
+	}
+	if originRow >= len(rows) {
+		return cloneScrollbackRows(rows)
+	}
+	end := originRow + visibleRows
+	if end > len(rows) {
+		end = len(rows)
+	}
+	if originRow == 0 && end >= len(rows) {
+		return nil
+	}
+	out := make([]terminal.ScrollbackRow, 0, originRow+len(rows)-end)
+	out = append(out, cloneScrollbackRows(rows[:originRow])...)
+	out = append(out, cloneScrollbackRows(rows[end:])...)
+	return out
+}
+
+func cloneSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
+	if snap == nil {
+		return nil
+	}
+	out := &protocolpb.Snapshot{
+		Cols:          snap.GetCols(),
+		Rows:          snap.GetRows(),
+		Runes:         append([]uint32(nil), snap.GetRunes()...),
+		Modes:         append([]int32(nil), snap.GetModes()...),
+		Fg:            append([]uint32(nil), snap.GetFg()...),
+		Bg:            append([]uint32(nil), snap.GetBg()...),
+		CursorVisible: snap.GetCursorVisible(),
+		Mode:          snap.GetMode(),
+		Title:         snap.GetTitle(),
+		Graphemes:     append([]string(nil), snap.GetGraphemes()...),
+	}
+	if snap.Cursor != nil {
+		out.Cursor = &protocolpb.Cursor{X: snap.Cursor.GetX(), Y: snap.Cursor.GetY()}
+	}
+	return out
+}
+
+func cropSnapshotToViewport(snap *protocolpb.Snapshot, originCol, originRow, cols, rows int) *protocolpb.Snapshot {
+	if snap == nil {
+		return nil
+	}
+	if cols <= 0 {
+		cols = int(snap.GetCols())
+	}
+	if rows <= 0 {
+		rows = int(snap.GetRows())
+	}
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	out := blankSnapshot(cols, rows)
+	out.Mode = snap.GetMode()
+	out.Title = snap.GetTitle()
+	out.CursorVisible = snap.GetCursorVisible()
+	if snap.Cursor != nil {
+		cursorX := int(snap.Cursor.GetX()) - originCol
+		cursorY := int(snap.Cursor.GetY()) - originRow
+		if cols > 0 && cursorX >= cols {
+			cursorX = cols - 1
+		}
+		if rows > 0 && cursorY >= rows {
+			cursorY = rows - 1
+		}
+		if cursorX < 0 {
+			cursorX = 0
+		}
+		if cursorY < 0 {
+			cursorY = 0
+		}
+		out.Cursor = &protocolpb.Cursor{X: uint32(cursorX), Y: uint32(cursorY)}
+	}
+	copySnapshotRegionFromOffset(out, snap, originCol, originRow, cols, rows)
+	return out
+}
+
+func viewportOriginForSnapshot(snap *protocolpb.Snapshot, viewCols, viewRows int) (int, int) {
+	if snap == nil {
+		return 0, 0
+	}
+	cols := int(snap.GetCols())
+	rows := int(snap.GetRows())
+	cursorX := 0
+	cursorY := 0
+	if snap.Cursor != nil {
+		cursorX = int(snap.Cursor.GetX())
+		cursorY = int(snap.Cursor.GetY())
+	}
+	if cursorX < 0 {
+		cursorX = 0
+	}
+	if cursorY < 0 {
+		cursorY = 0
+	}
+	if cols > 0 && cursorX >= cols {
+		cursorX = cols - 1
+	}
+	if rows > 0 && cursorY >= rows {
+		cursorY = rows - 1
+	}
+	return render.ViewportOriginForCursor(cols, rows, viewCols, viewRows, cursorX, cursorY)
+}
+
+func normalizeViewportOrigin(snap *protocolpb.Snapshot, originCol, originRow, viewCols, viewRows int) (int, int) {
+	if snap == nil {
+		if originCol < 0 {
+			originCol = 0
+		}
+		if originRow < 0 {
+			originRow = 0
+		}
+		return originCol, originRow
+	}
+	cols := int(snap.GetCols())
+	rows := int(snap.GetRows())
+	maxCol := cols - viewCols
+	maxRow := rows - viewRows
+	if maxCol < 0 {
+		maxCol = 0
+	}
+	if maxRow < 0 {
+		maxRow = 0
+	}
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	if originCol > maxCol {
+		originCol = maxCol
+	}
+	if originRow > maxRow {
+		originRow = maxRow
+	}
+	return originCol, originRow
+}
+
+func blankSnapshot(cols, rows int) *protocolpb.Snapshot {
+	if cols <= 0 {
+		cols = 1
+	}
+	if rows <= 0 {
+		rows = 1
+	}
+	size := cols * rows
+	return &protocolpb.Snapshot{
+		Cols:  uint32(cols),
+		Rows:  uint32(rows),
+		Runes: make([]uint32, size),
+		Modes: make([]int32, size),
+		Fg:    make([]uint32, size),
+		Bg:    make([]uint32, size),
+	}
+}
+
+func copySnapshotRegion(dst, src *protocolpb.Snapshot, limitCols, limitRows int) {
+	copySnapshotRegionAtOffset(dst, src, 0, 0, limitCols, limitRows)
+}
+
+func copySnapshotRegionFromOffset(dst, src *protocolpb.Snapshot, originCol, originRow, limitCols, limitRows int) {
+	if dst == nil || src == nil {
+		return
+	}
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	dstCols := int(dst.GetCols())
+	dstRows := int(dst.GetRows())
+	srcCols := int(src.GetCols())
+	srcRows := int(src.GetRows())
+	rows := minInt(dstRows, srcRows-originRow)
+	cols := minInt(dstCols, srcCols-originCol)
+	if limitRows > 0 && rows > limitRows {
+		rows = limitRows
+	}
+	if limitCols > 0 && cols > limitCols {
+		cols = limitCols
+	}
+	if rows <= 0 || cols <= 0 {
+		return
+	}
+	if len(src.GetGraphemes()) > 0 && len(dst.Graphemes) == 0 {
+		dst.Graphemes = make([]string, dstCols*dstRows)
+	}
+	for y := 0; y < rows; y++ {
+		srcRow := (originRow + y) * srcCols
+		dstRow := y * dstCols
+		for x := 0; x < cols; x++ {
+			srcIdx := srcRow + originCol + x
+			dstIdx := dstRow + x
+			if srcIdx < len(src.Runes) {
+				dst.Runes[dstIdx] = src.Runes[srcIdx]
+			}
+			if srcIdx < len(src.Modes) {
+				dst.Modes[dstIdx] = src.Modes[srcIdx]
+			}
+			if srcIdx < len(src.Fg) {
+				dst.Fg[dstIdx] = src.Fg[srcIdx]
+			}
+			if srcIdx < len(src.Bg) {
+				dst.Bg[dstIdx] = src.Bg[srcIdx]
+			}
+			if len(dst.Graphemes) > 0 {
+				if srcIdx < len(src.Graphemes) {
+					dst.Graphemes[dstIdx] = src.Graphemes[srcIdx]
+				} else {
+					dst.Graphemes[dstIdx] = ""
 				}
 			}
 		}
+	}
+}
+
+func copySnapshotRegionAtOffset(dst, src *protocolpb.Snapshot, originCol, originRow, limitCols, limitRows int) {
+	if dst == nil || src == nil {
+		return
+	}
+	if originCol < 0 {
+		originCol = 0
+	}
+	if originRow < 0 {
+		originRow = 0
+	}
+	dstCols := int(dst.GetCols())
+	dstRows := int(dst.GetRows())
+	srcCols := int(src.GetCols())
+	srcRows := int(src.GetRows())
+	rows := minInt(dstRows-originRow, srcRows)
+	cols := minInt(dstCols-originCol, srcCols)
+	if limitRows > 0 && rows > limitRows {
+		rows = limitRows
+	}
+	if limitCols > 0 && cols > limitCols {
+		cols = limitCols
+	}
+	if rows <= 0 || cols <= 0 {
+		return
+	}
+	if len(src.GetGraphemes()) > 0 && len(dst.Graphemes) == 0 {
+		dst.Graphemes = make([]string, dstCols*dstRows)
+	}
+	for y := 0; y < rows; y++ {
+		srcRow := y * srcCols
+		dstRow := (originRow + y) * dstCols
+		for x := 0; x < cols; x++ {
+			srcIdx := srcRow + x
+			dstIdx := dstRow + originCol + x
+			if srcIdx < len(src.Runes) {
+				dst.Runes[dstIdx] = src.Runes[srcIdx]
+			}
+			if srcIdx < len(src.Modes) {
+				dst.Modes[dstIdx] = src.Modes[srcIdx]
+			}
+			if srcIdx < len(src.Fg) {
+				dst.Fg[dstIdx] = src.Fg[srcIdx]
+			}
+			if srcIdx < len(src.Bg) {
+				dst.Bg[dstIdx] = src.Bg[srcIdx]
+			}
+			if len(dst.Graphemes) > 0 {
+				if srcIdx < len(src.Graphemes) {
+					dst.Graphemes[dstIdx] = src.Graphemes[srcIdx]
+				} else {
+					dst.Graphemes[dstIdx] = ""
+				}
+			}
+		}
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snapshot) {
+	s.recordRecentInput(data)
+	for _, b := range data {
 		final, params, private, ok := s.csiState.Feed(b)
 		if !ok {
 			continue
@@ -888,7 +1859,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 							"response":   trace.SummarizeBytes(resp, 80),
 						})
 					}
-					_, _ = s.writePTY(resp)
+					_, _ = s.writeTerminalReply(resp)
 				case 6:
 					if s.trace != nil {
 						recent := s.recentInputSnapshot()
@@ -948,7 +1919,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 							"response":   trace.SummarizeBytes(resp, 80),
 						})
 					}
-					_, _ = s.writePTY(resp)
+					_, _ = s.writeTerminalReply(resp)
 				}
 			case '?':
 				switch params[0] {
@@ -971,7 +1942,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 							"response":   trace.SummarizeBytes(resp, 80),
 						})
 					}
-					_, _ = s.writePTY(resp)
+					_, _ = s.writeTerminalReply(resp)
 				case 6:
 					if s.trace != nil {
 						recent := s.recentInputSnapshot()
@@ -1031,7 +2002,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 							"response":   trace.SummarizeBytes(resp, 80),
 						})
 					}
-					_, _ = s.writePTY(resp)
+					_, _ = s.writeTerminalReply(resp)
 				}
 			}
 		case 'u':
@@ -1055,7 +2026,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 					"response":   trace.SummarizeBytes(resp, 80),
 				})
 			}
-			_, _ = s.writePTY(resp)
+			_, _ = s.writeTerminalReply(resp)
 		case 'c':
 			switch private {
 			case 0:
@@ -1075,7 +2046,7 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 						"response":   trace.SummarizeBytes(resp, 80),
 					})
 				}
-				_, _ = s.writePTY(resp)
+				_, _ = s.writeTerminalReply(resp)
 			case '>':
 				if s.trace != nil {
 					s.trace.Event("device_attributes_request", map[string]any{
@@ -1093,10 +2064,73 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 						"response":   trace.SummarizeBytes(resp, 80),
 					})
 				}
-				_, _ = s.writePTY(resp)
+				_, _ = s.writeTerminalReply(resp)
 			}
 		}
 	}
+}
+
+func (s *localSession) filterOSCOutput(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	for _, b := range data {
+		code, payload, raw, ok := s.oscState.Feed(b)
+		if !ok {
+			continue
+		}
+		if !s.shouldSuppressOSC(code) {
+			s.oscState.AddPassthrough(raw)
+			continue
+		}
+		if payload == "?" {
+			s.respondToOSCQuery(code)
+		}
+	}
+	return s.filterOSCEcho(s.oscState.DrainPassthrough())
+}
+
+func (s *localSession) shouldSuppressOSC(code int) bool {
+	switch code {
+	case 10, 11, 12:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *localSession) respondToOSCQuery(code int) {
+	color := s.oscQueryColor(code)
+	if color == "" {
+		return
+	}
+	resp := []byte(fmt.Sprintf("\x1b]%d;%s\x07", code, color))
+	if s.trace != nil {
+		s.trace.Event("osc_query_request", map[string]any{
+			"component":  "host",
+			"session_id": s.id,
+			"code":       code,
+		})
+	}
+	if s.trace != nil {
+		s.trace.Event("osc_query_response", map[string]any{
+			"component":  "host",
+			"session_id": s.id,
+			"code":       code,
+			"response":   trace.SummarizeBytes(resp, 120),
+		})
+	}
+	_, _ = s.writeTerminalReply(resp)
+}
+
+func (s *localSession) filterOSCEcho(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	for _, b := range data {
+		s.oscEchoState.Feed(b)
+	}
+	return s.oscEchoState.DrainPassthrough()
 }
 
 func (s *localSession) setOscDefaults(fg, bg, cursor string) {
@@ -1221,61 +2255,6 @@ func (p *csiParser) Feed(b byte) (final byte, params []int, private byte, ok boo
 	return 0, nil, 0, false
 }
 
-type oscParser struct {
-	state  int
-	oscEsc bool
-	buf    []byte
-}
-
-func (p *oscParser) reset() {
-	p.state = 0
-	p.oscEsc = false
-	p.buf = p.buf[:0]
-}
-
-func (p *oscParser) Feed(b byte) (code int, payload string, ok bool) {
-	switch p.state {
-	case 0:
-		if b == 0x1b {
-			p.state = 1
-		}
-	case 1:
-		if b == ']' {
-			p.state = 2
-			p.oscEsc = false
-			p.buf = p.buf[:0]
-		} else if b == 0x1b {
-			p.state = 1
-		} else {
-			p.state = 0
-		}
-	case 2:
-		if p.oscEsc {
-			p.oscEsc = false
-			if b == '\\' {
-				code, payload, ok = parseOSCQuery(p.buf)
-				p.reset()
-				return code, payload, ok
-			}
-			p.buf = append(p.buf, 0x1b, b)
-			return 0, "", false
-		}
-		switch b {
-		case 0x1b:
-			p.oscEsc = true
-		case 0x07:
-			code, payload, ok = parseOSCQuery(p.buf)
-			p.reset()
-			return code, payload, ok
-		default:
-			p.buf = append(p.buf, b)
-		}
-	default:
-		p.reset()
-	}
-	return 0, "", false
-}
-
 func parseOSCQuery(buf []byte) (int, string, bool) {
 	if len(buf) == 0 {
 		return 0, "", false
@@ -1293,6 +2272,91 @@ func parseOSCQuery(buf []byte) (int, string, bool) {
 		return code, string(buf[i+1:]), true
 	}
 	return code, "", true
+}
+
+type oscEchoParser struct {
+	state       int
+	raw         []byte
+	code        int
+	digits      int
+	passthrough []byte
+}
+
+func (p *oscEchoParser) reset() {
+	p.state = 0
+	p.raw = p.raw[:0]
+	p.code = 0
+	p.digits = 0
+}
+
+func (p *oscEchoParser) flushRaw() {
+	if len(p.raw) > 0 {
+		p.passthrough = append(p.passthrough, p.raw...)
+	}
+	p.reset()
+}
+
+func (p *oscEchoParser) Feed(b byte) {
+	switch p.state {
+	case 0:
+		if b == '^' {
+			p.state = 1
+			p.raw = p.raw[:0]
+			p.raw = append(p.raw, b)
+			return
+		}
+		p.passthrough = append(p.passthrough, b)
+	case 1:
+		p.raw = append(p.raw, b)
+		if b == '[' {
+			p.state = 2
+			return
+		}
+		p.flushRaw()
+	case 2:
+		p.raw = append(p.raw, b)
+		if b == ']' {
+			p.state = 3
+			p.code = 0
+			p.digits = 0
+			return
+		}
+		p.flushRaw()
+	case 3:
+		p.raw = append(p.raw, b)
+		switch {
+		case b >= '0' && b <= '9':
+			p.code = p.code*10 + int(b-'0')
+			p.digits++
+		case b == ';' && p.digits > 0 && (p.code == 10 || p.code == 11 || p.code == 12):
+			p.state = 4
+		default:
+			p.flushRaw()
+		}
+	case 4:
+		p.raw = append(p.raw, b)
+		if b == '^' {
+			p.state = 5
+		}
+	case 5:
+		p.raw = append(p.raw, b)
+		if b == 'G' {
+			p.reset()
+			return
+		}
+		p.state = 4
+	default:
+		p.flushRaw()
+	}
+}
+
+func (p *oscEchoParser) DrainPassthrough() []byte {
+	if len(p.passthrough) == 0 {
+		return nil
+	}
+	out := append([]byte(nil), p.passthrough...)
+	p.passthrough = p.passthrough[:0]
+	return out
 }
 
 func (s *localSession) Run() {

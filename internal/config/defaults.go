@@ -27,10 +27,11 @@ func ForDir(dir string) Config {
 
 	return Config{
 		Server: ServerConfig{
-			Listen:    DefaultListenAddr,
-			DataDir:   cfgDir,
-			UsersFile: filepath.Join(cfgDir, DefaultUsersFileName),
-			BasePath:  DefaultBasePath,
+			Listen:             DefaultListenAddr,
+			DataDir:            cfgDir,
+			UsersFile:          filepath.Join(cfgDir, DefaultUsersFileName),
+			BasePath:           DefaultBasePath,
+			ReplayHistoryBytes: DefaultReplayHistoryBytes,
 			TLS: TLSConfig{
 				Mode:     DefaultTLSMode,
 				Dir:      tlsDir,
@@ -57,12 +58,13 @@ func ForDir(dir string) Config {
 			LoginNonInteractive: false,
 		},
 		Terminal: TerminalConfig{
-			Term:              DefaultTerminalTermValue(),
-			Respawn:           DefaultTerminalRespawn,
-			ScrollbackLines:   DefaultScrollbackLines,
-			Theme:             DefaultTerminalTheme,
-			HostnameOnly:      DefaultTerminalHostnameOnly,
-			WallInactiveAfter: DefaultWallInactiveAfterCSV,
+			Term:                        DefaultTerminalTermValue(),
+			Respawn:                     DefaultTerminalRespawn,
+			ScrollbackLines:             DefaultScrollbackLines,
+			Theme:                       DefaultTerminalTheme,
+			HostnameOnly:                DefaultTerminalHostnameOnly,
+			DisableDesktopNotifications: DefaultTerminalDisableDesktopNotifications,
+			WallInactiveAfter:           DefaultWallInactiveAfterCSV,
 		},
 	}
 }

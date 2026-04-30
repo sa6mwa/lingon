@@ -33,6 +33,8 @@ type Loader = config.Loader
 const (
 	// DefaultConfigDirName is the directory name under the home directory.
 	DefaultConfigDirName = config.DefaultConfigDirName
+	// ConfigDirEnv is the environment variable that overrides the Lingon config root.
+	ConfigDirEnv = config.ConfigDirEnv
 	// DefaultConfigFileName is the default config file name.
 	DefaultConfigFileName = config.DefaultConfigFileName
 	// DefaultAuthFileName is the default auth file name.
@@ -62,6 +64,8 @@ const (
 	DefaultTerminalRows = config.DefaultTerminalRows
 	// DefaultScrollbackLines is the default buffered scrollback line count.
 	DefaultScrollbackLines = config.DefaultScrollbackLines
+	// DefaultReplayHistoryBytes is the default byte cap for relay replay history.
+	DefaultReplayHistoryBytes = config.DefaultReplayHistoryBytes
 	// DefaultTerminalTerm is the default TERM for the PTY session.
 	DefaultTerminalTerm = config.DefaultTerminalTerm
 	// DefaultTerminalRespawn controls default respawn behavior for local PTYs.
@@ -70,6 +74,8 @@ const (
 	DefaultTerminalTheme = config.DefaultTerminalTheme
 	// DefaultTerminalHostnameOnly controls endpoint banner display mode.
 	DefaultTerminalHostnameOnly = config.DefaultTerminalHostnameOnly
+	// DefaultTerminalDisableDesktopNotifications controls desktop notification delivery.
+	DefaultTerminalDisableDesktopNotifications = config.DefaultTerminalDisableDesktopNotifications
 	// DefaultConnectLimitDisable disables global connection limiting by default.
 	DefaultConnectLimitDisable = config.DefaultConnectLimitDisable
 	// DefaultConnectLimitBurst is the default burst size for connection limiting.

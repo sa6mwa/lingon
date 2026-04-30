@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -161,70 +160,4 @@ func waitForFramePayload(t *testing.T, clk clock.Clock, rec *ptytest.WSRecorder,
 		}
 		ptytest.Advance(clk, 20*time.Millisecond)
 	}
-}
-
-func waitForRawContains(t *testing.T, sess *ptytest.PTYSession, substr string, timeout time.Duration) bool {
-	t.Helper()
-	clk := sess.Clock()
-	deadline := ptytest.Now(clk).Add(timeout)
-	for ptytest.Now(clk).Before(deadline) {
-		if strings.Contains(sess.DrainRaw(), substr) {
-			return true
-		}
-		ptytest.Advance(clk, 50*time.Millisecond)
-	}
-	return strings.Contains(sess.DrainRaw(), substr)
-}
-
-func activeTabLabel(sess *ptytest.PTYSession, labels []string) (string, error) {
-	row := sess.Screen().Row(0)
-	cols := make(map[string]int, len(labels))
-	for _, label := range labels {
-		idx := strings.Index(row, label)
-		if idx == -1 {
-			return "", fmt.Errorf("missing label %q in row %q", label, row)
-		}
-		cols[label] = idx + 1
-	}
-	bgColors := make(map[string]uint32, len(labels))
-	fgColors := make(map[string]uint32, len(labels))
-	for _, label := range labels {
-		cell, ok := sess.CellAt(1, cols[label])
-		if !ok {
-			return "", fmt.Errorf("missing cell for label %q", label)
-		}
-		bgColors[label] = cell.BG
-		fgColors[label] = cell.FG
-	}
-	if active, ok := uniqueColorLabel(bgColors); ok {
-		return active, nil
-	}
-	if active, ok := uniqueColorLabel(fgColors); ok {
-		return active, nil
-	}
-	return "", fmt.Errorf("unable to determine active tab from colors: bg=%v fg=%v", bgColors, fgColors)
-}
-
-func hasConnectionStatusBanner(row string) bool {
-	return strings.Contains(row, "connected to ") || strings.Contains(row, "reconnecting in ")
-}
-
-func uniqueColorLabel(colors map[string]uint32) (string, bool) {
-	counts := make(map[uint32]int)
-	for _, color := range colors {
-		counts[color]++
-	}
-	active := ""
-	for label, color := range colors {
-		if counts[color] == 1 {
-			if active != "" {
-				return "", false
-			}
-			active = label
-		}
-	}
-	if active == "" {
-		return "", false
-	}
-	return active, true
 }

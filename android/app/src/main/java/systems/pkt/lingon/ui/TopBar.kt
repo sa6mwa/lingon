@@ -13,8 +13,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
@@ -45,15 +47,20 @@ fun TopBar(
     onDismissMenu: () -> Unit,
     onShowSettings: () -> Unit,
     onShowTheme: () -> Unit,
-    onShowZoom: () -> Unit,
     onShowAppLock: () -> Unit,
     onResetZoomPan: () -> Unit,
+    wallInactivityEnabled: Boolean,
+    wallInactivityLabel: String?,
+    wallInactivityAvailable: Boolean,
+    onToggleWallInactivity: () -> Unit,
+    headlessResizeAvailable: Boolean,
+    headlessResizeEnabled: Boolean,
+    onResizeHeadlessNow: () -> Unit,
     onReload: () -> Unit,
     onShowShareToken: () -> Unit,
     onShowCertificates: () -> Unit,
-    resizeHostEnabled: Boolean,
-    resizeHostAvailable: Boolean,
-    onToggleResizeHost: (Boolean) -> Unit,
+    backgroundWallEnabled: Boolean,
+    onToggleBackgroundWall: (Boolean) -> Unit,
     onLogout: () -> Unit,
     compact: Boolean,
     vertical: Boolean,
@@ -139,30 +146,22 @@ fun TopBar(
                         modifier = Modifier.testTag(TestTags.CertificatesButton),
                     )
                     DropdownMenuItem(
-                        text = { Text("Resize host terminal") },
+                        text = { Text("Background wall notifications") },
                         onClick = {
-                            if (resizeHostAvailable) {
-                                onToggleResizeHost(!resizeHostEnabled)
-                                onDismissMenu()
-                            }
+                            onToggleBackgroundWall(!backgroundWallEnabled)
+                            onDismissMenu()
                         },
                         trailingIcon = {
                             Switch(
-                                checked = resizeHostEnabled,
-                                onCheckedChange = if (resizeHostAvailable) {
-                                    { checked ->
-                                        onToggleResizeHost(checked)
-                                        onDismissMenu()
-                                    }
-                                } else {
-                                    null
+                                checked = backgroundWallEnabled,
+                                onCheckedChange = { checked ->
+                                    onToggleBackgroundWall(checked)
+                                    onDismissMenu()
                                 },
-                                enabled = resizeHostAvailable,
-                                modifier = Modifier.testTag(TestTags.ResizeHostToggle),
+                                modifier = Modifier.testTag(TestTags.BackgroundWallToggle),
                             )
                         },
-                        enabled = resizeHostAvailable,
-                        modifier = Modifier.testTag(TestTags.ResizeHostMenuItem),
+                        modifier = Modifier.testTag(TestTags.BackgroundWallMenuItem),
                     )
                     DropdownMenuItem(
                         text = { Text("Select theme") },
@@ -171,14 +170,6 @@ fun TopBar(
                             onDismissMenu()
                         },
                         modifier = Modifier.testTag(TestTags.ThemeButton),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Zoom") },
-                        onClick = {
-                            onShowZoom()
-                            onDismissMenu()
-                        },
-                        modifier = Modifier.testTag(TestTags.ZoomButton),
                     )
                     DropdownMenuItem(
                         text = { Text("App lock timeout") },
@@ -229,11 +220,65 @@ fun TopBar(
     }
 
     @Composable
+    fun WallInactivityActionButton(compactVertical: Boolean) {
+        if (!wallInactivityAvailable) {
+            return
+        }
+        val buttonSize = if (compactVertical) 28.dp else 40.dp
+        val label = wallInactivityLabel?.takeIf { it.isNotBlank() }
+        val description = if (wallInactivityEnabled) {
+            "Wall inactivity ${label ?: "on"}"
+        } else {
+            "Wall inactivity off"
+        }
+        IconButton(
+            onClick = onToggleWallInactivity,
+            modifier = Modifier
+                .size(buttonSize)
+                .testTag(TestTags.WallInactivityButton),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Alarm,
+                contentDescription = description,
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (wallInactivityEnabled) 1f else 0.55f),
+            )
+        }
+    }
+
+    @Composable
+    fun HeadlessResizeActionButton(compactVertical: Boolean) {
+        if (!headlessResizeAvailable) {
+            return
+        }
+        val buttonSize = if (compactVertical) 28.dp else 40.dp
+        val description = if (headlessResizeEnabled) {
+            "Resize headless session"
+        } else {
+            "Resize unavailable for non-headless session"
+        }
+        IconButton(
+            onClick = onResizeHeadlessNow,
+            enabled = headlessResizeEnabled,
+            modifier = Modifier
+                .size(buttonSize)
+                .testTag(TestTags.HeadlessResizeButton),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.OpenInFull,
+                contentDescription = description,
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (headlessResizeEnabled) 1f else 0.35f),
+            )
+        }
+    }
+
+    @Composable
     fun TopBarActions(compactVertical: Boolean) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(if (compactVertical) 2.dp else 4.dp),
         ) {
+            HeadlessResizeActionButton(compactVertical = compactVertical)
+            WallInactivityActionButton(compactVertical = compactVertical)
             ReloadActionButton(compactVertical = compactVertical)
             MenuActionButton(compactVertical = compactVertical)
         }

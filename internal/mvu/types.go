@@ -26,6 +26,8 @@ type State struct {
 	ConnectionShownAt   time.Time
 	ConnectionExpiresAt time.Time
 
+	LoadingMessage string
+
 	DisconnectTitle    string
 	DisconnectDetail   string
 	DisconnectVisible  bool

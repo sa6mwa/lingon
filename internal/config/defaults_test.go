@@ -8,8 +8,9 @@ import (
 )
 
 func TestDefaultConfigUsesConstants(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
+	root := testutil.TempDir(t)
+	t.Setenv("HOME", root)
+	t.Setenv(ConfigDirEnv, "")
 	t.Setenv("TERM", "xterm-256color")
 
 	cfg := DefaultConfig()
@@ -24,7 +25,7 @@ func TestDefaultConfigUsesConstants(t *testing.T) {
 		t.Fatalf("TLS.Mode = %q, want %q", cfg.Server.TLS.Mode, DefaultTLSMode)
 	}
 
-	expectedDir := filepath.Join(home, DefaultConfigDirName)
+	expectedDir := filepath.Join(root, DefaultConfigDirName)
 	if cfg.Server.DataDir != expectedDir {
 		t.Fatalf("DataDir = %q, want %q", cfg.Server.DataDir, expectedDir)
 	}
@@ -59,6 +60,9 @@ func TestDefaultConfigUsesConstants(t *testing.T) {
 	if cfg.Server.Wall.InactiveAfter != DefaultWallInactiveAfterCSV {
 		t.Fatalf("Wall.InactiveAfter = %q, want %q", cfg.Server.Wall.InactiveAfter, DefaultWallInactiveAfterCSV)
 	}
+	if cfg.Server.ReplayHistoryBytes != DefaultReplayHistoryBytes {
+		t.Fatalf("Server.ReplayHistoryBytes = %d, want %d", cfg.Server.ReplayHistoryBytes, DefaultReplayHistoryBytes)
+	}
 
 	if cfg.Client.Endpoint != DefaultClientEndpoint {
 		t.Fatalf("Client.Endpoint = %q, want %q", cfg.Client.Endpoint, DefaultClientEndpoint)
@@ -83,6 +87,9 @@ func TestDefaultConfigUsesConstants(t *testing.T) {
 	}
 	if cfg.Terminal.HostnameOnly != DefaultTerminalHostnameOnly {
 		t.Fatalf("Terminal.HostnameOnly = %v, want %v", cfg.Terminal.HostnameOnly, DefaultTerminalHostnameOnly)
+	}
+	if cfg.Terminal.DisableDesktopNotifications != DefaultTerminalDisableDesktopNotifications {
+		t.Fatalf("Terminal.DisableDesktopNotifications = %v, want %v", cfg.Terminal.DisableDesktopNotifications, DefaultTerminalDisableDesktopNotifications)
 	}
 	if cfg.Terminal.WallInactiveAfter != DefaultWallInactiveAfterCSV {
 		t.Fatalf("Terminal.WallInactiveAfter = %q, want %q", cfg.Terminal.WallInactiveAfter, DefaultWallInactiveAfterCSV)

@@ -58,6 +58,7 @@ func frameSessions(sessions []Session) *protocolpb.Frame {
 			Name:           session.Name,
 			Status:         session.Status,
 			LastActiveUnix: session.LastActiveAt.Unix(),
+			Headless:       session.Headless,
 		})
 	}
 	return &protocolpb.Frame{
@@ -65,13 +66,24 @@ func frameSessions(sessions []Session) *protocolpb.Frame {
 	}
 }
 
-func frameWall(sessionID, sender, message string, timeoutSeconds uint32) *protocolpb.Frame {
+func frameWall(sessionID string, eventID uint64, sender, message string, timeoutSeconds uint32, kind protocolpb.WallKind, sourceSessionID, sourceSessionName string) *protocolpb.Frame {
 	return &protocolpb.Frame{
 		SessionId: sessionID,
 		Payload: &protocolpb.Frame_Wall{Wall: &protocolpb.Wall{
-			Sender:         sender,
-			Message:        message,
-			TimeoutSeconds: timeoutSeconds,
+			Id:                eventID,
+			Sender:            sender,
+			Message:           message,
+			TimeoutSeconds:    timeoutSeconds,
+			Kind:              kind,
+			SourceSessionId:   sourceSessionID,
+			SourceSessionName: sourceSessionName,
 		}},
+	}
+}
+
+func frameActivity(sessionID string) *protocolpb.Frame {
+	return &protocolpb.Frame{
+		SessionId: sessionID,
+		Payload:   &protocolpb.Frame_Activity{Activity: &protocolpb.Activity{}},
 	}
 }

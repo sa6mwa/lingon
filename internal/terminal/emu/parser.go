@@ -19,6 +19,7 @@ type parserState struct {
 
 	private   byte
 	params    []int
+	rawParams []byte
 	paramSeen bool
 	current   int
 	hasParam  bool
@@ -33,6 +34,7 @@ type parserState struct {
 func (p *parserState) resetCSI() {
 	p.private = 0
 	p.params = p.params[:0]
+	p.rawParams = p.rawParams[:0]
 	p.paramSeen = false
 	p.current = 0
 	p.hasParam = false
@@ -57,7 +59,11 @@ func (p *parserState) nextParam() {
 	p.current = 0
 }
 
-func (p *parserState) finalizeParams() []int {
+func (p *parserState) addParamByte(b byte) {
+	p.rawParams = append(p.rawParams, b)
+}
+
+func (p *parserState) finalizeParams() ([]int, string) {
 	if p.hasParam {
 		p.params = append(p.params, p.current)
 	} else if len(p.params) == 0 {
@@ -65,8 +71,9 @@ func (p *parserState) finalizeParams() []int {
 	}
 	out := make([]int, len(p.params))
 	copy(out, p.params)
+	raw := string(p.rawParams)
 	p.resetCSI()
-	return out
+	return out, raw
 }
 
 func (p *parserState) resetOSC() {

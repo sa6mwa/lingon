@@ -37,10 +37,8 @@ func (b *lockedString) String() string {
 }
 
 func TestAttachCtrlDDoesNotExitHost(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -49,7 +47,7 @@ func TestAttachCtrlDDoesNotExitHost(t *testing.T) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -68,7 +66,7 @@ func TestAttachCtrlDDoesNotExitHost(t *testing.T) {
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -120,6 +118,7 @@ func TestAttachCtrlDDoesNotExitHost(t *testing.T) {
 
 	runner := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_ctrl_d",
 		Cols:       80,
@@ -151,15 +150,17 @@ func TestAttachCtrlDDoesNotExitHost(t *testing.T) {
 
 	size := &sizeProvider{cols: 80, rows: 24}
 	attachClient := &attach.Client{
-		Endpoint:       endpoint,
-		SessionID:      "session_ctrl_d",
-		AccessToken:    access.Token,
-		RequestControl: true,
-		ClientID:       "attach1",
-		Stdin:          attachIn,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		TermSize:       size.Size,
+		Endpoint:            endpoint,
+		TLSDir:              tlsDir,
+		SessionID:           "session_ctrl_d",
+		AccessToken:         access.Token,
+		RequestControl:      true,
+		ClientID:            "attach1",
+		Stdin:               attachIn,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		TermSize:            size.Size,
+		DisableSignalResize: true,
 	}
 	attachCtx, attachCancel := context.WithCancel(context.Background())
 	t.Cleanup(attachCancel)

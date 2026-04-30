@@ -712,9 +712,11 @@ type wallResponse struct {
 type wallEventResponse struct {
 	ID             uint64    `json:"id"`
 	SessionID      string    `json:"session_id,omitempty"`
+	SessionName    string    `json:"session_name,omitempty"`
 	Sender         string    `json:"sender"`
 	Message        string    `json:"message"`
 	TimeoutSeconds uint32    `json:"timeout_seconds"`
+	Kind           uint32    `json:"kind,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -868,9 +870,11 @@ func (s *HTTPServer) handleWallEvents(w http.ResponseWriter, r *http.Request) {
 		payload = append(payload, wallEventResponse{
 			ID:             event.ID,
 			SessionID:      event.SessionID,
+			SessionName:    event.SessionName,
 			Sender:         event.Sender,
 			Message:        event.Message,
 			TimeoutSeconds: event.TimeoutSeconds,
+			Kind:           uint32(event.Kind),
 			CreatedAt:      event.CreatedAt,
 		})
 	}
@@ -929,6 +933,12 @@ func (s *HTTPServer) handleWallInactivity(w http.ResponseWriter, r *http.Request
 	if enabled {
 		afterLabel = formatDurationCompact(after)
 	}
+	s.Hub.BroadcastSessionFrame(r.Context(), req.SessionID, &protocolpb.Frame{
+		Payload: &protocolpb.Frame_WallInactivityStatus{WallInactivityStatus: &protocolpb.WallInactivityStatus{
+			Enabled:       enabled,
+			InactiveAfter: afterLabel,
+		}},
+	}, true)
 	writeJSON(w, http.StatusOK, wallInactivityResponse{
 		SessionID:     req.SessionID,
 		Enabled:       enabled,
@@ -1000,6 +1010,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 	cols := int(frame.GetHello().Cols)
 	rows := int(frame.GetHello().Rows)
 	sessionName := strings.TrimSpace(frame.GetHello().ClientId)
+	sessionHeadless := frame.GetHello().GetHeadless()
 	reconnected := false
 	var (
 		storedSession Session
@@ -1024,6 +1035,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 				ID:           frame.SessionId,
 				Username:     username,
 				Name:         sessionName,
+				Headless:     sessionHeadless,
 				CreatedAt:    now,
 				LastActiveAt: now,
 				Status:       "active",
@@ -1031,6 +1043,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 		} else {
 			storedSession.LastActiveAt = now
 			storedSession.Status = "active"
+			storedSession.Headless = sessionHeadless
 			if sessionName != "" {
 				storedSession.Name = sessionName
 			}
@@ -1058,9 +1071,6 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 			_ = replacedHost.Send(context.Background(), rejected)
 		}
 		_ = replacedHost.Close(context.Background(), "superseded by reconnect")
-	}
-	if svc := s.wallService(); svc != nil {
-		svc.markActivity(frame.SessionId, time.Now().UTC())
 	}
 	logger.Info("relay.host.connect.done", "session", frame.SessionId, "reconnected", reconnected, "ip", remoteIP)
 	s.notifySessions(username)
@@ -1176,7 +1186,7 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	ws.sessionID = sessionID
 	clientID := frame.GetHello().ClientId
 	reconnected := s.Hub.HasClientID(sessionID, clientID)
-	granted, holder, cols, rows := s.Hub.RegisterClient(ws, sessionID, clientID, frame.GetHello().WantsControl)
+	replacedClient, granted, holder, cols, rows := s.Hub.registerClient(ws, sessionID, clientID, frame.GetHello().WantsControl, true)
 	if !s.Hub.HasHost(sessionID) {
 		_ = ws.SendImmediate(ctx, frameError("no host connected"))
 		return
@@ -1186,6 +1196,15 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		s.Hub.BroadcastControl(ctx, sessionID)
 	}
 	_ = s.Hub.HandleClientFrame(ctx, ws, frame)
+	if replacedClient != nil {
+		rejected := frameErrorSessionRejected("superseded by reconnect")
+		if replacedWS, ok := replacedClient.(*wsConn); ok {
+			_ = replacedWS.SendImmediate(context.Background(), rejected)
+		} else {
+			_ = replacedClient.Send(context.Background(), rejected)
+		}
+		_ = replacedClient.Close(context.Background(), "superseded by reconnect")
+	}
 	logger.Info("relay.client.connect.done", "session", sessionID, "client", clientID, "reconnected", reconnected, "ip", remoteIP)
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
@@ -1222,10 +1241,17 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 			}
 			return
 		}
+		ws.touchActivity()
 		frame.SessionId = ws.sessionID
 
 		switch ws.role {
 		case RoleHost:
+			if frame.GetActivity() != nil {
+				if svc := s.wallService(); svc != nil {
+					svc.markActivity(ws.sessionID, time.Now().UTC())
+				}
+				continue
+			}
 			if err := s.Hub.HandleHostFrame(ctx, ws, frame); err != nil {
 				if errors.Is(err, errHostSessionClosed) {
 					if ws.logger != nil {
@@ -1243,14 +1269,14 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 					return
 				}
 				_ = ws.Send(ctx, frameError(err.Error()))
-			} else if isHostActivityFrame(frame) {
-				if svc := s.wallService(); svc != nil {
-					svc.markActivity(ws.sessionID, time.Now().UTC())
-				}
 			}
 		case RoleClient:
 			if err := s.Hub.HandleClientFrame(ctx, ws, frame); err != nil {
 				_ = ws.Send(ctx, frameError(err.Error()))
+			} else if isClientActivityFrame(frame) {
+				if svc := s.wallService(); svc != nil {
+					svc.markActivity(ws.sessionID, time.Now().UTC())
+				}
 			}
 		}
 	}
@@ -1266,7 +1292,7 @@ func (s *HTTPServer) pingLoop(ctx context.Context, conn *wsConn) {
 			return
 		case <-ticker.C:
 			pingCtx, cancel := context.WithTimeout(ctx, wsPongTimeout)
-			if err := conn.Ping(pingCtx); err != nil && conn.logger != nil {
+			if err := conn.PingIfIdle(pingCtx, wsPingInterval); err != nil && conn.logger != nil {
 				conn.logger.Debug("relay.ws.ping.failed", "err", err)
 			}
 			cancel()
@@ -1442,14 +1468,17 @@ func formatDurationCompact(d time.Duration) string {
 	return b.String()
 }
 
-func isHostActivityFrame(frame *protocolpb.Frame) bool {
+func isClientActivityFrame(frame *protocolpb.Frame) bool {
 	if frame == nil {
 		return false
 	}
-	return frame.GetSnapshot() != nil ||
-		frame.GetDiff() != nil ||
-		frame.GetOut() != nil ||
-		frame.GetScrollback() != nil
+	if in := frame.GetIn(); in != nil {
+		return len(in.GetData()) > 0
+	}
+	if command := frame.GetCommand(); command != nil {
+		return command.GetKind() == protocolpb.CommandKind_COMMAND_KIND_SEND_EOF
+	}
+	return false
 }
 
 func (s *HTTPServer) cookiePath() string {

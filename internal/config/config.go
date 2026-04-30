@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -17,14 +18,15 @@ type Config struct {
 
 // ServerConfig configures the relay/server mode.
 type ServerConfig struct {
-	Listen       string          `mapstructure:"listen" yaml:"listen"`
-	DataDir      string          `mapstructure:"data_dir" yaml:"data_dir"`
-	UsersFile    string          `mapstructure:"users_file" yaml:"users_file"`
-	BasePath     string          `mapstructure:"base" yaml:"base"`
-	TLS          TLSConfig       `mapstructure:"tls" yaml:"tls"`
-	WebUI        WebUIConfig     `mapstructure:"webui" yaml:"webui"`
-	Wall         WallConfig      `mapstructure:"wall" yaml:"wall"`
-	ConnectLimit ConnectLimitCfg `mapstructure:"connect_limit" yaml:"connect_limit"`
+	Listen             string          `mapstructure:"listen" yaml:"listen"`
+	DataDir            string          `mapstructure:"data_dir" yaml:"data_dir"`
+	UsersFile          string          `mapstructure:"users_file" yaml:"users_file"`
+	BasePath           string          `mapstructure:"base" yaml:"base"`
+	ReplayHistoryBytes int             `mapstructure:"replay_history_bytes" yaml:"replay_history_bytes"`
+	TLS                TLSConfig       `mapstructure:"tls" yaml:"tls"`
+	WebUI              WebUIConfig     `mapstructure:"webui" yaml:"webui"`
+	Wall               WallConfig      `mapstructure:"wall" yaml:"wall"`
+	ConnectLimit       ConnectLimitCfg `mapstructure:"connect_limit" yaml:"connect_limit"`
 }
 
 // WebUIConfig configures web UI behavior.
@@ -49,12 +51,13 @@ type ClientConfig struct {
 
 // TerminalConfig configures local terminal emulation defaults.
 type TerminalConfig struct {
-	Term              string `mapstructure:"term" yaml:"term"`
-	Respawn           bool   `mapstructure:"respawn" yaml:"respawn"`
-	ScrollbackLines   int    `mapstructure:"scrollback_lines" yaml:"scrollback_lines"`
-	Theme             string `mapstructure:"theme" yaml:"theme"`
-	HostnameOnly      bool   `mapstructure:"hostname_only" yaml:"hostname_only"`
-	WallInactiveAfter string `mapstructure:"wall_inactive_after" yaml:"wall_inactive_after"`
+	Term                        string `mapstructure:"term" yaml:"term"`
+	Respawn                     bool   `mapstructure:"respawn" yaml:"respawn"`
+	ScrollbackLines             int    `mapstructure:"scrollback_lines" yaml:"scrollback_lines"`
+	Theme                       string `mapstructure:"theme" yaml:"theme"`
+	HostnameOnly                bool   `mapstructure:"hostname_only" yaml:"hostname_only"`
+	DisableDesktopNotifications bool   `mapstructure:"disable_desktop_notifications" yaml:"disable_desktop_notifications"`
+	WallInactiveAfter           string `mapstructure:"wall_inactive_after" yaml:"wall_inactive_after"`
 }
 
 // TLSConfig configures TLS behavior for the relay/server.
@@ -88,9 +91,7 @@ func NewLoader() *Loader {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	v.SetConfigName("config")
-	v.AddConfigPath(".")
-	v.AddConfigPath("$HOME/.config/lingon")
-	v.AddConfigPath("$HOME/.lingon")
+	v.SetConfigFile(DefaultConfigPath())
 
 	return &Loader{v: v}
 }
@@ -114,11 +115,13 @@ func (l *Loader) SetConfigFile(path string) {
 func (l *Loader) ReadInConfig() error {
 	if l.configFile != "" {
 		l.v.SetConfigFile(l.configFile)
+	} else {
+		l.v.SetConfigFile(DefaultConfigPath())
 	}
 
 	if err := l.v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
-		if errors.As(err, &notFound) {
+		if l.configFile == "" && (errors.As(err, &notFound) || os.IsNotExist(err)) {
 			return nil
 		}
 		return err

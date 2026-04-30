@@ -43,7 +43,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-install adb-push integration-test
-VERSION_CMD := cd .. && go run ./cmd/lingon version --version
+VERSION_CMD := cd .. && go run -buildvcs=true ./cmd/lingon version --version
 
 help:
 	@echo "lingon android make targets:"
@@ -155,13 +155,11 @@ release: local-properties
 		exit 1; \
 	fi; \
 	APK_SIGNER="$$(ls $(ANDROID_SDK_ROOT)/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1)"; \
-	if [ -n "$$APK_SIGNER" ]; then \
-		if ! "$$APK_SIGNER" verify --verbose "$$APK_PATH" >/dev/null 2>&1; then \
-			echo "Warning: APK appears unsigned. Install will fail until it is signed."; \
-		fi; \
-	else \
-		echo "Note: apksigner not found; signing status not checked."; \
-	fi
+	if [ -z "$$APK_SIGNER" ]; then \
+		echo "Error: apksigner not found under $(ANDROID_SDK_ROOT)/build-tools. Cannot verify release signer." >&2; \
+		exit 1; \
+	fi; \
+	APKSIGNER_BIN="$$APK_SIGNER" EXPECTED_CERT_PATH="$(CURDIR)/lingon-release-cert.pem" ./scripts/verify-release-cert.sh "$$APK_PATH"
 
 install: local-properties
 	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:installDebug

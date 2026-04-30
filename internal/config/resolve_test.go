@@ -52,3 +52,38 @@ client:
 		t.Fatalf("Client.LogFile = %q, want empty", cfg.Client.LogFile)
 	}
 }
+
+func TestLoaderUsesLingonConfigDirEnvForDefaultConfigFile(t *testing.T) {
+	home := testutil.TempDir(t)
+	cfgDir := filepath.Join(testutil.TempDir(t), "cfg")
+	t.Setenv("HOME", home)
+	t.Setenv(ConfigDirEnv, cfgDir)
+
+	homeConfig := filepath.Join(home, DefaultConfigDirName, DefaultConfigFileName)
+	if err := os.MkdirAll(filepath.Dir(homeConfig), 0o700); err != nil {
+		t.Fatalf("MkdirAll(home config): %v", err)
+	}
+	if err := os.WriteFile(homeConfig, []byte("client:\n  endpoint: https://wrong.example.com/v1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(home config): %v", err)
+	}
+
+	rootConfig := filepath.Join(cfgDir, DefaultConfigFileName)
+	if err := os.MkdirAll(filepath.Dir(rootConfig), 0o700); err != nil {
+		t.Fatalf("MkdirAll(root config): %v", err)
+	}
+	if err := os.WriteFile(rootConfig, []byte("client:\n  endpoint: https://right.example.com/v1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(root config): %v", err)
+	}
+
+	loader := NewLoader()
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Client.Endpoint != "https://right.example.com/v1" {
+		t.Fatalf("Client.Endpoint = %q, want config-root endpoint", cfg.Client.Endpoint)
+	}
+	if used := loader.ConfigFileUsed(); used != rootConfig {
+		t.Fatalf("ConfigFileUsed() = %q, want %q", used, rootConfig)
+	}
+}

@@ -1,7 +1,10 @@
 # Lingon Android app
 
 The Lingon Android app is a native companion to the web UI, built for fast
-session work on the go while staying consistent with the web and SSH flows.
+session work on the go while staying consistent with the web and SSH flows. It
+supports session switching, sharing, certificate trust, per-session zoom,
+smooth terminal panning through scrollback, and optional background wall
+notifications.
 
 ## Renderer architecture note
 
@@ -48,21 +51,27 @@ Files created (git-ignored):
 
 ### Use your own signing key
 Generate a keystore:
+
+Note: the default Java keystore format here is `PKCS12`. For `PKCS12`,
+`storepass` and `keypass` must be the same in practice. Do not generate the key
+with different passwords or Gradle signing can fail with `Get Key failed` /
+`Given final block not properly padded`.
+
 ```bash
 keytool -genkeypair -v \
   -keystore /absolute/path/to/lingon-release.jks \
   -alias lingon \
   -keyalg RSA -keysize 2048 -validity 10000 \
-  -storepass "your-store-pass" -keypass "your-key-pass" \
+  -storepass "your-pass" -keypass "your-pass" \
   -dname "CN=Lingon, OU=Dev, O=Lingon, L=Local, S=Local, C=US"
 ```
 
 Create `android/signing.properties`:
 ```properties
 storeFile=/absolute/path/to/lingon-release.jks
-storePassword=your-store-pass
+storePassword=your-pass
 keyAlias=lingon
-keyPassword=your-key-pass
+keyPassword=your-pass
 ```
 
 Then build:
@@ -97,6 +106,20 @@ make integration-test PRESET=pixel7
 
 Artifacts (screenshots + debug info) are pulled to `android/test-artifacts/`.
 
+By default the integration runner now keeps a started emulator alive after the
+run and resets app state between individual test cases. Override with:
+
+```bash
+LINGON_IT_KEEP_EMULATOR=0 make integration-test
+LINGON_IT_RESET_APP_STATE=0 make integration-test
+```
+
+Run a single instrumentation test with:
+
+```bash
+LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification make integration-test
+```
+
 ## Emulator presets
 Use `PRESET` to select a device profile:
 ```bash
@@ -118,6 +141,13 @@ make list-presets
 - HTTPS is required; endpoints must start with `https://`.
 - `make emulator` configures `adb reverse tcp:12843` so `localhost` hits the host backend.
 - Manage certificates in-app via the top-right menu. Certificates are stored per endpoint.
+- Zoom is stored per endpoint/session and terminal panning remains pixel-based
+  across live and scrollback content.
+- Foreground wall messages are shown in-app and do not post Android system
+  notifications.
+- Background wall notifications are optional. When enabled, the app keeps a
+  foreground service active while backgrounded and polls the relay for wall
+  messages; polling is skipped while the app is foregrounded.
 - Debug builds accept a broadcast to add a PEM cert (useful for integration tests):
   - Action: `systems.pkt.lingon.DEBUG_ADD_CERT`
   - Extras: `pem` (string, required), `endpoint` (string, optional)

@@ -324,7 +324,11 @@ func parseRSAPrivateKey(block *pem.Block) (*rsa.PrivateKey, error) {
 func sanForHostname(hostname string) ([]string, []net.IP) {
 	trimmed := strings.TrimSpace(hostname)
 	if trimmed == "" {
-		return []string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
+		return []string{"localhost"}, []net.IP{
+			net.ParseIP("127.0.0.1"),
+			net.ParseIP("::1"),
+			net.ParseIP("10.0.2.2"),
+		}
 	}
 	if ip := net.ParseIP(trimmed); ip != nil {
 		return nil, []net.IP{ip}

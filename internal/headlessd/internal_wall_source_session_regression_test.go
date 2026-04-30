@@ -9,11 +9,12 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/pslog"
 )
 
 func TestDaemonInternalWallPreservesSourceSessionID(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := testutil.TempDir(t)
 	sessionID := "headless-target-session"
 	sourceID := "headless-source-session"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
@@ -45,14 +46,15 @@ func TestDaemonInternalWallPreservesSourceSessionID(t *testing.T) {
 	wallFrames := make(chan routedWall, 8)
 
 	attachClient := &attach.Client{
-		Endpoint:       "local://headless",
-		SessionID:      sessionID,
-		UnixSocket:     socketPath,
-		RequestControl: true,
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
-		NoHostTimeout:  8 * time.Second,
-		Logger:         pslog.NoopLogger(),
+		Endpoint:            "local://headless",
+		SessionID:           sessionID,
+		UnixSocket:          socketPath,
+		RequestControl:      true,
+		Stdout:              io.Discard,
+		Stderr:              io.Discard,
+		NoHostTimeout:       8 * time.Second,
+		DisableSignalResize: true,
+		Logger:              pslog.NoopLogger(),
 		OnFrame: func(frame *protocolpb.Frame) {
 			if frame == nil || frame.GetWall() == nil {
 				return
@@ -107,7 +109,6 @@ func TestDaemonInternalWallPreservesSourceSessionID(t *testing.T) {
 				continue
 			}
 			gotSource = frame.sessionID
-			break
 		default:
 			time.Sleep(20 * time.Millisecond)
 		}

@@ -1,5 +1,5 @@
 .PHONY: help generate build test test-short test-webui test-last-fail test-android lint fmt vet golangci-lint install release clean container push-container \
-	android-sdk android-avd android-emulator android-build android-release android-install android-integration-test
+	android-clean android-sdk android-avd android-emulator android-build android-release android-install android-integration-test
 
 GO ?= go
 CGO_ENABLED ?= 0
@@ -10,13 +10,14 @@ INSTALL ?= install
 INSTALL_MODE ?= 0755
 CONTAINER_BUILDER ?= $(shell command -v podman || command -v nerdctl || command -v docker)
 IMAGE ?= docker.io/pktsystems/lingon
-LINGON_VERSION ?= $(shell $(GO) run ./cmd/lingon version --version)
-LINGON_SEMVER ?= $(shell $(GO) run ./cmd/lingon version --semver)
+LINGON_VERSION ?= $(shell $(GO) run -buildvcs=true ./cmd/lingon version --version)
+LINGON_SEMVER ?= $(shell $(GO) run -buildvcs=true ./cmd/lingon version --semver)
 
 GOFLAGS ?=
 BUILD_FLAGS ?= -trimpath
-LD_FLAGS ?= -s -w
+LD_FLAGS ?=
 TEST_LOG ?= test.log
+WEBUI_TEST_PKGS ?= ./integration/webui
 
 ANDROID_DIR ?= android
 APK_PATH ?= $(ANDROID_DIR)/app/build/outputs/apk/release/app-release.apk
@@ -33,7 +34,7 @@ help:
 	@echo "  make build          # build the lingon binary"
 	@echo "  make test           # run tests with coverage"
 	@echo "  make test-short     # run short tests with coverage"
-	@echo "  make test-webui     # run webui-tagged tests"
+	@echo "  make test-webui     # run web UI integration tests"
 	@echo "  make test-last-fail # show last failing test from $(TEST_LOG)"
 	@echo "  make test-android   # run Android integration tests"
 	@echo "  make test-all       # run all tests (phone tests are not headless!)"
@@ -67,6 +68,7 @@ help:
 	@echo "  GOFLAGS=$(GOFLAGS)"
 	@echo "  BUILD_FLAGS=$(BUILD_FLAGS)"
 	@echo "  LD_FLAGS=$(LD_FLAGS)"
+	@echo "  WEBUI_TEST_PKGS=$(WEBUI_TEST_PKGS)"
 	@echo "  ANDROID_DIR=$(ANDROID_DIR)"
 	@echo "  APK_PATH=$(APK_PATH)"
 	@echo "  APK_OUT=$(APK_OUT)"
@@ -76,7 +78,7 @@ generate:
 	$(GO) generate ./...
 
 $(BIN):
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) $(BUILD_FLAGS) -ldflags="$(LD_FLAGS)" -o $(BIN) ./cmd/lingon
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build -buildvcs=true $(GOFLAGS) $(BUILD_FLAGS) -ldflags="$(LD_FLAGS)" -o $(BIN) ./cmd/lingon
 
 build: $(BIN)
 
@@ -97,7 +99,7 @@ test:
 	@bash -lc 'set -o pipefail; $(GO) test -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
 
 test-webui:
-	@bash -lc 'set -o pipefail; $(GO) test -count=1 -tags webui -json ./... | tee -a "$(TEST_LOG)"'
+	@bash -lc 'set -o pipefail; $(GO) test -count=1 -tags integration -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
 
 test-last-fail:
 	@bash -lc 'if [ ! -f "$(TEST_LOG)" ]; then echo "missing $(TEST_LOG); run make test first"; exit 1; fi; \
@@ -144,7 +146,7 @@ release: build android-release
 	zip -j $(ZIP_OUT) $(BIN) $(APK_OUT)
 
 podman.yaml:
-	envsubst < podman.yaml.template > podman.yaml
+	envsubst < podman.template.yaml > podman.yaml
 
 container: $(BIN) podman.yaml
 	@if [ -z "$(CONTAINER_BUILDER)" ]; then \
@@ -161,6 +163,9 @@ push-container:
 clean:
 	rm -rf $(dir $(BIN))
 	$(GO) clean ./...
+
+android-clean:
+	$(MAKE) -C $(ANDROID_DIR) clean
 
 android-sdk:
 	$(MAKE) -C $(ANDROID_DIR) sdk

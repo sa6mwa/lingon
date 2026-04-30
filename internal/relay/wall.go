@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"pkt.systems/lingon/internal/logging"
+	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/pslog"
 )
 
@@ -40,9 +41,11 @@ type wallEvent struct {
 	ID             uint64
 	Username       string
 	SessionID      string
+	SessionName    string
 	Sender         string
 	Message        string
 	TimeoutSeconds uint32
+	Kind           protocolpb.WallKind
 	CreatedAt      time.Time
 }
 
@@ -182,10 +185,10 @@ func (s *WallService) senderLabel(username, ip string) string {
 }
 
 func (s *WallService) sendUserWall(username, sender, message string, now time.Time) (int, error) {
-	return s.sendUserWallForSession(username, sender, message, "", now)
+	return s.sendUserWallForSession(username, sender, message, "", protocolpb.WallKind_WALL_KIND_UNSPECIFIED, now)
 }
 
-func (s *WallService) sendUserWallForSession(username, sender, message, sourceSessionID string, now time.Time) (int, error) {
+func (s *WallService) sendUserWallForSession(username, sender, message, sourceSessionID string, kind protocolpb.WallKind, now time.Time) (int, error) {
 	message = sanitizeWallMessage(message)
 	if message == "" {
 		return 0, fmt.Errorf("message is required")
@@ -197,13 +200,20 @@ func (s *WallService) sendUserWallForSession(username, sender, message, sourceSe
 		return 0, fmt.Errorf("wall service unavailable")
 	}
 	sessions := s.store.ListSessions(username)
+	sourceSessionName := ""
+	for _, session := range sessions {
+		if session.ID == sourceSessionID {
+			sourceSessionName = strings.TrimSpace(session.Name)
+			break
+		}
+	}
 	if len(sessions) == 0 {
 		// Keep backlog entries even when no live participants are currently connected.
-		s.recordEvent(username, sourceSessionID, sender, message, s.timeoutSeconds(), now)
+		s.recordEvent(username, sourceSessionID, sourceSessionName, sender, message, s.timeoutSeconds(), kind, now)
 		return 0, nil
 	}
 	timeoutSeconds := s.timeoutSeconds()
-	s.recordEvent(username, sourceSessionID, sender, message, timeoutSeconds, now)
+	eventID := s.recordEvent(username, sourceSessionID, sourceSessionName, sender, message, timeoutSeconds, kind, now)
 	sent := 0
 	for _, session := range sessions {
 		if session.Status != "active" {
@@ -212,19 +222,13 @@ func (s *WallService) sendUserWallForSession(username, sender, message, sourceSe
 		if !s.hub.HasParticipants(session.ID) {
 			continue
 		}
-		frame := frameWall(session.ID, sender, message, timeoutSeconds)
+		frame := frameWall(session.ID, eventID, sender, message, timeoutSeconds, kind, sourceSessionID, sourceSessionName)
 		if s.hub.BroadcastSessionFrame(context.Background(), session.ID, frame, true) {
 			sent++
 		}
 	}
 	if sent > 0 {
 		s.logger.Info("relay.wall.sent", "user", username, "sessions", sent)
-	}
-	if !now.IsZero() {
-		// Treat manual wall dispatch as activity for monitored sessions.
-		for _, session := range sessions {
-			s.markActivity(session.ID, now)
-		}
 	}
 	return sent, nil
 }
@@ -356,7 +360,7 @@ func (s *WallService) pruneEventsLocked(username string, now time.Time) {
 	s.eventsByUser[username] = next
 }
 
-func (s *WallService) recordEvent(username, sourceSessionID, sender, message string, timeoutSeconds uint32, now time.Time) uint64 {
+func (s *WallService) recordEvent(username, sourceSessionID, sourceSessionName, sender, message string, timeoutSeconds uint32, kind protocolpb.WallKind, now time.Time) uint64 {
 	if strings.TrimSpace(username) == "" {
 		return 0
 	}
@@ -371,9 +375,11 @@ func (s *WallService) recordEvent(username, sourceSessionID, sender, message str
 		ID:             s.nextEventID,
 		Username:       username,
 		SessionID:      strings.TrimSpace(sourceSessionID),
+		SessionName:    strings.TrimSpace(sourceSessionName),
 		Sender:         strings.TrimSpace(sender),
 		Message:        strings.TrimSpace(message),
 		TimeoutSeconds: timeoutSeconds,
+		Kind:           kind,
 		CreatedAt:      now,
 	}
 	s.eventsByUser[username] = append(s.eventsByUser[username], event)
@@ -392,14 +398,19 @@ func (s *WallService) listEvents(username string, sinceID uint64, limit int, now
 	defer s.mu.Unlock()
 	s.pruneEventsLocked(username, now)
 	events := s.eventsByUser[username]
+	currentMaxID := s.nextEventID
 	if len(events) == 0 {
-		return []wallEvent{}, sinceID, false
+		return []wallEvent{}, currentMaxID, false
 	}
 	out := make([]wallEvent, 0, limit)
-	nextID := sinceID
+	nextID := currentMaxID
 	more := false
 	for _, event := range events {
 		if event.ID <= sinceID {
+			continue
+		}
+		if !s.eventVisibleLocked(event) {
+			nextID = event.ID
 			continue
 		}
 		if len(out) < limit {
@@ -411,6 +422,21 @@ func (s *WallService) listEvents(username string, sinceID uint64, limit int, now
 		break
 	}
 	return out, nextID, more
+}
+
+func (s *WallService) eventVisibleLocked(event wallEvent) bool {
+	if event.Kind != protocolpb.WallKind_WALL_KIND_INACTIVITY {
+		return true
+	}
+	sessionID := strings.TrimSpace(event.SessionID)
+	if sessionID == "" || s.store == nil {
+		return true
+	}
+	session, ok := s.store.GetSession(sessionID)
+	if !ok {
+		return false
+	}
+	return session.Status == "active"
 }
 
 func (s *WallService) timeoutSeconds() uint32 {
@@ -588,6 +614,7 @@ func (s *WallService) fireMonitor(key string) {
 		s.mu.Unlock()
 		return
 	}
+	monitor.timer = nil
 	idle := now.Sub(monitor.lastActivity)
 	inactiveAfter := monitor.inactiveAfter
 	if inactiveAfter <= 0 {
@@ -602,11 +629,10 @@ func (s *WallService) fireMonitor(key string) {
 	sessionID = monitor.sessionID
 	username = monitor.username
 	sender = monitor.sender
-	s.removeMonitorLocked(key)
 	s.mu.Unlock()
 
 	message := fmt.Sprintf("%s inactive", s.sessionLabel(sessionID))
-	sent, err := s.sendUserWallForSession(username, sender, message, sessionID, time.Time{})
+	sent, err := s.sendUserWallForSession(username, sender, message, sessionID, protocolpb.WallKind_WALL_KIND_INACTIVITY, time.Time{})
 	if err != nil {
 		s.logger.Warn("relay.wall.inactive.failed", "session", sessionID, "err", err)
 		return

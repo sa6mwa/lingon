@@ -212,12 +212,16 @@ function createView(sessionId) {
     reconnectTimer: null,
     countdownTimer: null,
     stableTimer: null,
+    loadingTimer: null,
+    loadingVisible: false,
+    loadingText: "",
     suppressReconnect: false,
     ready: false,
     visible: false,
     hiddenAt: 0,
     noHost: false,
     connectionState: "offline",
+    statusLevel: "error",
     statusText: "",
     queuedInput: "",
   };
@@ -551,6 +555,9 @@ function disconnectView(view) {
     return;
   }
   stopReconnectTimers(view);
+  clearConnectedBannerTimer(view);
+  view.loadingVisible = false;
+  view.loadingText = "";
   view.suppressReconnect = true;
   view.ready = false;
   if (view.ws) {
@@ -559,6 +566,7 @@ function disconnectView(view) {
   view.ws = null;
   view.connectionState = "offline";
   view.statusText = "";
+  view.statusLevel = "error";
 }
 
 function disconnectAllViews() {
@@ -702,13 +710,29 @@ function shouldSuppressWallNotification(sender, message, eventMs) {
   return false;
 }
 
+function formatWallSource(sender, sessionName) {
+  const cleanSender = String(sender || "").trim();
+  const cleanSession = String(sessionName || "").trim();
+  if (!cleanSender) {
+    return cleanSession;
+  }
+  if (!cleanSession) {
+    return cleanSender;
+  }
+  return `${cleanSender}#${cleanSession}`;
+}
+
 function showWallNotification(data) {
   if (typeof window === "undefined" || typeof Notification === "undefined") {
     return;
   }
-  const sender = data && data.sender ? String(data.sender).trim() : "";
-  const title = sender ? `Broadcast from ${sender}` : "Broadcast";
-  const body = data && data.message ? String(data.message).trim() : "";
+  const sender = formatWallSource(
+    data && data.sender ? String(data.sender) : "",
+    data && (data.source_session_name || data.sourceSessionName) ? String(data.source_session_name || data.sourceSessionName) : "",
+  );
+  const title = "Broadcast";
+  const message = data && data.message ? String(data.message).trim() : "";
+  const body = sender && message ? `${sender}: ${message}` : sender || message;
   const eventMs =
     data && data.created_at && !Number.isNaN(Date.parse(data.created_at))
       ? Date.parse(data.created_at)
@@ -824,9 +848,10 @@ function markViewRecovered(view) {
   view.reconnectAttempt = 0;
   view.noHost = false;
   view.statusText = "";
+  view.statusLevel = "error";
   setViewConnectionState(view, "online");
   if (view === getActiveView()) {
-    setStatusBanner("");
+    updateActiveStatus();
     setEmptyState(false);
   }
 }
@@ -877,13 +902,20 @@ async function restoreShareSession() {
   return true;
 }
 
-function setStatusBanner(text) {
+function setStatusBanner(text, level = "error") {
   if (!text) {
     statusBanner.classList.add("hidden");
     statusBanner.textContent = "";
+    statusBanner.dataset.level = "";
+    statusBanner.classList.remove("is-loading", "is-warn", "is-info", "is-error");
     return;
   }
   statusBanner.textContent = text;
+  statusBanner.dataset.level = level;
+  statusBanner.classList.toggle("is-loading", level === "loading");
+  statusBanner.classList.toggle("is-warn", level === "warn");
+  statusBanner.classList.toggle("is-info", level === "info");
+  statusBanner.classList.toggle("is-error", level === "error");
   statusBanner.classList.remove("hidden");
 }
 
@@ -930,7 +962,13 @@ function updateActiveStatus() {
     window.__bifrons.term = view.term || null;
   }
   setConnectionPill(view.connectionState || "offline");
-  setStatusBanner(view.statusText || "");
+  if (view.statusText) {
+    setStatusBanner(view.statusText, view.statusLevel || "error");
+  } else if (view.loadingVisible) {
+    setStatusBanner(view.loadingText || "loading from relay", "loading");
+  } else {
+    setStatusBanner("");
+  }
   const showEmpty = view.noHost || !view.snapshot;
   setEmptyState(showEmpty);
   updateScrollbar(view);
@@ -1005,6 +1043,9 @@ function scheduleReconnect(view, reason, retryAfterSeconds = 0) {
     window.__bifrons.debug.lastReconnectAt = Date.now();
   }
   stopReconnectTimers(view);
+  clearConnectedBannerTimer(view);
+  view.loadingVisible = false;
+  view.loadingText = "";
   view.reconnectAttempt += 1;
   const delay = Math.min(
     backoffPolicy.max,
@@ -1017,9 +1058,10 @@ function scheduleReconnect(view, reason, retryAfterSeconds = 0) {
     remaining = Math.ceil(finalDelay / 1000);
   }
   view.statusText = `${reason} (reconnecting ${remaining}s)`;
+  view.statusLevel = "error";
   view.connectionState = "waiting";
   if (view === getActiveView()) {
-    setStatusBanner(view.statusText);
+    setStatusBanner(view.statusText, "error");
     setEmptyState(true);
     setConnectionPill("waiting");
   }
@@ -1033,7 +1075,7 @@ function scheduleReconnect(view, reason, retryAfterSeconds = 0) {
     }
     view.statusText = `${reason} (reconnecting ${remaining}s)`;
     if (view === getActiveView()) {
-      setStatusBanner(view.statusText);
+      setStatusBanner(view.statusText, "error");
     }
   }, 1000);
 
@@ -1063,7 +1105,9 @@ function resetReconnect(view) {
   }
   view.reconnectAttempt = 0;
   stopReconnectTimers(view);
+  clearConnectedBannerTimer(view);
   view.statusText = "";
+  view.statusLevel = "error";
   if (view === getActiveView()) {
     setStatusBanner("");
     updateActiveStatus();
@@ -1667,6 +1711,7 @@ function handleFrame(view, frame) {
       view.ready = true;
       scheduleBackoffReset(view);
     }
+    clearLoadingBanner(view);
     markViewRecovered(view);
     view.snapshot = data;
     updateViewSize(view, data.cols, data.rows);
@@ -1685,6 +1730,7 @@ function handleFrame(view, frame) {
       view.ready = true;
       scheduleBackoffReset(view);
     }
+    clearLoadingBanner(view);
     markViewRecovered(view);
     view.snapshot = applyDiffToSnapshot(view.snapshot, data);
     if (view.snapshot) {
@@ -1699,10 +1745,7 @@ function handleFrame(view, frame) {
   }
   if (type === "wall") {
     // A single wall event is fanned out to all attached sessions.
-    // Only surface browser notification from the active view to avoid one-per-session duplicates.
-    if (view !== getActiveView()) {
-      return;
-    }
+    // Surface browser notifications for every tab that receives the wall.
     showWallNotification(data);
     return;
   }
@@ -1725,6 +1768,9 @@ function handleFrame(view, frame) {
     if (msg.toLowerCase().includes("no host connected")) {
       view.noHost = true;
       view.statusText = "";
+      view.statusLevel = "error";
+      clearLoadingBanner(view);
+      clearConnectedBannerTimer(view);
       setViewConnectionState(view, "waiting");
       if (view === getActiveView()) {
         updateActiveStatus();
@@ -1814,6 +1860,45 @@ function renderView(view, forceClear = false) {
   }
 }
 
+function clearLoadingBanner(view) {
+  if (!view) {
+    return;
+  }
+  view.loadingVisible = false;
+  view.loadingText = "";
+  if (view === getActiveView() && !view.statusText) {
+    setStatusBanner("");
+  }
+}
+
+function clearConnectedBannerTimer(view) {
+  if (!view || !view.loadingTimer) {
+    return;
+  }
+  clearTimeout(view.loadingTimer);
+  view.loadingTimer = null;
+}
+
+function scheduleConnectedBannerExpiry(view) {
+  if (!view) {
+    return;
+  }
+  clearConnectedBannerTimer(view);
+  view.loadingTimer = setTimeout(() => {
+    view.loadingTimer = null;
+    if (!view || view.ws == null || view.ready || view.connectionState === "offline" || view.connectionState === "waiting") {
+      return;
+    }
+    if (view.statusText === "connected to relay") {
+      view.statusText = "";
+      view.statusLevel = "error";
+    }
+    if (view === getActiveView()) {
+      updateActiveStatus();
+    }
+  }, 3000);
+}
+
 async function connectView(view) {
   try {
     if (!view) {
@@ -1900,10 +1985,14 @@ function openViewWS(view) {
     if (typeof window !== "undefined" && window.__bifrons && window.__bifrons.debug) {
       window.__bifrons.debug.lastWsOpenAt = Date.now();
     }
-    view.statusText = "";
+    view.loadingVisible = true;
+    view.loadingText = "loading from relay";
+    view.statusText = "connected to relay";
+    view.statusLevel = "info";
     if (view === getActiveView()) {
-      setStatusBanner("");
+      updateActiveStatus();
     }
+    scheduleConnectedBannerExpiry(view);
     const hello = encodeFrameHello({
       sessionId: view.shareSession ? "" : view.sessionId || "default",
       hello: {
@@ -1951,6 +2040,7 @@ function openViewWS(view) {
       return;
     }
     view.ready = false;
+    clearLoadingBanner(view);
     setViewConnectionState(view, "offline");
     if (canReconnect(view)) {
       scheduleReconnect(view, "connection lost");
@@ -1964,6 +2054,7 @@ function openViewWS(view) {
     if (typeof window !== "undefined" && window.__bifrons && window.__bifrons.debug) {
       window.__bifrons.debug.lastWsErrorAt = Date.now();
     }
+    clearLoadingBanner(view);
     setViewConnectionState(view, "offline");
   };
 }
@@ -2475,6 +2566,7 @@ async function pollWallEvents(generation) {
         const timeoutSeconds = Number(event.timeout_seconds) || Number(event.timeoutSeconds) || 0;
         showWallNotification({
           sender: event.sender || "",
+          source_session_name: event.session_name || "",
           message: event.message || "",
           timeoutSeconds: timeoutSeconds > 0 ? timeoutSeconds : 5,
           created_at: event.created_at || "",

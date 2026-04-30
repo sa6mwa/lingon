@@ -11,6 +11,7 @@ import (
 
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
+	"pkt.systems/lingon/internal/protocolpb"
 )
 
 func TestLoginFlow(t *testing.T) {
@@ -805,5 +806,170 @@ func TestWallEventsEndpoint(t *testing.T) {
 	}
 	if second.HasMore {
 		t.Fatalf("second HasMore = true, want false")
+	}
+}
+
+func TestWallEventsEndpointSkipsStaleInactivityForInactiveSourceSession(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	alice, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+
+	now := time.Now().UTC()
+	store.CreateSession(Session{ID: "a1", Username: alice.Username, CreatedAt: now, LastActiveAt: now, Status: "active"})
+
+	svc := server.wallService()
+	if svc == nil {
+		t.Fatalf("wall service unavailable")
+	}
+	_, err = svc.sendUserWallForSession(
+		alice.Username,
+		"alice@127.0.0.1",
+		"bash inactive",
+		"a1",
+		protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("sendUserWallForSession inactivity: %v", err)
+	}
+	if changed := store.MarkSessionInactive("a1", "", now.Add(time.Second)); !changed {
+		t.Fatalf("MarkSessionInactive = false, want true")
+	}
+
+	access, err := store.CreateAccessToken(alice.Username, DefaultAccessTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/wall/events?since=0&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+access.Token)
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	var out wallEventsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Events) != 0 {
+		t.Fatalf("events = %d, want 0", len(out.Events))
+	}
+	if out.NextID == 0 {
+		t.Fatalf("NextID = 0, want skipped event cursor advancement")
+	}
+	if out.HasMore {
+		t.Fatalf("HasMore = true, want false")
+	}
+}
+
+func TestWallEventsEndpointKeepsManualWallForInactiveSourceSession(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	alice, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+
+	now := time.Now().UTC()
+	store.CreateSession(Session{ID: "a1", Username: alice.Username, CreatedAt: now, LastActiveAt: now, Status: "active"})
+
+	svc := server.wallService()
+	if svc == nil {
+		t.Fatalf("wall service unavailable")
+	}
+	_, err = svc.sendUserWallForSession(
+		alice.Username,
+		"alice@127.0.0.1",
+		"manual wall",
+		"a1",
+		protocolpb.WallKind_WALL_KIND_UNSPECIFIED,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("sendUserWallForSession manual: %v", err)
+	}
+	if changed := store.MarkSessionInactive("a1", "", now.Add(time.Second)); !changed {
+		t.Fatalf("MarkSessionInactive = false, want true")
+	}
+
+	access, err := store.CreateAccessToken(alice.Username, DefaultAccessTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/wall/events?since=0&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+access.Token)
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	var out wallEventsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(out.Events))
+	}
+	if out.Events[0].Message != "manual wall" {
+		t.Fatalf("message = %q, want %q", out.Events[0].Message, "manual wall")
+	}
+}
+
+func TestWallEventsEndpointKeepsActiveInactivity(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	alice, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+
+	now := time.Now().UTC()
+	store.CreateSession(Session{ID: "a1", Username: alice.Username, CreatedAt: now, LastActiveAt: now, Status: "active"})
+
+	svc := server.wallService()
+	if svc == nil {
+		t.Fatalf("wall service unavailable")
+	}
+	_, err = svc.sendUserWallForSession(
+		alice.Username,
+		"alice@127.0.0.1",
+		"bash inactive",
+		"a1",
+		protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("sendUserWallForSession inactivity: %v", err)
+	}
+
+	access, err := store.CreateAccessToken(alice.Username, DefaultAccessTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/wall/events?since=0&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+access.Token)
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	var out wallEventsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(out.Events))
+	}
+	if got := out.Events[0].Kind; got != uint32(protocolpb.WallKind_WALL_KIND_INACTIVITY) {
+		t.Fatalf("Kind = %d, want %d", got, protocolpb.WallKind_WALL_KIND_INACTIVITY)
 	}
 }

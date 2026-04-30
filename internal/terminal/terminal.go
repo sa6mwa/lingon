@@ -35,6 +35,15 @@ type Snapshot struct {
 	Cells         []Cell
 }
 
+// Snapshot mode flags capture terminal-wide state in Snapshot.Mode.
+const (
+	SnapshotModeWrap uint32 = 1 << iota
+	SnapshotModeOrigin
+	SnapshotModeInsert
+	SnapshotModeAltScreen
+	SnapshotModeAppCursor
+)
+
 // Cell mode flags used in snapshots.
 const (
 	ModeBold      int16 = 1 << 0

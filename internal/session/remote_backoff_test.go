@@ -30,10 +30,8 @@ func waitUntilNoErr(t *testing.T, clk clock.Clock, timeout time.Duration, cond f
 }
 
 func TestRemoteManagerHonorsBackoffGate(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -65,6 +63,7 @@ func TestRemoteManagerHonorsBackoffGate(t *testing.T) {
 
 	rm := newRemoteManager(remoteOptions{
 		Endpoint:        endpoint,
+		TLSDir:          tlsDir,
 		Token:           "token",
 		LocalID:         "local",
 		LocalName:       "local",

@@ -142,6 +142,52 @@ func TestSGREmptyResetsAttributes(t *testing.T) {
 	}
 }
 
+func TestSGRColonUnderlineStyleResetClearsUnderline(t *testing.T) {
+	emu := New(2, 1)
+	_ = emu.Write([]byte("\x1b[4mA\x1b[4:0mB"))
+	snap, _ := emu.Snapshot()
+	cellA := cellAt(snap, 0, 0)
+	cellB := cellAt(snap, 1, 0)
+	if cellA.Mode&terminal.ModeUnderline == 0 {
+		t.Fatalf("expected underline on first cell")
+	}
+	if cellB.Mode&terminal.ModeUnderline != 0 {
+		t.Fatalf("expected colon-form underline reset to clear second cell underline")
+	}
+}
+
+func TestSGRColonUnderlineStyleEnablesUnderline(t *testing.T) {
+	emu := New(1, 1)
+	_ = emu.Write([]byte("\x1b[4:3mA"))
+	snap, _ := emu.Snapshot()
+	cell := cellAt(snap, 0, 0)
+	if cell.Mode&terminal.ModeUnderline == 0 {
+		t.Fatalf("expected colon-form underline style to enable underline")
+	}
+}
+
+func TestPrivateCSIGreaterMDoesNotEnableUnderline(t *testing.T) {
+	emu := New(1, 1)
+	_ = emu.Write([]byte("\x1b[>4;mA"))
+	snap, _ := emu.Snapshot()
+	cell := cellAt(snap, 0, 0)
+	if cell.Mode&terminal.ModeUnderline != 0 {
+		t.Fatalf("expected private CSI > m sequence to not enable underline")
+	}
+}
+
+func TestAltScreen1049RestoresSavedAttributes(t *testing.T) {
+	emu := New(5, 1)
+	_ = emu.Write([]byte("\x1b[?1049h\x1b[4mALT\x1b[?1049lPLAIN"))
+	snap, _ := emu.Snapshot()
+	for x := 0; x < 5; x++ {
+		cell := cellAt(snap, x, 0)
+		if cell.Mode&terminal.ModeUnderline != 0 {
+			t.Fatalf("expected main-screen cell %d to not inherit alt-screen underline", x)
+		}
+	}
+}
+
 func TestTabStops(t *testing.T) {
 	emu := New(10, 1)
 	_ = emu.Write([]byte("a\tb"))

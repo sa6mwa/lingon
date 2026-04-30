@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/protocolpb"
 )
 
@@ -68,6 +69,8 @@ func (r *WSRecorder) record(role string, dir Direction, data []byte) {
 			rec.Payload = "snapshot"
 		case *protocolpb.Frame_Diff:
 			rec.Payload = "diff"
+		case *protocolpb.Frame_Scrollback:
+			rec.Payload = "scrollback"
 		case *protocolpb.Frame_Hello:
 			rec.Payload = "hello"
 		case *protocolpb.Frame_Welcome:
@@ -80,8 +83,12 @@ func (r *WSRecorder) record(role string, dir Direction, data []byte) {
 			rec.Payload = "resize"
 		case *protocolpb.Frame_Control:
 			rec.Payload = "control"
+		case *protocolpb.Frame_Activity:
+			rec.Payload = "activity"
 		case *protocolpb.Frame_Error:
 			rec.Payload = "error"
+		case *protocolpb.Frame_WallInactivityStatus:
+			rec.Payload = "wall_inactivity_status"
 		default:
 			rec.Payload = "other"
 		}
@@ -224,6 +231,7 @@ func (p *wsProxy) proxyWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func proxyLoop(ctx context.Context, src, dst *websocket.Conn, recorder *WSRecorder, role string, dir Direction) error {
+	src.SetReadLimit(config.DefaultWSReadLimit)
 	for {
 		msgType, data, err := src.Read(ctx)
 		if err != nil {

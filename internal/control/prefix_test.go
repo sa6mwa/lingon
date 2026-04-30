@@ -61,6 +61,28 @@ func TestPrefixSessionActions(t *testing.T) {
 	if action, out := p.Feed('o'); action != ActionToggleOffline || len(out) != 0 {
 		t.Fatalf("expected toggle offline action, got action=%v out=%v", action, out)
 	}
+	_, _ = p.Feed(CtrlL)
+	if action, out := p.Feed('0'); action != ActionResizeHeadless || len(out) != 0 {
+		t.Fatalf("expected resize headless action, got action=%v out=%v", action, out)
+	}
+	_, _ = p.Feed(CtrlL)
+	if action, out := p.Feed(0); action != ActionResizeHeadless || len(out) != 0 {
+		t.Fatalf("expected resize headless action for NUL, got action=%v out=%v", action, out)
+	}
+}
+
+func TestPrefixSessionActionsCtrlWRepeat(t *testing.T) {
+	var p Prefix
+	_, _ = p.Feed(CtrlL)
+	if action, out := p.Feed(CtrlW); action != ActionToggleWallInactivity || len(out) != 0 {
+		t.Fatalf("expected ctrl+w to toggle wall inactivity after ctrl+l, got action=%v out=%v", action, out)
+	}
+	if action, out := p.Feed(CtrlW); action != ActionToggleWallInactivity || len(out) != 0 {
+		t.Fatalf("expected repeated ctrl+w to keep toggling wall inactivity, got action=%v out=%v", action, out)
+	}
+	if action, out := p.Feed('x'); action != ActionNone || len(out) != 1 || out[0] != 'x' {
+		t.Fatalf("expected repeat mode to clear on non-ctrl+w input, got action=%v out=%v", action, out)
+	}
 }
 
 func TestPrefixPassthroughUnknown(t *testing.T) {

@@ -86,21 +86,21 @@ func TestFilterOuterOSCConsumesPendingWithDoubledESCSplitChunks(t *testing.T) {
 	}
 }
 
-func TestFilterOuterOSCConsumesLateOSCWithoutPendingOrGrace(t *testing.T) {
+func TestFilterOuterOSCConsumesLateCompleteResponsesWithoutPendingOrGrace(t *testing.T) {
 	clk := clock.NewMock()
 	r := &Runner{clock: clk}
 
 	in := []byte("\x1b]10;rgb:b7b7/b7b7/b7b7\x07\x1b]11;rgb:0000/0000/0000\x07")
 	out := r.filterOuterOSC(in)
-	if string(out) != string(in) {
-		t.Fatalf("expected late OSC data to pass through without pending/grace, got %q", string(out))
+	if len(out) != 0 {
+		t.Fatalf("expected late complete OSC responses to be consumed, got %q", string(out))
 	}
-	if r.outerDefaultFg != "" || r.outerDefaultBg != "" {
-		t.Fatalf("expected no outer default updates without pending/grace, fg=%q bg=%q", r.outerDefaultFg, r.outerDefaultBg)
+	if r.outerDefaultFg != "rgb:b7b7/b7b7/b7b7" || r.outerDefaultBg != "rgb:0000/0000/0000" {
+		t.Fatalf("expected outer defaults to update, fg=%q bg=%q", r.outerDefaultFg, r.outerDefaultBg)
 	}
 }
 
-func TestFilterOuterOSCConsumesLateOSCSplitChunksWithoutPendingOrGrace(t *testing.T) {
+func TestFilterOuterOSCPassesThroughLateSplitChunksWithoutPendingOrGrace(t *testing.T) {
 	clk := clock.NewMock()
 	r := &Runner{clock: clk}
 
@@ -109,11 +109,11 @@ func TestFilterOuterOSCConsumesLateOSCSplitChunksWithoutPendingOrGrace(t *testin
 		t.Fatalf("expected first fragment passthrough without pending/grace, got %q", string(out1))
 	}
 	out2 := r.filterOuterOSC([]byte("b7/b7b7\x07\x1b]11;rgb:0000/0000/0000\x07"))
-	if string(out2) != "b7/b7b7\x07\x1b]11;rgb:0000/0000/0000\x07" {
+	if string(out2) != "b7/b7b7\x07" {
 		t.Fatalf("expected second fragment passthrough without pending/grace, got %q", string(out2))
 	}
-	if r.outerDefaultFg != "" || r.outerDefaultBg != "" {
-		t.Fatalf("expected no outer default updates without pending/grace, fg=%q bg=%q", r.outerDefaultFg, r.outerDefaultBg)
+	if r.outerDefaultFg != "" || r.outerDefaultBg != "rgb:0000/0000/0000" {
+		t.Fatalf("expected complete late bg response to update only bg, fg=%q bg=%q", r.outerDefaultFg, r.outerDefaultBg)
 	}
 }
 

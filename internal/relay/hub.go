@@ -6,15 +6,18 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
 
+	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/pslog"
 
 	"github.com/coder/websocket"
+	"google.golang.org/protobuf/proto"
 )
 
 // Role identifies a connection role.
@@ -37,24 +40,30 @@ type connection interface {
 
 // Hub routes messages between host and clients.
 type Hub struct {
-	mu       sync.Mutex
-	sessions map[string]*sessionState
-	logger   pslog.Logger
+	mu                 sync.Mutex
+	sessions           map[string]*sessionState
+	logger             pslog.Logger
+	replayHistoryBytes int
 }
 
 var errHostSessionClosed = errors.New("host session closed")
 var errStaleHostConnection = errors.New("stale host connection")
 
 type sessionState struct {
-	id            string
-	host          connection
-	clients       map[string]connection
-	clientIDs     map[string]string
-	seenClientIDs map[string]struct{}
-	controller    string
-	cols          int
-	rows          int
-	seq           uint64
+	id             string
+	host           connection
+	clients        map[string]connection
+	clientIDs      map[string]string
+	pendingClients map[string]struct{}
+	seenClientIDs  map[string]struct{}
+	controller     string
+	cols           int
+	rows           int
+	seq            uint64
+	history        []*protocolpb.Frame
+	historyBytes   int
+	replayMu       sync.RWMutex
+	explicitClose  bool
 }
 
 // NewHub constructs a Hub.
@@ -63,9 +72,23 @@ func NewHub(logger pslog.Logger) *Hub {
 		logger = logging.Default()
 	}
 	return &Hub{
-		sessions: make(map[string]*sessionState),
-		logger:   logger,
+		sessions:           make(map[string]*sessionState),
+		logger:             logger,
+		replayHistoryBytes: config.DefaultReplayHistoryBytes,
 	}
+}
+
+// SetReplayHistoryBytes updates the maximum replay history size in bytes.
+func (h *Hub) SetReplayHistoryBytes(limit int) {
+	if h == nil {
+		return
+	}
+	if limit <= 0 {
+		limit = config.DefaultReplayHistoryBytes
+	}
+	h.mu.Lock()
+	h.replayHistoryBytes = limit
+	h.mu.Unlock()
 }
 
 // RegisterHost registers a host connection for a session.
@@ -84,29 +107,64 @@ func (h *Hub) registerHost(conn connection, sessionID string, cols, rows int) co
 	var replaced connection
 	if state.host != nil && state.host.ID() != conn.ID() {
 		replaced = state.host
+		state.history = nil
+		state.historyBytes = 0
 		h.logger.Info("relay.hub.host.takeover", "session", sessionID, "old_conn", state.host.ID(), "new_conn", conn.ID())
 	}
 	state.host = conn
 	state.cols = cols
 	state.rows = rows
+	state.explicitClose = false
 	h.logger.Debug("relay.hub.host.register", "session", sessionID, "conn", conn.ID(), "cols", cols, "rows", rows)
 	return replaced
 }
 
 // RegisterClient registers a client for a session.
 func (h *Hub) RegisterClient(conn connection, sessionID, clientID string, wantsControl bool) (bool, string, int, int) {
+	_, granted, holder, cols, rows := h.registerClient(conn, sessionID, clientID, wantsControl, false)
+	return granted, holder, cols, rows
+}
+
+// registerClient registers a client for a session.
+// If another client with the same clientID is already present, it is replaced and returned.
+func (h *Hub) registerClient(conn connection, sessionID, clientID string, wantsControl bool, pending bool) (connection, bool, string, int, int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	state := h.session(sessionID)
-	state.clients[conn.ID()] = conn
+	var replaced connection
+	var replacedConnID string
 	if clientID == "" {
 		clientID = conn.ID()
 	}
+	for existingConnID, existingClientID := range state.clientIDs {
+		if existingClientID != clientID || existingConnID == conn.ID() {
+			continue
+		}
+		if existing, ok := state.clients[existingConnID]; ok {
+			replaced = existing
+			replacedConnID = existingConnID
+			delete(state.clients, existingConnID)
+			delete(state.clientIDs, existingConnID)
+			delete(state.pendingClients, existingConnID)
+			break
+		}
+	}
+	var replacedWasController bool
+	if replacedConnID != "" && state.controller == replacedConnID {
+		replacedWasController = true
+		state.controller = ""
+	}
+	state.clients[conn.ID()] = conn
 	state.clientIDs[conn.ID()] = clientID
+	if pending {
+		state.pendingClients[conn.ID()] = struct{}{}
+	} else {
+		delete(state.pendingClients, conn.ID())
+	}
 	state.seenClientIDs[clientID] = struct{}{}
 	granted := false
-	if wantsControl && conn.Scope() == ShareScopeControl {
+	if conn.Scope() == ShareScopeControl && (wantsControl || replacedWasController) {
 		state.controller = conn.ID()
 		granted = true
 	}
@@ -122,7 +180,7 @@ func (h *Hub) RegisterClient(conn connection, sessionID, clientID string, wantsC
 		"wants_control", wantsControl,
 		"granted", granted,
 	)
-	return granted, holderID, state.cols, state.rows
+	return replaced, granted, holderID, state.cols, state.rows
 }
 
 // HasClientID reports whether a client ID is already registered for a session.
@@ -169,15 +227,24 @@ func (h *Hub) Unregister(conn connection) {
 			state.host = nil
 			state.controller = ""
 			h.logger.Info("relay.host.disconnect.done", "session", conn.SessionID())
-			notifyReason = "host disconnected"
+			if state.explicitClose {
+				notifyReason = "session closed"
+			} else {
+				notifyReason = "host disconnected"
+			}
 			notify = make([]connection, 0, len(state.clients))
-			for _, client := range state.clients {
+			for id, client := range state.clients {
+				if _, pending := state.pendingClients[id]; pending {
+					continue
+				}
 				notify = append(notify, client)
 			}
+			state.explicitClose = false
 		}
 	} else {
 		delete(state.clients, conn.ID())
 		delete(state.clientIDs, conn.ID())
+		delete(state.pendingClients, conn.ID())
 		h.logger.Debug("relay.hub.client.unregister", "session", conn.SessionID(), "conn", conn.ID())
 	}
 	if state.controller == conn.ID() {
@@ -189,12 +256,14 @@ func (h *Hub) Unregister(conn connection) {
 	if len(notify) == 0 {
 		return
 	}
-	frame := frameError(notifyReason)
 	for _, client := range notify {
-		if ws, ok := client.(*wsConn); ok {
-			_ = ws.SendImmediate(context.Background(), frame)
-		} else {
-			_ = client.Send(context.Background(), frame)
+		if notifyReason == "host disconnected" {
+			frame := frameError(notifyReason)
+			if ws, ok := client.(*wsConn); ok {
+				_ = ws.SendImmediate(context.Background(), frame)
+			} else {
+				_ = client.Send(context.Background(), frame)
+			}
 		}
 		_ = client.Close(context.Background(), notifyReason)
 	}
@@ -236,7 +305,33 @@ func (h *Hub) HandleHostFrame(ctx context.Context, conn connection, frame *proto
 		return errStaleHostConnection
 	}
 	if frame.GetSessionClosed() != nil {
+		state.seq++
+		frame.Seq = state.seq
+		frame.SessionId = conn.SessionID()
+		h.recordFrameLocked(state, frame)
+		state.explicitClose = true
+		clients := make([]connection, 0, len(state.clients))
+		for id, client := range state.clients {
+			if _, pending := state.pendingClients[id]; pending {
+				continue
+			}
+			clients = append(clients, client)
+		}
 		h.mu.Unlock()
+		for _, client := range clients {
+			var err error
+			if ws, ok := client.(*wsConn); ok {
+				err = ws.SendImmediate(ctx, frame)
+			} else {
+				err = client.Send(ctx, frame)
+			}
+			if err != nil {
+				if isExpectedSendError(err) {
+					continue
+				}
+				h.logger.Debug("relay.client.send.failed", "err", err)
+			}
+		}
 		return errHostSessionClosed
 	}
 	if ctrl := frame.GetControl(); ctrl != nil {
@@ -244,11 +339,18 @@ func (h *Hub) HandleHostFrame(ctx context.Context, conn connection, frame *proto
 	}
 	state.seq++
 	frame.Seq = state.seq
+	h.recordFrameLocked(state, frame)
 	clients := make([]connection, 0, len(state.clients))
-	for _, client := range state.clients {
+	for id, client := range state.clients {
+		if _, pending := state.pendingClients[id]; pending {
+			continue
+		}
 		clients = append(clients, client)
 	}
 	h.mu.Unlock()
+
+	state.replayMu.RLock()
+	defer state.replayMu.RUnlock()
 	h.logger.Trace("relay.hub.host.frame", "session", conn.SessionID(), "seq", frame.Seq, "clients", len(clients))
 
 	for _, client := range clients {
@@ -277,13 +379,19 @@ func (h *Hub) BroadcastSessionFrame(ctx context.Context, sessionID string, frame
 	state.seq++
 	frame.SessionId = sessionID
 	frame.Seq = state.seq
+	h.recordFrameLocked(state, frame)
 	host := state.host
 	clients := make([]connection, 0, len(state.clients))
-	for _, client := range state.clients {
+	for id, client := range state.clients {
+		if _, pending := state.pendingClients[id]; pending {
+			continue
+		}
 		clients = append(clients, client)
 	}
 	h.mu.Unlock()
 
+	state.replayMu.RLock()
+	defer state.replayMu.RUnlock()
 	sent := false
 	for _, client := range clients {
 		if err := client.Send(ctx, frame); err != nil {
@@ -331,7 +439,68 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 		return fmt.Errorf("no host connected")
 	}
 	if frame.GetHello() != nil {
+		hello := frame.GetHello()
+		lastSeq := hello.GetLastSeq()
+		if ok, replay := h.replaySinceLocked(state, lastSeq); ok {
+			host := state.host
+			holder := state.clientIDs[state.controller]
+			if holder == "" {
+				holder = state.controller
+			}
+			state.replayMu.Lock()
+			delete(state.pendingClients, conn.ID())
+			if len(replay) == 0 {
+				cols := hello.GetCols()
+				rows := hello.GetRows()
+				h.mu.Unlock()
+				defer state.replayMu.Unlock()
+				if err := conn.Send(ctx, frameControl(conn.SessionID(), holder)); err != nil && !isExpectedSendError(err) {
+					h.logger.Debug("relay.client.empty_replay_control.failed", "err", err)
+				}
+				if host != nil && cols > 0 && rows > 0 {
+					resize := &protocolpb.Frame{
+						SessionId: conn.SessionID(),
+						Payload: &protocolpb.Frame_Resize{Resize: &protocolpb.Resize{
+							Cols: cols,
+							Rows: rows,
+						}},
+					}
+					if err := host.Send(ctx, resize); err != nil && !isExpectedSendError(err) {
+						h.logger.Debug("relay.host.resize.forward.failed", "err", err)
+					}
+				}
+				return nil
+			}
+			h.mu.Unlock()
+			defer state.replayMu.Unlock()
+			for _, replayFrame := range replay {
+				if err := conn.Send(ctx, replayFrame); err != nil {
+					if !isExpectedSendError(err) {
+						h.logger.Debug("relay.client.replay.failed", "err", err)
+					}
+					return nil
+				}
+			}
+			if host != nil {
+				cols := hello.GetCols()
+				rows := hello.GetRows()
+				if cols > 0 && rows > 0 {
+					resize := &protocolpb.Frame{
+						SessionId: conn.SessionID(),
+						Payload: &protocolpb.Frame_Resize{Resize: &protocolpb.Resize{
+							Cols: cols,
+							Rows: rows,
+						}},
+					}
+					if err := host.Send(ctx, resize); err != nil && !isExpectedSendError(err) {
+						h.logger.Debug("relay.host.resize.forward.failed", "err", err)
+					}
+				}
+			}
+			return nil
+		}
 		host := state.host
+		delete(state.pendingClients, conn.ID())
 		h.mu.Unlock()
 		h.logger.Trace("relay.hub.client.hello", "session", conn.SessionID(), "conn", conn.ID())
 		return host.Send(ctx, frame)
@@ -349,7 +518,10 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 	}
 	host := state.host
 	clients := make([]connection, 0, len(state.clients))
-	for _, client := range state.clients {
+	for id, client := range state.clients {
+		if _, pending := state.pendingClients[id]; pending {
+			continue
+		}
 		clients = append(clients, client)
 	}
 	h.mu.Unlock()
@@ -383,13 +555,64 @@ func (h *Hub) session(sessionID string) *sessionState {
 		return state
 	}
 	state = &sessionState{
-		id:            sessionID,
-		clients:       make(map[string]connection),
-		clientIDs:     make(map[string]string),
-		seenClientIDs: make(map[string]struct{}),
+		id:             sessionID,
+		clients:        make(map[string]connection),
+		clientIDs:      make(map[string]string),
+		pendingClients: make(map[string]struct{}),
+		seenClientIDs:  make(map[string]struct{}),
 	}
 	h.sessions[sessionID] = state
 	return state
+}
+
+func (h *Hub) recordFrameLocked(state *sessionState, frame *protocolpb.Frame) {
+	if state == nil || frame == nil || frame.Seq == 0 {
+		return
+	}
+	clone := proto.Clone(frame)
+	next, ok := clone.(*protocolpb.Frame)
+	if !ok || next == nil {
+		return
+	}
+	state.history = append(state.history, next)
+	state.historyBytes += proto.Size(next)
+	for state.historyBytes > h.replayHistoryBytes && len(state.history) > 1 {
+		removed := state.history[0]
+		state.history = state.history[1:]
+		state.historyBytes -= proto.Size(removed)
+	}
+	if state.historyBytes < 0 {
+		state.historyBytes = 0
+	}
+}
+
+func (h *Hub) replaySinceLocked(state *sessionState, lastSeq uint64) (bool, []*protocolpb.Frame) {
+	if state == nil || lastSeq == 0 || len(state.history) == 0 {
+		return false, nil
+	}
+	if lastSeq > state.seq {
+		return false, nil
+	}
+	firstSeq := state.history[0].Seq
+	if lastSeq+1 < firstSeq {
+		return false, nil
+	}
+	idx := sort.Search(len(state.history), func(i int) bool {
+		return state.history[i].Seq > lastSeq
+	})
+	if idx >= len(state.history) {
+		return true, nil
+	}
+	replay := make([]*protocolpb.Frame, 0, len(state.history)-idx)
+	for _, frame := range state.history[idx:] {
+		clone := proto.Clone(frame)
+		next, ok := clone.(*protocolpb.Frame)
+		if !ok || next == nil {
+			continue
+		}
+		replay = append(replay, next)
+	}
+	return true, replay
 }
 
 func isExpectedSendError(err error) bool {
@@ -432,7 +655,10 @@ func (h *Hub) BroadcastControl(ctx context.Context, sessionID string) {
 	}
 	host := state.host
 	clients := make([]connection, 0, len(state.clients))
-	for _, client := range state.clients {
+	for id, client := range state.clients {
+		if _, pending := state.pendingClients[id]; pending {
+			continue
+		}
 		clients = append(clients, client)
 	}
 	h.mu.Unlock()

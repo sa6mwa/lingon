@@ -21,6 +21,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
@@ -28,6 +29,7 @@ import (
 	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/relayclient"
+	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/trace"
@@ -66,11 +68,22 @@ type Options struct {
 	OnPublishStatus func(PublishStatus)
 	OnPublishWall   func(*protocolpb.Wall)
 	OnStatus        func(StatusUpdate)
+	// DisableDesktopNotifications suppresses best-effort desktop notifications for inactivity walls.
+	DisableDesktopNotifications bool
+	DesktopNotifier             desktopnotify.Notifier
+	// AllowRemoteResize permits relay- or attach-driven resize frames to resize
+	// the underlying local PTY. This must remain false for normal host sessions
+	// and only be enabled for headless Lingon-owned PTYs.
+	AllowRemoteResize bool
 	// ToggleWallInactivityFallback handles local-only wall inactivity cycling
 	// when relay-backed toggle is unavailable.
 	ToggleWallInactivityFallback func(context.Context, string) (WallInactivityToggleResult, error)
 	OnSnapshot                   func(terminal.Snapshot)
 	Trace                        *trace.Writer
+	ResizeEvents                 <-chan struct{}
+	// DisableSignalResize suppresses process-global SIGWINCH handling and relies
+	// only on explicit ResizeEvents.
+	DisableSignalResize bool
 }
 
 // PublishStatusKind identifies host publish connectivity transitions.
@@ -112,6 +125,10 @@ type StatusUpdate struct {
 	Duration  time.Duration
 }
 
+var (
+	lineInputPace = 50 * time.Millisecond
+)
+
 // WallInactivityToggleResult describes post-toggle wall inactivity state.
 type WallInactivityToggleResult struct {
 	Enabled       bool
@@ -143,12 +160,13 @@ type Runner struct {
 	effects     *mvu.EffectScheduler
 	tabSuppress mvu.SessionTabSuppression
 
-	viewMu          sync.RWMutex
-	activeSessionID string
-	activeIsLocal   bool
-	remoteSessions  *remoteManager
-	clock           clock.Clock
-	trace           *trace.Writer
+	viewMu            sync.RWMutex
+	activeSessionID   string
+	activeIsLocal     bool
+	preferredRemoteID string
+	remoteSessions    *remoteManager
+	clock             clock.Clock
+	trace             *trace.Writer
 
 	renderCursorMu      sync.Mutex
 	renderCursorRow     int
@@ -174,6 +192,14 @@ type Runner struct {
 	scrollbackView    mvu.ScrollbackViewport
 	scrollbackSession string
 
+	wallNotifyMu            sync.Mutex
+	wallNotifyAfter         map[string]time.Duration
+	wallNotifyLabel         map[string]string
+	wallNotifyTimer         map[string]*clock.Timer
+	wallNotifyArmed         map[string]bool
+	wallNotifyRelay         map[string]bool
+	wallNotifySuppressRelay map[string]bool
+
 	tokenRefresher func(context.Context) (string, error)
 
 	themeName string
@@ -190,7 +216,12 @@ func New(opts Options) *Runner {
 		Endpoint: opts.Endpoint,
 		Theme:    theme.TUI(resolveThemeName(opts.Theme)),
 	}})
-	return &Runner{opts: opts, clock: opts.Clock, trace: opts.Trace, compositor: compositor}
+	return &Runner{
+		opts:       opts,
+		clock:      opts.Clock,
+		trace:      opts.Trace,
+		compositor: compositor,
+	}
 }
 
 func (r *Runner) runtime() *mvu.Runtime {
@@ -270,12 +301,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.opts.Clock = clock.New()
 	}
 	r.clock = r.opts.Clock
-
 	r.initializeSessionIdentity()
 	ui := r.runtime()
 	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{Clock: r.clock, Endpoint: r.opts.Endpoint}})
 	r.effects = mvu.NewEffectScheduler(r.clock)
 	defer r.effects.StopAll()
+	defer r.stopLocalWallNotifications()
 	r.applyTheme(resolveThemeName(r.opts.Theme))
 	if r.opts.Cols <= 0 || r.opts.Rows <= 0 {
 		cols, rows := termSizeAny(r.stdout(), r.stdin())
@@ -354,9 +385,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer stopSignals()
 	r.runCtx = sigCtx
 
-	sigwinch := make(chan os.Signal, 1)
-	signal.Notify(sigwinch, syscall.SIGWINCH)
-	defer signal.Stop(sigwinch)
+	sigwinch, stopResizeSignals := subscribeResizeSignals(r.opts.DisableSignalResize)
+	defer stopResizeSignals()
+	resizeEvents := r.opts.ResizeEvents
 	if r.opts.Stdin != nil {
 		go func() {
 			<-sigCtx.Done()
@@ -380,27 +411,38 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if r.opts.Publish {
 		r.remoteSessions = newRemoteManager(remoteOptions{
-			Endpoint:        r.opts.Endpoint,
-			Token:           r.opts.Token,
-			TokenRefresher:  tokenRefresher,
-			HostnameOnly:    r.opts.HostnameOnly,
-			TLSDir:          r.opts.TLSDir,
-			Insecure:        r.opts.Insecure,
-			Theme:           r.themeName,
-			Logger:          r.logger,
-			Compositor:      r.runtime(),
-			TermSize:        func() (int, int) { return termSizeAny(stdout, stdin) },
-			Clock:           r.clock,
-			InactiveTTL:     30 * time.Second,
-			RefreshInterval: 60 * time.Second,
-			Gate:            gate,
+			Endpoint:                    r.opts.Endpoint,
+			Token:                       r.opts.Token,
+			TokenRefresher:              tokenRefresher,
+			HostnameOnly:                r.opts.HostnameOnly,
+			TLSDir:                      r.opts.TLSDir,
+			Insecure:                    r.opts.Insecure,
+			Theme:                       r.themeName,
+			DisableDesktopNotifications: r.opts.DisableDesktopNotifications,
+			DesktopNotifier:             r.opts.DesktopNotifier,
+			Logger:                      r.logger,
+			Compositor:                  r.runtime(),
+			TermSize:                    func() (int, int) { return termSizeAny(stdout, stdin) },
+			Clock:                       r.clock,
+			InactiveTTL:                 30 * time.Second,
+			RefreshInterval:             60 * time.Second,
+			Gate:                        gate,
 			OnSessions: func(sessions []remoteSessionInfo) {
 				r.handleSessionListUpdate(sessions, stdout, stdin)
 			},
 			OnViewClosed: func(id string, err error) {
 				activeID, _ := r.activeSession()
 				if id != "" && id == activeID {
-					if r.remoteSessions != nil && r.remoteSessions.IsDisabled(id) {
+					if r.remoteSessions != nil && !r.isLocalSession(id) {
+						if r.remoteSessions.IsDisabled(id) || r.remoteSessions.HasSession(id) || r.remoteSessions.IsRetained(id) {
+							return
+						}
+						if r.activateAnyLocal(stdout, stdin) {
+							r.forceRedrawWithMode(stdout, true)
+						}
+						return
+					}
+					if r.remoteSessions != nil && (r.remoteSessions.IsDisabled(id) || r.remoteSessions.HasSession(id)) {
 						return
 					}
 					r.activateAnyLocal(stdout, stdin)
@@ -422,7 +464,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					return
 				}
 				if r.remoteSessions.IsDisabled(activeID) {
-					r.remoteSessions.RenderDisabled(activeID, stdout)
+					r.remoteSessions.RenderDisabled(activeID, r.remoteStdout(stdout))
 					return
 				}
 				r.remoteSessions.Render(activeID)
@@ -470,14 +512,25 @@ func (r *Runner) Run(ctx context.Context) error {
 			if n == 0 {
 				continue
 			}
+			cols, rows := termSizeAny(stdout, stdin)
+			if cols > 0 && rows > 0 {
+				r.ResizeActiveIfChanged(cols, rows)
+			}
 			if r.isLocalActive() {
 				if local := r.activeLocalSession(); local != nil {
-					r.takeControlLocal(local, stdout, stdin)
+					r.takeControlLocal(local)
 				}
 			}
 			filtered := r.filterOuterOSC(buf[:n])
 			if len(filtered) == 0 {
 				continue
+			}
+			if activeID, activeLocal := r.activeSession(); activeLocal {
+				if local := r.localSession(activeID); local != nil {
+					if snap := local.Snapshot(); snap != nil {
+						filtered = terminal.TranslateAppCursorKeys(filtered, snap.Mode&terminal.SnapshotModeAppCursor != 0)
+					}
+				}
 			}
 			pending = pending[:0]
 			flushPending := func() bool {
@@ -515,6 +568,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					} else {
 						r.setTabSuppressed(activeID, false)
 					}
+					r.noteLocalActivity(activeID)
 					r.noteLocalEnterInput(activeID, pending)
 				} else if r.remoteSessions != nil {
 					if bytes.IndexByte(pending, control.CtrlL) >= 0 {
@@ -620,6 +674,18 @@ func (r *Runner) Run(ctx context.Context) error {
 							return true
 						}
 						r.toggleOffline(activeID, stdout)
+					case control.ActionResizeHeadless:
+						if activeLocal || r.remoteSessions == nil {
+							r.showStatus("resize is headless-only", stdout, 2*time.Second)
+							return true
+						}
+						cols, rows := termSizeAny(stdout, stdin)
+						if cols <= 0 || rows <= 0 {
+							cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+						}
+						if err := r.remoteSessions.SendResize(sigCtx, activeID, cols, rows); err != nil {
+							r.showErrorStatus("resize failed", stdout, 2*time.Second)
+						}
 					case control.ActionToggleWallInactivity:
 						r.toggleWallInactivity(sigCtx, activeID, tokenRefresher, stdout)
 					case control.ActionNextTab:
@@ -633,10 +699,15 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				if len(out) > 0 {
 					pending = append(pending, out...)
+					if activeLocal && inputEndsLine(out) {
+						if !flushPending() {
+							return false
+						}
+					}
 				}
 				return true
 			}
-			for _, b := range filtered {
+			for i, b := range filtered {
 				activeID, _ := r.activeSession()
 				if r.scrollbackActiveFor(activeID) {
 					cmd := scrollState.feed(b)
@@ -662,6 +733,18 @@ func (r *Runner) Run(ctx context.Context) error {
 							r.scrollbackPage(1, 1, stdout, stdin)
 						case scrollLineDown:
 							r.scrollbackPage(-1, 1, stdout, stdin)
+						case scrollFiveUp:
+							r.scrollbackPage(1, 5, stdout, stdin)
+						case scrollFiveDown:
+							r.scrollbackPage(-1, 5, stdout, stdin)
+						case scrollLeft:
+							r.scrollbackPanX(-1, stdout, stdin)
+						case scrollRight:
+							r.scrollbackPanX(1, stdout, stdin)
+						case scrollFarLeft:
+							r.scrollbackPanX(-5, stdout, stdin)
+						case scrollFarRight:
+							r.scrollbackPanX(5, stdout, stdin)
 						case scrollTop:
 							r.scrollbackTop(rows, stdout, stdin)
 						case scrollBottom:
@@ -676,6 +759,14 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				if !processNormalByte(b) {
 					return
+				}
+				if isActiveSessionLineByte(activeID, b, r) && i+1 < len(filtered) {
+					remainder := filtered[i+1:]
+					r.addInputPrefill(remainder)
+					if inputAllLines(remainder) {
+						r.clock.Sleep(lineInputPace)
+					}
+					break
 				}
 			}
 			if !flushPending() {
@@ -697,24 +788,25 @@ func (r *Runner) Run(ctx context.Context) error {
 				if cols <= 0 || rows <= 0 {
 					continue
 				}
-				if r.isLocalActive() {
-					r.opts.Cols, r.opts.Rows = cols, rows
-					activeID, _ := r.activeSession()
-					if local := r.activeLocalSession(); local != nil {
-						if snap, err := local.Resize(cols, rows); err == nil && local.publisher != nil {
-							local.publisher.Resize(cols, rows, snap)
-						}
-					}
-					if r.scrollbackActiveFor(activeID) {
-						r.renderScrollback(stdout, stdin)
-					}
+				r.ResizeActive(cols, rows)
+				activeID, _ := r.activeSession()
+				if r.scrollbackActiveFor(activeID) {
+					r.renderScrollback(stdout, stdin)
 					continue
 				}
-				if r.remoteSessions != nil {
-					activeID, _ := r.activeSession()
-					_ = r.remoteSessions.SendResize(sigCtx, activeID, cols, rows)
-					r.remoteSessions.Render(activeID)
+				r.forceRedraw(stdout)
+			case <-resizeEvents:
+				cols, rows := termSizeAny(stdout, stdin)
+				if cols <= 0 || rows <= 0 {
+					continue
 				}
+				r.ResizeActive(cols, rows)
+				activeID, _ := r.activeSession()
+				if r.scrollbackActiveFor(activeID) {
+					r.renderScrollback(stdout, stdin)
+					continue
+				}
+				r.forceRedraw(stdout)
 			}
 		}
 	}()
@@ -725,6 +817,34 @@ func (r *Runner) Run(ctx context.Context) error {
 	wg.Wait()
 	r.clearOverlays(stdout, stdin)
 	return nil
+}
+
+func inputEndsLine(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	last := data[len(data)-1]
+	return last == '\r' || last == '\n'
+}
+
+func inputAllLines(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	for _, b := range data {
+		if b != '\r' && b != '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+func isActiveSessionLineByte(activeID string, b byte, r *Runner) bool {
+	if b != '\r' && b != '\n' {
+		return false
+	}
+	currentID, _ := r.activeSession()
+	return currentID == activeID
 }
 
 func (r *Runner) makeRaw(file *os.File) error {
@@ -747,12 +867,16 @@ func (r *Runner) restoreTerminal(file *os.File) {
 }
 
 func (r *Runner) forceRedraw(stdout *os.File) {
+	r.forceRedrawRespectingScrollback(stdout, false)
+}
+
+func (r *Runner) forceRedrawRespectingScrollback(stdout *os.File, forceFull bool) {
 	activeID, _ := r.activeSession()
 	if r.scrollbackActiveFor(activeID) {
 		r.renderScrollback(stdout, r.stdin())
 		return
 	}
-	r.forceRedrawWithMode(stdout, false)
+	r.forceRedrawWithMode(stdout, forceFull)
 }
 
 func (r *Runner) forceRedrawWithMode(stdout *os.File, forceFull bool) {
@@ -760,7 +884,7 @@ func (r *Runner) forceRedrawWithMode(stdout *os.File, forceFull bool) {
 		if r.remoteSessions != nil {
 			activeID, _ := r.activeSession()
 			if r.remoteSessions.IsDisabled(activeID) {
-				r.remoteSessions.RenderDisabled(activeID, stdout)
+				r.remoteSessions.RenderDisabled(activeID, r.remoteStdout(stdout))
 			} else {
 				r.remoteSessions.Render(activeID)
 			}
@@ -789,8 +913,9 @@ func (r *Runner) forceRedrawWithMode(stdout *os.File, forceFull bool) {
 }
 
 func (r *Runner) enterScrollback(sessionID string, stdout, stdin *os.File) {
+	totalRows, contentCols, cols, rows, rowOffset, colOffset := r.currentScrollbackAnchor(sessionID, stdout, stdin)
 	r.scrollbackMu.Lock()
-	r.scrollbackView.Enter()
+	r.scrollbackView.EnterAt(totalRows, rows, rowOffset, contentCols, cols, colOffset)
 	r.scrollbackSession = sessionID
 	r.scrollbackMu.Unlock()
 
@@ -799,6 +924,69 @@ func (r *Runner) enterScrollback(sessionID string, stdout, stdin *os.File) {
 		return
 	}
 	r.renderScrollback(stdout, stdin)
+}
+
+func (r *Runner) currentScrollbackAnchor(sessionID string, stdout, stdin *os.File) (totalRows, contentCols, viewCols, viewRows, rowOffset, colOffset int) {
+	viewCols = colsForViewport(stdout, stdin, nil)
+	viewRows = rowsForViewport(stdout, stdin, nil)
+	if activeID, isLocal := r.activeSession(); activeID == sessionID && !isLocal && r.remoteSessions != nil {
+		return 0, viewCols, viewCols, viewRows, 0, 0
+	}
+	local := r.localSession(sessionID)
+	if local == nil {
+		return 0, viewCols, viewCols, viewRows, 0, 0
+	}
+	snap := local.Snapshot()
+	if snap == nil {
+		return 0, viewCols, viewCols, viewRows, 0, 0
+	}
+	if viewCols <= 0 {
+		viewCols = int(snap.Cols)
+	}
+	if viewRows <= 0 {
+		viewRows = int(snap.Rows)
+	}
+	scrollback := local.scrollbackSnapshot()
+	totalRows = len(scrollback) + int(snap.Rows)
+	contentCols = scrollbackContentWidthTerminal(scrollback, snap)
+	if contentCols <= 0 {
+		contentCols = int(snap.Cols)
+	}
+	colOffset, liveOriginRow := render.ViewportOriginForSnapshot(snap, viewCols, viewRows)
+	rowOffset = int(snap.Rows) - viewRows - liveOriginRow
+	if rowOffset < 0 {
+		rowOffset = 0
+	}
+	return totalRows, contentCols, viewCols, viewRows, rowOffset, colOffset
+}
+
+func colsForViewport(stdout, stdin *os.File, snap *protocolpb.Snapshot) int {
+	cols, _ := termSizeAny(stdout, stdin)
+	if cols <= 0 && snap != nil {
+		cols = int(snap.Cols)
+	}
+	return cols
+}
+
+func rowsForViewport(stdout, stdin *os.File, snap *protocolpb.Snapshot) int {
+	_, rows := termSizeAny(stdout, stdin)
+	if rows <= 0 && snap != nil {
+		rows = int(snap.Rows)
+	}
+	return rows
+}
+
+func scrollbackContentWidthTerminal(scrollback []terminal.ScrollbackRow, snap *protocolpb.Snapshot) int {
+	width := 0
+	if snap != nil {
+		width = int(snap.Cols)
+	}
+	for _, row := range scrollback {
+		if len(row.Cells) > width {
+			width = len(row.Cells)
+		}
+	}
+	return width
 }
 
 func (r *Runner) exitScrollback(stdout, stdin *os.File) {
@@ -849,8 +1037,45 @@ func (r *Runner) scrollbackPage(delta int, stepRows int, stdout, stdin *os.File)
 		stepRows = rows
 	}
 	totalRows := len(scrollback) + int(snap.Rows)
+	contentCols := scrollbackContentWidthTerminal(scrollback, snap)
 	r.scrollbackMu.Lock()
+	r.scrollbackView.Normalize(totalRows, rows, contentCols, colsForViewport(stdout, stdin, snap))
 	changed := r.scrollbackView.Page(totalRows, rows, delta, stepRows)
+	r.scrollbackMu.Unlock()
+	if !changed {
+		return
+	}
+	r.renderScrollback(stdout, stdin)
+}
+
+func (r *Runner) scrollbackPanX(delta int, stdout, stdin *os.File) {
+	sessionID, isLocal := r.activeSession()
+	if sessionID == "" {
+		return
+	}
+	if !isLocal {
+		if r.remoteSessions != nil {
+			if r.remoteSessions.ScrollbackPanX(sessionID, delta) {
+				r.remoteSessions.Render(sessionID)
+			}
+		}
+		return
+	}
+	local := r.localSession(sessionID)
+	if local == nil {
+		return
+	}
+	snap := local.Snapshot()
+	if snap == nil {
+		return
+	}
+	scrollback := local.scrollbackSnapshot()
+	cols := colsForViewport(stdout, stdin, snap)
+	contentCols := scrollbackContentWidthTerminal(scrollback, snap)
+	totalRows := len(scrollback) + int(snap.Rows)
+	r.scrollbackMu.Lock()
+	r.scrollbackView.Normalize(totalRows, rowsForViewport(stdout, stdin, snap), contentCols, cols)
+	changed := r.scrollbackView.PanX(contentCols, cols, delta)
 	r.scrollbackMu.Unlock()
 	if !changed {
 		return
@@ -886,7 +1111,9 @@ func (r *Runner) scrollbackTop(viewRows int, stdout, stdin *os.File) {
 		return
 	}
 	totalRows := len(scrollback) + int(snap.Rows)
+	contentCols := scrollbackContentWidthTerminal(scrollback, snap)
 	r.scrollbackMu.Lock()
+	r.scrollbackView.Normalize(totalRows, viewRows, contentCols, colsForViewport(stdout, stdin, snap))
 	r.scrollbackView.Top(totalRows, viewRows)
 	r.scrollbackMu.Unlock()
 	r.renderScrollback(stdout, stdin)
@@ -919,6 +1146,7 @@ func (r *Runner) renderScrollback(stdout, stdin *os.File) {
 	r.scrollbackMu.Lock()
 	active := r.scrollbackView.Active() && r.scrollbackSession == sessionID
 	offset := r.scrollbackView.Offset()
+	colOffset := r.scrollbackView.Column()
 	r.scrollbackMu.Unlock()
 	if !active {
 		return
@@ -945,7 +1173,7 @@ func (r *Runner) renderScrollback(stdout, stdin *os.File) {
 	}
 	percent := r.scrollbackView.Percent(len(scrollback)+int(snap.Rows), rows)
 	r.runtime().ApplyAction(mvu.ScrollbackPercentAction{Visible: true, Percent: percent})
-	viewSnap := mvu.BuildScrollbackViewFromTerminal(cols, rows, scrollback, snap, offset)
+	viewSnap := mvu.BuildScrollbackViewFromTerminal(cols, rows, scrollback, snap, offset, colOffset)
 	ctx := r.runCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -975,14 +1203,6 @@ func (r *Runner) renderHostMVU(ctx context.Context, stdout *os.File, snap *proto
 	ui := r.runtime()
 	now := r.clock.Now()
 	cursor := mvu.CursorFromSnapshot(snap, cols, rows)
-	row := cursor.Row
-	col := cursor.Col
-	visible := cursor.Visible
-	r.renderCursorMu.Lock()
-	r.renderCursorRow = row
-	r.renderCursorCol = col
-	r.renderCursorVisible = visible
-	r.renderCursorMu.Unlock()
 	r.stdoutMu.Lock()
 	defer r.stdoutMu.Unlock()
 	frame, err := ui.RenderHostFrame(mvu.RuntimeHostFrameInput{
@@ -999,6 +1219,18 @@ func (r *Runner) renderHostMVU(ctx context.Context, stdout *os.File, snap *proto
 		return err
 	}
 	rendered := frame.Rendered
+	renderCursor := cursor
+	if rendered.ComposedSnapshot != nil {
+		renderCursor = mvu.CursorFromSnapshot(rendered.ComposedSnapshot, cols, rows)
+	}
+	row := renderCursor.Row
+	col := renderCursor.Col
+	visible := renderCursor.Visible
+	r.renderCursorMu.Lock()
+	r.renderCursorRow = row
+	r.renderCursorCol = col
+	r.renderCursorVisible = visible
+	r.renderCursorMu.Unlock()
 	if r.trace != nil {
 		activeID, activeLocal := r.activeSession()
 		r.trace.Event("render", map[string]any{
@@ -1106,6 +1338,10 @@ func (r *Runner) stdout() *os.File {
 		return r.opts.Stdout
 	}
 	return os.Stdout
+}
+
+func (r *Runner) remoteStdout(stdout *os.File) io.Writer {
+	return terminal.NewLockedWriter(stdout, &r.stdoutMu)
 }
 
 func termSize(file *os.File) (int, int) {
@@ -1230,7 +1466,9 @@ func (r *Runner) updateTabs(sessions []remoteSessionInfo) {
 	}
 	sources := mvu.SessionTabSourcesFrom(sessions)
 	if !mvu.SessionIDExists(sources, activeID) {
-		if localID := r.firstLocalID(); localID != "" {
+		if r.remoteSessions != nil && !r.isLocalSession(activeID) && r.remoteSessions.HasSession(activeID) {
+			// Keep the active remote tab selected while it is transiently missing.
+		} else if localID := r.firstLocalID(); localID != "" {
 			activeID = localID
 			r.setActiveSession(activeID, true)
 		}
@@ -1281,32 +1519,35 @@ func (r *Runner) cursorQueryFunc(stdout, stdin *os.File) func(terminal.Snapshot)
 			cols = raw.Cols
 			rows = raw.Rows
 		}
-		r.renderCursorMu.Lock()
-		if r.renderCursorVisible {
-			row = r.renderCursorRow
-			col = r.renderCursorCol
-			r.renderCursorMu.Unlock()
-			if raw.Cols == cols && raw.Rows == rows {
-				row = raw.Cursor.Y + 1
-				col = raw.Cursor.X + 1
-				if r.trace != nil {
-					r.trace.Event("cursor_query_source", map[string]any{
-						"component": "host",
-						"source":    "raw_full",
-						"row":       row,
-						"col":       col,
-						"cursor_x":  raw.Cursor.X,
-						"cursor_y":  raw.Cursor.Y,
-						"cols":      raw.Cols,
-						"rows":      raw.Rows,
-					})
-				}
-				return row, col, true
-			}
+		if raw.CursorVisible && raw.Cols == cols && raw.Rows == rows {
+			row = raw.Cursor.Y + 1
+			col = raw.Cursor.X + 1
 			if r.trace != nil {
 				r.trace.Event("cursor_query_source", map[string]any{
 					"component": "host",
-					"source":    "render_cache",
+					"source":    "raw_full",
+					"row":       row,
+					"col":       col,
+					"cursor_x":  raw.Cursor.X,
+					"cursor_y":  raw.Cursor.Y,
+					"cols":      raw.Cols,
+					"rows":      raw.Rows,
+				})
+			}
+			return row, col, true
+		}
+		r.stdoutMu.Lock()
+		topOverlayVisible := r.renderCache.TopOverlayVisible()
+		r.stdoutMu.Unlock()
+		r.renderCursorMu.Lock()
+		if topOverlayVisible && r.renderCursorVisible {
+			row = r.renderCursorRow
+			col = r.renderCursorCol
+			r.renderCursorMu.Unlock()
+			if r.trace != nil {
+				r.trace.Event("cursor_query_source", map[string]any{
+					"component": "host",
+					"source":    "render_overlay",
 					"row":       row,
 					"col":       col,
 					"cursor_x":  raw.Cursor.X,
@@ -1611,26 +1852,27 @@ func parseSessionSequenceSuffix(name string) int {
 
 func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, offline bool, tokenRefresher func(context.Context) (string, error), gate *netgate.Gate, stdout, stdin *os.File, debugRemoteInput bool) (*localSession, error) {
 	session := newLocalSession(ctx, localSessionOptions{
-		ID:              id,
-		Name:            name,
-		Shell:           r.opts.Shell,
-		Term:            r.opts.Term,
-		Cols:            r.opts.Cols,
-		Rows:            r.opts.Rows,
-		ScrollbackLines: r.opts.ScrollbackLines,
-		Respawn:         respawn,
-		Offline:         offline,
-		Logger:          r.logger,
-		Clock:           r.clock,
-		OnOutput:        r.handleLocalOutput(stdout, stdin),
-		OnPTYRead:       r.opts.OnPTYRead,
-		OnSnapshot:      r.opts.OnSnapshot,
-		OnExit:          r.handleLocalExit(stdout, stdin),
-		CursorQuery:     r.cursorQueryFunc(stdout, stdin),
-		Trace:           r.trace,
-		DefaultFg:       r.outerDefaultFg,
-		DefaultBg:       r.outerDefaultBg,
-		DefaultCursor:   r.outerDefaultCursor,
+		ID:                id,
+		Name:              name,
+		Shell:             r.opts.Shell,
+		Term:              r.opts.Term,
+		Cols:              r.opts.Cols,
+		Rows:              r.opts.Rows,
+		ScrollbackLines:   r.opts.ScrollbackLines,
+		Respawn:           respawn,
+		Offline:           offline,
+		Logger:            r.logger,
+		Clock:             r.clock,
+		OnOutput:          r.handleLocalOutput(stdout, stdin),
+		OnPTYRead:         r.opts.OnPTYRead,
+		OnSnapshot:        r.opts.OnSnapshot,
+		OnExit:            r.handleLocalExit(stdout, stdin),
+		CursorQuery:       r.cursorQueryFunc(stdout, stdin),
+		Trace:             r.trace,
+		DefaultFg:         r.outerDefaultFg,
+		DefaultBg:         r.outerDefaultBg,
+		DefaultCursor:     r.outerDefaultCursor,
+		AllowRemoteResize: r.opts.AllowRemoteResize,
 	})
 	session.SetLastActive(r.clock.Now())
 	session.setHolder(host.HostControlID)
@@ -1653,6 +1895,7 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			Clock:            r.clock,
 			SessionID:        session.ID(),
 			SessionName:      session.Name(),
+			Headless:         r.opts.AllowRemoteResize,
 			Cols:             r.opts.Cols,
 			Rows:             r.opts.Rows,
 			PublishControl:   r.opts.PublishControl,
@@ -1745,15 +1988,10 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			r.HandleSessionCommand(session.ctx, session.ID(), kind)
 		}
 		publisher.OnResize = func(cols, rows int) {
-			if cols <= 0 || rows <= 0 {
+			if session == nil || !session.AllowRemoteResize() {
 				return
 			}
-			if session.holder() == host.HostControlID {
-				return
-			}
-			if _, err := session.Resize(cols, rows); err != nil {
-				return
-			}
+			r.resizeLocalSession(session, cols, rows)
 		}
 		publisher.OnControl = func(holderID string) {
 			if holderID == "" {
@@ -1774,8 +2012,17 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			if r.opts.OnPublishWall != nil {
 				r.opts.OnPublishWall(wall)
 			}
+			if r.suppressRelayBackedLocalInactivityDuplicate(wall) {
+				return
+			}
+			if r.suppressFocusedLocalInactivityWall(wall) {
+				return
+			}
 			r.showWall(wall, stdout)
 		}
+		publisher.SetWallInactivityStatus(func() *protocolpb.WallInactivityStatus {
+			return r.currentWallInactivityStatus(session.ID())
+		})
 		session.SetPublisher(publisher)
 		go func() {
 			if err := publisher.Run(session.ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -1800,16 +2047,32 @@ func (r *Runner) handleLocalOutput(stdout, stdin *os.File) func(id string, data 
 		if local == nil {
 			return
 		}
-		local.SetLastActive(r.clock.Now())
+		r.noteLocalActivity(id)
 		r.noteLocalOutput(id, data)
+		forceFull := localOutputForcesFullRedraw(data)
 		if snap == nil {
-			r.forceRedraw(stdout)
+			r.forceRedrawWithMode(stdout, forceFull)
 			return
 		}
-		if err := r.renderSnapshotWithOverlays(r.runCtx, stdout, stdin, snap); err != nil {
+		activeID, _ := r.activeSession()
+		suppressTabs := r.tabSuppressed(activeID)
+		cols, rows := termSizeAny(stdout, stdin)
+		if cols <= 0 || rows <= 0 {
+			cols, rows = r.opts.Cols, r.opts.Rows
+		}
+		if err := r.renderHostMVU(context.Background(), stdout, snap, cols, rows, forceFull, suppressTabs); err != nil {
 			r.logger.Debug("session.render.failed", "err", err, "session", id)
 		}
 	}
+}
+
+func localOutputForcesFullRedraw(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	return bytes.Contains(data, []byte("\x1b[2J")) ||
+		bytes.Contains(data, []byte("\x1b[3J")) ||
+		bytes.Contains(data, []byte("\x1bc"))
 }
 
 func containsEnter(data []byte) bool {
@@ -1950,12 +2213,13 @@ func (r *Runner) filterOuterOSC(data []byte) []byte {
 	hadPending := pending != nil && len(pending) > 0
 	if !hadPending && grace.IsZero() {
 		// Keyboard input must never be delayed by OSC parsing.
-		// Only filter while an explicit OSC query response is pending/in-grace.
+		// Without an explicit query window, only consume complete OSC color
+		// responses already present in this read; do not retain partial input.
 		if r.outerOscParser.state != 0 || len(r.outerOscParser.passthrough) > 0 {
 			r.outerOscParser.resetAll()
 		}
 		r.outerOscMu.Unlock()
-		return data
+		return r.filterCompleteOuterOSCResponses(data)
 	}
 	now := time.Now()
 	if r.clock != nil {
@@ -2009,12 +2273,53 @@ func (r *Runner) filterOuterOSC(data []byte) []byte {
 	return out
 }
 
+func (r *Runner) filterCompleteOuterOSCResponses(data []byte) []byte {
+	var parser oscStreamParser
+	out := make([]byte, 0, len(data))
+	for _, b := range data {
+		code, payload, raw, ok := parser.Feed(b)
+		if ok {
+			if code == 10 || code == 11 || code == 12 {
+				r.updateOuterDefaults(code, payload, "late")
+			} else {
+				parser.AddPassthrough(raw)
+			}
+		}
+		if chunk := parser.DrainPassthrough(); len(chunk) > 0 {
+			out = append(out, chunk...)
+		}
+	}
+	if chunk := parser.FlushPassthrough(); len(chunk) > 0 {
+		out = append(out, chunk...)
+	}
+	return out
+}
+
 func (r *Runner) handleLocalExit(stdout, stdin *os.File) func(id string, err error) {
 	return func(id string, err error) {
+		r.renderFinalLocalSnapshot(id, stdout, stdin)
 		r.removeLocalSession(id, stdout, stdin)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			r.logger.Debug("session.local.exit", "session", id, "err", err)
 		}
+	}
+}
+
+func (r *Runner) renderFinalLocalSnapshot(id string, stdout, stdin *os.File) {
+	activeID, activeLocal := r.activeSession()
+	if !activeLocal || activeID != id || r.scrollbackActiveFor(id) {
+		return
+	}
+	local := r.localSession(id)
+	if local == nil {
+		return
+	}
+	snap := local.Snapshot()
+	if snap == nil {
+		return
+	}
+	if err := r.renderSnapshotWithOverlays(context.Background(), stdout, stdin, snap); err != nil && r.logger != nil {
+		r.logger.Debug("session.render.final.failed", "err", err, "session", id)
 	}
 }
 
@@ -2044,6 +2349,7 @@ func (r *Runner) removeLocalSession(id string, stdout, stdin *os.File) {
 	}
 	r.inputTraceMu.Unlock()
 	r.setTabSuppressed(id, false)
+	r.disableLocalWallNotification(id)
 
 	activeID, activeLocal := r.activeSession()
 	if activeLocal && activeID == id {
@@ -2088,13 +2394,47 @@ func (r *Runner) handleSessionListUpdate(sessions []remoteSessionInfo, stdout, s
 	activeID, _ := r.activeSession()
 	merged := r.mergeSessions(sessions)
 	mergedSources := mvu.SessionTabSourcesFrom(merged)
+	r.viewMu.RLock()
+	preferredRemoteID := r.preferredRemoteID
+	r.viewMu.RUnlock()
+	if preferredRemoteID != "" && r.remoteSessions != nil {
+		if !mvu.SessionIDExists(mergedSources, preferredRemoteID) {
+			r.viewMu.Lock()
+			if r.preferredRemoteID == preferredRemoteID {
+				r.preferredRemoteID = ""
+			}
+			r.viewMu.Unlock()
+			preferredRemoteID = ""
+		} else if activeID != preferredRemoteID {
+			if err := r.activateRemote(r.runCtx, preferredRemoteID, stdout, stdin); err == nil {
+				return
+			}
+			r.viewMu.Lock()
+			if r.preferredRemoteID == preferredRemoteID {
+				r.preferredRemoteID = ""
+			}
+			r.viewMu.Unlock()
+			preferredRemoteID = ""
+		}
+		if preferredRemoteID != "" {
+			r.refreshTabBar(stdout)
+			return
+		}
+	}
 	if activeID != "" && mvu.SessionIDExists(mergedSources, activeID) {
 		r.refreshTabBar(stdout)
 		return
 	}
-	if localID := r.firstLocalID(); localID != "" {
-		r.activateLocalSession(localID, stdout, stdin)
+	if r.activateAnyLocal(stdout, stdin) {
 		return
+	}
+	for _, session := range merged {
+		if r.isLocalSession(session.ID) {
+			continue
+		}
+		if err := r.activateRemote(r.runCtx, session.ID, stdout, stdin); err == nil {
+			return
+		}
 	}
 	r.refreshTabBar(stdout)
 }
@@ -2119,11 +2459,16 @@ func (r *Runner) handleRemoteInput(session *localSession, data []byte, debug boo
 		}
 		return
 	}
-	if _, err := session.writePTY(data); err != nil && r.logger != nil {
-		r.logger.Debug("session.remote.input.write.failed", "err", err, "session", session.ID())
-	} else if debug && r.logger != nil {
+	if err := session.enqueueRemoteInput(data); err != nil {
+		if r.logger != nil {
+			r.logger.Debug("session.remote.input.write.failed", "err", err, "session", session.ID())
+		}
+		return
+	}
+	if debug && r.logger != nil {
 		r.logger.Debug("session.remote.input.write.ok", "len", len(data), "session", session.ID())
 	}
+	r.noteLocalActivity(session.ID())
 }
 
 func (r *Runner) showStatus(message string, stdout *os.File, d time.Duration) {
@@ -2204,6 +2549,7 @@ func (r *Runner) handlePublisherSessionRejected(session *localSession, message s
 	} else {
 		r.updateTabs(nil)
 	}
+	r.disableLocalWallNotification(session.ID())
 	r.refreshTabBar(stdout)
 	activeID, _ := r.activeSession()
 	if activeID != "" && !r.isActiveLocalSession(session.ID()) {
@@ -2216,8 +2562,11 @@ func (r *Runner) showWall(wall *protocolpb.Wall, stdout *os.File) {
 	if wall == nil {
 		return
 	}
+	if r.suppressFocusedLocalInactivityWall(wall) {
+		return
+	}
 	ui := r.runtime()
-	sender := strings.TrimSpace(wall.Sender)
+	sender := desktopnotify.FormatWallSource(wall)
 	title := "Broadcast:"
 	if sender != "" {
 		title = fmt.Sprintf("Broadcast from %s:", sender)
@@ -2233,16 +2582,236 @@ func (r *Runner) showWall(wall *protocolpb.Wall, stdout *os.File) {
 		Message:  message,
 		Duration: timeout,
 	}})
-	r.forceRedrawWithMode(stdout, effect.ForceFull)
+	r.forceRedrawRespectingScrollback(stdout, effect.ForceFull)
 	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
 		Scheduler: r.effects,
 		Ctx:       r.runCtx,
 		Key:       mvu.EffectKeyStateExpiry,
 		Result:    effect,
 		Callback: func(full bool) {
-			r.forceRedrawWithMode(stdout, full)
+			r.forceRedrawRespectingScrollback(stdout, full)
 		},
 	})
+}
+
+func (r *Runner) stopLocalWallNotifications() {
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	for _, timer := range r.wallNotifyTimer {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+	r.wallNotifyAfter = nil
+	r.wallNotifyLabel = nil
+	r.wallNotifyTimer = nil
+	r.wallNotifyArmed = nil
+	r.wallNotifyRelay = nil
+	r.wallNotifySuppressRelay = nil
+}
+
+func (r *Runner) configureLocalWallNotification(sessionID string, after time.Duration, label string, relayBacked bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	if r.wallNotifyAfter == nil {
+		r.wallNotifyAfter = make(map[string]time.Duration)
+	}
+	if r.wallNotifyLabel == nil {
+		r.wallNotifyLabel = make(map[string]string)
+	}
+	if r.wallNotifyTimer == nil {
+		r.wallNotifyTimer = make(map[string]*clock.Timer)
+	}
+	if r.wallNotifyArmed == nil {
+		r.wallNotifyArmed = make(map[string]bool)
+	}
+	if r.wallNotifyRelay == nil {
+		r.wallNotifyRelay = make(map[string]bool)
+	}
+	if r.wallNotifySuppressRelay == nil {
+		r.wallNotifySuppressRelay = make(map[string]bool)
+	}
+	if timer := r.wallNotifyTimer[sessionID]; timer != nil {
+		timer.Stop()
+		delete(r.wallNotifyTimer, sessionID)
+	}
+	if after <= 0 {
+		delete(r.wallNotifyAfter, sessionID)
+		delete(r.wallNotifyLabel, sessionID)
+		delete(r.wallNotifyArmed, sessionID)
+		delete(r.wallNotifyRelay, sessionID)
+		delete(r.wallNotifySuppressRelay, sessionID)
+		return
+	}
+	r.wallNotifyAfter[sessionID] = after
+	r.wallNotifyLabel[sessionID] = strings.TrimSpace(label)
+	r.wallNotifyArmed[sessionID] = true
+	r.wallNotifyRelay[sessionID] = relayBacked
+	r.wallNotifyTimer[sessionID] = r.clock.AfterFunc(after, func() {
+		r.fireLocalWallNotification(sessionID)
+	})
+}
+
+func (r *Runner) disableLocalWallNotification(sessionID string) {
+	r.configureLocalWallNotification(sessionID, 0, "", false)
+}
+
+func (r *Runner) currentWallInactivityStatus(sessionID string) *protocolpb.WallInactivityStatus {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return &protocolpb.WallInactivityStatus{}
+	}
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	status := &protocolpb.WallInactivityStatus{}
+	if after := r.wallNotifyAfter[sessionID]; after > 0 {
+		status.Enabled = true
+	}
+	if label := strings.TrimSpace(r.wallNotifyLabel[sessionID]); label != "" {
+		status.InactiveAfter = label
+	}
+	return status
+}
+
+func (r *Runner) publishWallInactivityStatus(sessionID, errText string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	local := r.localSession(sessionID)
+	if local == nil || local.publisher == nil {
+		return
+	}
+	status := r.currentWallInactivityStatus(sessionID)
+	if status == nil {
+		status = &protocolpb.WallInactivityStatus{}
+	}
+	status.Error = strings.TrimSpace(errText)
+	local.publisher.PublishWallInactivityStatus(status)
+}
+
+func (r *Runner) noteLocalActivity(sessionID string) {
+	local := r.localSession(sessionID)
+	if local == nil {
+		return
+	}
+	local.SetLastActive(r.clock.Now())
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	after := r.wallNotifyAfter[sessionID]
+	if after <= 0 {
+		return
+	}
+	if r.wallNotifyTimer == nil {
+		r.wallNotifyTimer = make(map[string]*clock.Timer)
+	}
+	if timer := r.wallNotifyTimer[sessionID]; timer != nil {
+		timer.Stop()
+	}
+	if r.wallNotifyArmed == nil {
+		r.wallNotifyArmed = make(map[string]bool)
+	}
+	r.wallNotifyArmed[sessionID] = true
+	r.wallNotifyTimer[sessionID] = r.clock.AfterFunc(after, func() {
+		r.fireLocalWallNotification(sessionID)
+	})
+}
+
+func (r *Runner) fireLocalWallNotification(sessionID string) {
+	r.wallNotifyMu.Lock()
+	after := r.wallNotifyAfter[sessionID]
+	armed := r.wallNotifyArmed[sessionID]
+	relayBacked := r.wallNotifyRelay[sessionID]
+	if after <= 0 || !armed {
+		r.wallNotifyMu.Unlock()
+		return
+	}
+	r.wallNotifyArmed[sessionID] = false
+	if r.wallNotifyTimer != nil {
+		delete(r.wallNotifyTimer, sessionID)
+	}
+	r.wallNotifyMu.Unlock()
+
+	local := r.localSession(sessionID)
+	if local == nil {
+		return
+	}
+	label := strings.TrimSpace(local.Name())
+	if label == "" {
+		label = sessionID
+	}
+	if !r.opts.DisableDesktopNotifications {
+		if r.opts.DesktopNotifier == nil {
+			r.opts.DesktopNotifier = desktopnotify.New()
+		}
+		if r.opts.DesktopNotifier != nil {
+			notifyCtx := r.runCtx
+			if notifyCtx == nil {
+				notifyCtx = context.Background()
+			}
+			_ = r.opts.DesktopNotifier.Notify(notifyCtx, desktopnotify.Request{
+				Title: label,
+				Body:  "inactive",
+			})
+		}
+	}
+	activeID, _ := r.activeSession()
+	if activeID == sessionID {
+		return
+	}
+	if relayBacked {
+		r.wallNotifyMu.Lock()
+		if r.wallNotifySuppressRelay == nil {
+			r.wallNotifySuppressRelay = make(map[string]bool)
+		}
+		r.wallNotifySuppressRelay[sessionID] = true
+		r.wallNotifyMu.Unlock()
+	}
+	r.showWall(&protocolpb.Wall{
+		Message:         label + " inactive",
+		TimeoutSeconds:  5,
+		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+		SourceSessionId: sessionID,
+	}, r.stdout())
+}
+
+func (r *Runner) suppressFocusedLocalInactivityWall(wall *protocolpb.Wall) bool {
+	if wall == nil {
+		return false
+	}
+	activeID, activeLocal := r.activeSession()
+	if !activeLocal || activeID == "" {
+		return false
+	}
+	if !desktopnotify.IsInactivityWall(wall) {
+		return false
+	}
+	sourceID := strings.TrimSpace(wall.GetSourceSessionId())
+	if sourceID == "" {
+		return false
+	}
+	return sourceID == activeID
+}
+
+func (r *Runner) suppressRelayBackedLocalInactivityDuplicate(wall *protocolpb.Wall) bool {
+	if wall == nil || !desktopnotify.IsInactivityWall(wall) {
+		return false
+	}
+	sourceID := strings.TrimSpace(wall.GetSourceSessionId())
+	if sourceID == "" {
+		return false
+	}
+	r.wallNotifyMu.Lock()
+	defer r.wallNotifyMu.Unlock()
+	if r.wallNotifySuppressRelay == nil || !r.wallNotifySuppressRelay[sourceID] {
+		return false
+	}
+	delete(r.wallNotifySuppressRelay, sourceID)
+	return true
 }
 
 func (r *Runner) toggleRespawn(sessionID string, stdout *os.File) {
@@ -2300,17 +2869,22 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		result, err := r.opts.ToggleWallInactivityFallback(ctx, sessionID)
 		if err != nil {
 			r.showErrorStatus("wall inactivity toggle failed", stdout, 2*time.Second)
+			r.publishWallInactivityStatus(sessionID, "wall inactivity toggle failed")
 			return true
 		}
 		if result.Enabled {
+			r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(result.InactiveAfter), result.InactiveAfter, false)
 			status := "wall inactivity on"
 			if label := strings.TrimSpace(result.InactiveAfter); label != "" {
 				status = "wall inactivity " + label
 			}
 			r.showStatus(status, stdout, 2*time.Second)
+			r.publishWallInactivityStatus(sessionID, "")
 			return true
 		}
+		r.disableLocalWallNotification(sessionID)
 		r.showStatus("wall inactivity off", stdout, 2*time.Second)
+		r.publishWallInactivityStatus(sessionID, "")
 		return true
 	}
 	if local := r.localSession(sessionID); local != nil && local.Offline() {
@@ -2325,6 +2899,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return
 		}
 		r.showStatus("wall inactivity requires relay endpoint", stdout, 2*time.Second)
+		r.publishWallInactivityStatus(sessionID, "wall inactivity requires relay endpoint")
 		return
 	}
 	token := strings.TrimSpace(r.opts.Token)
@@ -2335,6 +2910,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 				return
 			}
 			r.showErrorStatus("wall inactivity toggle failed: token refresh", stdout, 2*time.Second)
+			r.publishWallInactivityStatus(sessionID, "wall inactivity toggle failed: token refresh")
 			return
 		}
 		token = strings.TrimSpace(refreshed)
@@ -2347,6 +2923,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 			return
 		}
 		r.showStatus("wall inactivity requires authentication", stdout, 2*time.Second)
+		r.publishWallInactivityStatus(sessionID, "wall inactivity requires authentication")
 		return
 	}
 	resp, err := relayclient.ToggleWallInactivity(
@@ -2365,6 +2942,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		return
 	}
 	if resp.Enabled {
+		r.configureLocalWallNotification(sessionID, parseWallInactiveAfter(resp.InactiveAfter), resp.InactiveAfter, true)
 		status := "wall inactivity on"
 		if label := strings.TrimSpace(resp.InactiveAfter); label != "" {
 			status = "wall inactivity " + label
@@ -2372,7 +2950,20 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		r.showStatus(status, stdout, 2*time.Second)
 		return
 	}
+	r.disableLocalWallNotification(sessionID)
 	r.showStatus("wall inactivity off", stdout, 2*time.Second)
+}
+
+func parseWallInactiveAfter(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	after, err := time.ParseDuration(raw)
+	if err != nil || after <= 0 {
+		return 0
+	}
+	return after
 }
 
 func (r *Runner) applyTheme(name string) {
@@ -2456,6 +3047,9 @@ func (r *Runner) switchTab(ctx context.Context, dir int, stdout, stdin *os.File)
 		return
 	}
 	if r.isLocalSession(nextID) {
+		r.viewMu.Lock()
+		r.preferredRemoteID = ""
+		r.viewMu.Unlock()
 		r.activateLocalSession(nextID, stdout, stdin)
 		return
 	}
@@ -2516,7 +3110,7 @@ func (r *Runner) activateLocalSession(sessionID string, stdout, stdin *os.File) 
 	} else {
 		r.updateTabs(nil)
 	}
-	r.takeControlLocal(local, stdout, stdin)
+	r.takeControlLocal(local)
 	r.forceRedraw(stdout)
 	r.stdoutMu.Lock()
 	topOverlayVisible := r.renderCache.TopOverlayVisible()
@@ -2540,22 +3134,21 @@ func (r *Runner) activateRemote(ctx context.Context, sessionID string, stdout, s
 	if r.remoteSessions.IsDisabled(sessionID) {
 		r.setActiveSession(sessionID, false)
 		r.updateTabs(r.remoteSessions.Sessions())
-		r.remoteSessions.Enable(ctx, sessionID, stdout)
-		r.remoteSessions.RenderDisabled(sessionID, stdout)
+		r.remoteSessions.Enable(ctx, sessionID, r.remoteStdout(stdout))
+		r.remoteSessions.RenderDisabled(sessionID, r.remoteStdout(stdout))
 		r.refreshTabBar(stdout)
 		return nil
 	}
-	_, err := r.remoteSessions.Show(ctx, sessionID, stdout)
+	_, err := r.remoteSessions.Show(ctx, sessionID, r.remoteStdout(stdout))
 	if err != nil {
 		return err
 	}
 	r.setActiveSession(sessionID, false)
+	r.viewMu.Lock()
+	r.preferredRemoteID = sessionID
+	r.viewMu.Unlock()
 	r.updateTabs(r.remoteSessions.Sessions())
 	r.remoteSessions.RenderClear(sessionID)
-	cols, rows := termSizeAny(stdout, stdin)
-	if cols > 0 && rows > 0 {
-		_ = r.remoteSessions.SendResize(ctx, sessionID, cols, rows)
-	}
 	r.refreshTabBar(stdout)
 	// Force an immediate redraw on tab switch so stale overlays from the previous tab
 	// do not linger until the next input/frame event.
@@ -2563,7 +3156,7 @@ func (r *Runner) activateRemote(ctx context.Context, sessionID string, stdout, s
 	return nil
 }
 
-func (r *Runner) takeControlLocal(local *localSession, stdout, stdin *os.File) {
+func (r *Runner) takeControlLocal(local *localSession) {
 	if local == nil {
 		return
 	}
@@ -2571,21 +3164,22 @@ func (r *Runner) takeControlLocal(local *localSession, stdout, stdin *os.File) {
 		r.logger.Trace("session.local.take_control", "session", local.ID())
 	}
 	local.takeControl()
-	cols, rows := termSizeAny(stdout, stdin)
-	if cols <= 0 || rows <= 0 {
+	r.resizeLocalSession(local, r.opts.Cols, r.opts.Rows)
+}
+
+func (r *Runner) resizeLocalSession(local *localSession, cols, rows int) {
+	if local == nil || cols <= 0 || rows <= 0 {
 		return
 	}
-	curCols, curRows := local.Size()
-	if cols == curCols && rows == curRows {
-		return
-	}
-	r.opts.Cols, r.opts.Rows = cols, rows
-	if snap, err := local.Resize(cols, rows); err == nil {
-		if local.publisher != nil {
-			local.publisher.Resize(cols, rows, snap)
+	snap, err := local.Resize(cols, rows)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Debug("session.local.resize.failed", "err", err, "session", local.ID(), "cols", cols, "rows", rows)
 		}
-	} else if r.logger != nil {
-		r.logger.Debug("session.local.resize.failed", "err", err, "session", local.ID(), "cols", cols, "rows", rows)
+		return
+	}
+	if local.publisher != nil {
+		local.publisher.Resize(cols, rows, snap)
 	}
 }
 

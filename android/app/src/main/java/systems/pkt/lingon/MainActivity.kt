@@ -22,7 +22,13 @@ import systems.pkt.lingon.viewmodel.AppViewModelFactory
 class MainActivity : ComponentActivity() {
     private val viewModel: AppViewModel by viewModels {
         val app = application as LingonApplication
-        AppViewModelFactory(app.repository, app.wsClient, app.wallNotifier, app.wallWorkScheduler)
+        AppViewModelFactory(
+            app.repository,
+            app.wsClient,
+            app.wallDeliveryCoordinator,
+            app.wallWorkScheduler,
+            app.backgroundWallServiceController,
+        )
     }
     private var unlockPromptInFlight = false
     private val unlockLauncher =
@@ -74,12 +80,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        (application as LingonApplication).setAppInForeground(true)
         viewModel.onAppForeground()
     }
 
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) {
+            (application as LingonApplication).setAppInForeground(false)
             viewModel.onAppBackground()
         }
     }

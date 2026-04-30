@@ -13,6 +13,8 @@ import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.protocol.Frame
 import systems.pkt.lingon.protocol.Hello
 import systems.pkt.lingon.protocol.In
+import systems.pkt.lingon.protocol.Command
+import systems.pkt.lingon.protocol.CommandKind
 import systems.pkt.lingon.protocol.Resize
 
 open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvider) {
@@ -61,13 +63,13 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
             override fun onMessage(webSocket: WebSocket, bytes: OkioByteString) {
                 val parsed = runCatching { Frame.parseFrom(bytes.toByteArray()) }
                 if (parsed.isFailure) {
-                    if (Log.isLoggable("lingon-ws", Log.DEBUG)) {
+                    if (isLoggable("lingon-ws", Log.DEBUG)) {
                         Log.w("lingon-ws", "rx parse failed len=${bytes.size}", parsed.exceptionOrNull())
                     }
                     return
                 }
                 val frame = parsed.getOrThrow()
-                if (Log.isLoggable("lingon-ws", Log.DEBUG)) {
+                if (isLoggable("lingon-ws", Log.DEBUG)) {
                     Log.d(
                         "lingon-ws",
                         "rx seq=${frame.seq} type=${frameType(frame)} session=${frame.sessionId} len=${bytes.size}",
@@ -77,7 +79,7 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (Log.isLoggable("lingon-ws", Log.DEBUG)) {
+                if (isLoggable("lingon-ws", Log.DEBUG)) {
                     Log.w("lingon-ws", "rx text len=${text.length}")
                 }
             }
@@ -111,6 +113,13 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         webSocket.send(frame.toOkioByteString())
     }
 
+    open fun sendCommand(webSocket: WebSocket, kind: CommandKind) {
+        if (kind == CommandKind.COMMAND_KIND_UNSPECIFIED) return
+        val command = Command.newBuilder().setKind(kind).build()
+        val frame = Frame.newBuilder().setCommand(command).build()
+        webSocket.send(frame.toOkioByteString())
+    }
+
     private fun buildWsUrl(baseUrl: HttpUrl, shareToken: String?): HttpUrl {
         val builder = baseUrl.newBuilder()
             .addPathSegments("ws/client")
@@ -130,11 +139,17 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
             frame.hasSessions() -> "sessions"
             frame.hasError() -> "error"
             frame.hasOut() -> "out"
+            frame.hasCommand() -> "command"
+            frame.hasWallInactivityStatus() -> "wall_inactivity_status"
             frame.hasHello() -> "hello"
             frame.hasIn() -> "in"
             frame.hasResize() -> "resize"
             else -> "unknown"
         }
+    }
+
+    private fun isLoggable(tag: String, level: Int): Boolean {
+        return runCatching { Log.isLoggable(tag, level) }.getOrDefault(false)
     }
 }
 

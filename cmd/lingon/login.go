@@ -55,16 +55,16 @@ func NewLoginCommand(loader *lingon.Loader) *cobra.Command {
 				_ = closer.Close()
 			}()
 			ctx := pslog.ContextWithLogger(cmd.Context(), logger)
-			endpointValue := endpoint
-			if !cmd.Flags().Changed("endpoint") {
-				endpointValue = cfg.Client.Endpoint
-			}
-			if endpointValue == "" {
-				return fmt.Errorf("endpoint is required")
-			}
 			authPath := authFile
 			if !cmd.Flags().Changed("auth-file") {
 				authPath = cfg.Client.AuthFile
+			}
+			endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpoint, authPath)
+			if err != nil {
+				return err
+			}
+			if endpointValue == "" {
+				return fmt.Errorf("endpoint is required")
 			}
 
 			nonInteractiveValue := nonInteractive

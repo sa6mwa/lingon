@@ -42,6 +42,127 @@ func TestPublisherBufferOverflowResetsToSnapshot(t *testing.T) {
 	}
 }
 
+func TestPublisherPublishSendsActivityForRealOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		_, data, err := conn.Read(r.Context())
+		if err != nil {
+			t.Errorf("server read: %v", err)
+			return
+		}
+		var frame protocolpb.Frame
+		if err := proto.Unmarshal(data, &frame); err != nil {
+			t.Errorf("unmarshal activity frame: %v", err)
+			return
+		}
+		if frame.GetActivity() == nil {
+			t.Errorf("expected activity frame, got %#v", frame.Payload)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, server.URL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer func() {
+		_ = ws.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	p := NewPublisher(PublishOptions{SessionID: "session"})
+	p.setConn(ws)
+	p.Publish([]byte("real-output"), &protocolpb.Snapshot{
+		Cols: 2, Rows: 1, Runes: []uint32{'A', 'B'}, Fg: []uint32{0, 0}, Bg: []uint32{0, 0},
+	})
+}
+
+func TestPublisherResizeDoesNotSendActivity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		readCtx, cancel := context.WithTimeout(r.Context(), 250*time.Millisecond)
+		defer cancel()
+		_, _, err = conn.Read(readCtx)
+		if err == nil {
+			t.Errorf("expected no frame for resize-only publish")
+			return
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, server.URL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer func() {
+		_ = ws.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	p := NewPublisher(PublishOptions{SessionID: "session"})
+	p.setConn(ws)
+	p.Resize(120, 30, &protocolpb.Snapshot{
+		Cols: 120, Rows: 30, Runes: make([]uint32, 120*30), Fg: make([]uint32, 120*30), Bg: make([]uint32, 120*30),
+	})
+}
+
+func TestPublisherSendSnapshotDoesNotSendActivityOnReplay(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		_, data, err := conn.Read(r.Context())
+		if err != nil {
+			t.Errorf("server read: %v", err)
+			return
+		}
+		var frame protocolpb.Frame
+		if err := proto.Unmarshal(data, &frame); err != nil {
+			t.Errorf("unmarshal replay snapshot: %v", err)
+			return
+		}
+		if frame.GetSnapshot() == nil {
+			t.Errorf("expected snapshot frame, got %#v", frame.Payload)
+			return
+		}
+		if frame.GetActivity() != nil {
+			t.Errorf("unexpected activity frame during replay snapshot")
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, server.URL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer func() {
+		_ = ws.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	p := NewPublisher(PublishOptions{SessionID: "session"})
+	p.setConn(ws)
+	p.mu.Lock()
+	p.lastSnap = &protocolpb.Snapshot{
+		Cols: 2, Rows: 1, Runes: []uint32{'A', 'B'}, Fg: []uint32{0, 0}, Bg: []uint32{0, 0},
+	}
+	p.mu.Unlock()
+	p.sendSnapshot()
+}
+
 func TestPublisherConnectAndServeHonorsDialTimeout(t *testing.T) {
 	old := publisherWSDialTimeout
 	publisherWSDialTimeout = 120 * time.Millisecond
@@ -120,6 +241,68 @@ func TestPublisherConnectAndServePingTimeout(t *testing.T) {
 	}
 	if elapsed > 8*time.Second {
 		t.Fatalf("ping timeout took too long: %v", elapsed)
+	}
+}
+
+func TestPublisherPingLoopSkipsWhileWriteBusy(t *testing.T) {
+	oldPingInterval := publisherPingInterval
+	oldPingTimeout := publisherPingTimeout
+	publisherPingInterval = 25 * time.Millisecond
+	publisherPingTimeout = 25 * time.Millisecond
+	t.Cleanup(func() {
+		publisherPingInterval = oldPingInterval
+		publisherPingTimeout = oldPingTimeout
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	ctxDial, cancelDial := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelDial()
+	ws, _, err := websocket.Dial(ctxDial, server.URL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer func() {
+		_ = ws.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	p := NewPublisher(PublishOptions{
+		SessionID: "session",
+	})
+	p.lastActivity.Store(time.Now().Add(-time.Minute).UnixNano())
+	p.writeMu.Lock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- p.pingLoop(ctx, ws, nil)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("pingLoop returned while write busy: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	cancel()
+	p.writeMu.Unlock()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("pingLoop err = %v, want nil after cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("pingLoop did not stop after cancel")
 	}
 }
 

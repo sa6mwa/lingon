@@ -24,10 +24,12 @@ lingon bootstrap
 ```
 
 This creates a default config at `~/.lingon/config.yaml` and a TLS directory at
-`~/.lingon/tls`. Paths inside the config are relative by default (resolved
-against the config file location). Use `-c/--config` to write elsewhere, `--set`
-to override values, `--force` (or `-f`) to overwrite, and
-`--regenerate-certificates` to rotate TLS assets.
+`~/.lingon/tls`. The Lingon config root defaults to `~/.lingon`; override it
+with `-C/--config-dir` or `LINGON_CONFIG_DIR` when you want every default
+config/data path rooted somewhere else. Paths inside the config are relative by
+default (resolved against the config file location). Use `-c/--config` to write
+one specific config file elsewhere, `--set` to override values, `--force` (or
+`-f`) to overwrite, and `--regenerate-certificates` to rotate TLS assets.
 
 Examples:
 
@@ -75,6 +77,38 @@ Log out from an endpoint (remote revoke + local token removal):
 ```bash
 lingon logout -e https://localhost:12843/v1
 ```
+
+### Endpoint selection
+
+When `-e/--endpoint` is omitted, Lingon resolves the endpoint in this order:
+
+1. `--endpoint`
+2. explicitly configured `client.endpoint` (config file or `LINGON_CLIENT_ENDPOINT`)
+3. single stored endpoint in `~/.lingon/auth.json` when the command is using stored auth
+4. built-in default endpoint (`https://localhost:12843/v1`)
+
+Important exceptions:
+
+- `lingon login` never depends on `auth.json`; without `--endpoint` it uses the configured endpoint or the built-in default.
+- Explicit `--token` / `--access-token` disables auth-file endpoint inference. Those flows use `--endpoint`, configured `client.endpoint`, or the built-in default.
+- Share tokens with an embedded endpoint use that embedded endpoint unless `--endpoint` is explicitly passed. Bare share tokens use `--endpoint`, configured `client.endpoint`, or the built-in default.
+- If stored auth contains multiple endpoints, auto-inference fails with an ambiguity error until you pass `--endpoint` or set `client.endpoint`.
+
+### Config root and derived paths
+
+By default Lingon stores config, auth, TLS assets, server data, local headless
+state, and logs under `~/.lingon`. It does not use `XDG_CONFIG_HOME` for this
+default. Use `-C/--config-dir` or `LINGON_CONFIG_DIR` to move the whole Lingon
+root for commands and tests:
+
+```bash
+lingon --config-dir /tmp/lingon-dev serve
+LINGON_CONFIG_DIR=/tmp/lingon-dev lingon login
+```
+
+The explicit `-c/--config` flag still points at a single config file. It does
+not, by itself, move other default paths unless those values are relative in
+that config file or you also set the config root.
 
 ### 5) Start a host session (default CLI)
 
@@ -129,6 +163,7 @@ lingon -e https://relay.example.com/v1 -s prod-shell
 Interactive host options (selection):
 
 - `-e, --endpoint` relay endpoint (https/wss base URL; assumes `https://` if omitted)
+- `-C, --config-dir` Lingon config root directory (default `~/.lingon`; env `LINGON_CONFIG_DIR`)
 - `-s, --session` session id
 - `--token` access token (overrides stored auth)
 - `--auth-file` path to auth file
@@ -140,6 +175,7 @@ Interactive host options (selection):
 - `-o, --offline` start offline; toggle relay publishing with `Ctrl+l o`
 - `--hostname-only` show hostname-only connect/disconnect banners
 - `--theme` TUI chrome theme (`lingon themes`)
+- `--disable-desktop-notifications` disable best-effort local desktop notifications for inactivity walls
 - `-k, --insecure` skip TLS verification
 - `--log-file` client log file path (empty disables)
 - `--trace`, `--trace-file` write a JSONL trace
@@ -164,7 +200,7 @@ lingonx -s local-shell
 Headless local mode notes:
 
 - `-x, --headless` switches root/attach/send/sessions to local headless mode.
-- Metadata and sockets are stored under `~/.lingon/headless/`.
+- Metadata and sockets are stored under `<config-dir>/headless/`.
 - `lingon attach -x` works even when relay publishing is offline/disconnected.
 - In `attach -x`, `Ctrl+l o` is local-host control and is allowed.
 
@@ -182,9 +218,14 @@ Attach to a share token:
 lingon attach --token <token>
 ```
 
+If the share token embeds an endpoint, attach uses it automatically unless you
+also pass `--endpoint`. Bare share tokens do not infer from `auth.json`; they
+use `--endpoint`, configured `client.endpoint`, or the built-in default.
+
 Attach options (selection):
 
 - `-e, --endpoint` relay endpoint (https/wss base URL; assumes `https://` if omitted)
+- `-C, --config-dir` Lingon config root directory (default `~/.lingon`; env `LINGON_CONFIG_DIR`)
 - `-x, --headless` attach via local headless unix socket sessions
 - `-t, --token` share token for anonymous attach
 - `--access-token` access token for authenticated attach
@@ -192,10 +233,31 @@ Attach options (selection):
 - `--pick` interactively pick a session
 - `--hostname-only` show hostname-only connect/disconnect banners
 - `--theme` TUI chrome theme (`lingon themes`)
+- `--disable-desktop-notifications` disable best-effort local desktop notifications for inactivity walls
 - `-k, --insecure` skip TLS verification
 - `--auth-file` path to auth file
 - `--log-file` client log file path (empty disables)
 - `--trace`, `--trace-file` write a JSONL trace
+
+### Wall messages and inactivity alerts
+
+Broadcast a wall message to your active sessions:
+
+```bash
+lingon wall hello from ops
+lingon wall --quiet hello from automation
+```
+
+Wall messages are delivered through the relay to connected clients. CLI host and
+attach clients show wall messages in the TUI. Local interactive host and attach
+clients can also emit best-effort desktop notifications for inactivity walls;
+disable that per command with `--disable-desktop-notifications` or in config
+with `terminal.disable_desktop_notifications: true`.
+
+`Ctrl+l w` cycles wall inactivity levels for the active session. Configure the
+cycle with `--wall-inactive-after` or `terminal.wall_inactive_after`; the
+default is `2m,5m,15m`. The relay uses `--wall-timeout` / `server.wall.timeout`
+for wall banner display duration.
 
 ### Serve
 
@@ -212,6 +274,7 @@ Common flags:
 - `--data-dir` data directory
 - `--users-file` user store
 - `--connect-limit-count`, `--connect-limit-burst`, `--connect-limit-window`, `--connect-limit-disable` global connection rate limiting
+- `--replay-history-bytes` replay history retained for reconnecting clients
 - `--tls-mode` `auto|bundle|acme`
 - `--tls-dir` local TLS directory (auto mode)
 - `--tls-bundle` PEM bundle file (bundle mode)
@@ -235,7 +298,8 @@ sharing, resize control, and themes are all accessible from the menu.
 ### Android app
 
 The Android app provides a native client with session switching, sharing,
-cert management, and UI themes.
+cert management, UI themes, per-session zoom, smooth scrollback panning, and
+optional background wall notifications.
 
 Build and run from the root:
 
@@ -259,6 +323,14 @@ make -C android install
 
 The Android `Makefile` includes targets for release builds, AVD setup, and
 integration tests.
+
+Android wall behavior:
+
+- Foreground wall messages are shown in-app and do not post Android system notifications.
+- Background wall notifications can be enabled from the menu; Android then keeps
+  a foreground service active while backgrounded and posts relay wall messages
+  as system notifications.
+- The app polls for background wall messages only while backgrounded.
 
 ## Known caveats and parity notes
 
@@ -325,6 +397,8 @@ client:
 terminal:
   term: xterm-256color
   scrollback_lines: 5000
+  disable_desktop_notifications: false
+  wall_inactive_after: 2m,5m,15m
 ```
 
 Relative paths are resolved relative to the config file. `~` is not expanded in
@@ -341,6 +415,7 @@ config values; use absolute paths or relative paths instead.
 - `lingon attach -x` - attach to a local headless PTY session
 - `lingon send` - send input to a session
 - `lingon send -x` - send input to a local headless PTY session
+- `lingon wall` - broadcast a wall message to active sessions
 - `lingon users` - manage users
 - `lingon sessions` - list sessions
 - `lingon sessions -x` - list local headless PTY sessions

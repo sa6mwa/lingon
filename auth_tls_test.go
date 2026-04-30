@@ -15,9 +15,8 @@ import (
 )
 
 func TestLoginUsesLocalCA(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
@@ -54,6 +53,7 @@ func TestLoginUsesLocalCA(t *testing.T) {
 		Username: "user",
 		Password: "pass",
 		TOTP:     "123456",
+		TLSDir:   tlsDir,
 	})
 	if err != nil {
 		t.Fatalf("Login: %v", err)

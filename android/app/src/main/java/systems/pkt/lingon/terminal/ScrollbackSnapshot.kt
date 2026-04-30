@@ -27,7 +27,8 @@ fun buildScrollbackSnapshot(
         start = 0
     }
 
-    val size = cols * rows
+    val displayRows = rows + clampedOffset
+    val size = cols * displayRows
     val runes = IntArray(size)
     val modes = IntArray(size)
     val fg = IntArray(size)
@@ -57,7 +58,7 @@ fun buildScrollbackSnapshot(
         }
     }
 
-    for (viewRow in 0 until rows) {
+    for (viewRow in 0 until displayRows) {
         val sourceRow = start + viewRow
         if (sourceRow < scrollback.size) {
             fillFromRow(viewRow, scrollback[sourceRow])
@@ -89,7 +90,7 @@ fun buildScrollbackSnapshot(
 
     return TerminalSnapshot(
         cols = cols,
-        rows = rows,
+        rows = displayRows,
         runes = runes,
         modes = modes,
         fg = fg,

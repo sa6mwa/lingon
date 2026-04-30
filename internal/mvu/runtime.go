@@ -3,6 +3,7 @@ package mvu
 import (
 	"bytes"
 	"io"
+	"strings"
 	"time"
 
 	"pkt.systems/lingon/internal/protocolpb"
@@ -18,6 +19,8 @@ type FrameState struct {
 	LastConnectionVisible bool
 	LastConnectionLen     int
 	LastConnectionStyle   BannerStyle
+	LastLoadingVisible    bool
+	LastLoadingLen        int
 	LastScrollbackVisible bool
 	LastScrollbackLen     int
 
@@ -78,13 +81,26 @@ type AttachRenderOutput struct {
 }
 
 type topOverlayRenderOptions struct {
-	SkipTabBar        bool
-	PrevConnectionLen int
-	PrevScrollbackLen int
+	SkipTabBar         bool
+	PrevConnectionLen  int
+	PrevScrollbackLen  int
+	PrevBannerRowOwned bool
+	BannerOwnsRow      bool
+}
+
+func bannerRowOwned(resolved Resolved, owns bool) bool {
+	return owns && !resolved.TabBarVisible && (resolved.ConnectionVisible || resolved.LoadingVisible)
+}
+
+func frameBannerRowOwned(frame FrameState, owns bool) bool {
+	return owns && !frame.LastTabBarVisible && (frame.LastConnectionVisible || frame.LastLoadingVisible)
 }
 
 func topStatusStable(prev FrameState, resolved Resolved) bool {
 	if prev.LastConnectionVisible != resolved.ConnectionVisible {
+		return false
+	}
+	if prev.LastLoadingVisible != resolved.LoadingVisible {
 		return false
 	}
 	if prev.LastScrollbackVisible != resolved.ScrollbackVisible {
@@ -142,9 +158,11 @@ func RenderHost(in HostRenderInput) (HostRenderOutput, error) {
 	skipTabBar = skipTabBar && prev != nil
 	var frame bytes.Buffer
 	if err := renderSnapshot(&frame, prev, composed, in.Cols, in.Rows, in.ForceFull, resolved, in.Cursor, topOverlayRenderOptions{
-		SkipTabBar:        skipTabBar,
-		PrevConnectionLen: in.Frame.LastConnectionLen,
-		PrevScrollbackLen: in.Frame.LastScrollbackLen,
+		SkipTabBar:         skipTabBar,
+		PrevConnectionLen:  in.Frame.LastConnectionLen,
+		PrevScrollbackLen:  in.Frame.LastScrollbackLen,
+		PrevBannerRowOwned: frameBannerRowOwned(in.Frame, false),
+		BannerOwnsRow:      false,
 	}); err != nil {
 		return out, err
 	}
@@ -158,6 +176,8 @@ func RenderHost(in HostRenderInput) (HostRenderOutput, error) {
 	out.Frame.LastConnectionVisible = resolved.ConnectionVisible
 	out.Frame.LastConnectionLen = len(resolved.State.ConnectionMessage)
 	out.Frame.LastConnectionStyle = resolved.State.ConnectionStyle
+	out.Frame.LastLoadingVisible = resolved.LoadingVisible
+	out.Frame.LastLoadingLen = len(resolved.State.LoadingMessage)
 	out.Frame.LastScrollbackVisible = resolved.ScrollbackVisible
 	out.Frame.LastScrollbackLen = len(resolved.State.ScrollbackMessage)
 	out.Frame.LastRenderCols = in.Cols
@@ -203,9 +223,11 @@ func RenderAttach(in AttachRenderInput) (AttachRenderOutput, error) {
 		prev != nil
 	var frame bytes.Buffer
 	if err := renderSnapshot(&frame, prev, composed, in.Cols, in.Rows, in.ForceFull, resolved, in.Cursor, topOverlayRenderOptions{
-		SkipTabBar:        skipTabBar,
-		PrevConnectionLen: in.Frame.LastConnectionLen,
-		PrevScrollbackLen: in.Frame.LastScrollbackLen,
+		SkipTabBar:         skipTabBar,
+		PrevConnectionLen:  in.Frame.LastConnectionLen,
+		PrevScrollbackLen:  in.Frame.LastScrollbackLen,
+		PrevBannerRowOwned: frameBannerRowOwned(in.Frame, true),
+		BannerOwnsRow:      true,
 	}); err != nil {
 		return out, err
 	}
@@ -218,6 +240,8 @@ func RenderAttach(in AttachRenderInput) (AttachRenderOutput, error) {
 	out.Frame.LastConnectionVisible = resolved.ConnectionVisible
 	out.Frame.LastConnectionLen = len(resolved.State.ConnectionMessage)
 	out.Frame.LastConnectionStyle = resolved.State.ConnectionStyle
+	out.Frame.LastLoadingVisible = resolved.LoadingVisible
+	out.Frame.LastLoadingLen = len(resolved.State.LoadingMessage)
 	out.Frame.LastScrollbackVisible = resolved.ScrollbackVisible
 	out.Frame.LastScrollbackLen = len(resolved.State.ScrollbackMessage)
 	if resolved.TabBarVisible {
@@ -240,8 +264,12 @@ func renderSnapshot(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int
 	if forceClear {
 		return render.SnapshotViewport(w, snap, cols, rows)
 	}
-	topRowOwned := resolved.TabBarVisible
+	bannerOwns := bannerRowOwned(resolved, top.BannerOwnsRow)
+	topRowOwned := resolved.TabBarVisible || bannerOwns
 	if topRowOwned {
+		if bannerOwns && !resolved.TabBarVisible {
+			return renderBannerOverlayFrame(w, prev, snap, cols, rows, resolved, cursor)
+		}
 		var err error
 		if prev != nil {
 			err = render.SnapshotViewportDeltaMaskTopRow(w, prev, snap, cols, rows)
@@ -263,8 +291,87 @@ func renderSnapshot(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int
 		_, err = w.Write(overlay)
 		return err
 	}
+	if top.PrevBannerRowOwned {
+		if err := render.SnapshotViewportNoClear(w, snap, cols, 1); err != nil {
+			return err
+		}
+		if rows > 1 {
+			if err := render.SnapshotViewportDeltaSkipTopRow(w, prev, snap, cols, rows); err != nil {
+				return err
+			}
+		}
+		var cursorBuf bytes.Buffer
+		WriteCursor(&cursorBuf, cursor)
+		_, err := w.Write(cursorBuf.Bytes())
+		return err
+	}
 	if prev != nil {
 		return render.SnapshotViewportDelta(w, prev, snap, cols, rows)
 	}
 	return render.SnapshotViewportNoClear(w, snap, cols, rows)
+}
+
+func renderBannerOverlayFrame(w io.Writer, prev, snap *protocolpb.Snapshot, cols, rows int, resolved Resolved, cursor Cursor) error {
+	if prev != nil {
+		if err := render.SnapshotViewportDeltaMaskTopRow(w, prev, snap, cols, rows); err != nil {
+			return err
+		}
+	} else if rows > 1 {
+		if err := render.SnapshotViewportNoClearMaskTopRow(w, snap, cols, rows); err != nil {
+			return err
+		}
+	}
+
+	message, style := topBannerMessageAndStyle(resolved)
+	if message == "" || cols <= 0 {
+		var cursorBuf bytes.Buffer
+		WriteCursor(&cursorBuf, cursor)
+		_, err := w.Write(cursorBuf.Bytes())
+		return err
+	}
+	if len(message) > cols {
+		message = message[len(message)-cols:]
+	}
+	startCol := cols - len(message) + 1
+	if startCol < 1 {
+		startCol = 1
+	}
+
+	var row bytes.Buffer
+	row.WriteString("\x1b[1;1H")
+	if startCol > 1 {
+		row.WriteString(render.ViewportRowSpan(snap, cols, rows, 0, 0, startCol-1))
+	}
+	row.WriteString("\x1b[1;")
+	row.WriteString(itoa(startCol))
+	row.WriteString("H")
+	switch style {
+	case BannerGreen:
+		row.WriteString("\x1b[38;2;0;0;0;42m")
+	case BannerYellow:
+		row.WriteString("\x1b[38;2;0;0;0;43m")
+	default:
+		row.WriteString("\x1b[97;41m")
+	}
+	row.WriteString(message)
+	row.WriteString(resolved.State.Theme.Reset)
+	WriteCursor(&row, cursor)
+	_, err := w.Write(row.Bytes())
+	return err
+}
+
+func topBannerMessageAndStyle(resolved Resolved) (string, BannerStyle) {
+	if resolved.ConnectionVisible {
+		return resolved.State.ConnectionMessage, resolved.State.ConnectionStyle
+	}
+	if resolved.LoadingVisible {
+		return resolved.State.LoadingMessage, BannerYellow
+	}
+	if resolved.ScrollbackVisible {
+		msg := strings.TrimSpace(resolved.State.ScrollbackMessage)
+		if msg != "" {
+			return msg, BannerGreen
+		}
+	}
+	return "", BannerGreen
 }

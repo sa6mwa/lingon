@@ -20,6 +20,8 @@ data class RelaySession(
     val lastActiveAt: String? = null,
     @SerialName("username")
     val username: String? = null,
+    @SerialName("headless")
+    val headless: Boolean = false,
 )
 
 @Serializable
@@ -28,8 +30,12 @@ data class RelayWallEvent(
     val id: Long = 0,
     @SerialName("session_id")
     val sessionId: String? = null,
+    @SerialName("kind")
+    val kind: Int = 0,
     @SerialName("sender")
     val sender: String = "",
+    @SerialName("session_name")
+    val sessionName: String? = null,
     @SerialName("message")
     val message: String = "",
     @SerialName("timeout_seconds")

@@ -22,10 +22,8 @@ import (
 )
 
 func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -34,7 +32,7 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -53,7 +51,7 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -121,6 +119,7 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 
 	runnerA := New(Options{
 		Endpoint:  endpoint,
+		TLSDir:    tlsDir,
 		Token:     access.Token,
 		SessionID: "session_a",
 		Cols:      80,
@@ -135,6 +134,7 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 	})
 	runnerB := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_b",
 		Cols:       80,
@@ -167,9 +167,9 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 		return hub.HasHost("session_a")
 	}, runErrA, runErrB)
 
-	if runnerA.remoteSessions == nil {
-		t.Fatalf("remote sessions not initialized")
-	}
+	waitUntilAll(t, 5*time.Second, func() bool {
+		return runnerA.remoteSessions != nil
+	}, runErrA, runErrB)
 	var sessions []remoteSessionInfo
 	waitUntilAll(t, 15*time.Second, func() bool {
 		refreshCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
@@ -245,10 +245,8 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 }
 
 func TestSessionStreamUpdatesTabs(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -257,7 +255,7 @@ func TestSessionStreamUpdatesTabs(t *testing.T) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -276,7 +274,7 @@ func TestSessionStreamUpdatesTabs(t *testing.T) {
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -331,6 +329,7 @@ func TestSessionStreamUpdatesTabs(t *testing.T) {
 
 	runnerA := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_a",
 		Cols:       80,
@@ -343,6 +342,7 @@ func TestSessionStreamUpdatesTabs(t *testing.T) {
 	})
 	runnerB := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_b",
 		Cols:       80,
@@ -399,10 +399,8 @@ func TestSessionStreamUpdatesTabs(t *testing.T) {
 }
 
 func TestRemoteInputSurvivesStaleSessionsList(t *testing.T) {
-	home := testutil.TempDir(t)
-	t.Setenv("HOME", home)
-
-	tlsDir := filepath.Join(home, ".lingon", "tls")
+	configDir := testutil.SetLingonConfigEnv(t)
+	tlsDir := filepath.Join(configDir, "tls")
 	if err := tlsmgr.GenerateAll(context.Background(), tlsDir, "", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
@@ -411,7 +409,7 @@ func TestRemoteInputSurvivesStaleSessionsList(t *testing.T) {
 		t.Fatalf("LoadLocalServerCert: %v", err)
 	}
 
-	usersPath := filepath.Join(home, ".lingon", "users.json")
+	usersPath := filepath.Join(configDir, "users.json")
 	users := relay.NewUserStore()
 	if _, err := relay.CreateUser(users, "test", "pass", time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -430,7 +428,7 @@ func TestRemoteInputSurvivesStaleSessionsList(t *testing.T) {
 	hub := relay.NewHub(nil)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
 	relayServer.UsersFile = usersPath
-	relayServer.DataDir = filepath.Join(home, ".lingon")
+	relayServer.DataDir = configDir
 
 	handler := server.WrapBasePath("/v1", relayServer.Handler())
 	srv := httptest.NewUnstartedServer(handler)
@@ -496,6 +494,7 @@ func TestRemoteInputSurvivesStaleSessionsList(t *testing.T) {
 
 	runnerA := New(Options{
 		Endpoint:  endpoint,
+		TLSDir:    tlsDir,
 		Token:     access.Token,
 		SessionID: "session_a",
 		Cols:      80,
@@ -507,6 +506,7 @@ func TestRemoteInputSurvivesStaleSessionsList(t *testing.T) {
 	})
 	runnerB := New(Options{
 		Endpoint:   endpoint,
+		TLSDir:     tlsDir,
 		Token:      access.Token,
 		SessionID:  "session_b",
 		Cols:       80,

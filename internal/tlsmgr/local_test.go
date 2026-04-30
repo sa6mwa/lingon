@@ -1,6 +1,7 @@
 package tlsmgr
 
 import (
+	"crypto/x509"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,26 @@ func TestGenerateAllCreatesTLSAssets(t *testing.T) {
 	}
 	if len(cert.Certificate) == 0 {
 		t.Fatalf("expected certificate data")
+	}
+
+	parsed, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	wantDNS := map[string]bool{"localhost": true}
+	wantIP := map[string]bool{
+		"127.0.0.1": true,
+		"::1":       true,
+		"10.0.2.2":  true,
+	}
+	for _, dns := range parsed.DNSNames {
+		delete(wantDNS, dns)
+	}
+	for _, ip := range parsed.IPAddresses {
+		delete(wantIP, ip.String())
+	}
+	if len(wantDNS) != 0 || len(wantIP) != 0 {
+		t.Fatalf("missing SANs: dns=%v ips=%v", wantDNS, wantIP)
 	}
 }
 

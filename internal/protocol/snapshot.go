@@ -42,3 +42,45 @@ func SnapshotToProto(s terminal.Snapshot) *protocolpb.Snapshot {
 		Graphemes:     graphemes,
 	}
 }
+
+// SnapshotFromProto converts a protocol snapshot into a terminal snapshot.
+func SnapshotFromProto(snap *protocolpb.Snapshot) terminal.Snapshot {
+	if snap == nil {
+		return terminal.Snapshot{}
+	}
+	cols := int(snap.GetCols())
+	rows := int(snap.GetRows())
+	cells := make([]terminal.Cell, cols*rows)
+	for i := range cells {
+		if i < len(snap.Runes) {
+			cells[i].Rune = rune(snap.Runes[i])
+		}
+		if i < len(snap.Modes) {
+			cells[i].Mode = int16(snap.Modes[i])
+		}
+		if i < len(snap.Fg) {
+			cells[i].FG = snap.Fg[i]
+		}
+		if i < len(snap.Bg) {
+			cells[i].BG = snap.Bg[i]
+		}
+		if i < len(snap.Graphemes) {
+			cells[i].Grapheme = snap.Graphemes[i]
+		}
+	}
+	out := terminal.Snapshot{
+		Cols:          cols,
+		Rows:          rows,
+		CursorVisible: snap.GetCursorVisible(),
+		Mode:          snap.GetMode(),
+		Title:         snap.GetTitle(),
+		Cells:         cells,
+	}
+	if snap.Cursor != nil {
+		out.Cursor = terminal.Cursor{
+			X: int(snap.Cursor.GetX()),
+			Y: int(snap.Cursor.GetY()),
+		}
+	}
+	return out
+}

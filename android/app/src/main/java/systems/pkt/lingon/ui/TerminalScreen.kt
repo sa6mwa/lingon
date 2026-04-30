@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -25,12 +26,15 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -48,6 +52,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.content.Context
 import android.text.Editable
 import android.text.InputType
@@ -66,7 +73,9 @@ import systems.pkt.lingon.MinTerminalFontSizeSp
 import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.terminal.TerminalGridView
 import systems.pkt.lingon.terminal.TerminalPalette
+import systems.pkt.lingon.terminal.TerminalViewportState
 import systems.pkt.lingon.ui.theme.LocalLingonExtraColors
+import systems.pkt.lingon.viewmodel.ConnectionState
 import systems.pkt.lingon.viewmodel.AppViewModel
 import systems.pkt.lingon.viewmodel.UiState
 import kotlin.math.abs
@@ -85,19 +94,34 @@ fun TerminalScreen(
     var ctrlActive by remember { mutableStateOf(false) }
     var altActive by remember { mutableStateOf(false) }
     var requestInputFocus by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
+    val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
     val config = LocalConfiguration.current
     val isCompact = config.screenWidthDp < 360 || config.screenHeightDp < 700
     val isLandscape = config.screenWidthDp > config.screenHeightDp
     val screenPadding = if (isCompact) 8.dp else 12.dp
     val spacing = if (isCompact) 6.dp else 8.dp
 
-    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val imeVisible = isTerminalImeVisible(
+        imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current),
+        navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current),
+    )
     val palette = rememberTerminalPalette()
     val focusInput: () -> Unit = {
         requestInputFocus?.invoke()
         Unit
     }
     LaunchedEffect(state.activeSessionId) { focusInput() }
+
+    val handleSelectSession: (String) -> Unit = { nextSessionId ->
+        val currentSessionId = state.activeSessionId
+        if (!currentSessionId.isNullOrBlank() && currentSessionId != nextSessionId) {
+            terminalGridView?.let { view ->
+                viewportCache[currentSessionId] = view.captureViewportState()
+            }
+        }
+        viewModel.selectSession(nextSessionId)
+    }
 
     fun sendTextFromSoftInput(payload: String) {
         val dispatch = dispatchSoftInput(payload, ctrlActive = ctrlActive, altActive = altActive)
@@ -127,23 +151,10 @@ fun TerminalScreen(
         val ctrlActiveNative = native.metaState and AndroidKeyEvent.META_CTRL_ON != 0
         val altActiveNative = native.metaState and AndroidKeyEvent.META_ALT_ON != 0
 
-        when (native.keyCode) {
-            AndroidKeyEvent.KEYCODE_ENTER -> {
-                viewModel.sendRawBytes(byteArrayOf('\r'.code.toByte()))
-                return true
-            }
-            AndroidKeyEvent.KEYCODE_DEL -> {
-                viewModel.sendRawBytes(byteArrayOf(0x7f.toByte()))
-                return true
-            }
-            AndroidKeyEvent.KEYCODE_TAB -> {
-                viewModel.sendRawBytes(byteArrayOf('\t'.code.toByte()))
-                return true
-            }
-            AndroidKeyEvent.KEYCODE_ESCAPE -> {
-                viewModel.sendRawBytes(byteArrayOf(0x1b.toByte()))
-                return true
-            }
+        val directBytes = hardwareKeyBytes(native.keyCode)
+        if (directBytes != null && !ctrlActiveNative && !altActiveNative) {
+            viewModel.sendRawBytes(directBytes)
+            return true
         }
 
         val unicode = native.unicodeChar
@@ -201,15 +212,20 @@ fun TerminalScreen(
                         onDismissMenu = onDismissMenu,
                         onShowSettings = { viewModel.showSettings(true) },
                         onShowTheme = { viewModel.showThemePicker(true) },
-                        onShowZoom = { viewModel.showZoom(true) },
                         onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
                         onResetZoomPan = { viewModel.resetZoomAndPan() },
+                        wallInactivityEnabled = state.wallInactivityEnabled,
+                        wallInactivityLabel = state.wallInactivityLabel,
+                        wallInactivityAvailable = !state.activeSessionId.isNullOrBlank(),
+                        onToggleWallInactivity = { viewModel.toggleWallInactivity() },
+                        headlessResizeAvailable = !state.activeSessionId.isNullOrBlank(),
+                        headlessResizeEnabled = state.activeSessionHeadless,
+                        onResizeHeadlessNow = { viewModel.sendHeadlessResizeNow() },
                         onReload = { viewModel.manualRefresh() },
                         onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
                         onShowCertificates = { viewModel.showCertificates(true) },
-                        resizeHostEnabled = state.resizeHostEnabled,
-                        resizeHostAvailable = state.hasControl,
-                        onToggleResizeHost = { enabled -> viewModel.setResizeHostEnabled(enabled) },
+                        backgroundWallEnabled = state.backgroundWallEnabled,
+                        onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
                         onLogout = { viewModel.logout() },
                         compact = true,
                         vertical = true,
@@ -218,15 +234,18 @@ fun TerminalScreen(
                     SessionsColumn(
                         sessions = state.sessions,
                         activeSessionId = state.activeSessionId,
-                        onSelect = viewModel::selectSession,
+                        onSelect = handleSelectSession,
                         compact = true,
                     )
                 }
                 TerminalPanel(
                     state = state,
                     viewModel = viewModel,
+                    viewportCache = viewportCache,
+                    terminalGridView = terminalGridView,
+                    onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
-                    fitToViewWidth = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f,
+                    fitToViewWidth = true,
                     screenPadding = screenPadding,
                     isCompact = isCompact,
                     isLandscape = true,
@@ -262,15 +281,20 @@ fun TerminalScreen(
                     onDismissMenu = onDismissMenu,
                     onShowSettings = { viewModel.showSettings(true) },
                     onShowTheme = { viewModel.showThemePicker(true) },
-                    onShowZoom = { viewModel.showZoom(true) },
                     onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
                     onResetZoomPan = { viewModel.resetZoomAndPan() },
+                    wallInactivityEnabled = state.wallInactivityEnabled,
+                    wallInactivityLabel = state.wallInactivityLabel,
+                    wallInactivityAvailable = !state.activeSessionId.isNullOrBlank(),
+                    onToggleWallInactivity = { viewModel.toggleWallInactivity() },
+                    headlessResizeAvailable = !state.activeSessionId.isNullOrBlank(),
+                    headlessResizeEnabled = state.activeSessionHeadless,
+                    onResizeHeadlessNow = { viewModel.sendHeadlessResizeNow() },
                     onReload = { viewModel.manualRefresh() },
                     onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
                     onShowCertificates = { viewModel.showCertificates(true) },
-                    resizeHostEnabled = state.resizeHostEnabled,
-                    resizeHostAvailable = state.hasControl,
-                    onToggleResizeHost = { enabled -> viewModel.setResizeHostEnabled(enabled) },
+                    backgroundWallEnabled = state.backgroundWallEnabled,
+                    onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
                     onLogout = { viewModel.logout() },
                     compact = isCompact,
                     vertical = false,
@@ -285,16 +309,19 @@ fun TerminalScreen(
                     SessionsRow(
                         sessions = state.sessions,
                         activeSessionId = state.activeSessionId,
-                        onSelect = viewModel::selectSession,
+                        onSelect = handleSelectSession,
                         compact = isCompact,
                     )
-                    StatusBanner(status = state.status)
+                    StatusBanner(status = state.bannerStatus)
                 }
                 TerminalPanel(
                     state = state,
                     viewModel = viewModel,
+                    viewportCache = viewportCache,
+                    terminalGridView = terminalGridView,
+                    onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
-                    fitToViewWidth = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f,
+                    fitToViewWidth = true,
                     screenPadding = screenPadding,
                     isCompact = isCompact,
                     isLandscape = false,
@@ -452,6 +479,9 @@ private fun SessionsColumn(
 private fun TerminalPanel(
     state: UiState,
     viewModel: AppViewModel,
+    viewportCache: MutableMap<String, TerminalViewportState>,
+    terminalGridView: TerminalGridView?,
+    onTerminalGridViewChanged: (TerminalGridView?) -> Unit,
     palette: TerminalPalette,
     fitToViewWidth: Boolean,
     screenPadding: Dp,
@@ -471,16 +501,48 @@ private fun TerminalPanel(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
+        var restoredSessionId by remember { mutableStateOf<String?>(null) }
+        var lifecycleRestoreNonce by remember { mutableStateOf(0) }
+        var restoredLifecycleNonce by remember { mutableStateOf(0) }
+        val sessionId = state.activeSessionId
+        val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
+        val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(lifecycleOwner, terminalGridView, sessionId) {
+            val observer = LifecycleEventObserver { _, event ->
+                val activeSessionId = sessionId ?: return@LifecycleEventObserver
+                val view = terminalGridView
+                when (event) {
+                    Lifecycle.Event.ON_STOP -> {
+                        if (view != null) {
+                            viewportCache[activeSessionId] = view.captureViewportState()
+                        }
+                    }
+                    Lifecycle.Event.ON_START -> {
+                        lifecycleRestoreNonce += 1
+                        focusInput()
+                    }
+                    else -> Unit
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+            }
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
         ) {
             val hostCols = state.activeSnapshot?.cols ?: 0
-            val hostRows = state.activeSnapshot?.rows ?: 0
+            val hostRows = state.activeSnapshot?.let { snapshot ->
+                (snapshot.rows - state.scrollbackOffsetRows).coerceAtLeast(0)
+            } ?: 0
             AndroidView(
                 factory = { context ->
                     TerminalGridView(context).apply {
+                        onTerminalGridViewChanged(this)
                         tag = "terminal_view"
                         setOnZoomChanged { value ->
                             viewModel.updateZoomFactor(value)
@@ -492,6 +554,7 @@ private fun TerminalPanel(
                     }
                 },
                 update = { view ->
+                    onTerminalGridViewChanged(view)
                     view.update(
                         snapshot = state.activeSnapshot,
                         fontSizeSp = state.fontSizeSp,
@@ -505,10 +568,10 @@ private fun TerminalPanel(
                         panResetNonce = state.panResetNonce,
                         scrollbackOffsetRows = state.scrollbackOffsetRows,
                         imeVisible = imeVisible,
+                        isLoading = state.sessionSyncing || state.connectionState == ConnectionState.Connecting,
                     )
                     view.setOnViewSizeChanged { cols, rows ->
                         if (cols <= 0 || rows <= 0) return@setOnViewSizeChanged
-                        if (state.resizeHostEnabled && imeVisible) return@setOnViewSizeChanged
                         viewModel.updateTerminalSize(cols, rows)
                     }
                 },
@@ -516,15 +579,69 @@ private fun TerminalPanel(
                     .fillMaxSize()
                     .testTag(TestTags.TerminalList),
             )
+            LaunchedEffect(sessionId) {
+                restoredSessionId = null
+            }
+            LaunchedEffect(
+                sessionId,
+                terminalGridView,
+                state.sessionSyncing,
+                state.lastFrameSeq,
+                state.scrollbackOffsetRows,
+                fitToViewWidth,
+                lifecycleRestoreNonce,
+            ) {
+                val view = terminalGridView ?: return@LaunchedEffect
+                val activeSessionId = sessionId ?: return@LaunchedEffect
+                if (restoredSessionId == activeSessionId && restoredLifecycleNonce == lifecycleRestoreNonce) {
+                    return@LaunchedEffect
+                }
+                if (shouldDelayViewportRestore) return@LaunchedEffect
+                view.scheduleViewportRestore(viewportCache[activeSessionId])
+                restoredSessionId = activeSessionId
+                restoredLifecycleNonce = lifecycleRestoreNonce
+            }
             if (showStatusOverlay) {
                 StatusBanner(
-                    status = state.status,
+                    status = state.bannerStatus,
                     onDismiss = { viewModel.dismissStatus() },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .statusBarsPadding()
                         .padding(horizontal = screenPadding, vertical = screenPadding),
                 )
+            }
+            if (state.showsSyncingIndicator) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(
+                            top = screenPadding,
+                            bottom = screenPadding,
+                            start = screenPadding,
+                            end = screenPadding,
+                        ),
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                    tonalElevation = 2.dp,
+                    shadowElevation = 4.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Text(
+                            text = "syncing",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
             }
             AndroidView(
                 factory = { context ->
@@ -828,10 +945,33 @@ private class TerminalInputView(
             }
 
             override fun deleteSurroundingText(leftLength: Int, rightLength: Int): Boolean {
-                if (leftLength > 0) {
-                    onBackspaceCallback(leftLength)
+                if (leftLength > 0 && this@TerminalInputView.inputBuffer.isNotEmpty()) {
+                    deleteFromComposingBuffer(leftLength, codePoints = false)
+                    return true
                 }
-                return true
+                if (
+                    shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength, rightLength) &&
+                    this@TerminalInputView.inputBuffer.isEmpty()
+                ) {
+                    onBackspaceCallback(leftLength)
+                    return true
+                }
+                return super.deleteSurroundingText(leftLength, rightLength)
+            }
+
+            override fun deleteSurroundingTextInCodePoints(leftLength: Int, rightLength: Int): Boolean {
+                if (leftLength > 0 && this@TerminalInputView.inputBuffer.isNotEmpty()) {
+                    deleteFromComposingBuffer(leftLength, codePoints = true)
+                    return true
+                }
+                if (
+                    shouldForwardImeDeleteSurroundingTextAsBackspace(leftLength, rightLength) &&
+                    this@TerminalInputView.inputBuffer.isEmpty()
+                ) {
+                    onBackspaceCallback(leftLength)
+                    return true
+                }
+                return super.deleteSurroundingTextInCodePoints(leftLength, rightLength)
             }
 
             override fun sendKeyEvent(event: AndroidKeyEvent): Boolean {
@@ -841,6 +981,7 @@ private class TerminalInputView(
                 return when (event.keyCode) {
                     AndroidKeyEvent.KEYCODE_ENTER -> {
                         onEnterCallback()
+                        inputBuffer.clear()
                         true
                     }
                     AndroidKeyEvent.KEYCODE_DEL -> {
@@ -922,6 +1063,29 @@ private class TerminalInputView(
         if (builder.isNotEmpty()) {
             onCommitTextCallback(builder.toString())
         }
+    }
+
+    private fun deleteFromComposingBuffer(leftLength: Int, codePoints: Boolean) {
+        val buffer = this@TerminalInputView.inputBuffer
+        if (buffer.isEmpty() || leftLength <= 0) {
+            return
+        }
+
+        val deleteCount = if (codePoints) {
+            minOf(leftLength, Character.codePointCount(buffer, 0, buffer.length))
+        } else {
+            minOf(leftLength, buffer.length)
+        }
+        if (deleteCount <= 0) {
+            return
+        }
+
+        val start = if (codePoints) {
+            Character.offsetByCodePoints(buffer, buffer.length, -deleteCount)
+        } else {
+            buffer.length - deleteCount
+        }
+        buffer.delete(start, buffer.length)
     }
 }
 

@@ -449,6 +449,26 @@ body.fullscreen-single .terminal-tile.is-active {
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
 }
 
+.status-banner.is-loading {
+  background: var(--warning);
+  color: #121212;
+}
+
+.status-banner.is-warn {
+  background: color-mix(in srgb, var(--warning) 85%, #000 15%);
+  color: #121212;
+}
+
+.status-banner.is-info {
+  background: var(--info);
+  color: #121212;
+}
+
+.status-banner.is-error {
+  background: var(--error);
+  color: var(--text-strong);
+}
+
 .empty-state {
   position: absolute;
   inset: 0;

@@ -77,6 +77,57 @@ func TestResolveScrollbackSuppressesConnectionBanner(t *testing.T) {
 	}
 }
 
+func TestResolveLoadingAppearsAfterConnectedExpires(t *testing.T) {
+	now := time.Now()
+	state := State{
+		Theme:               theme.TUI("default"),
+		ConnectionMessage:   "connected to https://relay.example/v1",
+		ConnectionStyle:     BannerGreen,
+		ConnectionShownAt:   now,
+		ConnectionExpiresAt: now.Add(2 * time.Second),
+		LoadingMessage:      "loading from relay",
+	}
+	before := Resolve(state, Cursor{Row: 2, Col: 1, Visible: true}, now, ResolveOptions{})
+	if before.LoadingVisible {
+		t.Fatalf("expected loading banner hidden while connected banner is active")
+	}
+	after := Resolve(state, Cursor{Row: 2, Col: 1, Visible: true}, now.Add(2500*time.Millisecond), ResolveOptions{})
+	if after.ConnectionVisible {
+		t.Fatalf("expected connected banner to expire")
+	}
+	if !after.LoadingVisible {
+		t.Fatalf("expected loading banner after connected banner expiry")
+	}
+	row := renderRow(t, ComposeTopOverlayResolved(120, Cursor{Row: 2, Col: 1, Visible: true}, after), 120, 8, 0)
+	if !strings.Contains(row, "loading from relay") {
+		t.Fatalf("expected loading banner text, got %q", row)
+	}
+}
+
+func TestResolveLoadingSuppressedByScrollbackAndDisconnect(t *testing.T) {
+	now := time.Now()
+	state := State{
+		Theme:             theme.TUI("default"),
+		LoadingMessage:    "loading from relay",
+		ScrollbackMessage: "[50%]",
+		DisconnectTitle:   "Not connected",
+		DisconnectDetail:  "reconnecting in 2s",
+		DisconnectVisible: true,
+	}
+	resolved := Resolve(state, Cursor{Row: 5, Col: 1, Visible: true}, now, ResolveOptions{})
+	if resolved.LoadingVisible {
+		t.Fatalf("expected loading banner hidden while scrollback owns top row")
+	}
+	if !resolved.ScrollbackVisible {
+		t.Fatalf("expected scrollback visible")
+	}
+	state.ScrollbackMessage = ""
+	resolved = Resolve(state, Cursor{Row: 5, Col: 1, Visible: true}, now, ResolveOptions{})
+	if resolved.LoadingVisible {
+		t.Fatalf("expected loading banner hidden while disconnect overlay is visible")
+	}
+}
+
 func TestComposeResolvedBannerPreservesPromptWhileSuppressingTabs(t *testing.T) {
 	const cols, rows = 100, 10
 	snap := makeSnapshot(cols, rows, 0, 0)

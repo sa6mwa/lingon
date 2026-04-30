@@ -29,6 +29,7 @@ type Host struct {
 	Token       string
 	SessionID   string
 	SessionName string
+	Headless    bool
 	Cols        int
 	Rows        int
 	Command     []string
@@ -140,6 +141,7 @@ func (h *Host) Run(ctx context.Context) error {
 			Rows:         uint32(h.Rows),
 			WantsControl: true,
 			ClientType:   "host",
+			Headless:     h.Headless,
 		}},
 	}
 	if err := writeFrame(runCtx, ws, hello); err != nil {
@@ -167,7 +169,7 @@ func (h *Host) Run(ctx context.Context) error {
 
 	go func() {
 		defer wg.Done()
-		h.readPTY(runCtx, ptyFile, h.emulator, outputQueue, screens)
+		h.readPTY(runCtx, ptyFile, h.emulator, ctrlFrames, outputQueue, screens)
 		cancelRun()
 	}()
 	go func() {
@@ -179,7 +181,7 @@ func (h *Host) Run(ctx context.Context) error {
 	return nil
 }
 
-func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.Emulator, outputQueue *frameQueue, screens int) {
+func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.Emulator, ctrlFrames chan<- *protocolpb.Frame, outputQueue *frameQueue, screens int) {
 	reader := bufio.NewReader(ptyFile)
 	buf := make([]byte, 4096)
 
@@ -236,6 +238,9 @@ func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.
 			if len(scrollFrames) == 0 {
 				continue
 			}
+		}
+		if len(data) > 0 {
+			enqueueControl(ctx, ctrlFrames, activityFrame(h.SessionID))
 		}
 		for _, scrollFrame := range scrollFrames {
 			if h.OnFrame != nil {

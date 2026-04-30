@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -32,6 +33,7 @@ type PublishOptions struct {
 	Clock            clock.Clock
 	SessionID        string
 	SessionName      string
+	Headless         bool
 	Cols             int
 	Rows             int
 	PublishControl   bool
@@ -46,21 +48,23 @@ type PublishOptions struct {
 type Publisher struct {
 	opts PublishOptions
 
-	Logger            pslog.Logger
-	OnInput           func([]byte)
-	OnResize          func(cols, rows int)
-	OnCommand         func(kind protocolpb.CommandKind)
-	OnControl         func(holderID string)
-	OnFrame           func(*protocolpb.Frame)
-	OnSessions        func([]*protocolpb.SessionInfo)
-	OnWall            func(*protocolpb.Wall)
-	OnStatus          func(connected bool, err error)
-	OnBackoff         func(remaining time.Duration)
-	OnSessionRejected func(message string)
+	Logger                 pslog.Logger
+	OnInput                func([]byte)
+	OnResize               func(cols, rows int)
+	OnCommand              func(kind protocolpb.CommandKind)
+	OnControl              func(holderID string)
+	OnFrame                func(*protocolpb.Frame)
+	OnSessions             func([]*protocolpb.SessionInfo)
+	OnWall                 func(*protocolpb.Wall)
+	OnWallInactivityStatus func(*protocolpb.WallInactivityStatus)
+	OnStatus               func(connected bool, err error)
+	OnBackoff              func(remaining time.Duration)
+	OnSessionRejected      func(message string)
 
-	mu       sync.Mutex
-	lastSnap *protocolpb.Snapshot
-	lastSent *protocolpb.Snapshot
+	mu           sync.Mutex
+	lastSnap     *protocolpb.Snapshot
+	lastSent     *protocolpb.Snapshot
+	lastActivity atomic.Int64
 
 	conn        *websocket.Conn
 	connected   bool
@@ -70,7 +74,8 @@ type Publisher struct {
 	holderID    string
 	wantControl bool
 
-	scrollbackSnapshot func() []terminal.ScrollbackRow
+	scrollbackSnapshot   func() []terminal.ScrollbackRow
+	wallInactivityStatus func() *protocolpb.WallInactivityStatus
 
 	backoffPolicy  backoff.Policy
 	backoffAttempt int
@@ -406,6 +411,9 @@ func (p *Publisher) Publish(data []byte, snap *protocolpb.Snapshot) {
 	if snap == nil {
 		return
 	}
+	if len(data) > 0 {
+		p.sendActivity()
+	}
 	snapFrame := &protocolpb.Frame{
 		SessionId: p.opts.SessionID,
 		Payload:   &protocolpb.Frame_Snapshot{Snapshot: snap},
@@ -481,6 +489,7 @@ func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
 			Rows:         uint32(p.opts.Rows),
 			WantsControl: p.opts.PublishControl,
 			ClientType:   "host",
+			Headless:     p.opts.Headless,
 		}},
 	}
 	if err := writeFrame(ctx, ws, hello); err != nil {
@@ -547,6 +556,7 @@ func (p *Publisher) setConn(ws *websocket.Conn) {
 	p.conn = ws
 	p.connected = true
 	p.mu.Unlock()
+	p.touchActivity()
 	if p.OnStatus != nil {
 		p.OnStatus(true, nil)
 	}
@@ -565,9 +575,11 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 		if err != nil {
 			return err
 		}
+		p.touchActivity()
 		if hello := frame.GetHello(); hello != nil {
 			p.sendScrollbackSnapshot()
 			p.sendSnapshot()
+			p.sendWallInactivityStatus()
 			continue
 		}
 		if in := frame.GetIn(); in != nil && p.OnInput != nil {
@@ -602,6 +614,12 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 			}
 			continue
 		}
+		if status := frame.GetWallInactivityStatus(); status != nil {
+			if p.OnWallInactivityStatus != nil {
+				p.OnWallInactivityStatus(status)
+			}
+			continue
+		}
 		if errMsg := frame.GetError(); errMsg != nil {
 			msg := errMsg.Message
 			if msg == "" {
@@ -626,6 +644,11 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 // SetScrollbackSnapshot sets the callback used to fetch scrollback for new clients.
 func (p *Publisher) SetScrollbackSnapshot(fn func() []terminal.ScrollbackRow) {
 	p.scrollbackSnapshot = fn
+}
+
+// SetWallInactivityStatus sets the callback used to fetch current inactivity status for new clients.
+func (p *Publisher) SetWallInactivityStatus(fn func() *protocolpb.WallInactivityStatus) {
+	p.wallInactivityStatus = fn
 }
 
 // PublishScrollback enqueues scrollback rows for delivery to clients.
@@ -661,6 +684,17 @@ func (p *Publisher) sendScrollbackSnapshot() {
 	}
 }
 
+func (p *Publisher) sendWallInactivityStatus() {
+	if p.wallInactivityStatus == nil {
+		return
+	}
+	status := p.wallInactivityStatus()
+	if status == nil {
+		return
+	}
+	p.PublishWallInactivityStatus(status)
+}
+
 func (p *Publisher) sendFrame(frame *protocolpb.Frame) bool {
 	p.mu.Lock()
 	ws := p.conn
@@ -676,7 +710,12 @@ func (p *Publisher) sendFrame(frame *protocolpb.Frame) bool {
 		p.clearConn()
 		return false
 	}
+	p.touchActivity()
 	return true
+}
+
+func (p *Publisher) sendActivity() {
+	_ = p.sendFrame(activityFrame(p.opts.SessionID))
 }
 
 func (p *Publisher) sendSnapshot() {
@@ -690,6 +729,21 @@ func (p *Publisher) sendSnapshot() {
 	frame := &protocolpb.Frame{
 		SessionId: p.opts.SessionID,
 		Payload:   &protocolpb.Frame_Snapshot{Snapshot: snap},
+	}
+	if p.OnFrame != nil {
+		p.OnFrame(frame)
+	}
+	_ = p.sendFrame(frame)
+}
+
+// PublishWallInactivityStatus sends inactivity wall status to connected clients.
+func (p *Publisher) PublishWallInactivityStatus(status *protocolpb.WallInactivityStatus) {
+	if status == nil {
+		return
+	}
+	frame := &protocolpb.Frame{
+		SessionId: p.opts.SessionID,
+		Payload:   &protocolpb.Frame_WallInactivityStatus{WallInactivityStatus: status},
 	}
 	if p.OnFrame != nil {
 		p.OnFrame(frame)
@@ -721,7 +775,9 @@ func (p *Publisher) SendSessionClosed(reason string) {
 	p.writeMu.Unlock()
 	if err != nil && p.Logger != nil {
 		p.Logger.Debug("host.publisher.session_closed.send.failed", "session", p.opts.SessionID, "err", err)
+		return
 	}
+	p.touchActivity()
 }
 
 // TakeControl announces that the host wants controller lease.
@@ -828,10 +884,18 @@ func (p *Publisher) pingLoop(ctx context.Context, ws *websocket.Conn, cancel con
 			return nil
 		case <-ticker.C:
 		}
+		if p.idleFor() < interval {
+			continue
+		}
+		if !p.writeMu.TryLock() {
+			continue
+		}
 		pingCtx, pingCancel := context.WithTimeout(ctx, timeout)
 		err := ws.Ping(pingCtx)
 		pingCancel()
+		p.writeMu.Unlock()
 		if err == nil {
+			p.touchActivity()
 			continue
 		}
 		_ = ws.Close(websocket.StatusInternalError, "ping timeout")
@@ -841,4 +905,36 @@ func (p *Publisher) pingLoop(ctx context.Context, ws *websocket.Conn, cancel con
 		}
 		return err
 	}
+}
+
+func (p *Publisher) touchActivity() {
+	if p == nil {
+		return
+	}
+	if p.clock == nil {
+		return
+	}
+	p.lastActivity.Store(p.clock.Now().UnixNano())
+}
+
+func activityFrame(sessionID string) *protocolpb.Frame {
+	return &protocolpb.Frame{
+		SessionId: sessionID,
+		Payload:   &protocolpb.Frame_Activity{Activity: &protocolpb.Activity{}},
+	}
+}
+
+func (p *Publisher) idleFor() time.Duration {
+	if p == nil || p.clock == nil {
+		return 0
+	}
+	nanos := p.lastActivity.Load()
+	if nanos <= 0 {
+		return 0
+	}
+	last := time.Unix(0, nanos)
+	if now := p.clock.Now(); now.After(last) {
+		return now.Sub(last)
+	}
+	return 0
 }

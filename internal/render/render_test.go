@@ -168,6 +168,41 @@ func TestSnapshotViewportDeltaResetsAttributesBeforeSpanWrite(t *testing.T) {
 	}
 }
 
+func TestSnapshotViewportDeltaResetsAttributesBeforeEveryChangedSpan(t *testing.T) {
+	prev := &protocolpb.Snapshot{
+		Cols:          4,
+		Rows:          1,
+		Runes:         []uint32{'a', 'b', 'c', 'd'},
+		Modes:         []int32{0, 0, 0, 0},
+		Fg:            []uint32{terminal.ColorDefault, terminal.ColorDefault, terminal.ColorDefault, terminal.ColorDefault},
+		Bg:            []uint32{terminal.ColorDefault, terminal.ColorDefault, terminal.ColorDefault, terminal.ColorDefault},
+		Cursor:        &protocolpb.Cursor{X: 3, Y: 0},
+		CursorVisible: true,
+	}
+	next := &protocolpb.Snapshot{
+		Cols:          4,
+		Rows:          1,
+		Runes:         []uint32{'w', 'b', 'c', 'x'},
+		Modes:         []int32{0, 0, 0, 0},
+		Fg:            []uint32{terminal.ColorDefault, terminal.ColorDefault, terminal.ColorDefault, terminal.ColorDefault},
+		Bg:            []uint32{terminal.ColorDefault, terminal.ColorDefault, terminal.ColorDefault, terminal.ColorDefault},
+		Cursor:        &protocolpb.Cursor{X: 3, Y: 0},
+		CursorVisible: true,
+	}
+
+	var buf bytes.Buffer
+	if err := SnapshotViewportDelta(&buf, prev, next, 4, 1); err != nil {
+		t.Fatalf("SnapshotViewportDelta: %v", err)
+	}
+	raw := buf.String()
+	if !strings.Contains(raw, "\x1b[1;1H\x1b[0m") {
+		t.Fatalf("expected first changed span to start with reset: %q", raw)
+	}
+	if !strings.Contains(raw, "\x1b[1;4H\x1b[0m") {
+		t.Fatalf("expected later changed span to start with reset: %q", raw)
+	}
+}
+
 func TestSnapshotViewportDeltaClearsChangedCellToSpace(t *testing.T) {
 	prev := &protocolpb.Snapshot{
 		Cols: 5,
@@ -208,7 +243,7 @@ func TestSnapshotViewportDeltaClearsChangedCellToSpace(t *testing.T) {
 	if strings.Contains(out, "\x1b[1;1H") {
 		t.Fatalf("expected no full-row repaint while clearing single cell, got %q", out)
 	}
-	if !strings.Contains(out, "\x1b[1;3H ") {
+	if !strings.Contains(out, "\x1b[1;3H\x1b[0m ") {
 		t.Fatalf("expected single-space cell clear at changed column, got %q", out)
 	}
 }

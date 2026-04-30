@@ -1,6 +1,10 @@
 package emu
 
-import "testing"
+import (
+	"testing"
+
+	"pkt.systems/lingon/internal/terminal"
+)
 
 func TestPrivateCSIUDoesNotRestoreCursor(t *testing.T) {
 	e := New(10, 5)
@@ -42,5 +46,29 @@ func TestPrivateCSIUDoesNotRestoreCursor(t *testing.T) {
 	}
 	if snap.Cursor.Y != 1 || snap.Cursor.X != 1 {
 		t.Fatalf("expected cursor to restore to row 2 col 2, got row %d col %d", snap.Cursor.Y+1, snap.Cursor.X+1)
+	}
+}
+
+func TestPrivateModeTracksApplicationCursor(t *testing.T) {
+	e := New(10, 5)
+	if err := e.Write([]byte("\x1b[?1h")); err != nil {
+		t.Fatalf("enable app cursor: %v", err)
+	}
+	snap, err := e.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot after enable: %v", err)
+	}
+	if snap.Mode&terminal.SnapshotModeAppCursor == 0 {
+		t.Fatalf("expected app cursor mode bit after ?1h, got %#x", snap.Mode)
+	}
+	if err := e.Write([]byte("\x1b[?1l")); err != nil {
+		t.Fatalf("disable app cursor: %v", err)
+	}
+	snap, err = e.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot after disable: %v", err)
+	}
+	if snap.Mode&terminal.SnapshotModeAppCursor != 0 {
+		t.Fatalf("expected app cursor mode bit cleared after ?1l, got %#x", snap.Mode)
 	}
 }

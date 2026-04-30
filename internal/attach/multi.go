@@ -9,10 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -21,6 +19,7 @@ import (
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
+	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
@@ -28,6 +27,7 @@ import (
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/retryafter"
+	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/trace"
 	"pkt.systems/pslog"
@@ -35,13 +35,14 @@ import (
 
 // MultiClient manages multiple attach sessions with tab switching.
 type MultiClient struct {
-	Endpoint       string
-	AccessToken    string
-	RequestControl bool
-	HostnameOnly   bool
-	SessionID      string
-	TLSDir         string
-	Insecure       bool
+	Endpoint                    string
+	AccessToken                 string
+	RequestControl              bool
+	HostnameOnly                bool
+	SessionID                   string
+	DisableDesktopNotifications bool
+	TLSDir                      string
+	Insecure                    bool
 	// SessionSource lists sessions for tab discovery/refresh.
 	// When nil, sessions are fetched from relay /sessions.
 	SessionSource func(context.Context) ([]SessionInfo, error)
@@ -57,8 +58,13 @@ type MultiClient struct {
 	Stdout        io.Writer
 	Stderr        io.Writer
 	TermSize      func() (int, int)
-	Logger        pslog.Logger
-	Theme         string
+	ResizeEvents  <-chan struct{}
+	// DisableSignalResize suppresses process-global SIGWINCH handling and relies
+	// only on explicit ResizeEvents.
+	DisableSignalResize bool
+	Logger              pslog.Logger
+	Theme               string
+	DesktopNotifier     desktopnotify.Notifier
 	// AuthFile is the path to the auth state file used for refresh.
 	AuthFile string
 	// TokenRefresher returns a fresh access token when the current one is invalid.
@@ -93,6 +99,8 @@ type MultiClient struct {
 
 var errNoSessions = errors.New("no sessions available")
 
+const missingSessionGrace = 5 * time.Second
+
 func isTerminalHostError(err error) bool {
 	if err == nil {
 		return false
@@ -112,15 +120,16 @@ func normalizeReconnectDelay(delay, policyBase time.Duration) time.Duration {
 }
 
 type sessionView struct {
-	id       string
-	name     string
-	client   *Client
-	cancel   context.CancelFunc
-	done     chan error
-	visible  bool
-	hiddenAt time.Time
-	readyAt  time.Time
-	removed  bool
+	id            string
+	name          string
+	client        *Client
+	cancel        context.CancelFunc
+	done          chan error
+	visible       bool
+	hiddenAt      time.Time
+	readyAt       time.Time
+	removed       bool
+	sessionClosed bool
 
 	connecting    bool
 	connected     bool
@@ -128,6 +137,7 @@ type sessionView struct {
 	connectedOnce bool
 	reconnectAt   time.Time
 	reconnectGen  uint64
+	missingSince  time.Time
 	pendingOps    []pendingOp
 }
 
@@ -160,6 +170,15 @@ func selectRenderableView(views map[string]*sessionView, activeID string) (*sess
 	return view, view.id
 }
 
+func sessionByID(sessions []SessionInfo, id string) (SessionInfo, bool) {
+	for _, session := range sessions {
+		if session.ID == id {
+			return session, true
+		}
+	}
+	return SessionInfo{}, false
+}
+
 // Run starts the multi-session attach client.
 func (m *MultiClient) Run(ctx context.Context) error {
 	if m.Logger == nil {
@@ -169,6 +188,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		return fmt.Errorf("endpoint is required")
 	}
 	localSessionMode := m.SessionSource != nil
+	sessionAllowsResize := func(session SessionInfo) bool {
+		return localSessionMode || session.Headless
+	}
 	if m.Clock == nil {
 		m.Clock = clock.New()
 	}
@@ -220,7 +242,13 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	}})
 	stdin := m.stdinReader()
 	stdout := m.stdoutWriter()
+	renderStdout := terminal.NewLockedWriter(stdout, nil)
 	termSize := m.TermSize
+	if termSize == nil {
+		termSize = func() (int, int) {
+			return terminalSizeAny(stdout, stdin)
+		}
+	}
 	ownsStdin := m.Stdin != nil
 	defer restoreCursor(m.Clock, stdout)
 	if enterAltScreen(m.Clock, stdout) {
@@ -258,9 +286,14 @@ func (m *MultiClient) Run(ctx context.Context) error {
 
 	var mu sync.Mutex
 	var refreshMu sync.Mutex
+	var missingRefreshMu sync.Mutex
+	var missingRefreshTimer *clock.Timer
 	var lastRefresh time.Time
 	var refreshSessions func() int
 	var forceRefreshSessions func() int
+	var refreshSessionsWithForce func(bool) int
+	var scheduleMissingRefresh func(time.Duration)
+	var stopMissingRefresh func()
 	var applySessions func([]SessionInfo)
 	var activateView func(string) error
 	views := make(map[string]*sessionView)
@@ -400,13 +433,13 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		mu.Unlock()
 		return gen
 	}
-	isReconnectActive := func(view *sessionView, gen uint64) bool {
+	isReconnectOverlayActive := func(view *sessionView, gen uint64) bool {
 		if view == nil {
 			return false
 		}
 		mu.Lock()
 		current := views[view.id]
-		active := current == view && view.reconnectGen == gen
+		active := current == view && view.reconnectGen == gen && activeID == view.id && view.visible
 		mu.Unlock()
 		return active
 	}
@@ -661,6 +694,31 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		renderActiveCurrent()
 		scheduleOverlayRedraw(effect)
 	}
+	showLoading := func(msg string) {
+		effect := ui.ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{
+			Kind:     mvu.StatusLoading,
+			Endpoint: endpointLabel,
+			Message:  msg,
+		}})
+		renderActiveCurrent()
+		scheduleOverlayRedraw(effect)
+	}
+	scheduleLoading := func(sessionID string, view *sessionView) {
+		if localSessionMode || view == nil {
+			return
+		}
+		m.Clock.AfterFunc(3*time.Second, func() {
+			mu.Lock()
+			current := views[sessionID]
+			visible := current == view && view.visible
+			connecting := current == view && view.connecting && !view.connected
+			mu.Unlock()
+			if !visible || !connecting {
+				return
+			}
+			showLoading("loading from relay")
+		})
+	}
 	showError := func(msg string, d time.Duration) {
 		effect := ui.ApplyAction(mvu.AttachStatusAction{Input: mvu.AttachStatusInput{
 			Kind:      mvu.StatusError,
@@ -720,6 +778,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			view.connectedOnce = prev.connectedOnce
 			view.reconnectAt = prev.reconnectAt
 			view.reconnectGen = prev.reconnectGen
+			view.missingSince = prev.missingSince
 		}
 		cctx, ccancel := context.WithCancel(ctx)
 		var tokenRefresher func(context.Context) (string, error)
@@ -727,22 +786,26 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			tokenRefresher = m.refreshToken
 		}
 		client := &Client{
-			Endpoint:           m.Endpoint,
-			SessionID:          session.ID,
-			UnixSocket:         unixSocket,
-			AccessToken:        m.AccessToken,
-			RequestControl:     visible && m.RequestControl,
-			AllowOfflineToggle: m.AllowOfflineToggle,
-			HostnameOnly:       m.HostnameOnly,
-			TLSDir:             m.TLSDir,
-			Insecure:           m.Insecure,
-			Theme:              themeName,
-			Stdin:              io.NopCloser(strings.NewReader("")),
-			TermSize:           termSize,
-			Logger:             m.Logger,
-			TokenRefresher:     tokenRefresher,
-			Clock:              m.Clock,
-			Trace:              m.Trace,
+			Endpoint:                    m.Endpoint,
+			SessionID:                   session.ID,
+			UnixSocket:                  unixSocket,
+			AccessToken:                 m.AccessToken,
+			RequestControl:              visible && m.RequestControl,
+			AllowOfflineToggle:          m.AllowOfflineToggle,
+			HostnameOnly:                m.HostnameOnly,
+			DisableDesktopNotifications: m.DisableDesktopNotifications,
+			TLSDir:                      m.TLSDir,
+			Insecure:                    m.Insecure,
+			Theme:                       themeName,
+			Stdin:                       io.NopCloser(strings.NewReader("")),
+			TermSize:                    termSize,
+			DisableResizePropagation:    !sessionAllowsResize(session),
+			DisableSignalResize:         true,
+			Logger:                      m.Logger,
+			TokenRefresher:              tokenRefresher,
+			Clock:                       m.Clock,
+			Trace:                       m.Trace,
+			DesktopNotifier:             m.DesktopNotifier,
 		}
 		if localSessionMode {
 			client.OnRoutedHeadlessStatus = func(wall *protocolpb.Wall) {
@@ -751,6 +814,37 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		if prev != nil && prev.client != nil {
 			client.SeedFrom(prev.client)
+		}
+		client.OnSessionClosed = func(_ string) {
+			var cancelView context.CancelFunc
+			mu.Lock()
+			if latest := views[session.ID]; latest == view {
+				latest.sessionClosed = true
+				latest.removed = true
+				cancelView = latest.cancel
+			}
+			removedSessions[session.ID] = struct{}{}
+			pruned := make([]SessionInfo, 0, len(sessions))
+			for _, info := range sessions {
+				if info.ID == session.ID {
+					continue
+				}
+				pruned = append(pruned, info)
+			}
+			mu.Unlock()
+			if cancelView != nil {
+				cancelView()
+			}
+			if applySessions != nil {
+				applySessions(pruned)
+				return
+			}
+			if refreshSessions != nil {
+				count := refreshSessions()
+				if count < 0 && forceRefreshSessions != nil {
+					_ = forceRefreshSessions()
+				}
+			}
 		}
 		client.OnReady = func() {
 			readyAt := m.Clock.Now()
@@ -763,6 +857,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			view.connected = true
 			view.connecting = false
 			view.connectedOnce = true
+			view.sessionClosed = false
 			view.reconnectAt = time.Time{}
 			view.reconnectGen++
 			view.readyAt = readyAt
@@ -825,12 +920,18 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				if cols == 0 || rows == 0 {
 					cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
 				}
-				if localSessionMode || client.isController() {
+				if sessionAllowsResize(session) {
 					_ = client.SendResize(ctx, cols, rows)
 				}
 			}
 			if showStatus && !localSessionMode {
 				showConnected(mvu.ConnectedToMessage(endpointLabel), 3*time.Second)
+			}
+			if !localSessionMode {
+				showLoading("")
+			}
+			if showStatus && client.HasSnapshot() {
+				client.RenderCurrentFull()
 			}
 			if showStatus && m.OnActive != nil {
 				m.OnActive(session.ID)
@@ -840,6 +941,18 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			if applySessions == nil {
 				return
 			}
+			if !localSessionMode && len(updated) == 0 {
+				mu.Lock()
+				hasViews := len(views) > 0
+				mu.Unlock()
+				if hasViews {
+					if m.Logger != nil {
+						m.Logger.Debug("attach.sessions.empty.ignored")
+					}
+					startWaitForSessions()
+					return
+				}
+			}
 			if len(updated) > 0 {
 				mvu.SortSessionsByLastActive(updated)
 			}
@@ -847,8 +960,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		client.compositor = ui
 		if visible {
-			client.Stdout = stdout
-			client.SetStdout(stdout)
+			client.Stdout = renderStdout
+			client.SetStdout(renderStdout)
 		} else {
 			client.Stdout = io.Discard
 			client.SetStdout(io.Discard)
@@ -856,6 +969,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		view.client = client
 		if m.OnView != nil {
 			m.OnView(session.ID, client)
+		}
+		if visible {
+			scheduleLoading(session.ID, view)
 		}
 		view.cancel = ccancel
 		view.done = make(chan error, 1)
@@ -871,30 +987,21 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return
 			}
-			if err != nil && !isTerminalHostError(err) {
-				if setOffline(true) {
-					setTabs()
-				}
-			}
-			if errors.Is(err, ErrAuthExpired) {
-				m.setFatal(err)
-				return
-			}
-			if err != nil && !isTerminalHostError(err) {
-				waitMu.Lock()
-				waitCtrl.AllowStart()
-				waitMu.Unlock()
-			}
 			if m.Logger != nil {
 				m.Logger.Debug("attach.view.closed", "session", current.ID, "err", err)
 			}
 			mu.Lock()
 			preVisible := v.visible
 			preRemoved := v.removed
+			preSessionClosed := v.sessionClosed
 			_, preRemovedBySession := removedSessions[current.ID]
 			preLatest := views[current.ID]
+			preActive := activeID == current.ID && preLatest == v && v.visible
+			if preLatest == v && preLatest != nil && preLatest.sessionClosed {
+				preSessionClosed = true
+			}
 			mu.Unlock()
-			if preRemoved || preRemovedBySession || preLatest != v {
+			if preRemoved || preRemovedBySession || preSessionClosed || preLatest != v {
 				if m.OnViewClosed != nil {
 					m.OnViewClosed(current.ID, preVisible, preLatest == v)
 				} else if m.Logger != nil {
@@ -908,9 +1015,26 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					if preRemovedBySession {
 						reason = "removed_session"
 					}
+					if preSessionClosed {
+						reason = "session_closed"
+					}
 					m.Logger.Debug("attach.view.reconnect.skip", "session", current.ID, "reason", reason)
 				}
 				return
+			}
+			if preActive && err != nil && !isTerminalHostError(err) {
+				if setOffline(true) {
+					setTabs()
+				}
+			}
+			if errors.Is(err, ErrAuthExpired) {
+				m.setFatal(err)
+				return
+			}
+			if preActive && err != nil && !isTerminalHostError(err) {
+				waitMu.Lock()
+				waitCtrl.AllowStart()
+				waitMu.Unlock()
 			}
 			if m.Logger != nil {
 				m.Logger.Debug("attach.view.reconnect.start", "session", current.ID)
@@ -997,7 +1121,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			_, removedBySession := removedSessions[current.ID]
 			attempt := backoffAttempts[current.ID]
 			mu.Unlock()
-			if !localSessionMode && currentView.connectedOnce && !isTerminalHostError(err) {
+			if preActive && !localSessionMode && currentView.connectedOnce && !isTerminalHostError(err) {
 				result := ui.ApplyAction(mvu.AttachConnectivityAction{Input: mvu.AttachConnectivityInput{
 					Connected:     false,
 					ConnectedOnce: true,
@@ -1030,10 +1154,28 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				return
 			}
 			gen := nextReconnectGen(currentView)
-			if isReconnectActive(currentView, gen) && currentView.connectedOnce {
+			if isReconnectOverlayActive(currentView, gen) && currentView.connectedOnce {
 				updateDisconnectOverlay()
 			}
 			for {
+				mu.Lock()
+				missingSince := currentView.missingSince
+				mu.Unlock()
+				if !missingSince.IsZero() && m.Clock.Now().Sub(missingSince) >= missingSessionGrace && forceRefreshSessions != nil {
+					count := forceRefreshSessions()
+					if m.Logger != nil {
+						m.Logger.Debug("attach.sessions.refresh.missing_expired", "session", current.ID, "count", count)
+					}
+					if ctx.Err() != nil {
+						return
+					}
+					mu.Lock()
+					_, ok := views[current.ID]
+					mu.Unlock()
+					if !ok {
+						return
+					}
+				}
 				delay := m.backoffPolicy.Next(attempt)
 				if retryDelay, ok := retryafter.FromError(err); ok && retryDelay > delay {
 					delay = retryDelay
@@ -1056,7 +1198,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 						view.reconnectAt = deadline
 					}
 					mu.Unlock()
-					if isReconnectActive(currentView, gen) && currentView.connectedOnce {
+					if isReconnectOverlayActive(currentView, gen) && currentView.connectedOnce {
 						updateDisconnectOverlay()
 					}
 					ticker := m.Clock.NewTicker(time.Second)
@@ -1076,7 +1218,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							ticker.Stop()
 							return
 						case <-ticker.C:
-							if isReconnectActive(currentView, gen) && currentView.connectedOnce {
+							if isReconnectOverlayActive(currentView, gen) && currentView.connectedOnce {
 								updateDisconnectOverlay()
 							}
 						}
@@ -1088,14 +1230,14 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							view.reconnectAt = time.Time{}
 						}
 						mu.Unlock()
-						if isReconnectActive(currentView, gen) && currentView.connectedOnce {
+						if isReconnectOverlayActive(currentView, gen) && currentView.connectedOnce {
 							updateDisconnectOverlay()
 						}
 					}
 					if ctx.Err() != nil {
 						return
 					}
-				} else if isReconnectActive(currentView, gen) && currentView.connectedOnce {
+				} else if isReconnectOverlayActive(currentView, gen) && currentView.connectedOnce {
 					updateDisconnectOverlay()
 				}
 				if m.OnReconnect != nil {
@@ -1166,7 +1308,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 			view.visible = true
 			view.hiddenAt = time.Time{}
-			view.client.SetStdout(stdout)
+			view.client.SetStdout(renderStdout)
 			if reconnect && view.cancel != nil {
 				reconnectAt := view.reconnectAt
 				reconnectGen := view.reconnectGen
@@ -1312,18 +1454,56 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			waitMu.Unlock()
 		}
 		allIDs := make(map[string]struct{}, len(updated))
+		prevSessions := make(map[string]SessionInfo, len(sessions))
 		for _, s := range updated {
 			allIDs[s.ID] = struct{}{}
 		}
+		for _, s := range sessions {
+			prevSessions[s.ID] = s
+		}
+		retainedSessions := make([]SessionInfo, 0)
+		nextMissingRefresh := time.Duration(-1)
 		var nextActive string
 		var needsConnect bool
 		var needsActivate bool
 		var shouldExit bool
 		mu.Lock()
+		now := m.Clock.Now()
 		removed := 0
+		prevActiveID := activeID
 		for id, view := range views {
 			if _, ok := allIDs[id]; ok {
+				view.missingSince = time.Time{}
+				view.sessionClosed = false
 				continue
+			}
+			prev, hadPrev := prevSessions[id]
+			retainMissing := view.visible || view.connecting || view.connectedOnce
+			if view.sessionClosed {
+				retainMissing = false
+			}
+			if retainMissing {
+				if view.missingSince.IsZero() {
+					view.missingSince = now
+				}
+				if now.Sub(view.missingSince) < missingSessionGrace {
+					delay := missingSessionGrace - now.Sub(view.missingSince)
+					if nextMissingRefresh < 0 || delay < nextMissingRefresh {
+						nextMissingRefresh = delay
+					}
+					if hadPrev {
+						retainedSessions = append(retainedSessions, prev)
+					} else {
+						retainedSessions = append(retainedSessions, SessionInfo{
+							ID:           id,
+							Name:         view.name,
+							Status:       "reconnecting",
+							Offline:      true,
+							LastActiveAt: now,
+						})
+					}
+					continue
+				}
 			}
 			if localSessionMode {
 				routedStatusMu.Lock()
@@ -1338,14 +1518,27 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			removed++
 			delete(views, id)
 		}
-		sessions = updated
+		sessions = append(updated, retainedSessions...)
+		if len(sessions) > 0 {
+			mvu.SortSessionsByLastActive(sessions)
+		}
+		for id, view := range views {
+			if view == nil || view.client == nil {
+				continue
+			}
+			session, ok := sessionByID(sessions, id)
+			if !ok {
+				continue
+			}
+			view.client.DisableResizePropagation = !sessionAllowsResize(session)
+		}
+		nextActive = activeID
 		if activeID != "" && !mvu.SessionIDExists(mvu.SessionTabSourcesFrom(sessions), activeID) {
-			activeID = m.pickActiveSession(sessions)
+			nextActive = m.pickActiveSession(sessions)
 		}
 		if m.Logger != nil {
 			m.Logger.Debug("attach.sessions.apply.done", "removed", removed, "active", activeID)
 		}
-		nextActive = activeID
 		if nextActive != "" {
 			if view := views[nextActive]; view == nil || view.client == nil || (!view.connected && !view.connecting) {
 				needsConnect = true
@@ -1353,18 +1546,29 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				needsActivate = true
 			}
 		}
+		if nextActive != prevActiveID {
+			activeID = prevActiveID
+		}
 		if len(sessions) == 0 {
 			shouldExit = true
 		}
 		mu.Unlock()
+		if nextMissingRefresh >= 0 {
+			scheduleMissingRefresh(nextMissingRefresh)
+		} else {
+			stopMissingRefresh()
+		}
 		if len(sessions) > 0 {
 			stopWaitForSessions()
 			if !localSessionMode && !isOffline() {
-				_ = ui.ApplyAction(mvu.AttachConnectivityAction{Input: mvu.AttachConnectivityInput{
+				result := ui.ApplyAction(mvu.AttachConnectivityAction{Input: mvu.AttachConnectivityInput{
 					Connected: true,
 					Endpoint:  endpointLabel,
 					Now:       m.Clock.Now(),
 				}})
+				if result.Changed {
+					renderActiveCurrent()
+				}
 			}
 		}
 		setTabs()
@@ -1382,17 +1586,17 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		renderTabs()
 	}
 
-	refreshSessions = func() int {
+	refreshSessionsWithForce = func(force bool) int {
 		refreshMu.Lock()
 		defer refreshMu.Unlock()
 		now := m.Clock.Now()
-		if !lastRefresh.IsZero() && now.Sub(lastRefresh) < time.Second {
+		if !force && !lastRefresh.IsZero() && now.Sub(lastRefresh) < time.Second {
 			if m.Logger != nil {
 				m.Logger.Trace("attach.sessions.refresh.skip", "since", now.Sub(lastRefresh))
 			}
 			return -1
 		}
-		if m.Gate != nil && !m.Gate.Allowed() {
+		if !force && m.Gate != nil && !m.Gate.Allowed() {
 			if m.Logger != nil {
 				m.Logger.Trace("attach.sessions.refresh.gated")
 			}
@@ -1415,11 +1619,38 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		applySessions(updated)
 		return len(updated)
 	}
+	refreshSessions = func() int {
+		return refreshSessionsWithForce(false)
+	}
 	forceRefreshSessions = func() int {
-		refreshMu.Lock()
-		lastRefresh = time.Time{}
-		refreshMu.Unlock()
-		return refreshSessions()
+		return refreshSessionsWithForce(true)
+	}
+	scheduleMissingRefresh = func(delay time.Duration) {
+		if delay < 0 {
+			delay = 0
+		}
+		missingRefreshMu.Lock()
+		defer missingRefreshMu.Unlock()
+		if missingRefreshTimer == nil {
+			missingRefreshTimer = m.Clock.AfterFunc(delay, func() {
+				missingRefreshMu.Lock()
+				missingRefreshTimer = nil
+				missingRefreshMu.Unlock()
+				if ctx.Err() == nil && forceRefreshSessions != nil {
+					forceRefreshSessions()
+				}
+			})
+			return
+		}
+		missingRefreshTimer.Reset(delay)
+	}
+	stopMissingRefresh = func() {
+		missingRefreshMu.Lock()
+		if missingRefreshTimer != nil {
+			missingRefreshTimer.Stop()
+			missingRefreshTimer = nil
+		}
+		missingRefreshMu.Unlock()
 	}
 
 	var refreshTicker *clock.Ticker
@@ -1510,9 +1741,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}()
 	}
 
-	go func() {
-		m.handleResize(ctx, &mu, &views, func() string { return activeID })
-	}()
+	resizeSignalCh, stopResizeSignals := subscribeResizeSignals(m.DisableSignalResize)
+	defer stopResizeSignals()
+	resizeEvents := m.ResizeEvents
 
 	reader := bufio.NewReader(stdin)
 	readCh := make(chan []byte, 1)
@@ -1536,6 +1767,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	var prefix control.Prefix
 	var scrollState scrollInputState
 	var mouseFilter mouseReportFilter
+	pending := make([]byte, 0, 2048)
 	resolveNextTab := func(delta int) (string, string) {
 		mu.Lock()
 		current := make([]SessionInfo, len(sessions))
@@ -1574,6 +1806,115 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		client.ForceTabsVisibleOnce()
 		client.RenderCurrent()
 	}
+	processResizeEvent := func() {
+		id := activeID
+		mu.Lock()
+		view := views[id]
+		session, _ := sessionByID(sessions, id)
+		mu.Unlock()
+		if view == nil || view.client == nil {
+			return
+		}
+		cols, rows := view.client.terminalSize()
+		if cols == 0 || rows == 0 {
+			cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+		}
+		view.client.RenderCurrentFull()
+		if sessionAllowsResize(session) {
+			_ = view.client.SendResize(ctx, cols, rows)
+		}
+	}
+	drainPendingResize := func() {
+		for {
+			handled := false
+			select {
+			case <-resizeSignalCh:
+				processResizeEvent()
+				handled = true
+			case <-resizeEvents:
+				processResizeEvent()
+				handled = true
+			default:
+			}
+			if !handled {
+				return
+			}
+		}
+	}
+	flushPending := func() bool {
+		if len(pending) == 0 {
+			return true
+		}
+		drainPendingResize()
+		mu.Lock()
+		view := views[activeID]
+		if view == nil && len(views) == 1 {
+			for _, v := range views {
+				view = v
+				break
+			}
+		}
+		connected := view != nil && view.connected
+		connecting := view != nil && view.connecting
+		flushing := view != nil && view.flushingInput
+		viewID := activeID
+		if view != nil {
+			viewID = view.id
+		}
+		targetClient := (*Client)(nil)
+		if view != nil {
+			targetClient = view.client
+		}
+		mu.Unlock()
+		if view == nil || targetClient == nil {
+			if m.Logger != nil {
+				m.Logger.Debug("attach.stdin.no.view", "session", activeID, "hasView", view != nil, "hasClient", targetClient != nil)
+			}
+			pending = pending[:0]
+			return true
+		}
+		if !connected || flushing {
+			if m.Logger != nil {
+				m.Logger.Debug("attach.stdin.dropped.disconnected", "session", activeID, "connecting", connecting, "flushing", flushing)
+			}
+			var immediateClient *Client
+			queued := append([]byte(nil), pending...)
+			mu.Lock()
+			current := views[viewID]
+			if current == nil && len(views) == 1 {
+				for _, v := range views {
+					current = v
+					break
+				}
+			}
+			switch {
+			case current == nil || current.client == nil:
+			case current.connected && !current.flushingInput:
+				immediateClient = current.client
+			default:
+				current.pendingOps = append(current.pendingOps, pendingOp{input: queued})
+			}
+			mu.Unlock()
+			if immediateClient == nil {
+				pending = pending[:0]
+				return true
+			}
+			targetClient = immediateClient
+		}
+		if m.Logger != nil {
+			m.Logger.Debug("attach.stdin.send", "bytes", len(pending))
+		}
+		if len(pending) == 1 && pending[0] == 0x0c {
+			targetClient.PrepareForCtrlLClear()
+		}
+		if err := targetClient.SendInput(ctx, pending); err != nil {
+			if m.Logger != nil {
+				m.Logger.Debug("attach.stdin.send.failed", "err", err)
+			}
+		}
+		pending = pending[:0]
+		return true
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1581,12 +1922,21 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				return err
 			}
 			return ctx.Err()
+		case <-resizeSignalCh:
+			processResizeEvent()
+			continue
+		case <-resizeEvents:
+			processResizeEvent()
+			continue
 		case err := <-readErrCh:
-			if err != io.EOF {
+			if !isBenignStdinReadErr(err) {
 				m.Logger.Debug("attach.stdin.read.failed", "err", err)
 			}
 			if fatal := m.fatal(); fatal != nil {
 				return fatal
+			}
+			if isBenignStdinReadErr(err) {
+				return nil
 			}
 			return err
 		case data := <-readCh:
@@ -1609,6 +1959,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					return true
 				}
 				if b == 0x04 {
+					if !flushPending() {
+						return false
+					}
 					cancel()
 					return false
 				}
@@ -1616,6 +1969,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				cmdKind := protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED
 				cmdSet := false
 				if action != control.ActionNone {
+					if !flushPending() {
+						return false
+					}
 					switch action {
 					case control.ActionHelp:
 						ui.ApplyAction(mvu.HelpVisibleAction{Visible: true})
@@ -1666,6 +2022,21 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							cmdKind = protocolpb.CommandKind_COMMAND_KIND_TOGGLE_RESPAWN
 							cmdSet = true
 						}
+					case control.ActionResizeHeadless:
+						targetView, targetClient, _, _, _ := activeViewSnapshot()
+						targetSession, ok := sessionByID(sessions, activeID)
+						if targetView == nil || targetClient == nil || !ok || !sessionAllowsResize(targetSession) {
+							showConnected("resize is headless-only", 2*time.Second)
+							return true
+						}
+						cols, rows := targetClient.terminalSize()
+						if cols == 0 || rows == 0 {
+							cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+						}
+						if err := targetClient.SendResize(ctx, cols, rows); err != nil {
+							showError("resize failed", 2*time.Second)
+						}
+						return true
 					case control.ActionToggleWallInactivity:
 						if localSessionMode {
 							cmdKind = protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY
@@ -1720,6 +2091,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							if toggleActiveSessionOffline() {
 								setTabs()
 								syncActiveRoutedStatus()
+								wakeTabsForNoOpSwitch()
 							}
 						} else {
 							showError("offline toggle is host local-only", 2*time.Second)
@@ -1798,73 +2170,12 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				if len(out) == 0 {
 					return true
 				}
-				mu.Lock()
-				view := views[activeID]
-				if view == nil && len(views) == 1 {
-					for _, v := range views {
-						view = v
-						break
-					}
-				}
-				connected := view != nil && view.connected
-				connecting := view != nil && view.connecting
-				flushing := view != nil && view.flushingInput
-				viewID := activeID
-				if view != nil {
-					viewID = view.id
-				}
-				targetClient := (*Client)(nil)
-				if view != nil {
-					targetClient = view.client
-				}
-				mu.Unlock()
-				if view == nil || targetClient == nil {
-					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.no.view", "session", activeID, "hasView", view != nil, "hasClient", targetClient != nil)
-					}
-					return true
-				}
-				if !connected || flushing {
-					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.dropped.disconnected", "session", activeID, "connecting", connecting, "flushing", flushing)
-					}
-					var immediateClient *Client
-					queued := append([]byte(nil), out...)
-					mu.Lock()
-					current := views[viewID]
-					if current == nil && len(views) == 1 {
-						for _, v := range views {
-							current = v
-							break
-						}
-					}
-					switch {
-					case current == nil || current.client == nil:
-					case current.connected && !current.flushingInput:
-						immediateClient = current.client
-					default:
-						current.pendingOps = append(current.pendingOps, pendingOp{input: queued})
-					}
-					mu.Unlock()
-					if immediateClient == nil {
-						return true
-					}
-					targetClient = immediateClient
-				}
-				if m.Logger != nil {
-					m.Logger.Debug("attach.stdin.send", "bytes", len(out))
-				}
-				if len(out) == 1 && out[0] == 0x0c {
-					targetClient.SuppressTabsUntilCursorLeavesTopRow()
-				}
-				if err := targetClient.SendInput(ctx, out); err != nil {
-					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.send.failed", "err", err)
-					}
-				}
+				pending = append(pending, out...)
 				return true
 			}
-			filtered := make([]byte, 0, 8)
+			filtered := make([]byte, 0, len(data))
+			mouseChunk := make([]byte, 0, 8)
+			allHandledByScrollback := true
 			for _, b := range data {
 				_, client, _, _, _ := activeViewSnapshot()
 				if client != nil && client.ScrollbackActive() {
@@ -1893,6 +2204,18 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							changed = client.ScrollbackPage(1, 1)
 						case scrollLineDown:
 							changed = client.ScrollbackPage(-1, 1)
+						case scrollFiveUp:
+							changed = client.ScrollbackPage(1, 5)
+						case scrollFiveDown:
+							changed = client.ScrollbackPage(-1, 5)
+						case scrollLeft:
+							changed = client.ScrollbackPanX(-1)
+						case scrollRight:
+							changed = client.ScrollbackPanX(1)
+						case scrollFarLeft:
+							changed = client.ScrollbackPanX(-5)
+						case scrollFarRight:
+							changed = client.ScrollbackPanX(5)
 						case scrollTop:
 							client.ScrollbackTop(rows)
 							changed = true
@@ -1910,42 +2233,23 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					}
 					continue
 				}
-				filtered = filterMouseByte(&mouseFilter, b, filtered)
-				for _, fb := range filtered {
-					if !processNormalByte(fb) {
-						return nil
-					}
+				allHandledByScrollback = false
+				mouseChunk = filterMouseByte(&mouseFilter, b, mouseChunk)
+				filtered = append(filtered, mouseChunk...)
+			}
+			if allHandledByScrollback {
+				continue
+			}
+			_, client, _, _, _ := activeViewSnapshot()
+			filtered = terminal.TranslateAppCursorKeys(filtered, client != nil && client.appCursorActive())
+			for _, fb := range filtered {
+				if !processNormalByte(fb) {
+					return nil
 				}
 			}
-		}
-	}
-}
-
-func (m *MultiClient) handleResize(ctx context.Context, mu *sync.Mutex, views *map[string]*sessionView, activeID func() string) {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	defer signal.Stop(ch)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ch:
-		}
-		id := activeID()
-		mu.Lock()
-		view := (*views)[id]
-		mu.Unlock()
-		if view == nil || view.client == nil {
-			continue
-		}
-		cols, rows := view.client.terminalSize()
-		if cols == 0 || rows == 0 {
-			cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
-		}
-		view.client.RenderCurrent()
-		if m.SessionSource != nil || view.client.isController() {
-			_ = view.client.SendResize(ctx, cols, rows)
+			if !flushPending() {
+				return nil
+			}
 		}
 	}
 }
@@ -2099,4 +2403,26 @@ func (m *MultiClient) stdoutWriter() io.Writer {
 		return m.Stdout
 	}
 	return os.Stdout
+}
+
+func terminalSizeAny(stdout io.Writer, stdin io.Reader) (int, int) {
+	if outFile, ok := stdout.(*os.File); ok && term.IsTerminal(int(outFile.Fd())) {
+		if cols, rows, err := term.GetSize(int(outFile.Fd())); err == nil && cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	if inFile, ok := stdin.(*os.File); ok && term.IsTerminal(int(inFile.Fd())) {
+		if cols, rows, err := term.GetSize(int(inFile.Fd())); err == nil && cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	if tty, err := os.Open("/dev/tty"); err == nil {
+		defer func() {
+			_ = tty.Close()
+		}()
+		if cols, rows, err := term.GetSize(int(tty.Fd())); err == nil && cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	return 0, 0
 }

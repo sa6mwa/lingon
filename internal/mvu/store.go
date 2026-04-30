@@ -216,6 +216,7 @@ func (r *Runtime) clearAllOverlays() {
 		state.ConnectionStyle = BannerRed
 		state.ConnectionShownAt = time.Time{}
 		state.ConnectionExpiresAt = time.Time{}
+		state.LoadingMessage = ""
 		state.DisconnectTitle = ""
 		state.DisconnectDetail = ""
 		state.DisconnectVisible = false
@@ -311,6 +312,23 @@ func (r *Runtime) hideConnection() {
 	})
 }
 
+// showLoading displays a persistent loading banner.
+func (r *Runtime) showLoading(message string) {
+	if message == "" {
+		return
+	}
+	r.mutateState(func(state *State, _ time.Time) {
+		state.LoadingMessage = message
+	})
+}
+
+// hideLoading clears the loading banner.
+func (r *Runtime) hideLoading() {
+	r.mutateState(func(state *State, _ time.Time) {
+		state.LoadingMessage = ""
+	})
+}
+
 // showDisconnected displays a persistent disconnect dialog.
 func (r *Runtime) showDisconnected(title, detail string) {
 	if title == "" {
@@ -402,7 +420,7 @@ func (r *Runtime) TabBarVisibility(state State, cursor Cursor, now time.Time) (b
 		r.tabBarAutoHidden = false
 		return false, 0
 	}
-	if cursor.Row <= 1 && state.ConnectionMessage == "" && state.ScrollbackMessage == "" {
+	if cursor.Row <= 1 && state.ConnectionMessage == "" && state.LoadingMessage == "" && state.ScrollbackMessage == "" {
 		r.tabBarCursorTopSince = now
 		r.tabBarAutoHidden = true
 		return false, 0

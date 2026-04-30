@@ -105,10 +105,16 @@ type wsClient struct {
 }
 
 type internalWallEvent struct {
-	SourceSessionID string `json:"source_session_id"`
-	Sender          string `json:"sender"`
-	Message         string `json:"message"`
-	TimeoutSeconds  uint32 `json:"timeout_seconds"`
+	SourceSessionID   string              `json:"source_session_id"`
+	SourceSessionName string              `json:"source_session_name"`
+	Sender            string              `json:"sender"`
+	Message           string              `json:"message"`
+	TimeoutSeconds    uint32              `json:"timeout_seconds"`
+	Kind              protocolpb.WallKind `json:"kind"`
+}
+
+type internalDetachRequest struct {
+	Reason string `json:"reason"`
 }
 
 // New constructs a daemon.
@@ -237,32 +243,34 @@ func (d *Daemon) Run(ctx context.Context) error {
 	runnerCtx, cancelRunner := context.WithCancel(ctx)
 	defer cancelRunner()
 	runner := session.New(session.Options{
-		Endpoint:        d.opts.Endpoint,
-		Token:           d.opts.Token,
-		AuthFile:        d.opts.AuthFile,
-		SessionID:       d.sessionID,
-		Cols:            d.opts.Cols,
-		Rows:            d.opts.Rows,
-		Shell:           d.opts.Shell,
-		Term:            d.opts.Term,
-		Respawn:         d.opts.Respawn,
-		Offline:         d.opts.Offline,
-		Publish:         d.opts.Publish,
-		PublishControl:  d.opts.PublishControl,
-		HostnameOnly:    d.opts.HostnameOnly,
-		ScrollbackLines: d.opts.ScrollbackLines,
-		TLSDir:          d.opts.TLSDir,
-		Insecure:        d.opts.Insecure,
-		Stdin:           stdinR,
-		Stdout:          stdoutFile,
-		DisableRaw:      true,
-		Logger:          d.logger,
-		Trace:           d.opts.Trace,
-		Clock:           d.clock,
-		OnPublishFrame:  d.handlePublishedFrame,
-		OnPublishStatus: d.handlePublishStatus,
-		OnPublishWall:   d.handlePublishWall,
-		OnStatus:        d.handleSessionStatus,
+		Endpoint:                    d.opts.Endpoint,
+		Token:                       d.opts.Token,
+		AuthFile:                    d.opts.AuthFile,
+		SessionID:                   d.sessionID,
+		Cols:                        d.opts.Cols,
+		Rows:                        d.opts.Rows,
+		Shell:                       d.opts.Shell,
+		Term:                        d.opts.Term,
+		Respawn:                     d.opts.Respawn,
+		Offline:                     d.opts.Offline,
+		Publish:                     d.opts.Publish,
+		PublishControl:              d.opts.PublishControl,
+		HostnameOnly:                d.opts.HostnameOnly,
+		ScrollbackLines:             d.opts.ScrollbackLines,
+		TLSDir:                      d.opts.TLSDir,
+		Insecure:                    d.opts.Insecure,
+		Stdin:                       stdinR,
+		Stdout:                      stdoutFile,
+		DisableRaw:                  true,
+		Logger:                      d.logger,
+		Trace:                       d.opts.Trace,
+		Clock:                       d.clock,
+		DisableDesktopNotifications: true,
+		AllowRemoteResize:           true,
+		OnPublishFrame:              d.handlePublishedFrame,
+		OnPublishStatus:             d.handlePublishStatus,
+		OnPublishWall:               d.handlePublishWall,
+		OnStatus:                    d.handleSessionStatus,
 		ToggleWallInactivityFallback: func(ctx context.Context, sessionID string) (session.WallInactivityToggleResult, error) {
 			return d.toggleWallInactivityFallback(sessionID), nil
 		},
@@ -286,6 +294,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/client", d.handleWSClient)
 	mux.HandleFunc("/internal/headless/wall", d.handleInternalWall)
+	detachCh := make(chan string, 1)
+	mux.HandleFunc("/internal/headless/detach", d.handleInternalDetach(detachCh))
 	httpServer := &http.Server{Handler: mux}
 	serveErrCh := make(chan error, 1)
 	go func() {
@@ -302,6 +312,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		cancelRunner()
+	case reason := <-detachCh:
+		if strings.TrimSpace(reason) == "" {
+			reason = "detached"
+		}
+		if d.runner != nil {
+			d.runner.StopSession(d.sessionID, reason)
+		} else {
+			cancelRunner()
+		}
 	case err := <-runnerErrCh:
 		runnerDone = true
 		runnerErr = err
@@ -335,6 +354,34 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	_ = d.writeState("stopped", "")
 	return nil
+}
+
+func (d *Daemon) handleInternalDetach(detachCh chan<- string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req internalDetachRequest
+		if r.Body != nil {
+			defer func() {
+				_ = r.Body.Close()
+			}()
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+				http.Error(w, "invalid detach payload", http.StatusBadRequest)
+				return
+			}
+		}
+		reason := strings.TrimSpace(req.Reason)
+		if reason == "" {
+			reason = "detached"
+		}
+		select {
+		case detachCh <- reason:
+		default:
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}
 }
 
 func (d *Daemon) resolveSessionID() (string, error) {
@@ -737,10 +784,15 @@ func (d *Daemon) routeWallEventWithSource(wall *protocolpb.Wall, sourceSessionID
 	if sourceID == "" {
 		sourceID = d.sessionID
 	}
+	eventID := wall.GetId()
 	out := &protocolpb.Wall{
-		Sender:         strings.TrimSpace(wall.GetSender()),
-		Message:        msg,
-		TimeoutSeconds: wall.GetTimeoutSeconds(),
+		Id:                eventID,
+		Sender:            strings.TrimSpace(wall.GetSender()),
+		Message:           msg,
+		TimeoutSeconds:    wall.GetTimeoutSeconds(),
+		Kind:              wall.GetKind(),
+		SourceSessionId:   sourceID,
+		SourceSessionName: strings.TrimSpace(wall.GetSourceSessionName()),
 	}
 	frame := &protocolpb.Frame{
 		SessionId: sourceID,
@@ -764,9 +816,12 @@ func (d *Daemon) handleInternalWall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wall := &protocolpb.Wall{
-		Sender:         strings.TrimSpace(evt.Sender),
-		Message:        strings.TrimSpace(evt.Message),
-		TimeoutSeconds: evt.TimeoutSeconds,
+		Sender:            strings.TrimSpace(evt.Sender),
+		Message:           strings.TrimSpace(evt.Message),
+		TimeoutSeconds:    evt.TimeoutSeconds,
+		Kind:              evt.Kind,
+		SourceSessionId:   strings.TrimSpace(evt.SourceSessionID),
+		SourceSessionName: strings.TrimSpace(evt.SourceSessionName),
 	}
 	if wall.Message == "" {
 		http.Error(w, "message is required", http.StatusBadRequest)
@@ -788,9 +843,11 @@ func (d *Daemon) currentStatusWall() *protocolpb.Wall {
 		return nil
 	}
 	return &protocolpb.Wall{
-		Sender:         d.status.Sender,
-		Message:        d.status.Message,
-		TimeoutSeconds: d.status.TimeoutSeconds,
+		Sender:          d.status.Sender,
+		Message:         d.status.Message,
+		TimeoutSeconds:  d.status.TimeoutSeconds,
+		Kind:            d.status.Kind,
+		SourceSessionId: d.status.SourceSessionId,
 	}
 }
 
@@ -811,10 +868,12 @@ func (d *Daemon) broadcastWallToPeers(wall *protocolpb.Wall) {
 			continue
 		}
 		evt := internalWallEvent{
-			SourceSessionID: d.sessionID,
-			Sender:          strings.TrimSpace(wall.GetSender()),
-			Message:         strings.TrimSpace(wall.GetMessage()),
-			TimeoutSeconds:  wall.GetTimeoutSeconds(),
+			SourceSessionID:   d.sessionID,
+			SourceSessionName: strings.TrimSpace(wall.GetSourceSessionName()),
+			Sender:            strings.TrimSpace(wall.GetSender()),
+			Message:           strings.TrimSpace(wall.GetMessage()),
+			TimeoutSeconds:    wall.GetTimeoutSeconds(),
+			Kind:              wall.GetKind(),
 		}
 		_ = postInternalWallEvent(socketPath, evt)
 	}
@@ -1173,9 +1232,11 @@ func (d *Daemon) monitorLocalWallInactivity(ctx context.Context) {
 			continue
 		}
 		wall := &protocolpb.Wall{
-			Sender:         d.sessionID,
-			Message:        fmt.Sprintf("%s inactive", d.sessionID),
-			TimeoutSeconds: 5,
+			Sender:          d.sessionID,
+			Message:         fmt.Sprintf("%s inactive", d.sessionID),
+			TimeoutSeconds:  5,
+			Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
+			SourceSessionId: d.sessionID,
 		}
 		d.routeWallEvent(wall, true)
 		d.forwardWallToRelayAsync(wall)

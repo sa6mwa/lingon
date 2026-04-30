@@ -19,8 +19,10 @@ import systems.pkt.lingon.MaxTerminalZoom
 import systems.pkt.lingon.MinTerminalFontSizeSp
 import systems.pkt.lingon.MinTerminalZoom
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
+import kotlin.math.min
 
 class TerminalGridView @JvmOverloads constructor(
     context: Context,
@@ -39,9 +41,12 @@ class TerminalGridView @JvmOverloads constructor(
     private var zoomFactor: Float = DefaultTerminalZoom
     private var panResetNonce: Int = 0
     private var imeVisible: Boolean = false
+    private var isLoading: Boolean = false
     private var scrollbackOffsetRows: Int = 0
     private var cameraOffsetXPx: Float = 0f
     private var cameraOffsetYPx: Float = 0f
+    private var pendingViewportState: TerminalViewportState? = null
+    private var lastViewportHeightPx: Int = 0
     private var panActive: Boolean = false
     private var lastTouchX: Float = 0f
     private var lastTouchY: Float = 0f
@@ -50,9 +55,13 @@ class TerminalGridView @JvmOverloads constructor(
     private var onTap: (() -> Unit)? = null
     private var onScrollback: ((Int) -> Unit)? = null
     private var scrollRemainderY: Float = 0f
+    private var pendingLiveReentryRows: Int = 0
+    private var pendingScrollbackEntryRows: Int = 0
+    private var pendingScrollbackEntryYPx: Float = 0f
     private var lastCursorX: Int = Int.MIN_VALUE
     private var lastCursorY: Int = Int.MIN_VALUE
     private var cursorFollowAfterInput: Boolean = false
+    private var suppressCursorFollowForScrollbackReentry: Boolean = false
 
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
@@ -168,6 +177,7 @@ class TerminalGridView @JvmOverloads constructor(
         panResetNonce: Int,
         scrollbackOffsetRows: Int,
         imeVisible: Boolean,
+        isLoading: Boolean,
     ) {
         var invalidate = false
         if (this.snapshot !== snapshot) {
@@ -206,21 +216,30 @@ class TerminalGridView @JvmOverloads constructor(
             this.zoomFactor = zoomFactor
             invalidate = true
         }
-        if (this.panResetNonce != panResetNonce) {
+        if (panResetNonce > this.panResetNonce) {
             this.panResetNonce = panResetNonce
             resetPan()
             invalidate = true
+        } else if (this.panResetNonce != panResetNonce) {
+            this.panResetNonce = panResetNonce
         }
         if (this.scrollbackOffsetRows != scrollbackOffsetRows) {
-            this.scrollbackOffsetRows = scrollbackOffsetRows.coerceAtLeast(0)
+            val nextScrollbackOffsetRows = scrollbackOffsetRows.coerceAtLeast(0)
+            applyScrollbackOffsetChange(previousOffsetRows = this.scrollbackOffsetRows, nextOffsetRows = nextScrollbackOffsetRows)
+            this.scrollbackOffsetRows = nextScrollbackOffsetRows
             invalidate = true
         }
         if (this.imeVisible != imeVisible) {
             this.imeVisible = imeVisible
             invalidate = true
         }
+        if (this.isLoading != isLoading) {
+            this.isLoading = isLoading
+            invalidate = true
+        }
         if (invalidate) {
             updateLayout()
+            applyPendingViewportRestoreIfReady()
             invalidate()
         }
     }
@@ -244,6 +263,88 @@ class TerminalGridView @JvmOverloads constructor(
     fun getViewCols(): Int = viewCols
 
     fun getViewRows(): Int = viewRows
+
+    fun getRenderScaleX(): Float = renderScaleX
+
+    fun getRenderScaleY(): Float = renderScaleY
+
+    fun getCameraOffsetYForTesting(): Float = cameraOffsetYPx
+
+    fun getScaledCellHeightForTesting(): Float = scaledCellHeight
+
+    fun getVisibleStartRow(): Int {
+        val snap = snapshot ?: return 0
+        val rows = snap.rows
+        if (rows <= 0 || scaledCellHeight <= 0f || height <= 0) return 0
+        val maxRows = floor(height / scaledCellHeight).toInt().coerceAtLeast(0)
+        val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
+        val maxOffsetRows = max(0, rows - visibleRows)
+        val startRow = floor(cameraOffsetYPx.coerceAtLeast(0f) / scaledCellHeight).toInt()
+        return startRow.coerceIn(0, maxOffsetRows)
+    }
+
+    fun getVisibleEndRowExclusive(): Int {
+        val snap = snapshot ?: return 0
+        val rows = snap.rows
+        if (rows <= 0 || scaledCellHeight <= 0f || height <= 0) return 0
+        val maxRows = floor(height / scaledCellHeight).toInt().coerceAtLeast(0)
+        val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
+        return (getVisibleStartRow() + visibleRows).coerceAtMost(rows)
+    }
+
+    fun captureViewportState(): TerminalViewportState {
+        return TerminalViewportState(
+            cameraOffsetXPx = cameraOffsetXPx,
+            cameraOffsetYPx = cameraOffsetYPx,
+            scrollRemainderY = scrollRemainderY,
+            viewportHeightPx = height,
+        )
+    }
+
+    fun scheduleViewportRestore(state: TerminalViewportState?) {
+        pendingViewportState = state
+        applyPendingViewportRestoreIfReady()
+    }
+
+    fun restoreViewportState(state: TerminalViewportState?) {
+        if (state == null) return
+        pendingViewportState = null
+        applyViewportRestore(state)
+    }
+
+    private fun applyPendingViewportRestoreIfReady() {
+        val state = pendingViewportState ?: return
+        if (height <= 0 || scaledCellHeight <= 0f) return
+        pendingViewportState = null
+        applyViewportRestore(state)
+    }
+
+    private fun applyViewportRestore(state: TerminalViewportState) {
+        cameraOffsetXPx = state.cameraOffsetXPx
+        val totalRows = snapshot?.rows ?: 0
+        cameraOffsetYPx = if (TerminalViewportPolicy.shouldSnapToLiveBottom(
+                zoomFactor = zoomFactor,
+                scrollbackOffsetRows = scrollbackOffsetRows,
+            )
+        ) {
+            TerminalViewportPolicy.bottomAlignedCameraOffsetY(
+                totalRows = totalRows,
+                scaledCellHeightPx = scaledCellHeight,
+                viewportHeightPx = height,
+            )
+        } else {
+            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
+                cameraOffsetYPx = state.cameraOffsetYPx,
+                previousViewportHeightPx = state.viewportHeightPx,
+                nextViewportHeightPx = height,
+                totalRows = totalRows,
+                scaledCellHeightPx = scaledCellHeight,
+            )
+        }
+        scrollRemainderY = state.scrollRemainderY
+        clampCameraOffsets(resetScrollRemainder = false)
+        invalidate()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -303,27 +404,32 @@ class TerminalGridView @JvmOverloads constructor(
         val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
         val maxOffsetXPx = max(0f, (cols * scaledW) - width.toFloat())
         val maxOffsetYPx = max(0f, (rows * scaledH) - height.toFloat())
-        val zoomed = zoomFactor > DefaultTerminalZoom + zoomEpsilon
-        if (!zoomed || scrollbackOffsetRows > 0) {
+        if (isLoading || scrollbackOffsetRows > 0) {
             cursorFollowAfterInput = false
         }
         if (snap.cursorVisible) {
             val cursorX = snap.cursorX.coerceIn(0, cols - 1)
             val cursorY = snap.cursorY.coerceIn(0, rows - 1)
             val cursorMoved = cursorX != lastCursorX || cursorY != lastCursorY
-            if (cursorMoved && zoomed && scrollbackOffsetRows <= 0) {
+            if (
+                !isLoading &&
+                cursorMoved &&
+                scrollbackOffsetRows <= 0 &&
+                !suppressCursorFollowForScrollbackReentry
+            ) {
                 cursorFollowAfterInput = true
             }
+            suppressCursorFollowForScrollbackReentry = false
             lastCursorX = cursorX
             lastCursorY = cursorY
         } else {
             lastCursorX = Int.MIN_VALUE
             lastCursorY = Int.MIN_VALUE
             cursorFollowAfterInput = false
+            suppressCursorFollowForScrollbackReentry = false
         }
         if (snap.cursorVisible && cursorFollowAfterInput) {
             val adjustedX = TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
-                zoomFactor = zoomFactor,
                 panActive = panActive,
                 scrollbackOffsetRows = scrollbackOffsetRows,
                 cameraOffsetXPx = cameraOffsetXPx,
@@ -344,9 +450,9 @@ class TerminalGridView @JvmOverloads constructor(
         val panOffsetRows = floor(cameraY / scaledH).toInt()
         val maxOffsetRows = max(0, rows - visibleRows)
         var followCameraYPx: Float? = null
-        val startRow = if (TerminalViewportPolicy.shouldAutoFollowCursor(
-                imeVisible = imeVisible,
-                fitToViewWidth = fitToViewWidth,
+        val startRow = if (isLoading) {
+            panOffsetRows.coerceIn(0, maxOffsetRows)
+        } else if (TerminalViewportPolicy.shouldAutoFollowCursor(
                 zoomFactor = zoomFactor,
                 panOffsetCols = panOffsetCols.coerceAtLeast(0),
                 panOffsetRows = panOffsetRows.coerceAtLeast(0),
@@ -365,7 +471,7 @@ class TerminalGridView @JvmOverloads constructor(
                     visibleRows = visibleRows,
                 ).coerceIn(0, maxOffsetRows)
             }
-        } else if (snap.cursorVisible && cursorFollowAfterInput) {
+        } else if (!isLoading && snap.cursorVisible && cursorFollowAfterInput) {
             val cursorY = snap.cursorY.coerceIn(0, rows - 1)
             if (cursorY >= rows - 1) {
                 followCameraYPx = maxOffsetYPx
@@ -544,6 +650,7 @@ class TerminalGridView @JvmOverloads constructor(
         val widthPx = width
         val heightPx = height
         if (widthPx <= 0 || heightPx <= 0) {
+            lastViewportHeightPx = heightPx
             updateViewSize(0, 0)
             return
         }
@@ -576,8 +683,12 @@ class TerminalGridView @JvmOverloads constructor(
                 val heightScale = heightPx.toFloat() / (hostRows.toFloat() * baseCellHeight)
                 minOf(widthScale, heightScale)
             }
-            scaleX *= fitScale
-            scaleY *= fitScale
+            val effectiveScale = TerminalViewportPolicy.effectiveRenderScale(
+                zoomFactor = zoomFactor,
+                fitScale = fitScale,
+            )
+            scaleX = effectiveScale
+            scaleY = effectiveScale
         }
         renderScaleX = scaleX
         renderScaleY = scaleY
@@ -591,6 +702,30 @@ class TerminalGridView @JvmOverloads constructor(
         }
         val nextRows = floor(heightPx / scaledCellHeight).toInt().coerceAtLeast(0)
         updateViewSize(nextCols, nextRows)
+        val snap = snapshot
+        if (snap != null && lastViewportHeightPx > 0 && lastViewportHeightPx != heightPx) {
+            cameraOffsetYPx = if (TerminalViewportPolicy.shouldSnapToLiveBottom(
+                    zoomFactor = zoomFactor,
+                    scrollbackOffsetRows = scrollbackOffsetRows,
+                )
+            ) {
+                TerminalViewportPolicy.bottomAlignedCameraOffsetY(
+                    totalRows = snap.rows,
+                    scaledCellHeightPx = scaledCellHeight,
+                    viewportHeightPx = heightPx,
+                )
+            } else {
+                TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
+                    cameraOffsetYPx = cameraOffsetYPx,
+                    previousViewportHeightPx = lastViewportHeightPx,
+                    nextViewportHeightPx = heightPx,
+                    totalRows = snap.rows,
+                    scaledCellHeightPx = scaledCellHeight,
+                )
+            }
+            scrollRemainderY = 0f
+        }
+        lastViewportHeightPx = heightPx
         clampCameraOffsets(resetScrollRemainder = true)
     }
 
@@ -605,7 +740,11 @@ class TerminalGridView @JvmOverloads constructor(
         cameraOffsetXPx = 0f
         cameraOffsetYPx = 0f
         scrollRemainderY = 0f
+        pendingLiveReentryRows = 0
+        pendingScrollbackEntryRows = 0
+        pendingScrollbackEntryYPx = 0f
         cursorFollowAfterInput = false
+        suppressCursorFollowForScrollbackReentry = false
     }
 
     private fun applyPanDelta(dx: Float, dy: Float) {
@@ -626,6 +765,9 @@ class TerminalGridView @JvmOverloads constructor(
         if (nextX == cameraOffsetXPx && nextY == cameraOffsetYPx && overflowY == 0f) return
         cameraOffsetXPx = nextX
         cameraOffsetYPx = nextY
+        if (dy < 0f) {
+            reducePendingScrollbackEntry(-dy)
+        }
         maybeAutoReenterLiveView()
         dispatchScrollbackFromPanOverflow(overflowY)
         invalidate()
@@ -656,20 +798,83 @@ class TerminalGridView @JvmOverloads constructor(
 
     private fun maybeAutoReenterLiveView() {
         if (scrollbackOffsetRows <= 0 || scaledCellHeight <= 0f) return
+        pendingScrollbackEntryRows = 0
+        pendingScrollbackEntryYPx = 0f
+        if (pendingLiveReentryRows > 0) return
         val rowsToExit = TerminalViewportPolicy.scrollbackRowsToExitForLiveReentry(
             scrollbackOffsetRows = scrollbackOffsetRows,
             cameraOffsetYPx = cameraOffsetYPx,
             scaledCellHeightPx = scaledCellHeight,
         )
         if (rowsToExit <= 0) return
+        pendingLiveReentryRows += rowsToExit
         onScrollback?.invoke(-rowsToExit)
-        scrollbackOffsetRows = (scrollbackOffsetRows - rowsToExit).coerceAtLeast(0)
-        cameraOffsetYPx = (cameraOffsetYPx - (rowsToExit * scaledCellHeight)).coerceAtLeast(0f)
+    }
+
+    private fun applyScrollbackOffsetChange(previousOffsetRows: Int, nextOffsetRows: Int) {
+        val addedRows = (nextOffsetRows - previousOffsetRows).coerceAtLeast(0)
+        if (addedRows > 0) {
+            applyPendingScrollbackEntry(addedRows)
+            return
+        }
+        applyPendingLiveReentry(previousOffsetRows = previousOffsetRows, nextOffsetRows = nextOffsetRows)
+    }
+
+    private fun reducePendingScrollbackEntry(deltaYPx: Float) {
+        if (deltaYPx <= 0f || pendingScrollbackEntryYPx <= 0f || scaledCellHeight <= 0f) return
+        pendingScrollbackEntryYPx = (pendingScrollbackEntryYPx - deltaYPx).coerceAtLeast(0f)
+        pendingScrollbackEntryRows = if (pendingScrollbackEntryYPx > 0f) {
+            ceil(pendingScrollbackEntryYPx / scaledCellHeight).toInt().coerceAtLeast(1)
+        } else {
+            0
+        }
+    }
+
+    private fun applyPendingScrollbackEntry(addedRows: Int) {
+        if (scaledCellHeight <= 0f) {
+            pendingScrollbackEntryRows = 0
+            pendingScrollbackEntryYPx = 0f
+            return
+        }
+        val addedPx = addedRows * scaledCellHeight
+        val pendingRowsToApply = min(addedRows, pendingScrollbackEntryRows)
+        val pendingPxToApply = min(pendingScrollbackEntryYPx, pendingRowsToApply * scaledCellHeight)
+        cameraOffsetYPx += addedPx - pendingPxToApply
+        pendingScrollbackEntryRows = (pendingScrollbackEntryRows - pendingRowsToApply).coerceAtLeast(0)
+        pendingScrollbackEntryYPx = (pendingScrollbackEntryYPx - pendingPxToApply).coerceAtLeast(0f)
+        if (pendingScrollbackEntryRows == 0) {
+            pendingScrollbackEntryYPx = 0f
+        }
+        scrollRemainderY = 0f
+    }
+
+    private fun applyPendingLiveReentry(previousOffsetRows: Int, nextOffsetRows: Int) {
+        if (pendingLiveReentryRows <= 0) return
+        val consumedRows = (previousOffsetRows - nextOffsetRows).coerceAtLeast(0)
+        if (consumedRows <= 0) {
+            pendingLiveReentryRows = 0
+            return
+        }
+        val rowsToApply = min(pendingLiveReentryRows, consumedRows)
+        if (scaledCellHeight > 0f) {
+            cameraOffsetYPx = (cameraOffsetYPx - (rowsToApply * scaledCellHeight)).coerceAtLeast(0f)
+        }
+        pendingLiveReentryRows = (pendingLiveReentryRows - rowsToApply).coerceAtLeast(0)
+        suppressCursorFollowForScrollbackReentry = true
         scrollRemainderY = 0f
     }
 
     private fun dispatchScrollbackFromPanOverflow(overflowYPx: Float) {
         if (overflowYPx == 0f || scaledCellHeight <= 0f) return
+        if (overflowYPx < 0f) {
+            pendingScrollbackEntryYPx += -overflowYPx
+            val requiredRows = ceil(pendingScrollbackEntryYPx / scaledCellHeight).toInt().coerceAtLeast(1)
+            val deltaRows = (requiredRows - pendingScrollbackEntryRows).coerceAtLeast(0)
+            if (deltaRows == 0) return
+            pendingScrollbackEntryRows += deltaRows
+            onScrollback?.invoke(deltaRows)
+            return
+        }
         scrollRemainderY += -overflowYPx
         val deltaRows = (scrollRemainderY / scaledCellHeight).toInt()
         if (deltaRows == 0) return

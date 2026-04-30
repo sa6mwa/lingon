@@ -129,7 +129,7 @@ func TestActionRegressionDeltaSingleCharNoFullRow(t *testing.T) {
 	}
 }
 
-func TestActionRegressionAttachBannerPreservesPromptLeftOfBadge(t *testing.T) {
+func TestActionRegressionAttachBannerOwnsTopRow(t *testing.T) {
 	const cols, rows = 80, 8
 	snap := makeSnapshot(cols, rows, 0, 0)
 	setRow(snap, 0, "PROMPT> visible with badge")
@@ -152,9 +152,28 @@ func TestActionRegressionAttachBannerPreservesPromptLeftOfBadge(t *testing.T) {
 	}
 	row := renderRow(t, out.Bytes, cols, rows, 0)
 	if !strings.Contains(row, "PROMPT>") {
-		t.Fatalf("expected prompt to remain visible on row 1 with banner badge, got %q", row)
+		t.Fatalf("expected banner overlay to preserve prompt on row 1, got %q", row)
 	}
 	if !strings.Contains(row, "connection lost") {
 		t.Fatalf("expected banner badge on row 1, got %q", row)
+	}
+}
+
+func TestActionRegressionLoadingBannerUsesYellowStyle(t *testing.T) {
+	rt := NewRuntime()
+	rt.ApplyAction(StatusAction{Input: StatusInput{
+		Kind:    StatusLoading,
+		Message: "loading from relay",
+	}})
+	resolved := Resolve(rt.Read(), Cursor{Row: 2, Col: 1, Visible: true}, time.Now(), ResolveOptions{})
+	if !resolved.LoadingVisible {
+		t.Fatalf("expected loading banner visible")
+	}
+	row := renderRow(t, ComposeTopOverlayResolved(80, Cursor{Row: 2, Col: 1, Visible: true}, resolved), 80, 8, 0)
+	if !strings.Contains(row, "loading from relay") {
+		t.Fatalf("expected loading banner text, got %q", row)
+	}
+	if !strings.Contains(string(ComposeTopOverlayResolved(80, Cursor{Row: 2, Col: 1, Visible: true}, resolved)), "\x1b[38;2;0;0;0;43m") {
+		t.Fatalf("expected yellow banner ANSI sequence")
 	}
 }

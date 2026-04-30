@@ -196,7 +196,7 @@ func TestRenderAttachMasksTopRowWhenOverlayHides(t *testing.T) {
 	}
 }
 
-func TestRenderAttachConnectionBannerPreservesPromptLeftOfBadge(t *testing.T) {
+func TestRenderAttachConnectionBannerOwnsTopRow(t *testing.T) {
 	const cols, rows = 80, 8
 	snap := makeSnapshot(cols, rows, 0, 0)
 	setRow(snap, 0, "PROMPT> should stay visible")
@@ -218,7 +218,7 @@ func TestRenderAttachConnectionBannerPreservesPromptLeftOfBadge(t *testing.T) {
 	}
 	row := renderRow(t, out.Bytes, cols, rows, 0)
 	if !strings.Contains(row, "PROMPT>") {
-		t.Fatalf("expected prompt to remain visible with attach banner badge, got %q", row)
+		t.Fatalf("expected attach banner overlay to preserve prompt on row 1, got %q", row)
 	}
 	if !strings.Contains(row, "connection lost") {
 		t.Fatalf("expected attach banner text on top row, got %q", row)
@@ -369,6 +369,9 @@ func TestRenderHostConnectionBannerOverwritesTopRowWithoutShiftingContent(t *tes
 	row0 := renderRow(t, out.Bytes, cols, rows, 0)
 	if !strings.Contains(row0, "connection lost") {
 		t.Fatalf("expected banner on row 1, got %q", row0)
+	}
+	if !strings.Contains(row0, "PROMPT> shifted-under-banner") {
+		t.Fatalf("expected prompt preserved on row 1 under banner overlay, got %q", row0)
 	}
 	row1 := renderRow(t, out.Bytes, cols, rows, 1)
 	if !strings.Contains(row1, "SECOND-ROW") {

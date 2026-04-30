@@ -39,7 +39,7 @@ func TestParseSetValues(t *testing.T) {
 }
 
 func TestBootstrapCLIShorthands(t *testing.T) {
-	t.Setenv("HOME", testutil.TempDir(t))
+	testutil.SetLingonConfigEnv(t)
 	dir := testutil.TempDir(t)
 	configPath := filepath.Join(dir, "config.yaml")
 

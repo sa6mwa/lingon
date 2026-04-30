@@ -86,20 +86,10 @@ func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 	return nil
 }
 
-func runHeadlessForeground(cmd *cobra.Command, _ *lingon.Loader, configDir string, cfg lingon.Config) error {
+func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir string, cfg lingon.Config) error {
 	insecure, err := cmd.Flags().GetBool("insecure")
 	if err != nil {
 		return err
-	}
-	endpointValue, err := cmd.Flags().GetString("endpoint")
-	if err != nil {
-		return err
-	}
-	if !cmd.Flags().Changed("endpoint") {
-		endpointValue = cfg.Client.Endpoint
-	}
-	if endpointValue == "" {
-		return fmt.Errorf("endpoint is required")
 	}
 	authPath, err := cmd.Flags().GetString("auth-file")
 	if err != nil {
@@ -107,6 +97,17 @@ func runHeadlessForeground(cmd *cobra.Command, _ *lingon.Loader, configDir strin
 	}
 	if !cmd.Flags().Changed("auth-file") {
 		authPath = cfg.Client.AuthFile
+	}
+	endpointValue, err := cmd.Flags().GetString("endpoint")
+	if err != nil {
+		return err
+	}
+	endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointValue, authPath)
+	if err != nil {
+		return err
+	}
+	if endpointValue == "" {
+		return fmt.Errorf("endpoint is required")
 	}
 	tokenValue, err := cmd.Flags().GetString("token")
 	if err != nil {

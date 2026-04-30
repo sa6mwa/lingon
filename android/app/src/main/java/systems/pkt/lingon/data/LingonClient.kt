@@ -8,16 +8,17 @@ import systems.pkt.lingon.data.certs.TrustedCert
 interface LingonClient {
     val endpointFlow: Flow<String>
     val fontSizeFlow: Flow<Int>
-    val zoomFlow: Flow<Float>
     val resizeHostFlow: Flow<Boolean>
+    val backgroundWallEnabledFlow: Flow<Boolean>
     val appLockTimeoutMinutesFlow: Flow<Int>
     val savedEndpointsFlow: Flow<List<String>>
     val certificatesFlow: Flow<Map<String, List<TrustedCert>>>
 
     fun setEndpoint(value: String)
     fun setFontSize(value: Int)
-    fun setZoom(value: Float)
+    fun saveSessionZoom(endpoint: String, sessionId: String, value: Float)
     fun setResizeHostEnabled(value: Boolean)
+    fun setBackgroundWallEnabled(value: Boolean)
     fun setAppLockTimeoutMinutes(value: Int)
     fun saveLastActiveSessionId(endpoint: String, sessionId: String)
     fun clearLastActiveSession()
@@ -26,6 +27,7 @@ interface LingonClient {
     suspend fun logout()
     suspend fun clearAuth()
     suspend fun refreshAuth(): Boolean
+    suspend fun loadSessionZoom(endpoint: String, sessionId: String): Float
     suspend fun loadLastActiveSessionId(endpoint: String): String?
     suspend fun listSessions(): List<RelaySession>
     suspend fun listWallEvents(sinceId: Long, limit: Int): RelayWallEventsPage

@@ -5,6 +5,7 @@ import (
 
 	"github.com/creack/pty"
 
+	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/terminal"
 )
@@ -68,13 +69,68 @@ func TestCursorQueryFuncUsesRenderedCursor(t *testing.T) {
 	if err := pty.Setsize(ptmx, &pty.Winsize{Cols: 40, Rows: 10}); err != nil {
 		t.Fatalf("setsize: %v", err)
 	}
+	raw := terminal.Snapshot{
+		Cols:          80,
+		Rows:          24,
+		Cursor:        terminal.Cursor{X: 8, Y: 1},
+		CursorVisible: true,
+	}
+	wantRow, wantCol, wantOK := r.cursorQueryPosition(protocol.SnapshotToProto(raw), 40, 10)
 	query := r.cursorQueryFunc(ptmx, ptmx)
-	row, col, ok := query(terminal.Snapshot{Cols: 80, Rows: 24})
+	row, col, ok := query(raw)
+	if ok != wantOK {
+		t.Fatalf("ok=%v, want %v", ok, wantOK)
+	}
+	if row != wantRow || col != wantCol {
+		t.Fatalf("expected row=%d col=%d, got row=%d col=%d", wantRow, wantCol, row, col)
+	}
+}
+
+func TestCursorQueryFuncUsesRenderedOverlayCursorBeforeRawCursor(t *testing.T) {
+	r := &Runner{}
+	r.renderCursorMu.Lock()
+	r.renderCursorRow = 1
+	r.renderCursorCol = 5
+	r.renderCursorVisible = true
+	r.renderCursorMu.Unlock()
+	r.renderCache.Frame.LastTopOverlayVisible = true
+
+	query := r.cursorQueryFunc(nil, nil)
+	row, col, ok := query(terminal.Snapshot{
+		Cols:          80,
+		Rows:          24,
+		Cursor:        terminal.Cursor{X: 8, Y: 1},
+		CursorVisible: false,
+	})
 	if !ok {
 		t.Fatalf("expected cursor position")
 	}
-	if row != 3 || col != 7 {
-		t.Fatalf("expected row=3 col=7, got row=%d col=%d", row, col)
+	if row != 1 || col != 5 {
+		t.Fatalf("expected rendered overlay cursor row=1 col=5, got row=%d col=%d", row, col)
+	}
+}
+
+func TestCursorQueryFuncPrefersCurrentRawCursorOverStaleOverlayCursor(t *testing.T) {
+	r := &Runner{}
+	r.renderCursorMu.Lock()
+	r.renderCursorRow = 1
+	r.renderCursorCol = 5
+	r.renderCursorVisible = true
+	r.renderCursorMu.Unlock()
+	r.renderCache.Frame.LastTopOverlayVisible = true
+
+	query := r.cursorQueryFunc(nil, nil)
+	row, col, ok := query(terminal.Snapshot{
+		Cols:          80,
+		Rows:          24,
+		Cursor:        terminal.Cursor{X: 8, Y: 1},
+		CursorVisible: true,
+	})
+	if !ok {
+		t.Fatalf("expected cursor position")
+	}
+	if row != 2 || col != 9 {
+		t.Fatalf("expected current raw cursor row=2 col=9, got row=%d col=%d", row, col)
 	}
 }
 
@@ -88,9 +144,10 @@ func TestCursorQueryFuncUsesRawCursorWhenFullScreen(t *testing.T) {
 
 	query := r.cursorQueryFunc(nil, nil)
 	row, col, ok := query(terminal.Snapshot{
-		Cols:   17,
-		Rows:   9,
-		Cursor: terminal.Cursor{X: 4, Y: 1},
+		Cols:          17,
+		Rows:          9,
+		Cursor:        terminal.Cursor{X: 4, Y: 1},
+		CursorVisible: true,
 	})
 	if !ok {
 		t.Fatalf("expected cursor position")

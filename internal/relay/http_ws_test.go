@@ -284,6 +284,126 @@ func TestClientConnectLogsReconnected(t *testing.T) {
 	}
 }
 
+func TestWSHostActivityFrameDoesNotForwardToClients(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+	ts := newTestServer(t, server.Handler())
+	defer ts.Close()
+
+	access, err := store.CreateAccessToken(user.Username, DefaultAccessTokenTTL, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	hostConn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/host"), &websocket.DialOptions{
+		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + access.Token}},
+	})
+	if err != nil {
+		t.Fatalf("host dial: %v", err)
+	}
+	defer func() {
+		_ = hostConn.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	hostHello := &protocolpb.Frame{
+		SessionId: "activity-session",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			Cols:         80,
+			Rows:         24,
+			WantsControl: true,
+			ClientType:   "host",
+		}},
+	}
+	hostHelloData, err := proto.Marshal(hostHello)
+	if err != nil {
+		t.Fatalf("marshal host hello: %v", err)
+	}
+	if err := hostConn.Write(ctx, websocket.MessageBinary, hostHelloData); err != nil {
+		t.Fatalf("send host hello: %v", err)
+	}
+
+	clientConn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/client"), &websocket.DialOptions{
+		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + access.Token}},
+	})
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+	defer func() {
+		_ = clientConn.Close(websocket.StatusNormalClosure, "bye")
+	}()
+
+	clientHello := &protocolpb.Frame{
+		SessionId: "activity-session",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "observer",
+			Cols:         80,
+			Rows:         24,
+			WantsControl: false,
+			ClientType:   "attach",
+		}},
+	}
+	clientHelloData, err := proto.Marshal(clientHello)
+	if err != nil {
+		t.Fatalf("marshal client hello: %v", err)
+	}
+	if err := clientConn.Write(ctx, websocket.MessageBinary, clientHelloData); err != nil {
+		t.Fatalf("send client hello: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), time.Second)
+	_, _, err = clientConn.Read(readCtx)
+	readCancel()
+	if err != nil {
+		t.Fatalf("expected welcome frame: %v", err)
+	}
+	for {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+		_, _, err := clientConn.Read(drainCtx)
+		drainCancel()
+		if err != nil {
+			break
+		}
+	}
+
+	activityData, err := proto.Marshal(frameActivity("activity-session"))
+	if err != nil {
+		t.Fatalf("marshal activity frame: %v", err)
+	}
+	if err := hostConn.Write(ctx, websocket.MessageBinary, activityData); err != nil {
+		t.Fatalf("send activity frame: %v", err)
+	}
+	state := server.Hub.sessions["activity-session"]
+	if state == nil {
+		t.Fatal("expected hub session state")
+	}
+	if len(state.history) != 0 {
+		t.Fatalf("activity frame should not enter replay history, got %d frames", len(state.history))
+	}
+	if state.historyBytes != 0 {
+		t.Fatalf("activity frame should not consume replay history bytes, got %d", state.historyBytes)
+	}
+
+	noFrameCtx, noFrameCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer noFrameCancel()
+	_, message, err := clientConn.Read(noFrameCtx)
+	if err == nil {
+		var frame protocolpb.Frame
+		if unmarshalErr := proto.Unmarshal(message, &frame); unmarshalErr != nil {
+			t.Fatalf("unmarshal unexpected frame: %v", unmarshalErr)
+		}
+		t.Fatalf("unexpected forwarded frame: %#v", frame.Payload)
+	}
+}
+
 func TestWSClientConnectsWithShareSessionCookie(t *testing.T) {
 	store := NewStore()
 	users := NewUserStore()
