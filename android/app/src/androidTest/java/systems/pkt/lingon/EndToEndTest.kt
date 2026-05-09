@@ -1152,6 +1152,63 @@ class EndToEndTest {
     }
 
     @Test
+    fun focused_background_resume_preserves_live_camera_when_cursor_still_fits() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val headlessId = startHeadlessViaHarness(rows = 240)
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
+        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        focusTerminalInput()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before lifecycle fixture")
+        assertTrue(
+            "fixture requires a terminal taller than the focused viewport: rows=${beforeLoad.rows}, viewRows=${beforeLoad.viewRows}",
+            beforeLoad.rows > beforeLoad.viewRows,
+        )
+        val visibleRows = (beforeLoad.visibleEndRowExclusive - beforeLoad.visibleStartRow).coerceAtLeast(4)
+        val outputRows = (visibleRows - 3).coerceAtLeast(1)
+        sendTerminalInput("clear; seq 1 $outputRows")
+        sendTerminalEnter()
+        val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > beforeLoad.lastFrameSeq &&
+                info.hash != beforeLoad.hash &&
+                info.visibleStartRow == 0 &&
+                info.cursorY in info.visibleStartRow until info.visibleEndRowExclusive
+        } ?: throw AssertionError("terminal fixture did not settle with cursor visible before lifecycle refocus")
+        assertEquals(
+            "fixture must start with the saved camera at the top",
+            0f,
+            loaded.cameraOffsetYPx,
+            0.01f,
+        )
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        val resumed = waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == headlessId &&
+                info.viewRows > 0 &&
+                !stateForTest().sessionSyncing
+        } ?: throw AssertionError("focused lifecycle refocus moved the live camera without new terminal output")
+        assertEquals("focused lifecycle refocus changed visible start row", loaded.visibleStartRow, resumed.visibleStartRow)
+        assertEquals(
+            "focused lifecycle refocus moved camera without new terminal output",
+            loaded.cameraOffsetYPx,
+            resumed.cameraOffsetYPx,
+            0.01f,
+        )
+    }
+
+    @Test
     fun keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -2471,6 +2528,7 @@ class EndToEndTest {
                 prevLine = prevLine,
                 tail = tail,
                 cursorLine = cursorLine,
+                cursorY = snap?.cursorY ?: 0,
                 hasControl = state.hasControl,
                 resizeEnabled = state.resizeHostEnabled,
                 viewCols = terminalView?.getViewCols() ?: state.terminalCols,
@@ -3172,8 +3230,8 @@ class EndToEndTest {
         }
     }
 
-    private fun startHeadlessViaHarness(): String {
-        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless")
+    private fun startHeadlessViaHarness(cols: Int = 120, rows: Int = 50): String {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless?cols=$cols&rows=$rows")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 5_000
@@ -3514,6 +3572,7 @@ class EndToEndTest {
         val prevLine: String,
         val tail: String,
         val cursorLine: String,
+        val cursorY: Int,
         val hasControl: Boolean,
         val resizeEnabled: Boolean,
         val viewCols: Int,

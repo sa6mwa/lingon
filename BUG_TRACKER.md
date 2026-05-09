@@ -29,9 +29,34 @@ Required status values:
 
 ## Active Items
 
+### B-045 Android zoomed terminal keeps prompt cropped after wide output
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `horizontal-pan`
+- Summary: In a zoomed Android terminal, wide command output can pan the camera right and leave the next prompt cropped on the left even though the cursor would fit if the camera returned to the user's left-aligned position.
+- Report:
+  Running a wide command such as `ps aux` in a zoomed Android terminal can move the camera several characters to the right. When the shell returns to the prompt, the prompt text on the left remains cropped even though the cursor/prompt would fit with horizontal camera alignment restored.
+- Repro:
+  1. Open an Android terminal and zoom in so horizontal panning is possible.
+  2. Start with the horizontal camera aligned all the way left.
+  3. Produce wide output that moves the cursor/right edge far enough to pan the camera right.
+  4. Return to a prompt near the left edge.
+  5. Observe the prompt remains cropped because the horizontal follow policy keeps a nonzero left-margin offset instead of restoring camera X to zero.
+- Investigation notes:
+  - The horizontal cursor-follow policy returns `cursorLeft - margin` when the cursor is left of the current viewport.
+  - For prompt positions near the left edge, that can be a positive camera offset even though the cursor would fit with camera X restored to zero.
+  - Fix: TerminalGridView now tracks a preferred horizontal camera offset separately from temporary cursor-follow movement. Horizontal follow restores that preferred offset when the cursor fits there, so both left-aligned `x=0` and user-panned positions such as `x=10` are preserved.
+- Regression coverage:
+  - `TerminalViewportPolicyTest.horizontal cursor follow restores left edge when cursor fits from origin`
+  - `TerminalViewportPolicyTest.horizontal cursor follow restores user panned edge when cursor fits there`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest`
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - Pending phone-visible verification with zoomed `ps aux` / wide-output prompt return.
+
 ### B-044 Android refocus/reconnect shifts terminal camera without new output
 
-- Status: `resolved`
+- Status: `needs_verification`
 - Area: `android`, `terminal`, `viewport`, `lifecycle`
 - Summary: Refocusing or reconnecting the Android app can move the terminal camera back to cursor-follow placement even when no new terminal content requires a follow adjustment.
 - Report:
@@ -44,13 +69,19 @@ Required status values:
   - The lifecycle restore path reused the default live cursor-follow/bottom-align logic. That is correct for new terminal output, but not for restoring a previously captured camera after app refocus.
   - Restore must treat the captured camera as authoritative, then only future cursor movement from later frames can request cursor follow.
   - Fix: viewport restore now restores the saved camera directly, seeds the current cursor as already observed, and suppresses live auto-follow for the restored frame sequence only.
+  - Follow-up: this did not resolve the phone-visible refocus bug. The original regression only exercised the lower-level view restore path, not the full focused Android lifecycle path.
+  - Follow-up fix: TerminalScreen now re-applies the cached viewport once per lifecycle and IME visibility state. This covers the likely phone timing where restore ran before the focused/keyboard-visible layout settled and was not retried.
 - Regression coverage:
   - `EndToEndTest.lifecycle_viewport_restore_preserves_saved_camera_without_new_frame`
+  - `EndToEndTest.focused_background_resume_preserves_live_camera_when_cursor_still_fits`
 - Verification:
   - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_saved_camera_without_new_frame make integration-test` failed before the fix with `expected:<0.0> but was:<1266.3601>`, then passed after the fix.
   - `cd android && LINGON_IT_ONLY=keyboard_height_change_preserves_live_camera_when_cursor_still_fits make integration-test`
   - `cd android && ./gradlew :app:testDebugUnitTest`
   - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin`
+  - `cd android && LINGON_IT_ONLY=focused_background_resume_preserves_live_camera_when_cursor_still_fits make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - Pending phone-visible verification because the earlier fix did not resolve the physical device report.
 
 ### B-043 Android wall notifications can duplicate for one wall event
 

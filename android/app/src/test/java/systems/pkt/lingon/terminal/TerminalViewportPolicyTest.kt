@@ -105,6 +105,7 @@ class TerminalViewportPolicyTest {
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
@@ -118,6 +119,7 @@ class TerminalViewportPolicyTest {
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
@@ -126,11 +128,48 @@ class TerminalViewportPolicyTest {
             0.001f,
         )
         assertEquals(
-            50f,
+            0f,
             TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 100f,
+                preferredCameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 6,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow restores left edge when cursor fits from origin`() {
+        assertEquals(
+            0f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 180f,
+                preferredCameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 6,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow restores user panned edge when cursor fits there`() {
+        assertEquals(
+            10f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 180f,
+                preferredCameraOffsetXPx = 10f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
@@ -148,6 +187,7 @@ class TerminalViewportPolicyTest {
                 panActive = true,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 42f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
@@ -161,6 +201,7 @@ class TerminalViewportPolicyTest {
                 panActive = false,
                 scrollbackOffsetRows = 3,
                 cameraOffsetXPx = 42f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,

@@ -361,7 +361,19 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			id, err := h.startHeadless()
+			cols := 120
+			rows := 50
+			if raw := r.URL.Query().Get("cols"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					cols = value
+				}
+			}
+			if raw := r.URL.Query().Get("rows"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					rows = value
+				}
+			}
+			id, err := h.startHeadless(cols, rows)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -595,7 +607,7 @@ func (h *harness) startHost(token string) (string, error) {
 	return id, nil
 }
 
-func (h *harness) startHeadless() (string, error) {
+func (h *harness) startHeadless(cols int, rows int) (string, error) {
 	if h.ctx.Err() != nil {
 		return "", h.ctx.Err()
 	}
@@ -614,8 +626,8 @@ func (h *harness) startHeadless() (string, error) {
 		Token:          h.access,
 		AuthFile:       h.authPath,
 		SessionID:      id,
-		Cols:           120,
-		Rows:           50,
+		Cols:           cols,
+		Rows:           rows,
 		Shell:          defaultHeadlessShell(),
 		Publish:        true,
 		PublishControl: true,

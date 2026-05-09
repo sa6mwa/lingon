@@ -45,6 +45,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var scrollbackOffsetRows: Int = 0
     private var cameraOffsetXPx: Float = 0f
     private var cameraOffsetYPx: Float = 0f
+    private var preferredCameraOffsetXPx: Float = 0f
     private var pendingViewportState: TerminalViewportState? = null
     private var lastViewportHeightPx: Int = 0
     private var panActive: Boolean = false
@@ -128,6 +129,7 @@ class TerminalGridView @JvmOverloads constructor(
                 updateLayout()
                 if (scaledCellWidth > 0f) {
                     cameraOffsetXPx = focusCellX * scaledCellWidth - detector.focusX
+                    preferredCameraOffsetXPx = cameraOffsetXPx
                 }
                 if (scaledCellHeight > 0f) {
                     cameraOffsetYPx = focusCellY * scaledCellHeight - detector.focusY
@@ -325,6 +327,7 @@ class TerminalGridView @JvmOverloads constructor(
 
     private fun applyViewportRestore(state: TerminalViewportState) {
         cameraOffsetXPx = state.cameraOffsetXPx
+        preferredCameraOffsetXPx = state.cameraOffsetXPx
         cameraOffsetYPx = state.cameraOffsetYPx
         scrollRemainderY = state.scrollRemainderY
         snapshot?.takeIf { it.cursorVisible }?.let { snap ->
@@ -424,6 +427,7 @@ class TerminalGridView @JvmOverloads constructor(
                 panActive = panActive,
                 scrollbackOffsetRows = scrollbackOffsetRows,
                 cameraOffsetXPx = cameraOffsetXPx,
+                preferredCameraOffsetXPx = preferredCameraOffsetXPx,
                 scaledCellWidthPx = scaledW,
                 viewportWidthPx = width,
                 totalCols = cols,
@@ -437,6 +441,7 @@ class TerminalGridView @JvmOverloads constructor(
             cameraOffsetXPx = cameraX
             cameraOffsetYPx = cameraY
         }
+        preferredCameraOffsetXPx = preferredCameraOffsetXPx.coerceIn(0f, maxOffsetXPx)
         val panOffsetCols = floor(cameraX / scaledW).toInt()
         val panOffsetRows = floor(cameraY / scaledH).toInt()
         val maxOffsetRows = max(0, rows - visibleRows)
@@ -736,6 +741,7 @@ class TerminalGridView @JvmOverloads constructor(
 
     private fun resetPan() {
         cameraOffsetXPx = 0f
+        preferredCameraOffsetXPx = 0f
         cameraOffsetYPx = 0f
         scrollRemainderY = 0f
         pendingLiveReentryRows = 0
@@ -762,6 +768,7 @@ class TerminalGridView @JvmOverloads constructor(
         val nextY = attemptedY.coerceIn(0f, maxOffsetYPx)
         if (nextX == cameraOffsetXPx && nextY == cameraOffsetYPx && overflowY == 0f) return
         cameraOffsetXPx = nextX
+        preferredCameraOffsetXPx = nextX
         cameraOffsetYPx = nextY
         if (dy < 0f) {
             reducePendingScrollbackEntry(-dy)
@@ -785,6 +792,7 @@ class TerminalGridView @JvmOverloads constructor(
             cameraOffsetXPx = nextX
             cameraOffsetYPx = nextY
         }
+        preferredCameraOffsetXPx = preferredCameraOffsetXPx.coerceIn(0f, maxOffsetXPx)
         if (resetScrollRemainder) {
             scrollRemainderY = 0f
         }

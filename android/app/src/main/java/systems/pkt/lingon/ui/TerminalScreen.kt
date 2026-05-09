@@ -504,6 +504,7 @@ private fun TerminalPanel(
         var restoredSessionId by remember { mutableStateOf<String?>(null) }
         var lifecycleRestoreNonce by remember { mutableStateOf(0) }
         var restoredLifecycleNonce by remember { mutableStateOf(0) }
+        var restoredImeVisible by remember { mutableStateOf<Boolean?>(null) }
         val sessionId = state.activeSessionId
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
@@ -581,6 +582,7 @@ private fun TerminalPanel(
             )
             LaunchedEffect(sessionId) {
                 restoredSessionId = null
+                restoredImeVisible = null
             }
             LaunchedEffect(
                 sessionId,
@@ -590,16 +592,22 @@ private fun TerminalPanel(
                 state.scrollbackOffsetRows,
                 fitToViewWidth,
                 lifecycleRestoreNonce,
+                imeVisible,
             ) {
                 val view = terminalGridView ?: return@LaunchedEffect
                 val activeSessionId = sessionId ?: return@LaunchedEffect
-                if (restoredSessionId == activeSessionId && restoredLifecycleNonce == lifecycleRestoreNonce) {
+                if (
+                    restoredSessionId == activeSessionId &&
+                    restoredLifecycleNonce == lifecycleRestoreNonce &&
+                    restoredImeVisible == imeVisible
+                ) {
                     return@LaunchedEffect
                 }
                 if (shouldDelayViewportRestore) return@LaunchedEffect
                 view.scheduleViewportRestore(viewportCache[activeSessionId])
                 restoredSessionId = activeSessionId
                 restoredLifecycleNonce = lifecycleRestoreNonce
+                restoredImeVisible = imeVisible
             }
             if (showStatusOverlay) {
                 StatusBanner(

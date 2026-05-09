@@ -72,6 +72,7 @@ internal object TerminalViewportPolicy {
         panActive: Boolean,
         scrollbackOffsetRows: Int,
         cameraOffsetXPx: Float,
+        preferredCameraOffsetXPx: Float,
         scaledCellWidthPx: Float,
         viewportWidthPx: Int,
         totalCols: Int,
@@ -90,6 +91,11 @@ internal object TerminalViewportPolicy {
         val cursorRightPx = cursorLeftPx + scaledCellWidthPx
         val marginPx = scaledCellWidthPx
         val viewportRightPx = current + viewportWidthPx
+        val preferred = preferredCameraOffsetXPx.coerceIn(0f, maxOffsetXPx)
+
+        if (cursorLeftPx >= preferred && cursorRightPx <= preferred + viewportWidthPx) {
+            return preferred
+        }
 
         val desired = when {
             cursorLeftPx < current + marginPx -> cursorLeftPx - marginPx
