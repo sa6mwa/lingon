@@ -31,20 +31,21 @@ class MonotonicWallDeliveryCoordinator(
             if (!shouldPostNotification()) {
                 return@withLock false
             }
+            val claim = stateStore.claimDelivery(notification.endpoint, notification.eventId)
+                ?: return@withLock true
             if (notifier.notifyWall(notification.copy(message = body))) {
-                stateStore.recordDelivered(notification.endpoint, notification.eventId)
                 return@withLock true
             }
+            stateStore.rollbackDeliveryClaim(claim)
             false
         }
     }
 
     override suspend fun consumeInApp(notification: WallNotification): Boolean {
         return deliveryMu.withLock {
-            if (!stateStore.shouldDeliver(notification.endpoint, notification.eventId)) {
+            if (stateStore.claimDelivery(notification.endpoint, notification.eventId) == null) {
                 return@withLock false
             }
-            stateStore.recordDelivered(notification.endpoint, notification.eventId)
             notification.message.trim().isNotBlank()
         }
     }

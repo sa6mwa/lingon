@@ -76,6 +76,23 @@ class WallDeliveryCoordinatorTest {
     }
 
     @Test
+    fun concurrentDeliveryThroughSeparateCoordinatorsPostsOnlyOnce() = runTest {
+        val store = newStore()
+        val notifier = SlowRecordingNotifier()
+        val firstCoordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val secondCoordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val notification = notification(eventId = 42L)
+
+        awaitAll(
+            async(Dispatchers.Default) { firstCoordinator.deliver(notification) },
+            async(Dispatchers.Default) { secondCoordinator.deliver(notification) },
+        )
+
+        assertEquals(42L, store.loadCursor(notification.endpoint))
+        assertEquals(1, notifier.deliveries.get())
+    }
+
+    @Test
     fun notificationSuppressionDoesNotConsumeEvent() = runTest {
         val store = newStore()
         val notifier = RecordingNotifier(succeeds = true)

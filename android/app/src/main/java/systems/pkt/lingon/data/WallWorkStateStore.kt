@@ -57,6 +57,42 @@ class WallWorkStateStore(
         return shouldDeliver
     }
 
+    suspend fun claimDelivery(endpoint: String, eventId: Long): WallDeliveryClaim? {
+        val cleaned = endpoint.trim()
+        if (cleaned.isBlank() || eventId <= 0L) {
+            return WallDeliveryClaim(cleaned, eventId, previousCursor = 0L, cursorBacked = false)
+        }
+        var claim: WallDeliveryClaim? = null
+        dataStore.edit { prefs ->
+            val cursorMap = parseCursorMap(prefs[cursorsKey])
+            val current = cursorMap[cleaned] ?: 0L
+            if (eventId > current) {
+                cursorMap[cleaned] = eventId
+                prefs[cursorsKey] = encodeCursorMap(cursorMap)
+                claim = WallDeliveryClaim(cleaned, eventId, previousCursor = current, cursorBacked = true)
+            }
+        }
+        return claim
+    }
+
+    suspend fun rollbackDeliveryClaim(claim: WallDeliveryClaim) {
+        if (!claim.cursorBacked) {
+            return
+        }
+        dataStore.edit { prefs ->
+            val cursorMap = parseCursorMap(prefs[cursorsKey])
+            if (cursorMap[claim.endpoint] != claim.eventId) {
+                return@edit
+            }
+            if (claim.previousCursor > 0L) {
+                cursorMap[claim.endpoint] = claim.previousCursor
+            } else {
+                cursorMap.remove(claim.endpoint)
+            }
+            prefs[cursorsKey] = encodeCursorMap(cursorMap)
+        }
+    }
+
     suspend fun shouldDeliver(endpoint: String, eventId: Long): Boolean {
         val cleaned = endpoint.trim()
         if (cleaned.isBlank() || eventId <= 0L) {
@@ -147,3 +183,10 @@ class WallWorkStateStore(
         }
     }
 }
+
+class WallDeliveryClaim internal constructor(
+    val endpoint: String,
+    val eventId: Long,
+    val previousCursor: Long,
+    internal val cursorBacked: Boolean,
+)

@@ -66,6 +66,43 @@ class WallWorkStateStoreTest {
     }
 
     @Test
+    fun deliveryClaimAtomicallySuppressesReplay() = runTest {
+        val store = newStore()
+
+        val claim = store.claimDelivery("https://a.example/v1", 42L)
+
+        assertEquals(42L, claim?.eventId)
+        assertEquals(null, store.claimDelivery("https://a.example/v1", 42L))
+        assertEquals(null, store.claimDelivery("https://a.example/v1", 41L))
+        assertEquals(42L, store.loadCursor("https://a.example/v1"))
+    }
+
+    @Test
+    fun deliveryClaimRollbackRestoresPreviousCursor() = runTest {
+        val store = newStore()
+        store.saveCursor("https://a.example/v1", 41L)
+        val claim = store.claimDelivery("https://a.example/v1", 42L)
+            ?: throw AssertionError("missing claim")
+
+        store.rollbackDeliveryClaim(claim)
+
+        assertEquals(41L, store.loadCursor("https://a.example/v1"))
+        assertEquals(42L, store.claimDelivery("https://a.example/v1", 42L)?.eventId)
+    }
+
+    @Test
+    fun deliveryClaimRollbackDoesNotMoveNewerCursorBackward() = runTest {
+        val store = newStore()
+        val claim = store.claimDelivery("https://a.example/v1", 42L)
+            ?: throw AssertionError("missing claim")
+        store.advanceCursor("https://a.example/v1", 43L)
+
+        store.rollbackDeliveryClaim(claim)
+
+        assertEquals(43L, store.loadCursor("https://a.example/v1"))
+    }
+
+    @Test
     fun clearCursorRemovesOnlyRequestedEndpoint() = runTest {
         val store = newStore()
         store.saveCursor("https://a.example/v1", 7L)

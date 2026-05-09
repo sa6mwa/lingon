@@ -496,6 +496,56 @@ class EndToEndTest {
     }
 
     @Test
+    fun lifecycle_viewport_restore_preserves_saved_camera_without_new_frame() {
+        lateinit var view: TerminalGridView
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 40, cols = 20, cursorY = 35),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 40,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                ),
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "lifecycle restore should preserve the saved camera when no new frame arrived",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+            assertEquals(0, view.getVisibleStartRow())
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
     fun zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
@@ -1476,6 +1526,7 @@ class EndToEndTest {
 
         waitForWallNotificationBody(message, "background manual wall notification")
         assertNoWallNotificationAutogroupSummary()
+        assertSingleWallNotificationBody(message)
         val wallNotification = wallNotifications()
             .firstOrNull { wallNotificationFullText(it) == message }
             ?: throw AssertionError("missing lingon_wall notification for message=$message")
@@ -1575,6 +1626,7 @@ class EndToEndTest {
             "second wall notification was not visible: $visibleMessages",
             visibleMessages.contains(secondMessage),
         )
+        assertSingleWallNotificationBody(secondMessage)
     }
 
     @Test
@@ -1957,6 +2009,16 @@ class EndToEndTest {
             }
             false
         }
+    }
+
+    private fun assertSingleWallNotificationBody(message: String) {
+        val matching = wallNotifications()
+            .filter { wallNotificationFullText(it) == message }
+        assertEquals(
+            "expected one active wall notification for message=$message, got=${matching.size}",
+            1,
+            matching.size,
+        )
     }
 
     private fun setNotificationDeliveryEnabled(enabled: Boolean): Boolean {

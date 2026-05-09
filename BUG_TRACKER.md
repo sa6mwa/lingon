@@ -29,6 +29,58 @@ Required status values:
 
 ## Active Items
 
+### B-044 Android refocus/reconnect shifts terminal camera without new output
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `lifecycle`
+- Summary: Refocusing or reconnecting the Android app can move the terminal camera back to cursor-follow placement even when no new terminal content requires a follow adjustment.
+- Report:
+  After the keyboard typing case was fixed, starting/refocusing Lingon still rearranges the terminal camera to the same forced placement as before. Refocus/reconnect must preserve the saved camera view unless a real terminal delta/replay changes the cursor/content so the cursor no longer fits.
+- Repro:
+  1. Render a live terminal viewport and save its camera state.
+  2. Simulate lifecycle restore/refocus with the same terminal frame and cursor state.
+  3. Observe that the restore path can apply live cursor-follow behavior even though no new terminal output arrived.
+- Investigation notes:
+  - The lifecycle restore path reused the default live cursor-follow/bottom-align logic. That is correct for new terminal output, but not for restoring a previously captured camera after app refocus.
+  - Restore must treat the captured camera as authoritative, then only future cursor movement from later frames can request cursor follow.
+  - Fix: viewport restore now restores the saved camera directly, seeds the current cursor as already observed, and suppresses live auto-follow for the restored frame sequence only.
+- Regression coverage:
+  - `EndToEndTest.lifecycle_viewport_restore_preserves_saved_camera_without_new_frame`
+- Verification:
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_saved_camera_without_new_frame make integration-test` failed before the fix with `expected:<0.0> but was:<1266.3601>`, then passed after the fix.
+  - `cd android && LINGON_IT_ONLY=keyboard_height_change_preserves_live_camera_when_cursor_still_fits make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest`
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin`
+
+### B-043 Android wall notifications can duplicate for one wall event
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `background`
+- Summary: Android can show duplicate Lingon wall notifications for the same wall message even when the relay only sent one event.
+- Report:
+  The Android notification history showed two identical Lingon notifications with the same title, body, and timestamp. No duplicate wall message was sent, so the app must prevent duplicate system notification posts for the same wall event.
+- Repro:
+  1. Enable background wall notifications.
+  2. Let separate Android background delivery paths observe the same wall event concurrently.
+  3. Both paths can pass the cursor check before either records delivery.
+  4. Observe duplicate system notification posts for the same message.
+- Investigation notes:
+  - Existing regression coverage only checked that one coordinator instance suppresses replay. Its per-instance mutex hid the production race.
+  - Production can construct separate coordinators sharing the same persisted wall cursor. The old delivery path read `shouldDeliver`, posted the notification, and only then recorded the cursor, leaving a race window across coordinator instances.
+  - Fix: delivery now claims the event atomically in the shared wall cursor store before posting the notification. If posting fails, the claim is rolled back unless a newer cursor has already advanced.
+- Regression coverage:
+  - `WallDeliveryCoordinatorTest.concurrentDeliveryThroughSeparateCoordinatorsPostsOnlyOnce`
+  - `WallWorkStateStoreTest.deliveryClaimAtomicallySuppressesReplay`
+  - `WallWorkStateStoreTest.deliveryClaimRollbackRestoresPreviousCursor`
+  - `WallWorkStateStoreTest.deliveryClaimRollbackDoesNotMoveNewerCursorBackward`
+  - `EndToEndTest.background_manual_wall_delivery_posts_system_notification` now asserts exactly one active notification for the wall message.
+  - `EndToEndTest.background_manual_wall_delivery_does_not_repost_previous_message` now asserts exactly one active notification for the second wall message.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest --tests systems.pkt.lingon.data.WallWorkStateStoreTest`
+  - `cd android && LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest`
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin`
+
 ### B-042 Android keyboard input snaps live camera even when cursor still fits
 
 - Status: `resolved`
