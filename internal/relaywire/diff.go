@@ -1,8 +1,9 @@
-package host
+package relaywire
 
 import "pkt.systems/lingon/internal/protocolpb"
 
-func diffSnapshots(prev, next *protocolpb.Snapshot) (*protocolpb.Diff, bool) {
+// DiffSnapshots returns an incremental diff or reports that a full snapshot is required.
+func DiffSnapshots(prev, next *protocolpb.Snapshot) (*protocolpb.Diff, bool) {
 	if next == nil {
 		return nil, false
 	}

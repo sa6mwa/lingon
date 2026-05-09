@@ -1,4 +1,4 @@
-package host
+package relayhost
 
 import (
 	"bufio"
@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
@@ -18,6 +17,7 @@ import (
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/relaywire"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/terminal/emu"
 	"pkt.systems/pslog"
@@ -71,11 +71,11 @@ func (h *Host) Run(ctx context.Context) error {
 		h.Rows = config.DefaultTerminalRows
 	}
 
-	wsBase, err := normalizeEndpoint(h.Endpoint)
+	wsBase, err := relaywire.NormalizeEndpoint(h.Endpoint)
 	if err != nil {
 		return err
 	}
-	tlsCfg, err := clientTLSConfig(h.TLSDir, h.Insecure)
+	tlsCfg, err := relaywire.ClientTLSConfig(h.TLSDir, h.Insecure)
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func (h *Host) Run(ctx context.Context) error {
 	if screens <= 0 {
 		screens = 10
 	}
-	outputQueue := newFrameQueue(0)
+	outputQueue := relaywire.NewFrameQueue(0)
 	if snap, err := h.snapshot(); err == nil {
 		snapFrame := &protocolpb.Frame{
 			SessionId: h.SessionID,
@@ -144,7 +144,7 @@ func (h *Host) Run(ctx context.Context) error {
 			Headless:     h.Headless,
 		}},
 	}
-	if err := writeFrame(runCtx, ws, hello); err != nil {
+	if err := relaywire.WriteFrame(runCtx, ws, hello); err != nil {
 		return err
 	}
 
@@ -181,7 +181,7 @@ func (h *Host) Run(ctx context.Context) error {
 	return nil
 }
 
-func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.Emulator, ctrlFrames chan<- *protocolpb.Frame, outputQueue *frameQueue, screens int) {
+func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.Emulator, ctrlFrames chan<- *protocolpb.Frame, outputQueue *relaywire.FrameQueue, screens int) {
 	reader := bufio.NewReader(ptyFile)
 	buf := make([]byte, 4096)
 
@@ -218,7 +218,7 @@ func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.
 		if screens > 0 {
 			outputQueue.SetMaxBytes(proto.Size(snapFrame) * screens)
 		}
-		diff, shouldSendSnapshot := diffSnapshots(h.lastSnap, snap)
+		diff, shouldSendSnapshot := relaywire.DiffSnapshots(h.lastSnap, snap)
 		if shouldSendSnapshot {
 			h.lastSnap = snap
 			frame = snapFrame
@@ -231,7 +231,7 @@ func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.
 		}
 		if scrollback, ok := emulator.(*emu.Emulator); ok {
 			rows := scrollback.DrainScrollback()
-			scrollFrames = buildScrollbackFrames(h.SessionID, int(snap.Cols), rows, false)
+			scrollFrames = relaywire.BuildScrollbackFrames(h.SessionID, int(snap.Cols), rows, false)
 		}
 		h.emuMu.Unlock()
 		if frame == nil {
@@ -240,7 +240,7 @@ func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.
 			}
 		}
 		if len(data) > 0 {
-			enqueueControl(ctx, ctrlFrames, activityFrame(h.SessionID))
+			enqueueControl(ctx, ctrlFrames, relaywire.ActivityFrame(h.SessionID))
 		}
 		for _, scrollFrame := range scrollFrames {
 			if h.OnFrame != nil {
@@ -258,9 +258,9 @@ func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.
 	}
 }
 
-func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File, ctrlFrames chan<- *protocolpb.Frame, ptyInput chan []byte, outputQueue *frameQueue, screens int) {
+func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File, ctrlFrames chan<- *protocolpb.Frame, ptyInput chan []byte, outputQueue *relaywire.FrameQueue, screens int) {
 	for {
-		frame, err := readFrame(ctx, ws)
+		frame, err := relaywire.ReadFrame(ctx, ws)
 		if err != nil {
 			h.Logger.Debug("host.ws.read.failed", "err", err)
 			return
@@ -272,7 +272,7 @@ func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File,
 				var scrollFrames []*protocolpb.Frame
 				if scrollback, ok := h.emulator.(*emu.Emulator); ok {
 					rows := scrollback.ScrollbackSnapshot()
-					scrollFrames = buildScrollbackFrames(h.SessionID, int(snap.Cols), rows, true)
+					scrollFrames = relaywire.BuildScrollbackFrames(h.SessionID, int(snap.Cols), rows, true)
 				}
 				h.emuMu.Unlock()
 				for _, scrollFrame := range scrollFrames {
@@ -349,7 +349,7 @@ func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File,
 	}
 }
 
-func (h *Host) writeFrames(ctx context.Context, ws *websocket.Conn, ctrlFrames <-chan *protocolpb.Frame, outputQueue *frameQueue) error {
+func (h *Host) writeFrames(ctx context.Context, ws *websocket.Conn, ctrlFrames <-chan *protocolpb.Frame, outputQueue *relaywire.FrameQueue) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -363,14 +363,14 @@ func (h *Host) writeFrames(ctx context.Context, ws *websocket.Conn, ctrlFrames <
 			if frame == nil {
 				continue
 			}
-			if err := writeFrame(ctx, ws, frame); err != nil {
+			if err := relaywire.WriteFrame(ctx, ws, frame); err != nil {
 				return err
 			}
 		default:
 		}
 
 		if frame := outputQueue.Pop(); frame != nil {
-			if err := writeFrame(ctx, ws, frame); err != nil {
+			if err := relaywire.WriteFrame(ctx, ws, frame); err != nil {
 				return err
 			}
 			continue
@@ -383,7 +383,7 @@ func (h *Host) writeFrames(ctx context.Context, ws *websocket.Conn, ctrlFrames <
 			if frame == nil {
 				continue
 			}
-			if err := writeFrame(ctx, ws, frame); err != nil {
+			if err := relaywire.WriteFrame(ctx, ws, frame); err != nil {
 				return err
 			}
 		case <-outputQueue.Notify():
@@ -435,28 +435,6 @@ func (h *Host) snapshotLocked() (*protocolpb.Snapshot, error) {
 		return nil, err
 	}
 	return snapshotToProto(snap), nil
-}
-
-func readFrame(ctx context.Context, conn *websocket.Conn) (*protocolpb.Frame, error) {
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var frame protocolpb.Frame
-	if err := proto.Unmarshal(data, &frame); err != nil {
-		return nil, err
-	}
-	return &frame, nil
-}
-
-func writeFrame(ctx context.Context, conn *websocket.Conn, frame *protocolpb.Frame) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	data, err := proto.Marshal(frame)
-	if err != nil {
-		return err
-	}
-	return conn.Write(ctx, websocket.MessageBinary, data)
 }
 
 func startCommand(command []string) (*exec.Cmd, *os.File, error) {

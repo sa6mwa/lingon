@@ -1,4 +1,4 @@
-package host
+package relaywire
 
 import (
 	"fmt"
@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-func normalizeEndpoint(endpoint string) (string, error) {
+// NormalizeEndpoint converts an HTTP relay endpoint into its websocket base URL.
+func NormalizeEndpoint(endpoint string) (string, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		return "", fmt.Errorf("endpoint must include scheme")

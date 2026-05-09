@@ -22,12 +22,12 @@ import (
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
 	"pkt.systems/lingon/internal/desktopnotify"
-	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/publisher"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/terminal"
@@ -1875,7 +1875,7 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 		AllowRemoteResize: r.opts.AllowRemoteResize,
 	})
 	session.SetLastActive(r.clock.Now())
-	session.setHolder(host.HostControlID)
+	session.setHolder(publisher.HostControlID)
 
 	r.localMu.Lock()
 	if r.localSessions[id] != nil {
@@ -1888,7 +1888,7 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 	r.localMu.Unlock()
 
 	if r.opts.Publish {
-		publisher := host.NewPublisher(host.PublishOptions{
+		pub := publisher.New(publisher.Options{
 			Endpoint:         r.opts.Endpoint,
 			Token:            r.opts.Token,
 			TokenRefresher:   tokenRefresher,
@@ -1905,7 +1905,7 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			Logger:           r.logger,
 		})
 		endpointLabel := config.EndpointDisplay(r.opts.Endpoint, r.opts.HostnameOnly)
-		publisher.OnStatus = func(connected bool, err error) {
+		pub.OnStatus = func(connected bool, err error) {
 			if session.Offline() {
 				return
 			}
@@ -1946,10 +1946,10 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			r.forceRedraw(stdout)
 			_ = err
 		}
-		publisher.OnSessionRejected = func(message string) {
+		pub.OnSessionRejected = func(message string) {
 			r.handlePublisherSessionRejected(session, message, stdout)
 		}
-		publisher.OnBackoff = func(remaining time.Duration) {
+		pub.OnBackoff = func(remaining time.Duration) {
 			if session.Offline() {
 				return
 			}
@@ -1979,33 +1979,33 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			r.forceRedraw(stdout)
 		}
 		if r.opts.OnPublishFrame != nil {
-			publisher.OnFrame = r.opts.OnPublishFrame
+			pub.OnFrame = r.opts.OnPublishFrame
 		}
-		publisher.OnInput = func(data []byte) {
+		pub.OnInput = func(data []byte) {
 			r.handleRemoteInput(session, data, debugRemoteInput)
 		}
-		publisher.OnCommand = func(kind protocolpb.CommandKind) {
+		pub.OnCommand = func(kind protocolpb.CommandKind) {
 			r.HandleSessionCommand(session.ctx, session.ID(), kind)
 		}
-		publisher.OnResize = func(cols, rows int) {
+		pub.OnResize = func(cols, rows int) {
 			if session == nil || !session.AllowRemoteResize() {
 				return
 			}
 			r.resizeLocalSession(session, cols, rows)
 		}
-		publisher.OnControl = func(holderID string) {
+		pub.OnControl = func(holderID string) {
 			if holderID == "" {
 				return
 			}
 			session.setHolder(holderID)
 		}
-		publisher.OnSessions = func(infos []*protocolpb.SessionInfo) {
+		pub.OnSessions = func(infos []*protocolpb.SessionInfo) {
 			if r.remoteSessions == nil {
 				return
 			}
 			r.remoteSessions.applySessions(toRemoteSessionsFromProto(infos))
 		}
-		publisher.OnWall = func(wall *protocolpb.Wall) {
+		pub.OnWall = func(wall *protocolpb.Wall) {
 			if wall == nil {
 				return
 			}
@@ -2020,12 +2020,12 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			}
 			r.showWall(wall, stdout)
 		}
-		publisher.SetWallInactivityStatus(func() *protocolpb.WallInactivityStatus {
+		pub.SetWallInactivityStatus(func() *protocolpb.WallInactivityStatus {
 			return r.currentWallInactivityStatus(session.ID())
 		})
-		session.SetPublisher(publisher)
+		session.SetPublisher(pub)
 		go func() {
-			if err := publisher.Run(session.ctx); err != nil && !errors.Is(err, context.Canceled) {
+			if err := pub.Run(session.ctx); err != nil && !errors.Is(err, context.Canceled) {
 				r.logger.Warn("session.publisher.stop.failed", "err", err, "session", session.ID())
 			}
 		}()

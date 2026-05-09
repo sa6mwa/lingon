@@ -1,4 +1,4 @@
-package host
+package relaywire
 
 import (
 	"pkt.systems/lingon/internal/protocol"
@@ -8,7 +8,8 @@ import (
 
 const scrollbackChunkSize = 100
 
-func buildScrollbackFrames(sessionID string, cols int, rows []terminal.ScrollbackRow, clear bool) []*protocolpb.Frame {
+// BuildScrollbackFrames chunks scrollback rows into relay protocol frames.
+func BuildScrollbackFrames(sessionID string, cols int, rows []terminal.ScrollbackRow, clear bool) []*protocolpb.Frame {
 	if len(rows) == 0 && !clear {
 		return nil
 	}

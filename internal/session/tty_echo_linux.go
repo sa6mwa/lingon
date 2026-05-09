@@ -13,6 +13,9 @@ func disableTTYEcho(file *os.File) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	if termios.Lflag&unix.ECHO == 0 {
+		return nil, nil
+	}
 	original := *termios
 	termios.Lflag &^= unix.ECHO
 	if err := unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, termios); err != nil {

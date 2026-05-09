@@ -1,4 +1,4 @@
-package host_test
+package relayhost_test
 
 import (
 	"testing"

@@ -14,8 +14,8 @@ import (
 
 	"pkt.systems/lingon"
 	"pkt.systems/lingon/internal/authstore"
-	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/relay"
+	"pkt.systems/lingon/internal/relayhost"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/lingon/internal/tlsmgr"
@@ -160,7 +160,7 @@ func runSendInputScenario(t *testing.T, sharedConfig bool) {
 	t.Cleanup(hostCancel)
 
 	hostErr := make(chan error, 1)
-	hostSession := &host.Host{
+	hostSession := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,

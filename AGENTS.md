@@ -1,5 +1,44 @@
 # AGENTS.md
 
+## Absolute first rule: terminal isolation
+
+Never run or write tests, harnesses, scripts, or ad hoc verification that can
+touch, reconfigure, resize, signal, detach, clear, or otherwise mutate the
+inherited terminal/tty/pty of the shell, tmux client, or Lingon session that
+launched the command.
+
+This is a hard stop, not a preference:
+
+- Do not use `/dev/tty` in tests or test helpers.
+- Do not put the caller's `os.Stdin`, `os.Stdout`, or `os.Stderr` into raw mode.
+- Do not send terminal escape sequences, tmux control sequences, Ctrl+B
+  sequences, Ctrl+L control paths, or resize/signal events to the inherited
+  terminal.
+- Do not send `SIGWINCH` to the process, process group, parent process, or
+  inherited tty owner.
+- Bare PTY/localSession usage in tests is prohibited unless the test explicitly
+  creates a child PTY/TTY pair isolated from the runner terminal.
+- TUI, attach, headless, host, and terminal regression tests must use `ptytest`
+  or an equivalent reviewed harness that owns its sub-PTYs. Do not bypass this
+  with direct `newLocalSession` tests for interactive behavior.
+- Do not run real user-installed interactive programs such as `codex`, `tmux`,
+  shells, or terminal apps in automated tests unless they are fully contained
+  inside a dedicated test-owned sub-PTY with no inherited stdio access.
+- Any PTY, raw mode, resize, or terminal-control test must allocate a dedicated
+  isolated PTY/TTY owned by that test and must restore/close it in cleanup.
+- If a test cannot prove that all terminal control is isolated from the caller,
+  do not run it and do not merge it.
+
+Agent-driven verification must also avoid surprise resource exhaustion:
+
+- Do not run full Android/emulator/instrumentation sweeps in parallel with other
+  heavy suites.
+- Do not leave emulators, adb servers, Gradle daemons, harnesses, or test
+  servers running after verification unless the engineer explicitly asks for
+  them to stay up.
+- If a suite can monopolize CPU, RAM, GPU, or the desktop session, state that
+  before starting it and run it serially.
+
 You are collaborating with a highly opinionated Go architect. Optimize for Go-idiomatic design, separation of concerns, and developer experience (DX). Do NOT jump into implementation: propose options + tradeoffs first.
 
 ## Workflow (mandatory)

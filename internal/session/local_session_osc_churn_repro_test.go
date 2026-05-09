@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"pkt.systems/lingon/internal/clock"
-	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/publisher"
 )
 
 func TestLocalSessionOSCQueryDoesNotSelfSustainPublish(t *testing.T) {
@@ -68,7 +68,7 @@ echo "OSC-DONE"
 	var frameCount atomic.Int64
 	var activityCount atomic.Int64
 	var renderCount atomic.Int64
-	publisher := host.NewPublisher(host.PublishOptions{SessionID: "osc-repro"})
+	publisher := publisher.New(publisher.Options{SessionID: "osc-repro"})
 	publisher.OnFrame = func(frame *protocolpb.Frame) {
 		if frame == nil {
 			return
@@ -199,7 +199,7 @@ echo "OSC-LOOP-IDLE"
 	var frameCount atomic.Int64
 	var activityCount atomic.Int64
 	var renderCount atomic.Int64
-	publisher := host.NewPublisher(host.PublishOptions{SessionID: "osc-loop"})
+	publisher := publisher.New(publisher.Options{SessionID: "osc-loop"})
 	publisher.OnFrame = func(frame *protocolpb.Frame) {
 		if frame == nil {
 			return

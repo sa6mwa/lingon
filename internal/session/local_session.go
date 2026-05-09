@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"pkt.systems/lingon/internal/clock"
-	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocol"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/pty"
+	"pkt.systems/lingon/internal/publisher"
 	"pkt.systems/lingon/internal/render"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/terminal/emu"
@@ -70,7 +70,7 @@ type localSession struct {
 	lastActiveMu sync.RWMutex
 	lastActive   time.Time
 
-	publisher *host.Publisher
+	publisher *publisher.Publisher
 	closeOnce sync.Once
 
 	logger pslog.Logger
@@ -498,7 +498,7 @@ func (s *localSession) AllowRemoteResize() bool {
 	return s != nil && s.allowRemoteResize
 }
 
-func (s *localSession) SetPublisher(p *host.Publisher) {
+func (s *localSession) SetPublisher(p *publisher.Publisher) {
 	s.publisher = p
 	if p != nil {
 		p.SetScrollbackSnapshot(s.scrollbackSnapshot)
@@ -912,14 +912,17 @@ func (s *localSession) writePTYWithMode(data []byte, disableEcho bool) (int, err
 	}
 	s.ptyMu.RLock()
 	ptyFile := s.pty
-	ttyFile := s.tty
+	termiosFile := s.tty
+	if termiosFile == nil {
+		termiosFile = ptyFile
+	}
 	s.ptyMu.RUnlock()
 	if ptyFile == nil {
 		return 0, errPTYNotReady
 	}
 	restoreEcho := func() {}
-	if disableEcho && ttyFile != nil {
-		if restore, err := disableTTYEcho(ttyFile); err == nil && restore != nil {
+	if disableEcho && termiosFile != nil {
+		if restore, err := disableTTYEcho(termiosFile); err == nil && restore != nil {
 			restoreEcho = restore
 		}
 	}
@@ -937,7 +940,10 @@ func (s *localSession) sendRemoteEOF() error {
 
 	s.ptyMu.RLock()
 	ptyFile := s.pty
-	ttyFile := s.tty
+	termiosFile := s.tty
+	if termiosFile == nil {
+		termiosFile = ptyFile
+	}
 	s.ptyMu.RUnlock()
 	if ptyFile == nil {
 		return errPTYNotReady
@@ -949,8 +955,8 @@ func (s *localSession) sendRemoteEOF() error {
 		veof = s.veofOrig
 	}
 	s.veofMu.Unlock()
-	if ttyFile != nil {
-		_ = setVEOF(ttyFile, veof)
+	if termiosFile != nil {
+		_ = setVEOF(termiosFile, veof)
 		defer func() {
 			s.applyVEOF(s.holder())
 		}()
@@ -1019,7 +1025,7 @@ func (s *localSession) takeControl() {
 		return
 	}
 	s.publisher.TakeControl()
-	s.setHolder(host.HostControlID)
+	s.setHolder(publisher.HostControlID)
 }
 
 func (s *localSession) holder() string {
@@ -1033,12 +1039,15 @@ func (s *localSession) filterRemoteInput(data []byte) []byte {
 		return data
 	}
 	s.ptyMu.RLock()
-	ttyFile := s.tty
+	termiosFile := s.tty
+	if termiosFile == nil {
+		termiosFile = s.pty
+	}
 	s.ptyMu.RUnlock()
-	if ttyFile == nil {
+	if termiosFile == nil {
 		return data
 	}
-	return filterRemoteInput(ttyFile, data)
+	return filterRemoteInput(termiosFile, data)
 }
 
 func (s *localSession) setHolder(holderID string) {
@@ -1050,12 +1059,15 @@ func (s *localSession) setHolder(holderID string) {
 
 func (s *localSession) captureVEOF() {
 	s.ptyMu.RLock()
-	ttyFile := s.tty
+	termiosFile := s.tty
+	if termiosFile == nil {
+		termiosFile = s.pty
+	}
 	s.ptyMu.RUnlock()
-	if ttyFile == nil {
+	if termiosFile == nil {
 		return
 	}
-	val, err := getVEOF(ttyFile)
+	val, err := getVEOF(termiosFile)
 	if err != nil {
 		return
 	}
@@ -1067,9 +1079,12 @@ func (s *localSession) captureVEOF() {
 
 func (s *localSession) applyVEOF(holderID string) {
 	s.ptyMu.RLock()
-	ttyFile := s.tty
+	termiosFile := s.tty
+	if termiosFile == nil {
+		termiosFile = s.pty
+	}
 	s.ptyMu.RUnlock()
-	if ttyFile == nil {
+	if termiosFile == nil {
 		return
 	}
 	s.veofMu.Lock()
@@ -1080,10 +1095,10 @@ func (s *localSession) applyVEOF(holderID string) {
 	orig := s.veofOrig
 	s.veofMu.Unlock()
 	target := orig
-	if holderID != "" && holderID != host.HostControlID {
+	if holderID != "" && holderID != publisher.HostControlID {
 		target = 0
 	}
-	_ = setVEOF(ttyFile, target)
+	_ = setVEOF(termiosFile, target)
 }
 
 func (s *localSession) enqueueRemoteInput(data []byte) error {
@@ -1166,6 +1181,14 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	defer s.closePTY()
 
 	s.captureVEOF()
+	if ttyFile != nil {
+		_ = ttyFile.Close()
+		s.ptyMu.Lock()
+		if s.tty == ttyFile {
+			s.tty = nil
+		}
+		s.ptyMu.Unlock()
+	}
 
 	if s.cols <= 0 {
 		s.cols = 80
@@ -2006,27 +2029,27 @@ func (s *localSession) respondToTerminalQueries(data []byte, snap terminal.Snaps
 				}
 			}
 		case 'u':
-			if private != '?' {
+			switch private {
+			case '?':
+				if s.trace != nil {
+					s.trace.Event("keyboard_enhancement_declined", map[string]any{
+						"component":  "host",
+						"session_id": s.id,
+						"private":    "?",
+						"param":      params,
+					})
+				}
 				continue
+			case '>':
+				if s.trace != nil {
+					s.trace.Event("keyboard_enhancement_declined", map[string]any{
+						"component":  "host",
+						"session_id": s.id,
+						"private":    ">",
+						"param":      params,
+					})
+				}
 			}
-			if s.trace != nil {
-				s.trace.Event("keyboard_enhancement_request", map[string]any{
-					"component":  "host",
-					"session_id": s.id,
-					"private":    "?",
-					"param":      params,
-				})
-			}
-			resp := []byte("\x1b[?0u")
-			if s.trace != nil {
-				s.trace.Event("keyboard_enhancement_response", map[string]any{
-					"component":  "host",
-					"session_id": s.id,
-					"private":    "?",
-					"response":   trace.SummarizeBytes(resp, 80),
-				})
-			}
-			_, _ = s.writeTerminalReply(resp)
 		case 'c':
 			switch private {
 			case 0:

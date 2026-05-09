@@ -1,4 +1,4 @@
-package host
+package publisher
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 )
 
 func TestPublisherBufferOverflowResetsToSnapshot(t *testing.T) {
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		SessionID:        "session",
 		MaxReplayScreens: 1,
 	})
@@ -75,7 +75,7 @@ func TestPublisherPublishSendsActivityForRealOutput(t *testing.T) {
 		_ = ws.Close(websocket.StatusNormalClosure, "bye")
 	}()
 
-	p := NewPublisher(PublishOptions{SessionID: "session"})
+	p := New(Options{SessionID: "session"})
 	p.setConn(ws)
 	p.Publish([]byte("real-output"), &protocolpb.Snapshot{
 		Cols: 2, Rows: 1, Runes: []uint32{'A', 'B'}, Fg: []uint32{0, 0}, Bg: []uint32{0, 0},
@@ -109,7 +109,7 @@ func TestPublisherResizeDoesNotSendActivity(t *testing.T) {
 		_ = ws.Close(websocket.StatusNormalClosure, "bye")
 	}()
 
-	p := NewPublisher(PublishOptions{SessionID: "session"})
+	p := New(Options{SessionID: "session"})
 	p.setConn(ws)
 	p.Resize(120, 30, &protocolpb.Snapshot{
 		Cols: 120, Rows: 30, Runes: make([]uint32, 120*30), Fg: make([]uint32, 120*30), Bg: make([]uint32, 120*30),
@@ -153,7 +153,7 @@ func TestPublisherSendSnapshotDoesNotSendActivityOnReplay(t *testing.T) {
 		_ = ws.Close(websocket.StatusNormalClosure, "bye")
 	}()
 
-	p := NewPublisher(PublishOptions{SessionID: "session"})
+	p := New(Options{SessionID: "session"})
 	p.setConn(ws)
 	p.mu.Lock()
 	p.lastSnap = &protocolpb.Snapshot{
@@ -178,7 +178,7 @@ func TestPublisherConnectAndServeHonorsDialTimeout(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		Endpoint:  server.URL,
 		Token:     "test-token",
 		SessionID: "session",
@@ -223,7 +223,7 @@ func TestPublisherConnectAndServePingTimeout(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		Endpoint:  server.URL,
 		Token:     "test-token",
 		SessionID: "session",
@@ -274,7 +274,7 @@ func TestPublisherPingLoopSkipsWhileWriteBusy(t *testing.T) {
 		_ = ws.Close(websocket.StatusNormalClosure, "bye")
 	}()
 
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		SessionID: "session",
 	})
 	p.lastActivity.Store(time.Now().Add(-time.Minute).UnixNano())
@@ -334,7 +334,7 @@ func TestPublisherSessionRejectedGoesOfflineAndStopsReconnect(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		Endpoint:  server.URL,
 		Token:     "test-token",
 		SessionID: "session",
@@ -415,7 +415,7 @@ func TestPublisherNonRejectedServerErrorKeepsRetrying(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		Endpoint:  server.URL,
 		Token:     "test-token",
 		SessionID: "session",
@@ -489,7 +489,7 @@ func TestPublisherSendSessionClosedFrame(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		Endpoint:  server.URL,
 		Token:     "test-token",
 		SessionID: "session-closed-test",
@@ -550,7 +550,7 @@ func TestPublisherSendSessionClosedFrame(t *testing.T) {
 }
 
 func TestPublisherDialHTTPClientReused(t *testing.T) {
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		SessionID: "session",
 		Token:     "token",
 		Insecure:  true,
@@ -588,7 +588,7 @@ func TestPublisherReconnectStressKeepsResourcesBounded(t *testing.T) {
 	baselineGoroutines := runtime.NumGoroutine()
 	baselineThreadCreates := threadCreateProfileCount()
 
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		Endpoint:  "https://127.0.0.1:1",
 		Token:     "test-token",
 		SessionID: "session",
@@ -662,7 +662,7 @@ func TestPublisherReconnectStressKeepsResourcesBounded(t *testing.T) {
 }
 
 func TestPublisherNormalizeReconnectDelay(t *testing.T) {
-	p := NewPublisher(PublishOptions{
+	p := New(Options{
 		SessionID: "session",
 		BackoffPolicy: &backoff.Policy{
 			Base:   250 * time.Millisecond,
@@ -683,7 +683,7 @@ func TestPublisherNormalizeReconnectDelay(t *testing.T) {
 }
 
 func TestPublisherNormalizeReconnectDelayFallsBackToDefaultBase(t *testing.T) {
-	p := NewPublisher(PublishOptions{SessionID: "session"})
+	p := New(Options{SessionID: "session"})
 	p.backoffPolicy.Base = 0
 
 	if got := p.normalizeReconnectDelay(0); got != backoff.DefaultPolicy.Base {

@@ -433,7 +433,7 @@ Top-level `Makefile` targets:
 
 - `make build` - build `bin/lingon`
 - `make test` - run unit tests
-- `make test-webui` - run webui-tagged tests
+- `make test-webui` - run Web UI integration tests
 - `make test-android` - run Android integration tests
 - `make lint` - go vet + golint + golangci-lint
 - `make release` - build binary + Android APK + zip bundle

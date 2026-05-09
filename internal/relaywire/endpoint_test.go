@@ -1,4 +1,4 @@
-package host
+package relaywire
 
 import "testing"
 
@@ -38,7 +38,7 @@ func TestNormalizeEndpoint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := normalizeEndpoint(tt.endpoint)
+			got, err := NormalizeEndpoint(tt.endpoint)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error")
@@ -49,7 +49,7 @@ func TestNormalizeEndpoint(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got != tt.want {
-				t.Fatalf("normalizeEndpoint() = %q, want %q", got, tt.want)
+				t.Fatalf("NormalizeEndpoint() = %q, want %q", got, tt.want)
 			}
 		})
 	}

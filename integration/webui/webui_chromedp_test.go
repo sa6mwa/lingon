@@ -30,9 +30,9 @@ import (
 
 	attachpkg "pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/clock"
-	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/relayclient"
+	"pkt.systems/lingon/internal/relayhost"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/lingon/internal/tlsmgr"
@@ -87,7 +87,7 @@ func TestWebUIControlFlow(t *testing.T) {
 	hostCtx, hostCancel := context.WithCancel(context.Background())
 	t.Cleanup(hostCancel)
 	hostErr := make(chan error, 1)
-	h := &host.Host{
+	h := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -364,7 +364,7 @@ func TestWebUIAccountSeparation(t *testing.T) {
 	}
 
 	hostErr := make(chan error, 2)
-	hostA := &host.Host{
+	hostA := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     accessA.Token,
@@ -373,7 +373,7 @@ func TestWebUIAccountSeparation(t *testing.T) {
 		Rows:      24,
 		Command:   []string{"/bin/sh", "-c", "printf 'READY_A\\r\\n'; sleep 3600"},
 	}
-	hostB := &host.Host{
+	hostB := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     accessB.Token,
@@ -549,7 +549,7 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 	hostCtx, hostCancel := context.WithCancel(context.Background())
 	t.Cleanup(hostCancel)
 	hostErr := make(chan error, 1)
-	h := &host.Host{
+	h := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -718,7 +718,7 @@ func TestWebUIWebSocketBackoff(t *testing.T) {
 	hostCtx, hostCancel := context.WithCancel(context.Background())
 	t.Cleanup(hostCancel)
 	hostErr := make(chan error, 1)
-	h := &host.Host{
+	h := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -838,7 +838,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 	hostErr := make(chan error, 2)
 	ctxHost, cancelHost := context.WithCancel(context.Background())
 	t.Cleanup(cancelHost)
-	hostA := &host.Host{
+	hostA := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -847,7 +847,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 		Rows:      24,
 		Command:   []string{"/bin/sh", "-c", "printf 'READY_A\\r\\n'; sleep 3600"},
 	}
-	hostB := &host.Host{
+	hostB := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -1129,7 +1129,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 	ctxHost, cancelHost := context.WithCancel(context.Background())
 	t.Cleanup(cancelHost)
 	for _, id := range sessionIDs {
-		sessionHost := &host.Host{
+		sessionHost := &relayhost.Host{
 			Endpoint:  endpoint,
 			TLSDir:    tlsDir,
 			Token:     access.Token,
@@ -1138,7 +1138,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 			Rows:      24,
 			Command:   []string{"/bin/sh", "-c", "printf 'READY\\r\\n'; sleep 3600"},
 		}
-		go func(h *host.Host) { hostErr <- h.Run(ctxHost) }(sessionHost)
+		go func(h *relayhost.Host) { hostErr <- h.Run(ctxHost) }(sessionHost)
 	}
 
 	for _, id := range sessionIDs {
@@ -1312,7 +1312,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
 	t.Cleanup(hostCancel)
 	hostErr := make(chan error, 1)
 
-	h := &host.Host{
+	h := &relayhost.Host{
 		Endpoint:         endpoint,
 		TLSDir:           tlsDir,
 		Token:            access.Token,
@@ -2032,7 +2032,7 @@ func TestWebUIResizeDoesNotBypassReconnectBackoff(t *testing.T) {
 	hostCtx, hostCancel := context.WithCancel(context.Background())
 	t.Cleanup(hostCancel)
 	hostErr := make(chan error, 1)
-	h := &host.Host{
+	h := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -2191,7 +2191,7 @@ func TestWebUISwitchesToNewActiveSessionAfterNoHost(t *testing.T) {
 	ctxHostA, cancelHostA := context.WithCancel(context.Background())
 	t.Cleanup(cancelHostA)
 	hostAErr := make(chan error, 1)
-	hostA := &host.Host{
+	hostA := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -2252,7 +2252,7 @@ func TestWebUISwitchesToNewActiveSessionAfterNoHost(t *testing.T) {
 	ctxHostB, cancelHostB := context.WithCancel(context.Background())
 	t.Cleanup(cancelHostB)
 	hostBErr := make(chan error, 1)
-	hostB := &host.Host{
+	hostB := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -2358,7 +2358,7 @@ func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 	ctxHost, cancelHost := context.WithCancel(context.Background())
 	t.Cleanup(cancelHost)
 	hostErr := make(chan error, 1)
-	h := &host.Host{
+	h := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,
@@ -2439,7 +2439,7 @@ func TestWebUIConnectAndReloadDoNotRearmWallInactivityWithoutTerminalInput(t *te
 	hostCtx, hostCancel := context.WithCancel(context.Background())
 	t.Cleanup(hostCancel)
 	hostErr := make(chan error, 1)
-	h := &host.Host{
+	h := &relayhost.Host{
 		Endpoint:  endpoint,
 		TLSDir:    tlsDir,
 		Token:     access.Token,

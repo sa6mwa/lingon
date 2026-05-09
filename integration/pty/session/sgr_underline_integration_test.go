@@ -198,10 +198,6 @@ func assertSnapshotTextModeClear(t *testing.T, snap terminal.Snapshot, screen, t
 	}
 }
 
-func snapshotText(snap terminal.Snapshot) string {
-	return strings.Join(snapshotRows(snap), "\n")
-}
-
 func findStringColumn(s, needle string) int {
 	for i := 0; i+len(needle) <= len(s); i++ {
 		if s[i:i+len(needle)] == needle {

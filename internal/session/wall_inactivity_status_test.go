@@ -5,12 +5,12 @@ import (
 	"time"
 
 	"pkt.systems/lingon/internal/clock"
-	"pkt.systems/lingon/internal/host"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/publisher"
 )
 
 func TestRunnerPublishWallInactivityStatusUsesCurrentState(t *testing.T) {
-	publisher := host.NewPublisher(host.PublishOptions{SessionID: "s1"})
+	publisher := publisher.New(publisher.Options{SessionID: "s1"})
 	var got *protocolpb.Frame
 	publisher.OnFrame = func(frame *protocolpb.Frame) {
 		got = frame

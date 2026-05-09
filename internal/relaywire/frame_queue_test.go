@@ -1,4 +1,4 @@
-package host
+package relaywire
 
 import (
 	"testing"
@@ -15,7 +15,7 @@ func TestFrameQueueCompactsToSnapshot(t *testing.T) {
 		t.Fatalf("expected snapshot size > 0")
 	}
 
-	q := newFrameQueue(size*3 - 1)
+	q := NewFrameQueue(size*3 - 1)
 	q.Enqueue(snap, snap)
 	second := snapshotFrame(10, 5)
 	q.Enqueue(second, second)

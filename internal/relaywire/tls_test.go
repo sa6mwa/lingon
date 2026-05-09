@@ -1,4 +1,4 @@
-package host
+package relaywire
 
 import (
 	"context"
@@ -42,15 +42,15 @@ func TestHostDialUsesLocalCA(t *testing.T) {
 	server.StartTLS()
 	t.Cleanup(server.Close)
 
-	wsBase, err := normalizeEndpoint(server.URL)
+	wsBase, err := NormalizeEndpoint(server.URL)
 	if err != nil {
-		t.Fatalf("normalizeEndpoint: %v", err)
+		t.Fatalf("NormalizeEndpoint: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	tlsCfg, err := clientTLSConfig(tlsDir, false)
+	tlsCfg, err := ClientTLSConfig(tlsDir, false)
 	if err != nil {
-		t.Fatalf("clientTLSConfig: %v", err)
+		t.Fatalf("ClientTLSConfig: %v", err)
 	}
 	httpClient := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
@@ -63,9 +63,9 @@ func TestHostDialUsesLocalCA(t *testing.T) {
 }
 
 func TestClientTLSConfigInsecure(t *testing.T) {
-	cfg, err := clientTLSConfig("", true)
+	cfg, err := ClientTLSConfig("", true)
 	if err != nil {
-		t.Fatalf("clientTLSConfig: %v", err)
+		t.Fatalf("ClientTLSConfig: %v", err)
 	}
 	if !cfg.InsecureSkipVerify {
 		t.Fatalf("expected InsecureSkipVerify=true")

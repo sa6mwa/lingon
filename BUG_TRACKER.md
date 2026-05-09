@@ -29,6 +29,37 @@ Required status values:
 
 ## Active Items
 
+### B-041 Codex v0.129.0 hangs on repeated start in host local PTY
+
+- Status: `resolved`
+- Area: `host`, `pty`, `terminal`, `escape-sequences`
+- Summary: Codex starts in a Lingon host local PTY once, then hangs on a second start in the same session. Earlier workaround attempts also regressed CPR row reporting and Codex prompt styling.
+- Report:
+  Codex v0.129.0 must start reliably inside Lingon local PTY sessions. A prior single-start regression was insufficient: Codex can start the first time and then hang on the second start. CPR must continue to report the actual cursor row where Codex starts; forcing or implying row 1 is a regression. OSC color probing must also continue to work so Codex keeps its expected prompt styling, including the gray prompt background.
+- Repro:
+  1. Start a Lingon host local PTY session.
+  2. Launch Codex v0.129.0 and wait for the UI to draw.
+  3. Exit Codex back to the same shell.
+  4. Launch Codex again in that same PTY.
+  5. Observe the second start hangs. Also verify Codex startup receives the actual cursor row and OSC 10/11 responses.
+- Investigation notes:
+  - CPR/DSR, DA, and OSC color query support must not be suppressed globally or for Codex startup. These replies are part of the expected xterm-compatible terminal surface.
+  - Lingon must decline unsupported kitty keyboard enhancement without falsely advertising support, but the fallback xterm probe surface still has to work.
+  - Root cause: Lingon kept the PTY slave fd open in the host after starting the child. Codex v0.129.0 duplicates stdin for its startup cursor probe, sets that fd nonblocking, reads the CPR, then expects the next read to return `EAGAIN`. With Lingon's host-side slave fd still open, the probe could block before parsing the CPR it already received.
+  - Fix: capture the slave-side startup state Lingon needs, then close the host copy of the PTY slave so child programs own the terminal side. Post-start termios operations use the PTY master fd instead of retaining the slave fd. Unsupported keyboard enhancement controls are ignored/declined without sending a kitty `CSI ? ... u` status response.
+- Regression coverage:
+  - `TestRespondToTerminalQueriesCodexStartupProbeUsesXtermFallback` drives the Codex-style startup control sequence directly against the query responder and asserts Lingon declines kitty keyboard enhancement while still returning CPR and DA xterm fallback replies.
+  - `TestRespondToTerminalQueriesXtermStatusAndAttributes` asserts DSR 5, CPR 6, private DSR, DA1, and DA2 reply with the supported xterm-compatible responses.
+  - `TestFilterOSCOutputRespondsToColorQueriesAndSuppressesQueryBytes` asserts OSC 10/11/12 color queries get replies and do not leak query bytes into rendered output.
+  - `TestFilterOSCOutputUsesCapturedOSCDefaults` asserts captured terminal color defaults are used for OSC color query replies.
+  - Existing `TestAttachCtrlDDoesNotExitHost` covers remote Ctrl-D/EOF behavior after the PTY slave fd is closed.
+- Verification:
+  - `go test -count=1 ./internal/session`
+  - `go test ./...`
+  - `go vet ./...`
+  - `golint ./...`
+  - `golangci-lint run ./...`
+
 ### B-040 Android ANSI blue is still too dark
 
 - Status: `resolved`
@@ -661,7 +692,7 @@ Required status values:
   - `internal/ptytest.Harness` and affected webui/session tests updated to the restored hidden-dir config location
 - Verification:
   - `go test -count=1 ./internal/config ./cmd/lingon ./internal/cliwall`
-  - `go test -count=5 ./internal/host -run TestHostHonorsRetryAfter -v`
+  - `go test -count=5 ./internal/relayhost -run TestHostHonorsRetryAfter -v`
   - `go test -count=1 ./...`
   - `go vet ./...`
   - `golint ./...`
@@ -873,7 +904,7 @@ Required status values:
   - `internal/attach.TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsiveRealClock`
 - Verification:
   - Focused contention slice passed:
-    - `go test -p 5 -json -count=1 ./internal/attach ./internal/session ./internal/host ./internal/relay ./internal/headlessd`
+    - `go test -p 5 -json -count=1 ./internal/attach ./internal/session ./internal/relayhost ./internal/relay ./internal/headlessd`
   - Full suite passed:
     - `go test -json -count=1 ./...`
   - Quality gates passed:
@@ -899,10 +930,10 @@ Required status values:
   7. Observe viewport wrapping/smearing instead of camera cropping.
 - Regression coverage:
   - `internal/attach.TestMultiAttachWithoutExplicitTermSizeMatchesControlViewportAcrossStartupResizeAndCommand`
-  - `internal/attach.TestSingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput`
-  - `internal/attach.TestMultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput`
-  - `internal/attach.TestSingleAttachHeadlessResizeMatrixRendersExpectedViewport`
-  - `internal/attach.TestMultiAttachHeadlessResizeMatrixRendersExpectedViewport`
+  - `integration/pty/attach.TestSingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput`
+  - `integration/pty/attach.TestMultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput`
+  - `integration/pty/attach.TestSingleAttachHeadlessResizeMatrixRendersExpectedViewport`
+  - `integration/pty/attach.TestMultiAttachHeadlessResizeMatrixRendersExpectedViewport`
   - Existing guard rails rechecked:
     - `internal/attach.TestMultiAttachStartupDoesNotSendResizeToRelayHost`
     - `internal/attach.TestMultiAttachResizeDoesNotResizeRelayHostPTY`
@@ -920,8 +951,7 @@ Required status values:
   - The runtime fix makes `MultiClient` derive a real terminal-size provider from its own local stdin/stdout tty when `TermSize` is unset, so normal `lingon attach` now uses the real local viewport/camera dimensions.
 - Verification:
   - Focused matrix:
-    - `go test -count=1 ./internal/attach -run 'Test(SingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|MultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|SingleAttachHeadlessResizeMatrixRendersExpectedViewport|MultiAttachHeadlessResizeMatrixRendersExpectedViewport)'`
-    - `go test -count=1 -tags webui ./internal/attach -run 'Test(SingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|MultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|SingleAttachHeadlessResizeMatrixRendersExpectedViewport|MultiAttachHeadlessResizeMatrixRendersExpectedViewport)'`
+    - `go test -count=1 -tags integration ./integration/pty/attach -run 'Test(SingleAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|MultiAttachRelayViewportMatrixMatchesHostAcrossResizesAndLongOutput|SingleAttachHeadlessResizeMatrixRendersExpectedViewport|MultiAttachHeadlessResizeMatrixRendersExpectedViewport)'`
   - `go test -count=1 ./internal/attach -run 'TestMultiAttachWithoutExplicitTermSizeMatchesControlViewportAcrossStartupResizeAndCommand'`
   - `go test -count=1 ./internal/attach`
   - `go test -count=1 ./internal/session -run TestHostSIGWINCHPsAuxAdvancePreservesExpandedScreen -v`
@@ -1177,26 +1207,25 @@ Required status values:
 
 ## Recently Resolved Or Reverified
 
-### B-018 `make test-webui` reruns the whole repo under the `webui` tag
+### B-018 `make test-webui` reruns the wrong Web UI package set
 
 - Status: `resolved`
 - Area: `build`, `tests`, `webui`
-- Summary: `make test-webui` must run the actual webui-tagged package set, not `go test -tags webui ./...`.
+- Summary: `make test-webui` must run the actual Web UI integration package set, not `go test -tags webui ./...`.
 - Report:
-  The current target takes far too long because it reruns the whole repository with the `webui` tag instead of only the package(s) that actually declare `//go:build webui` tests.
+  The original target took far too long because it reran the whole repository with the `webui` tag instead of only the package(s) that contained Web UI browser integration tests.
 - Repro:
   1. Run `make test-webui`.
-  2. Observe that it executes `go test -count=1 -tags webui -json ./...`.
-  3. The run covers the full repo rather than the real webui-tagged package set.
+  2. Observe that the old target executed `go test -count=1 -tags webui -json ./...`.
+  3. The run covered the full repo rather than the Web UI integration package set.
 - Investigation notes:
-  - `rg` over `*_test.go` showed only `internal/attach/webui_chromedp_test.go` currently declares `//go:build webui`.
-  - The prior Make target therefore paid full-repo PTY/session coverage costs even though only `./internal/attach` needed the `webui` tag.
-  - The Make target now runs an explicit package list via `WEBUI_TEST_PKGS`, defaulting to `./internal/attach`.
+  - Web UI browser integration tests now live under `./integration/webui` and use the `integration` build tag.
+  - The Make target runs an explicit package list via `WEBUI_TEST_PKGS`, defaulting to `./integration/webui`.
 - Regression coverage:
   - Makefile contract update only; no Go test added.
 - Verification:
   - `make test-webui`
-  - `rg -n --glob '*_test.go' '//go:build webui|\\+build webui' .`
+  - `rg -n --glob '*_test.go' '//go:build integration|\\+build integration' integration/webui`
 
 ### B-005 Android reconnect syncing indicator missing while reconnect is pending
 
@@ -1283,7 +1312,7 @@ Required status values:
 
 - Status: `resolved`
 - Area: `android`, `tests`, `tooling`
-- Summary: Local Android integration runs should reuse a running emulator and reset app state between cases instead of paying repeated emulator boot cost.
+- Summary: Local Android integration runs can opt into keeping a script-started emulator alive with `LINGON_IT_KEEP_EMULATOR=1`, and always reset app state between cases.
 - Report:
   The integration runner was cold-booting or forcing full environment restart cost too often, making Android verification much slower than necessary.
 - Repro:
@@ -1294,13 +1323,13 @@ Required status values:
 - Regression coverage:
   - Script-level verification remains live-run based; there is no shell test harness for the runner.
 - Implementation notes:
-  - `android/scripts/run-integration-tests.sh` now keeps a script-started emulator alive by default.
+  - `android/scripts/run-integration-tests.sh` stops a script-started emulator by default to avoid leaving expensive processes behind; set `LINGON_IT_KEEP_EMULATOR=1` to preserve the previous reuse behavior.
   - The runner resets `systems.pkt.lingon` and `systems.pkt.lingon.test` state between per-test instrumentation invocations and clears device-side test artifacts before each case.
   - `adb reverse --remove-all` is issued before re-establishing the harness port mapping so reuse does not accumulate stale reverse mappings.
 - Verification:
   - `bash -n android/scripts/run-integration-tests.sh`
   - Code-path review confirming:
-    - cleanup only kills the emulator when `LINGON_IT_KEEP_EMULATOR=0`
+    - cleanup kills a script-started emulator unless `LINGON_IT_KEEP_EMULATOR=1`
     - the per-test loop resets app state before each Gradle instrumentation invocation
     - harness restarts remain limited to tests that actually need different backend topology
   - Live emulator verification on `emulator-5554`:

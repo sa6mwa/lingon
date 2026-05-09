@@ -1,4 +1,4 @@
-package host
+package publisher
 
 import (
 	"context"
@@ -20,13 +20,14 @@ import (
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/relaywire"
 	"pkt.systems/lingon/internal/retryafter"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/pslog"
 )
 
-// PublishOptions configures relay publishing.
-type PublishOptions struct {
+// Options configures relay publishing.
+type Options struct {
 	Endpoint         string
 	Token            string
 	TokenRefresher   func(context.Context) (string, error)
@@ -46,7 +47,7 @@ type PublishOptions struct {
 
 // Publisher publishes terminal updates to the relay and receives remote input.
 type Publisher struct {
-	opts PublishOptions
+	opts Options
 
 	Logger                 pslog.Logger
 	OnInput                func([]byte)
@@ -69,7 +70,7 @@ type Publisher struct {
 	conn        *websocket.Conn
 	connected   bool
 	writeMu     sync.Mutex
-	outputQueue *frameQueue
+	outputQueue *relaywire.FrameQueue
 	maxScreens  int
 	holderID    string
 	wantControl bool
@@ -108,8 +109,8 @@ func durationFromEnv(key string, fallback time.Duration) time.Duration {
 	return parsed
 }
 
-// NewPublisher constructs a Publisher.
-func NewPublisher(opts PublishOptions) *Publisher {
+// New constructs a Publisher.
+func New(opts Options) *Publisher {
 	if opts.Logger == nil {
 		opts.Logger = logging.Default()
 	}
@@ -128,7 +129,7 @@ func NewPublisher(opts PublishOptions) *Publisher {
 		opts:           opts,
 		Logger:         opts.Logger,
 		backoffPolicy:  policy,
-		outputQueue:    newFrameQueue(0),
+		outputQueue:    relaywire.NewFrameQueue(0),
 		maxScreens:     maxScreens,
 		tokenRefresher: opts.TokenRefresher,
 		clock:          opts.Clock,
@@ -362,7 +363,7 @@ func (p *Publisher) dialHTTPClient() (*http.Client, error) {
 	}
 	p.mu.Unlock()
 
-	tlsCfg, err := clientTLSConfig(p.opts.TLSDir, p.opts.Insecure)
+	tlsCfg, err := relaywire.ClientTLSConfig(p.opts.TLSDir, p.opts.Insecure)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +440,7 @@ func (p *Publisher) Resize(cols, rows int, snap *protocolpb.Snapshot) {
 }
 
 func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
-	wsBase, err := normalizeEndpoint(p.opts.Endpoint)
+	wsBase, err := relaywire.NormalizeEndpoint(p.opts.Endpoint)
 	if err != nil {
 		return false, err
 	}
@@ -492,7 +493,7 @@ func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
 			Headless:     p.opts.Headless,
 		}},
 	}
-	if err := writeFrame(ctx, ws, hello); err != nil {
+	if err := relaywire.WriteFrame(ctx, ws, hello); err != nil {
 		return false, err
 	}
 
@@ -571,7 +572,7 @@ func (p *Publisher) clearConn() {
 
 func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 	for {
-		frame, err := readFrame(ctx, ws)
+		frame, err := relaywire.ReadFrame(ctx, ws)
 		if err != nil {
 			return err
 		}
@@ -653,7 +654,7 @@ func (p *Publisher) SetWallInactivityStatus(fn func() *protocolpb.WallInactivity
 
 // PublishScrollback enqueues scrollback rows for delivery to clients.
 func (p *Publisher) PublishScrollback(rows []terminal.ScrollbackRow, cols int, clear bool) {
-	frames := buildScrollbackFrames(p.opts.SessionID, cols, rows, clear)
+	frames := relaywire.BuildScrollbackFrames(p.opts.SessionID, cols, rows, clear)
 	for _, frame := range frames {
 		if p.OnFrame != nil {
 			p.OnFrame(frame)
@@ -678,7 +679,7 @@ func (p *Publisher) sendScrollbackSnapshot() {
 		cols = int(p.lastSnap.Cols)
 	}
 	p.mu.Unlock()
-	frames := buildScrollbackFrames(p.opts.SessionID, cols, rows, true)
+	frames := relaywire.BuildScrollbackFrames(p.opts.SessionID, cols, rows, true)
 	for _, frame := range frames {
 		p.sendFrame(frame)
 	}
@@ -703,7 +704,7 @@ func (p *Publisher) sendFrame(frame *protocolpb.Frame) bool {
 		return false
 	}
 	p.writeMu.Lock()
-	err := writeFrame(context.Background(), ws, frame)
+	err := relaywire.WriteFrame(context.Background(), ws, frame)
 	p.writeMu.Unlock()
 	if err != nil {
 		_ = ws.Close(websocket.StatusInternalError, "write error")
@@ -715,7 +716,7 @@ func (p *Publisher) sendFrame(frame *protocolpb.Frame) bool {
 }
 
 func (p *Publisher) sendActivity() {
-	_ = p.sendFrame(activityFrame(p.opts.SessionID))
+	_ = p.sendFrame(relaywire.ActivityFrame(p.opts.SessionID))
 }
 
 func (p *Publisher) sendSnapshot() {
@@ -771,7 +772,7 @@ func (p *Publisher) SendSessionClosed(reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), publisherSessionCloseTimeout)
 	defer cancel()
 	p.writeMu.Lock()
-	err := writeFrame(ctx, ws, frame)
+	err := relaywire.WriteFrame(ctx, ws, frame)
 	p.writeMu.Unlock()
 	if err != nil && p.Logger != nil {
 		p.Logger.Debug("host.publisher.session_closed.send.failed", "session", p.opts.SessionID, "err", err)
@@ -822,7 +823,7 @@ func (p *Publisher) buildFrame(data []byte, snap *protocolpb.Snapshot) *protocol
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lastSnap = snap
-	diff, shouldSendSnapshot := diffSnapshots(p.lastSent, snap)
+	diff, shouldSendSnapshot := relaywire.DiffSnapshots(p.lastSent, snap)
 	if shouldSendSnapshot {
 		p.lastSent = snap
 		return &protocolpb.Frame{
@@ -847,7 +848,7 @@ func (p *Publisher) writeLoop(ctx context.Context, ws *websocket.Conn) error {
 		}
 		if frame := p.outputQueue.Pop(); frame != nil {
 			p.writeMu.Lock()
-			err := writeFrame(context.Background(), ws, frame)
+			err := relaywire.WriteFrame(context.Background(), ws, frame)
 			p.writeMu.Unlock()
 			if err != nil {
 				_ = ws.Close(websocket.StatusInternalError, "write error")
@@ -915,13 +916,6 @@ func (p *Publisher) touchActivity() {
 		return
 	}
 	p.lastActivity.Store(p.clock.Now().UnixNano())
-}
-
-func activityFrame(sessionID string) *protocolpb.Frame {
-	return &protocolpb.Frame{
-		SessionId: sessionID,
-		Payload:   &protocolpb.Frame_Activity{Activity: &protocolpb.Activity{}},
-	}
 }
 
 func (p *Publisher) idleFor() time.Duration {

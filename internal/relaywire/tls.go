@@ -1,4 +1,4 @@
-package host
+package relaywire
 
 import (
 	"crypto/tls"
@@ -8,7 +8,8 @@ import (
 	"pkt.systems/lingon/internal/tlsmgr"
 )
 
-func clientTLSConfig(tlsDir string, insecure bool) (*tls.Config, error) {
+// ClientTLSConfig builds a relay client TLS configuration from Lingon's local CA roots.
+func ClientTLSConfig(tlsDir string, insecure bool) (*tls.Config, error) {
 	dir := strings.TrimSpace(tlsDir)
 	if dir == "" {
 		dir = config.DefaultTLSDir()

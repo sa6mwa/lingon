@@ -1,4 +1,4 @@
-package host
+package publisher
 
 import (
 	"testing"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestPublisherSendWallInactivityStatusEmitsFrame(t *testing.T) {
-	publisher := NewPublisher(PublishOptions{SessionID: "s1"})
+	publisher := New(Options{SessionID: "s1"})
 	publisher.SetWallInactivityStatus(func() *protocolpb.WallInactivityStatus {
 		return &protocolpb.WallInactivityStatus{
 			Enabled:       true,

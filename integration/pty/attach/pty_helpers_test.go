@@ -121,21 +121,6 @@ func waitForHost(t *testing.T, h *ptytest.Harness, sessionID string, timeout tim
 	}
 }
 
-func waitForSessionSeq(t *testing.T, h *ptytest.Harness, sessionID string, minSeq uint64, timeout time.Duration) {
-	t.Helper()
-	clk := h.Clock()
-	deadline := ptytest.Now(clk).Add(timeout)
-	for {
-		if ptytest.Now(clk).After(deadline) {
-			t.Fatalf("timed out waiting for seq >= %d on %s (have %d)", minSeq, sessionID, h.SessionSeq(sessionID))
-		}
-		if h.SessionSeq(sessionID) >= minSeq {
-			return
-		}
-		ptytest.Advance(clk, 50*time.Millisecond)
-	}
-}
-
 func waitForFramePayload(t *testing.T, clk clock.Clock, rec *ptytest.WSRecorder, role, sessionID string, dir ptytest.Direction, payload string, min int, timeout time.Duration) {
 	t.Helper()
 	deadline := ptytest.Now(clk).Add(timeout)

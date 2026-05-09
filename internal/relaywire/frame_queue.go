@@ -1,4 +1,4 @@
-package host
+package relaywire
 
 import (
 	"sync"
@@ -8,7 +8,8 @@ import (
 	"pkt.systems/lingon/internal/protocolpb"
 )
 
-type frameQueue struct {
+// FrameQueue buffers outbound relay frames with optional byte compaction.
+type FrameQueue struct {
 	mu         sync.Mutex
 	frames     []*protocolpb.Frame
 	totalBytes int
@@ -16,19 +17,22 @@ type frameQueue struct {
 	notify     chan struct{}
 }
 
-func newFrameQueue(maxBytes int) *frameQueue {
-	q := &frameQueue{
+// NewFrameQueue constructs a relay frame queue.
+func NewFrameQueue(maxBytes int) *FrameQueue {
+	q := &FrameQueue{
 		maxBytes: maxBytes,
 		notify:   make(chan struct{}, 1),
 	}
 	return q
 }
 
-func (q *frameQueue) Notify() <-chan struct{} {
+// Notify returns a channel signaled when frames are enqueued.
+func (q *FrameQueue) Notify() <-chan struct{} {
 	return q.notify
 }
 
-func (q *frameQueue) SetMaxBytes(maxBytes int) {
+// SetMaxBytes updates the queue compaction threshold.
+func (q *FrameQueue) SetMaxBytes(maxBytes int) {
 	if maxBytes <= 0 {
 		return
 	}
@@ -40,7 +44,8 @@ func (q *frameQueue) SetMaxBytes(maxBytes int) {
 	q.mu.Unlock()
 }
 
-func (q *frameQueue) Enqueue(frame, snapshot *protocolpb.Frame) {
+// Enqueue appends a frame, compacting to snapshot when the queue exceeds its limit.
+func (q *FrameQueue) Enqueue(frame, snapshot *protocolpb.Frame) {
 	if frame == nil {
 		return
 	}
@@ -63,7 +68,8 @@ func (q *frameQueue) Enqueue(frame, snapshot *protocolpb.Frame) {
 	q.signal()
 }
 
-func (q *frameQueue) Pop() *protocolpb.Frame {
+// Pop removes and returns the oldest queued frame.
+func (q *FrameQueue) Pop() *protocolpb.Frame {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.frames) == 0 {
@@ -79,19 +85,21 @@ func (q *frameQueue) Pop() *protocolpb.Frame {
 	return frame
 }
 
-func (q *frameQueue) Len() int {
+// Len returns the number of queued frames.
+func (q *FrameQueue) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.frames)
 }
 
-func (q *frameQueue) TotalBytes() int {
+// TotalBytes returns the approximate protobuf byte size of queued frames.
+func (q *FrameQueue) TotalBytes() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.totalBytes
 }
 
-func (q *frameQueue) compactLocked(snapshot *protocolpb.Frame) {
+func (q *FrameQueue) compactLocked(snapshot *protocolpb.Frame) {
 	if snapshot != nil {
 		q.frames = q.frames[:0]
 		q.frames = append(q.frames, snapshot)
@@ -108,7 +116,7 @@ func (q *frameQueue) compactLocked(snapshot *protocolpb.Frame) {
 	q.totalBytes = proto.Size(last)
 }
 
-func (q *frameQueue) signal() {
+func (q *FrameQueue) signal() {
 	select {
 	case q.notify <- struct{}{}:
 	default:

@@ -1,4 +1,4 @@
-package host
+package relaywire
 
 import (
 	"testing"
@@ -10,7 +10,7 @@ func TestDiffSnapshots(t *testing.T) {
 	prev := snapshotForTest(2, 1, []rune{'a', 'b'})
 	next := snapshotForTest(2, 1, []rune{'a', 'c'})
 
-	diff, full := diffSnapshots(prev, next)
+	diff, full := DiffSnapshots(prev, next)
 	if full {
 		t.Fatalf("expected diff, got full snapshot")
 	}
@@ -37,7 +37,7 @@ func TestDiffSnapshotsClearsGraphemes(t *testing.T) {
 	prev.Graphemes = []string{"❌️", ""}
 	next := snapshotForTest(2, 1, []rune{'a', 'b'})
 
-	diff, full := diffSnapshots(prev, next)
+	diff, full := DiffSnapshots(prev, next)
 	if full {
 		t.Fatalf("expected diff, got full snapshot")
 	}

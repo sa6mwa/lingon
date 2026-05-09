@@ -3,7 +3,7 @@ package lingon
 import (
 	"context"
 
-	"pkt.systems/lingon/internal/host"
+	"pkt.systems/lingon/internal/relayhost"
 	"pkt.systems/pslog"
 )
 
@@ -22,7 +22,7 @@ type HostOptions struct {
 
 // Host starts an authoritative terminal host session.
 func Host(ctx context.Context, opts HostOptions) error {
-	return (&host.Host{
+	return (&relayhost.Host{
 		Endpoint:        opts.Endpoint,
 		Token:           opts.Token,
 		SessionID:       opts.SessionID,
