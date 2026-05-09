@@ -69,6 +69,7 @@ data class UiState(
     val appLockTimeoutMinutes: Int = 30,
     val requiresAppUnlock: Boolean = false,
     val unlockPromptPending: Boolean = false,
+    val restoreTerminalImeOnLifecycleStart: Boolean? = null,
 ) {
     val bannerStatus: StatusMessage?
         get() = transientStatus ?: status

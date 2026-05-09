@@ -408,6 +408,10 @@ class AppViewModel(
         persistSessionZoomDebounced(key, normalized)
     }
 
+    fun recordTerminalImeVisibilityForLifecycle(visible: Boolean) {
+        _state.update { it.copy(restoreTerminalImeOnLifecycleStart = visible) }
+    }
+
     fun resetZoomAndPan() {
         val key = activeSessionViewStateKey()
         if (key == null) {

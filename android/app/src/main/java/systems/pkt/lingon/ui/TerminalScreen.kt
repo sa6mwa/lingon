@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +95,7 @@ fun TerminalScreen(
     var ctrlActive by remember { mutableStateOf(false) }
     var altActive by remember { mutableStateOf(false) }
     var requestInputFocus by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var requestInputBlur by remember { mutableStateOf<(() -> Unit)?>(null) }
     var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
     val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
     val config = LocalConfiguration.current
@@ -111,7 +113,14 @@ fun TerminalScreen(
         requestInputFocus?.invoke()
         Unit
     }
-    LaunchedEffect(state.activeSessionId) { focusInput() }
+    val focusInputIfImeRestoreAllowed: () -> Unit = {
+        if (state.restoreTerminalImeOnLifecycleStart == false) {
+            requestInputBlur?.invoke()
+        } else {
+            focusInput()
+        }
+    }
+    LaunchedEffect(state.activeSessionId) { focusInputIfImeRestoreAllowed() }
 
     val handleSelectSession: (String) -> Unit = { nextSessionId ->
         val currentSessionId = state.activeSessionId
@@ -258,7 +267,10 @@ fun TerminalScreen(
                     onSendKey = ::sendTextFromSoftInput,
                     onSendBytes = ::sendBytesFromSoftInput,
                     onInputReady = { requestInputFocus = it },
+                    onInputBlurReady = { requestInputBlur = it },
                     focusInput = focusInput,
+                    focusInputIfImeRestoreAllowed = focusInputIfImeRestoreAllowed,
+                    onImeVisibilityCapturedForLifecycle = viewModel::recordTerminalImeVisibilityForLifecycle,
                     showStatusOverlay = true,
                     modifier = Modifier
                         .weight(1f)
@@ -334,7 +346,10 @@ fun TerminalScreen(
                     onSendKey = ::sendTextFromSoftInput,
                     onSendBytes = ::sendBytesFromSoftInput,
                     onInputReady = { requestInputFocus = it },
+                    onInputBlurReady = { requestInputBlur = it },
                     focusInput = focusInput,
+                    focusInputIfImeRestoreAllowed = focusInputIfImeRestoreAllowed,
+                    onImeVisibilityCapturedForLifecycle = viewModel::recordTerminalImeVisibilityForLifecycle,
                     showStatusOverlay = false,
                     modifier = Modifier
                         .weight(1f)
@@ -496,7 +511,10 @@ private fun TerminalPanel(
     onSendKey: (String) -> Unit,
     onSendBytes: (ByteArray) -> Unit,
     onInputReady: ((() -> Unit) -> Unit),
+    onInputBlurReady: ((() -> Unit) -> Unit),
     focusInput: () -> Unit,
+    focusInputIfImeRestoreAllowed: () -> Unit,
+    onImeVisibilityCapturedForLifecycle: (Boolean) -> Unit,
     showStatusOverlay: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -509,19 +527,27 @@ private fun TerminalPanel(
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
         val lifecycleOwner = LocalLifecycleOwner.current
+        val currentImeVisible by rememberUpdatedState(imeVisible)
+        val currentFocusInputIfImeRestoreAllowed by rememberUpdatedState(focusInputIfImeRestoreAllowed)
+        LaunchedEffect(imeVisible, sessionId) {
+            if (sessionId != null && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                onImeVisibilityCapturedForLifecycle(imeVisible)
+            }
+        }
         DisposableEffect(lifecycleOwner, terminalGridView, sessionId) {
             val observer = LifecycleEventObserver { _, event ->
                 val activeSessionId = sessionId ?: return@LifecycleEventObserver
                 val view = terminalGridView
                 when (event) {
                     Lifecycle.Event.ON_STOP -> {
+                        onImeVisibilityCapturedForLifecycle(currentImeVisible)
                         if (view != null) {
                             viewportCache[activeSessionId] = view.captureViewportState()
                         }
                     }
                     Lifecycle.Event.ON_START -> {
                         lifecycleRestoreNonce += 1
-                        focusInput()
+                        currentFocusInputIfImeRestoreAllowed()
                     }
                     else -> Unit
                 }
@@ -683,6 +709,9 @@ private fun TerminalPanel(
                     view.setOnHardwareKey(onHardwareKey)
                     onInputReady {
                         view.requestTerminalFocus()
+                    }
+                    onInputBlurReady {
+                        view.clearTerminalFocus()
                     }
                 },
                 modifier = Modifier
@@ -1052,6 +1081,16 @@ private class TerminalInputView(
                 // Some OEM/emulator IMEs can throw while view focus is transitioning.
             }
         }
+    }
+
+    fun clearTerminalFocus() {
+        try {
+            val imm = context.getSystemService(InputMethodManager::class.java)
+            imm?.hideSoftInputFromWindow(windowToken, 0)
+        } catch (_: RuntimeException) {
+            // Some OEM/emulator IMEs can throw while view focus is transitioning.
+        }
+        clearFocus()
     }
 
     private fun emitCommittedText(text: CharSequence) {

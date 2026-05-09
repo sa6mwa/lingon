@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-046 Android IME state is not preserved across app refocus
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `keyboard`, `lifecycle`
+- Summary: Refocusing the Android app can automatically show the terminal IME even when the user hid it before backgrounding.
+- Report:
+  If the keyboard is toggled off, then Lingon is unfocused or closed and later refocused, the keyboard is automatically toggled back on without tapping the terminal. The IME visibility state should persist across app unfocus/refocus: hidden stays hidden, visible stays visible.
+- Repro:
+  1. Focus the terminal so the IME controls are visible.
+  2. Hide the keyboard.
+  3. Background/unfocus the app.
+  4. Refocus the app.
+  5. Observe the keyboard returns even though it was hidden before unfocus.
+- Investigation notes:
+  - `TerminalScreen` unconditionally requested terminal input focus on lifecycle `ON_START` and active-session changes.
+  - That forced the IME visible after resume regardless of whether the user had hidden it before backgrounding.
+  - Fix: automatic focus restore is now gated by captured foreground IME visibility. Initial startup and "IME was visible" still request focus; "IME was hidden" does not.
+  - The first attempted fix still failed because the hidden input view kept focus and Android restored the IME on resume by itself. The final fix records foreground IME visibility into `AppViewModel` state and explicitly clears terminal input focus/hides IME when the saved state is hidden.
+- Regression coverage:
+  - `EndToEndTest.keyboard_hidden_before_background_stays_hidden_after_resume`
+  - `EndToEndTest.keyboard_visible_before_background_is_restored_after_resume`
+- Verification:
+  - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed before the final fix, then passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+
 ### B-045 Android zoomed terminal keeps prompt cropped after wide output
 
 - Status: `needs_verification`

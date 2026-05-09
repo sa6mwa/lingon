@@ -1152,6 +1152,40 @@ class EndToEndTest {
     }
 
     @Test
+    fun keyboard_hidden_before_background_stays_hidden_after_resume() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        focusTerminalInput()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        Thread.sleep(1_000L)
+        assertFalse("IME controls were restored even though keyboard was hidden before background", hasTextNode("CTRL"))
+    }
+
+    @Test
+    fun keyboard_visible_before_background_is_restored_after_resume() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        focusTerminalInput()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+    }
+
+    @Test
     fun focused_background_resume_preserves_live_camera_when_cursor_still_fits() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
