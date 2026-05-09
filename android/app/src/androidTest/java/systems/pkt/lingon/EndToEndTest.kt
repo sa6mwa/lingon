@@ -426,6 +426,76 @@ class EndToEndTest {
     }
 
     @Test
+    fun keyboard_height_change_preserves_live_camera_when_cursor_still_fits() {
+        lateinit var view: TerminalGridView
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(1600))
+                layout(0, 0, 480, 1600)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 30, cols = 20, cursorY = 18),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 30,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                ),
+            )
+            assertEquals(0f, view.getCameraOffsetYForTesting(), 0.01f)
+
+            val keyboardHeight = (cellHeight * 20f).toInt().coerceAtLeast(1)
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(keyboardHeight))
+            view.layout(0, 0, 480, keyboardHeight)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 30, cols = 20, cursorY = 18),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 30,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, keyboardHeight, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "keyboard shrink should not bottom-align while the cursor row still fits",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+            assertEquals(0, view.getVisibleStartRow())
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
     fun zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
@@ -2732,7 +2802,7 @@ class EndToEndTest {
         return View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY)
     }
 
-    private fun terminalSnapshotForViewTest(rows: Int, cols: Int): TerminalSnapshot {
+    private fun terminalSnapshotForViewTest(rows: Int, cols: Int, cursorY: Int = rows - 1): TerminalSnapshot {
         val size = rows * cols
         return TerminalSnapshot(
             cols = cols,
@@ -2743,7 +2813,7 @@ class EndToEndTest {
             bg = IntArray(size),
             graphemes = null,
             cursorX = 0,
-            cursorY = rows - 1,
+            cursorY = cursorY.coerceIn(0, rows - 1),
             cursorVisible = true,
             mode = 0,
             title = "",

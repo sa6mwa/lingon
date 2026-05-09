@@ -29,6 +29,29 @@ Required status values:
 
 ## Active Items
 
+### B-042 Android keyboard input snaps live camera even when cursor still fits
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `keyboard`
+- Summary: When the Android keyboard appears and the live cursor is still visible in the current camera viewport, the terminal must preserve the camera instead of bottom-aligning and cropping content unnecessarily.
+- Report:
+  With the terminal scrolled to the live bottom, starting to type opens the keyboard. Even though the cursor and input row still fit in the visible terminal viewport, the app shifts the camera downward so the cursor sits just above the new camera bottom, cropping content that should remain visible.
+- Repro:
+  1. Open an Android terminal session with enough visible rows that the prompt/cursor fits before keyboard input.
+  2. Scroll/pan to the live bottom.
+  3. Start typing so the keyboard appears.
+  4. Observe the camera snaps downward even though the cursor row was already visible and did not need auto-follow.
+- Investigation notes:
+  - The Android terminal view bottom-aligns on viewport height changes whenever live auto-follow is eligible.
+  - That is too aggressive for keyboard entry: live follow should move vertically only when the cursor row no longer fits in the current camera viewport.
+  - Fix: vertical cursor follow now preserves the current camera when the cursor row is already fully visible, and scrolls only the minimum amount needed to reveal the cursor when it is above or below the viewport.
+- Regression coverage:
+  - `TerminalViewportPolicyTest.vertical cursor follow preserves camera when cursor already fits`
+  - `EndToEndTest.keyboard_height_change_preserves_live_camera_when_cursor_still_fits`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest`
+  - `cd android && LINGON_IT_ONLY=keyboard_height_change_preserves_live_camera_when_cursor_still_fits make integration-test`
+
 ### B-041 Codex v0.129.0 hangs on repeated start in host local PTY
 
 - Status: `resolved`

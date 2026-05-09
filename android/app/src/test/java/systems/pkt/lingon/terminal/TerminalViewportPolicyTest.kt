@@ -61,6 +61,43 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
+    fun `vertical cursor follow preserves camera when cursor already fits`() {
+        assertEquals(
+            0f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                cameraOffsetYPx = 0f,
+                scaledCellHeightPx = 10f,
+                viewportHeightPx = 200,
+                totalRows = 30,
+                cursorY = 18,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            100f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                cameraOffsetYPx = 0f,
+                scaledCellHeightPx = 10f,
+                viewportHeightPx = 200,
+                totalRows = 30,
+                cursorY = 29,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            80f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                cameraOffsetYPx = 100f,
+                scaledCellHeightPx = 10f,
+                viewportHeightPx = 200,
+                totalRows = 30,
+                cursorY = 8,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
     fun `cursor follow pans horizontally to keep typing visible`() {
         assertEquals(
             0f,

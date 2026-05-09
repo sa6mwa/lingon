@@ -44,6 +44,30 @@ internal object TerminalViewportPolicy {
         return (filledRows - visibleRows).coerceIn(0, maxOffset)
     }
 
+    fun autoFollowCursorCameraOffsetY(
+        cameraOffsetYPx: Float,
+        scaledCellHeightPx: Float,
+        viewportHeightPx: Int,
+        totalRows: Int,
+        cursorY: Int,
+    ): Float {
+        if (totalRows <= 0 || scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return cameraOffsetYPx
+
+        val maxOffsetYPx = max(0f, (totalRows * scaledCellHeightPx) - viewportHeightPx.toFloat())
+        val current = cameraOffsetYPx.coerceIn(0f, maxOffsetYPx)
+        val clampedCursorY = cursorY.coerceIn(0, totalRows - 1)
+        val cursorTopPx = clampedCursorY * scaledCellHeightPx
+        val cursorBottomPx = cursorTopPx + scaledCellHeightPx
+        val viewportBottomPx = current + viewportHeightPx
+
+        val desired = when {
+            cursorTopPx < current -> cursorTopPx
+            cursorBottomPx > viewportBottomPx -> cursorBottomPx - viewportHeightPx
+            else -> current
+        }
+        return desired.coerceIn(0f, maxOffsetYPx)
+    }
+
     fun autoFollowCursorCameraOffsetX(
         panActive: Boolean,
         scrollbackOffsetRows: Int,

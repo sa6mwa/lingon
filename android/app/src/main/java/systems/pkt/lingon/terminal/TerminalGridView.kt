@@ -327,11 +327,22 @@ class TerminalGridView @JvmOverloads constructor(
                 scrollbackOffsetRows = scrollbackOffsetRows,
             )
         ) {
-            TerminalViewportPolicy.bottomAlignedCameraOffsetY(
-                totalRows = totalRows,
-                scaledCellHeightPx = scaledCellHeight,
-                viewportHeightPx = height,
-            )
+            val snap = snapshot
+            if (snap != null && snap.cursorVisible) {
+                TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                    cameraOffsetYPx = state.cameraOffsetYPx,
+                    scaledCellHeightPx = scaledCellHeight,
+                    viewportHeightPx = height,
+                    totalRows = totalRows,
+                    cursorY = snap.cursorY,
+                )
+            } else {
+                TerminalViewportPolicy.bottomAlignedCameraOffsetY(
+                    totalRows = totalRows,
+                    scaledCellHeightPx = scaledCellHeight,
+                    viewportHeightPx = height,
+                )
+            }
         } else {
             TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
                 cameraOffsetYPx = state.cameraOffsetYPx,
@@ -461,28 +472,24 @@ class TerminalGridView @JvmOverloads constructor(
             )
         ) {
             val cursorY = if (snap.cursorVisible) snap.cursorY else rows - 1
-            if (cursorY >= rows - 1) {
-                followCameraYPx = maxOffsetYPx
-                floor(maxOffsetYPx / scaledH).toInt().coerceIn(0, maxOffsetRows)
-            } else {
-                TerminalViewportPolicy.autoFollowStartRow(
-                    cursorY = cursorY,
-                    totalRows = rows,
-                    visibleRows = visibleRows,
-                ).coerceIn(0, maxOffsetRows)
-            }
+            followCameraYPx = TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                cameraOffsetYPx = cameraY,
+                scaledCellHeightPx = scaledH,
+                viewportHeightPx = height,
+                totalRows = rows,
+                cursorY = cursorY,
+            )
+            floor(followCameraYPx / scaledH).toInt().coerceIn(0, maxOffsetRows)
         } else if (!isLoading && snap.cursorVisible && cursorFollowAfterInput) {
             val cursorY = snap.cursorY.coerceIn(0, rows - 1)
-            if (cursorY >= rows - 1) {
-                followCameraYPx = maxOffsetYPx
-                floor(maxOffsetYPx / scaledH).toInt().coerceIn(0, maxOffsetRows)
-            } else {
-                TerminalViewportPolicy.autoFollowStartRow(
-                    cursorY = cursorY,
-                    totalRows = rows,
-                    visibleRows = visibleRows,
-                ).coerceIn(0, maxOffsetRows)
-            }
+            followCameraYPx = TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                cameraOffsetYPx = cameraY,
+                scaledCellHeightPx = scaledH,
+                viewportHeightPx = height,
+                totalRows = rows,
+                cursorY = cursorY,
+            )
+            floor(followCameraYPx / scaledH).toInt().coerceIn(0, maxOffsetRows)
         } else {
             panOffsetRows.coerceIn(0, maxOffsetRows)
         }
@@ -709,11 +716,21 @@ class TerminalGridView @JvmOverloads constructor(
                     scrollbackOffsetRows = scrollbackOffsetRows,
                 )
             ) {
-                TerminalViewportPolicy.bottomAlignedCameraOffsetY(
-                    totalRows = snap.rows,
-                    scaledCellHeightPx = scaledCellHeight,
-                    viewportHeightPx = heightPx,
-                )
+                if (snap.cursorVisible) {
+                    TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                        cameraOffsetYPx = cameraOffsetYPx,
+                        scaledCellHeightPx = scaledCellHeight,
+                        viewportHeightPx = heightPx,
+                        totalRows = snap.rows,
+                        cursorY = snap.cursorY,
+                    )
+                } else {
+                    TerminalViewportPolicy.bottomAlignedCameraOffsetY(
+                        totalRows = snap.rows,
+                        scaledCellHeightPx = scaledCellHeight,
+                        viewportHeightPx = heightPx,
+                    )
+                }
             } else {
                 TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
                     cameraOffsetYPx = cameraOffsetYPx,
