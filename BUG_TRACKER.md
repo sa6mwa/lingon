@@ -31,7 +31,7 @@ Required status values:
 
 ### B-058 Full Android integration sweep remains unsafe on developer workstation
 
-- Status: `in_progress`
+- Status: `needs_verification`
 - Area: `android`, `integration-test`, `emulator`, `performance`, `safety`
 - Summary: The unqualified Android integration sweep can still freeze the workstation even after cgroup containment, so containment and the offending tests/phases must be investigated before another full run.
 - Report:
@@ -40,11 +40,24 @@ Required status values:
   1. Start the full Android integration sweep.
   2. During the long 30-test connected instrumentation batch, the host can become unresponsive and require reboot.
   3. Resource artifacts from the interrupted run show the emulator/Gradle/UTP path still held roughly 5.4-6.5 GiB in the test cgroup, with the host-GPU emulator as the dominant process.
+- Investigation notes:
+  - The interrupted run profile sampled qemu, GradleDaemon, UTP launcher, harness, and netsimd inside the integration cgroup, with peak cgroup CPU below the 600% quota and memory below the old 8G ceiling. That makes a simple managed-process CPU cgroup escape unlikely.
+  - The dominant offender was qemu: every full-run profile shows `qemu-system-x86_64` as the top CPU process.
+  - The integration path was launching a heavyweight emulator: `configure-avd.sh` forced 6 vCPUs and 4096 MB RAM, and the cgroup default on a 12-core machine allowed 600% CPU. That is too much sustained qemu CPU for the workstation.
+  - A software-GPU probe was not the fix: `-gpu swiftshader -no-window` passed a single targeted test but increased average cgroup CPU to 4.62 cores and CPU pressure to 55%.
+  - The Android Gradle daemon also used the project-wide `-Xmx4g` heap for instrumentation invocations, which unnecessarily inflated the integration cgroup memory envelope.
 - Regression coverage:
-  - Pending; this item is investigation-only until containment and the offending tests/phases are identified.
+  - Managed integration AVDs are reconfigured before launch to 2 vCPUs and 2048 MB RAM by default, with `LINGON_IT_AVD_CPU_CORES` and `LINGON_IT_AVD_RAM_MB` overrides.
+  - The integration cgroup default CPU quota is now capped at 200%, still lower on small machines when half the online cores is less than two full cores.
+  - The integration cgroup memory ceiling defaults to 7G with swap disabled, avoiding the observed 6G pressure while staying below the old 8G ceiling.
+  - The integration Gradle invocation overrides the single-use daemon heap to `-Xmx1536m` instead of the project-wide `-Xmx4g`.
 - Verification:
-  - Existing interrupted-run artifacts were inspected enough to identify emulator/Gradle/UTP as the dominant resource path.
-  - Full Android integration verification is intentionally blocked by this item until containment is proven.
+  - Existing interrupted-run artifacts were inspected and identified qemu as the dominant CPU process while the managed emulator/Gradle/UTP/harness processes were sampled in the test cgroup.
+  - `LINGON_IT_ONLY=top_bar_menu_is_accessible EMULATOR_FLAGS='-gpu swiftshader -no-window -no-snapshot' make integration-test` passed, but proved software GPU made qemu CPU pressure worse.
+  - `LINGON_IT_ONLY=top_bar_menu_is_accessible LINGON_IT_CPU_QUOTA_PERCENT=200 make integration-test` passed and proved the cgroup can cap qemu to roughly two cores.
+  - `LINGON_IT_ONLY=top_bar_menu_is_accessible make integration-test` passed with the new defaults: CPUQuota=200%, 2-vCPU/2048 MB AVD, 1536m Gradle daemon, peak CPU 2.12 cores, peak memory about 6.01 GiB.
+  - `LINGON_IT_ONLY=terminal_updates_live make integration-test` passed with the new defaults: peak CPU 2.11 cores, average CPU 1.59 cores, peak memory about 6.53 GiB.
+  - Full Android integration verification is still deferred until after review because the original failure mode was host-level unresponsiveness; targeted runs now prove the qemu CPU envelope is bounded.
 
 ### B-057 Android integration suite needs per-test cost attribution and performance fixes
 

@@ -41,6 +41,16 @@ detect_online_cpu_count() {
   echo "${cores}"
 }
 
+default_cpu_quota_percent() {
+  local cores="$1"
+  local half_quota=$((cores * 50))
+  if [[ "${half_quota}" -gt 200 ]]; then
+    echo "200"
+  else
+    echo "${half_quota}"
+  fi
+}
+
 summarize_cgroup_profile() {
   local profile_dir="$1"
   local exit_status="$2"
@@ -120,15 +130,15 @@ maybe_wrap_in_cgroup_scope() {
 
   local cores quota_percent memory_max memory_swap_max unit profile_dir
   cores="$(detect_online_cpu_count)"
-  quota_percent="${LINGON_IT_CPU_QUOTA_PERCENT:-$((cores * 50))}"
-  memory_max="${LINGON_IT_MEMORY_MAX:-8G}"
+  quota_percent="${LINGON_IT_CPU_QUOTA_PERCENT:-$(default_cpu_quota_percent "${cores}")}"
+  memory_max="${LINGON_IT_MEMORY_MAX:-7G}"
   memory_swap_max="${LINGON_IT_MEMORY_SWAP_MAX:-0}"
   unit="lingon-android-it-$$"
   profile_dir="${ARTIFACT_OUT}/resource-profile-$(date +%Y%m%d-%H%M%S)-$$"
   mkdir -p "${profile_dir}"
 
   echo "Running Android integration tests in systemd scope ${unit}.scope"
-  echo "Limits: CPUQuota=${quota_percent}% (${cores} online CPUs, half-core default), MemoryMax=${memory_max}, MemorySwapMax=${memory_swap_max}"
+  echo "Limits: CPUQuota=${quota_percent}% (${cores} online CPUs, capped integration default), MemoryMax=${memory_max}, MemorySwapMax=${memory_swap_max}"
   echo "Resource profile directory: ${profile_dir}"
   export LINGON_IT_CGROUP_UNIT="${unit}.scope"
   export LINGON_IT_CPU_QUOTA_PERCENT_EFFECTIVE="${quota_percent}"
@@ -498,6 +508,10 @@ if [[ -z "${DEVICE_SERIAL}" ]]; then
     echo "Creating AVD ${AVD_NAME} (PRESET=${PRESET})..."
     (cd "${ANDROID_DIR}" && make avd PRESET="${PRESET}")
   fi
+  AVD_NAME="${AVD_NAME}" \
+    AVD_RAM_MB="${LINGON_IT_AVD_RAM_MB:-2048}" \
+    AVD_CPU_CORES="${LINGON_IT_AVD_CPU_CORES:-2}" \
+    "${ANDROID_DIR}/scripts/configure-avd.sh"
   AVD_NAME="${AVD_NAME}" "${ANDROID_DIR}/scripts/cleanup-avd-snapshots.sh" || true
   EMU_PORT="$(ADB="${ADB_BIN}" "${ANDROID_DIR}/scripts/find-emu-port.sh")"
   echo "Starting emulator ${AVD_NAME} on port ${EMU_PORT}..."
@@ -557,6 +571,7 @@ set +e
     fi
     ./gradlew --no-daemon \
       -Dkotlin.compiler.execution.strategy=in-process \
+      "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" \
       :app:connectedDebugAndroidTest \
       --no-configuration-cache \
       -Plingon.it.class="${class_arg}" \
