@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-052 Review follow-up: wall delivery exceptions and live height-change bottom alignment
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `terminal`, `viewport`, `keyboard`
+- Summary: Review identified two untested failure modes: a throwing wall notifier can leave a claimed cursor persisted without a posted notification, and live/default-zoom viewport height changes can preserve an old camera when the cursor still fits instead of snapping to the terminal bottom.
+- Report:
+  1. If `WallNotifier.notifyWall(...)` throws after `claimDelivery()` advances the cursor, rollback is skipped and subsequent delivery attempts treat the event as already consumed.
+  2. On IME/viewport height changes, live mode should align the terminal bottom to the new viewport edge. Cursor-follow can keep the old camera if the prompt row is visible above trailing blank rows, hiding the terminal bottom behind the keyboard.
+- Repro:
+  1. Claim wall event 42, make `notifyWall` throw, then retry event 42. The cursor must still be retryable and previous cursor state must be restored.
+  2. Render 30 terminal rows in a tall viewport with cursor row 18, then shrink the viewport to 20 cell rows in live/default-zoom mode. The camera must move to row 10 so rows 10-29 remain visible.
+- Investigation notes:
+  - Both review comments were real. The new wall unit tests failed before the fix because notifier exceptions escaped after the cursor claim was persisted.
+  - `MonotonicWallDeliveryCoordinator.deliver` now rolls back the claim when `notifyWall` returns false or throws. Coroutine cancellation is also rolled back and rethrown, so cancellation semantics are preserved.
+  - The new height-change instrumentation assertion failed before the fix with the camera still at `0.0` after shrinking the viewport. In live/default-zoom mode, height changes now use bottom alignment directly instead of cursor-follow.
+- Regression coverage:
+  - Added `WallDeliveryCoordinatorTest.thrownNotificationDoesNotAdvanceCursorAndAllowsRetry`.
+  - Added `WallDeliveryCoordinatorTest.thrownNotificationRestoresPreviousCursor`.
+  - Added `WallDeliveryCoordinatorTest.cancelledNotificationRollsBackClaimAndPropagates`.
+  - Updated `EndToEndTest.keyboard_height_change_bottom_aligns_live_view_when_cursor_still_fits` to assert live bottom alignment even when the cursor row remains visible above trailing blank rows.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_height_change_bottom_aligns_live_view_when_cursor_still_fits make integration-test` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
 ### B-051 Review follow-up: wall alert dedupe silences distinct messages and viewport restore loses horizontal preference
 
 - Status: `resolved`

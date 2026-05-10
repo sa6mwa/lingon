@@ -1,5 +1,6 @@
 package systems.pkt.lingon.notifications
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import systems.pkt.lingon.data.WallWorkStateStore
@@ -31,8 +32,16 @@ class MonotonicWallDeliveryCoordinator(
             }
             val claim = stateStore.claimDelivery(notification.endpoint, notification.eventId)
                 ?: return@withLock true
-            if (notifier.notifyWall(notification.copy(message = body))) {
-                return@withLock true
+            try {
+                if (notifier.notifyWall(notification.copy(message = body))) {
+                    return@withLock true
+                }
+            } catch (err: CancellationException) {
+                stateStore.rollbackDeliveryClaim(claim)
+                throw err
+            } catch (_: Exception) {
+                stateStore.rollbackDeliveryClaim(claim)
+                return@withLock false
             }
             stateStore.rollbackDeliveryClaim(claim)
             false

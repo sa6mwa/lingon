@@ -429,7 +429,7 @@ class EndToEndTest {
     }
 
     @Test
-    fun keyboard_height_change_preserves_live_camera_when_cursor_still_fits() {
+    fun keyboard_height_change_bottom_aligns_live_view_when_cursor_still_fits() {
         lateinit var view: TerminalGridView
         composeRule.activity.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
@@ -491,12 +491,12 @@ class EndToEndTest {
             view.draw(Canvas(Bitmap.createBitmap(480, keyboardHeight, Bitmap.Config.ARGB_8888)))
 
             assertEquals(
-                "keyboard shrink should not bottom-align while the cursor row still fits",
-                0f,
+                "keyboard shrink in live mode should align to the terminal bottom even when the cursor still fits",
+                (30 * cellHeight) - keyboardHeight.toFloat(),
                 view.getCameraOffsetYForTesting(),
                 0.01f,
             )
-            assertEquals(0, view.getVisibleStartRow())
+            assertEquals(10, view.getVisibleStartRow())
         }
         composeRule.waitForIdle()
     }

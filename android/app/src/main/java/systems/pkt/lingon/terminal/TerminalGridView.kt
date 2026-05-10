@@ -717,21 +717,11 @@ class TerminalGridView @JvmOverloads constructor(
                     scrollbackOffsetRows = scrollbackOffsetRows,
                 )
             ) {
-                if (snap.cursorVisible) {
-                    TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
-                        cameraOffsetYPx = cameraOffsetYPx,
-                        scaledCellHeightPx = scaledCellHeight,
-                        viewportHeightPx = heightPx,
-                        totalRows = snap.rows,
-                        cursorY = snap.cursorY,
-                    )
-                } else {
-                    TerminalViewportPolicy.bottomAlignedCameraOffsetY(
-                        totalRows = snap.rows,
-                        scaledCellHeightPx = scaledCellHeight,
-                        viewportHeightPx = heightPx,
-                    )
-                }
+                TerminalViewportPolicy.bottomAlignedCameraOffsetY(
+                    totalRows = snap.rows,
+                    scaledCellHeightPx = scaledCellHeight,
+                    viewportHeightPx = heightPx,
+                )
             } else {
                 TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
                     cameraOffsetYPx = cameraOffsetYPx,

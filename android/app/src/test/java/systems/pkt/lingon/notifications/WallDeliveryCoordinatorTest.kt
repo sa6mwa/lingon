@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,6 +32,51 @@ class WallDeliveryCoordinatorTest {
 
         assertEquals(0L, store.loadCursor(notification.endpoint))
         assertEquals(2, notifier.deliveries.size)
+    }
+
+    @Test
+    fun thrownNotificationDoesNotAdvanceCursorAndAllowsRetry() = runTest {
+        val store = newStore()
+        val notifier = ThrowOnceNotifier()
+        val coordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val notification = notification(eventId = 42L)
+
+        assertEquals(false, coordinator.deliver(notification))
+        assertEquals(true, coordinator.deliver(notification))
+
+        assertEquals(42L, store.loadCursor(notification.endpoint))
+        assertEquals(2, notifier.deliveries.get())
+    }
+
+    @Test
+    fun thrownNotificationRestoresPreviousCursor() = runTest {
+        val store = newStore()
+        val notifier = ThrowOnceNotifier()
+        val coordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val endpoint = "https://relay.example/v1"
+        store.advanceCursor(endpoint, 40L)
+
+        assertEquals(false, coordinator.deliver(notification(eventId = 42L)))
+
+        assertEquals(40L, store.loadCursor(endpoint))
+        assertEquals(true, coordinator.deliver(notification(eventId = 41L)))
+        assertEquals(41L, store.loadCursor(endpoint))
+    }
+
+    @Test
+    fun cancelledNotificationRollsBackClaimAndPropagates() = runTest {
+        val store = newStore()
+        val coordinator = MonotonicWallDeliveryCoordinator(store, CancellingNotifier())
+        val notification = notification(eventId = 42L)
+
+        try {
+            coordinator.deliver(notification)
+            error("expected cancellation")
+        } catch (_: CancellationException) {
+            // Expected.
+        }
+
+        assertEquals(0L, store.loadCursor(notification.endpoint))
     }
 
     @Test
@@ -172,6 +218,23 @@ class WallDeliveryCoordinatorTest {
         override fun notifyWall(notification: WallNotification): Boolean {
             deliveries += notification
             return succeeds
+        }
+    }
+
+    private class ThrowOnceNotifier : WallNotifier {
+        val deliveries = AtomicInteger(0)
+
+        override fun notifyWall(notification: WallNotification): Boolean {
+            if (deliveries.incrementAndGet() == 1) {
+                throw IllegalStateException("notification platform rejected post")
+            }
+            return true
+        }
+    }
+
+    private class CancellingNotifier : WallNotifier {
+        override fun notifyWall(notification: WallNotification): Boolean {
+            throw CancellationException("cancelled")
         }
     }
 
