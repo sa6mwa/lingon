@@ -564,6 +564,98 @@ class EndToEndTest {
     }
 
     @Test
+    fun lifecycle_viewport_restore_survives_ime_height_bounce_without_new_frame() {
+        lateinit var view: TerminalGridView
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(640))
+                layout(0, 0, 480, 640)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 18),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = true,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val saved = TerminalViewportState(
+                cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
+                cameraOffsetYPx = 0f,
+                scrollRemainderY = 0f,
+                viewportHeightPx = view.height,
+                scaledCellHeightPx = cellHeight,
+                totalRows = 80,
+            )
+            view.restoreViewportState(saved)
+            assertEquals(0f, view.getCameraOffsetYForTesting(), 0.01f)
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(1200))
+            view.layout(0, 0, 480, 1200)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 18),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            assertEquals(
+                "transient hidden IME height must not move a restored lifecycle camera without a new frame",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(640))
+            view.layout(0, 0, 480, 640)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 18),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            assertEquals(
+                "restored lifecycle camera should survive the IME height returning without a new frame",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
     fun lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera() {
         lateinit var view: TerminalGridView
         composeRule.activity.runOnUiThread {

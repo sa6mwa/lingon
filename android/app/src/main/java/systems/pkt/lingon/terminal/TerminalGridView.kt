@@ -47,6 +47,8 @@ class TerminalGridView @JvmOverloads constructor(
     private var cameraOffsetYPx: Float = 0f
     private var preferredCameraOffsetXPx: Float = 0f
     private var pendingViewportState: TerminalViewportState? = null
+    private var restoredViewportState: TerminalViewportState? = null
+    private var restoredViewportFrameSeq: Long = Long.MIN_VALUE
     private var lastViewportHeightPx: Int = 0
     private var panActive: Boolean = false
     private var lastTouchX: Float = 0f
@@ -103,6 +105,8 @@ class TerminalGridView @JvmOverloads constructor(
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+            restoredViewportState = null
+            restoredViewportFrameSeq = Long.MIN_VALUE
             panActive = false
             cursorFollowAfterInput = false
             return true
@@ -201,6 +205,8 @@ class TerminalGridView @JvmOverloads constructor(
         }
         if (this.frameSeq != frameSeq) {
             this.frameSeq = frameSeq
+            restoredViewportState = null
+            restoredViewportFrameSeq = Long.MIN_VALUE
             if (suppressLiveAutoFollowFrameSeq != frameSeq) {
                 suppressLiveAutoFollowFrameSeq = null
             }
@@ -333,6 +339,8 @@ class TerminalGridView @JvmOverloads constructor(
     }
 
     private fun applyViewportRestore(state: TerminalViewportState) {
+        restoredViewportState = state
+        restoredViewportFrameSeq = frameSeq
         cameraOffsetXPx = state.cameraOffsetXPx
         preferredCameraOffsetXPx = state.preferredCameraOffsetXPx
         cameraOffsetYPx = TerminalViewportPolicy.restoreCameraOffsetY(
@@ -712,7 +720,18 @@ class TerminalGridView @JvmOverloads constructor(
         updateViewSize(nextCols, nextRows)
         val snap = snapshot
         if (snap != null && lastViewportHeightPx > 0 && lastViewportHeightPx != heightPx) {
-            cameraOffsetYPx = if (TerminalViewportPolicy.shouldSnapToLiveBottom(
+            val restoredState = restoredViewportState.takeIf { restoredViewportFrameSeq == frameSeq }
+            cameraOffsetYPx = if (restoredState != null) {
+                TerminalViewportPolicy.restoreCameraOffsetY(
+                    savedCameraOffsetYPx = restoredState.cameraOffsetYPx,
+                    savedViewportHeightPx = restoredState.viewportHeightPx,
+                    savedScaledCellHeightPx = restoredState.scaledCellHeightPx,
+                    savedTotalRows = restoredState.totalRows,
+                    nextViewportHeightPx = heightPx,
+                    nextScaledCellHeightPx = scaledCellHeight,
+                    nextTotalRows = snap.rows,
+                )
+            } else if (TerminalViewportPolicy.shouldSnapToLiveBottom(
                     zoomFactor = zoomFactor,
                     scrollbackOffsetRows = scrollbackOffsetRows,
                 )
@@ -745,6 +764,8 @@ class TerminalGridView @JvmOverloads constructor(
     }
 
     private fun resetPan() {
+        restoredViewportState = null
+        restoredViewportFrameSeq = Long.MIN_VALUE
         cameraOffsetXPx = 0f
         preferredCameraOffsetXPx = 0f
         cameraOffsetYPx = 0f
@@ -759,6 +780,8 @@ class TerminalGridView @JvmOverloads constructor(
     private fun applyPanDelta(dx: Float, dy: Float) {
         if (scaledCellWidth <= 0f || scaledCellHeight <= 0f) return
         val snap = snapshot ?: return
+        restoredViewportState = null
+        restoredViewportFrameSeq = Long.MIN_VALUE
         val maxOffsetXPx = max(0f, (snap.cols * scaledCellWidth) - width.toFloat())
         val maxOffsetYPx = max(0f, (snap.rows * scaledCellHeight) - height.toFloat())
         val attemptedX = cameraOffsetXPx - dx

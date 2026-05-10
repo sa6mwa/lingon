@@ -51,6 +51,8 @@ Required status values:
   - Refocus via `am start` can re-enter the activity path; `.MainActivity` now uses `singleTop` so foregrounding targets the existing activity instance instead of stacking a fresh one.
   - Reopened: the real phone still auto-hides after refocus. The missing invariant is that a platform-driven post-resume IME hide must not be interpreted as a user hide when the saved lifecycle preference is visible.
   - Follow-up fix: IME inset changes now go through `TerminalImeLifecyclePolicy`. A false inset while the saved lifecycle preference is visible re-requests focus instead of persisting hidden. User dismissal is explicit through pre-IME Back and ignores stale visible insets until Android reports the hidden inset.
+  - Follow-up report: the IME now remains visible, but refocus shifts the terminal camera down by about one or two rows. The restore invariant is broader than IME visibility: the same terminal frame must keep the same viewport while Android settles IME height.
+  - Follow-up fix: `TerminalGridView` now retains the restored viewport for the current terminal frame and re-applies it across same-frame height changes, so transient IME hidden/visible height bounces do not run the generic live-bottom snap path. New frames, user pan, zoom, or reset clear this restore guard.
 - Verification:
   - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed before the final fix, then passed.
   - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` failed before the delayed assertion fix, then passed.
@@ -60,6 +62,9 @@ Required status values:
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the follow-up fix.
   - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed as a targeted smoke test.
   - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed after the first follow-up fix because stale visible insets could undo explicit Back dismissal, then passed after adding dismissal-in-progress handling.
+  - Added `lifecycle_viewport_restore_survives_ime_height_bounce_without_new_frame`, which failed before the viewport follow-up fix with the restored camera moving from `0` to `2680.8003px`, then passed after retaining the same-frame restored viewport.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the viewport follow-up fix.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed as the final smoke test after the viewport follow-up fix.
   - Waiting for engineer confirmation on the physical phone before marking this resolved.
 
 ### B-058 Full Android integration sweep remains unsafe on developer workstation
