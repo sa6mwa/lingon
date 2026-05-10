@@ -109,9 +109,9 @@ You are collaborating with a highly opinionated Go architect. Optimize for Go-id
 - The engineer may intentionally update this file by running `make release`
   manually before `make adb-install` to the phone that runs Lingon.
 - If this file appears dirty while investigating unrelated work, treat it as
-  expected local release/install metadata churn. Do not revert, normalize,
-  stage, or commit it unless the task explicitly concerns Android release
-  metadata or the engineer asks to include it.
+  expected local release/install metadata churn. Do not revert or normalize it.
+- Include this file in commits like any other tracked source file when it is
+  dirty; the release metadata needs to follow the commit it was generated from.
 
 ## Repo hygiene
 - If `.golangci.yml` does not exist in repo root, create and seed it with the contents below.
