@@ -636,6 +636,78 @@ class EndToEndTest {
     }
 
     @Test
+    fun lifecycle_viewport_capture_keeps_horizontal_preference_separate_from_temporary_camera() {
+        lateinit var view: TerminalGridView
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(200), exactlyMeasureSpec(240))
+                layout(0, 0, 200, 240)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 20, cols = 80, cursorX = 4),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 80,
+                    hostRows = 20,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 40f,
+                    preferredCameraOffsetXPx = 40f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 20,
+                ),
+            )
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 20, cols = 80, cursorX = 30),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 80,
+                hostRows = 20,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(200, 240, Bitmap.Config.ARGB_8888)))
+
+            val saved = view.captureViewportState()
+            assertTrue(
+                "fixture should create a temporary cursor-follow camera to the right of the saved preference",
+                saved.cameraOffsetXPx > saved.preferredCameraOffsetXPx,
+            )
+            assertEquals(
+                "capture must preserve the user's horizontal preference separately from cursor-follow camera",
+                40f,
+                saved.preferredCameraOffsetXPx,
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
     fun lifecycle_viewport_restore_preserves_live_bottom_across_height_change() {
         lateinit var view: TerminalGridView
         composeRule.activity.runOnUiThread {

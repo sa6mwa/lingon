@@ -106,9 +106,13 @@ internal fun wallNotificationTag(notification: WallNotification): String {
 }
 
 private fun wallNotificationKey(notification: WallNotification): String {
+    val cleanEndpoint = notification.endpoint.trim()
+    if (notification.eventId > 0L) {
+        return listOf(cleanEndpoint, notification.eventId.toString()).joinToString(separator = "\u001f")
+    }
     return listOf(
-        notification.endpoint.trim(),
-        notification.eventId.coerceAtLeast(0L).toString(),
+        cleanEndpoint,
+        "fallback",
         notification.sender.trim(),
         notification.sourceSessionName.trim(),
         notification.message.trim(),

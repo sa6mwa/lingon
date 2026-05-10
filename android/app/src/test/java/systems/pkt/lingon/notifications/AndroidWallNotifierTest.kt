@@ -20,6 +20,30 @@ class AndroidWallNotifierTest {
             wallNotificationId(wallNotification(eventId = 42L, message = "hello")),
             wallNotificationId(wallNotification(eventId = 43L, message = "hello")),
         )
+        assertNotEquals(
+            wallNotificationTag(wallNotification(eventId = 42L, message = "hello")),
+            wallNotificationTag(wallNotification(eventId = 43L, message = "hello")),
+        )
+    }
+
+    @Test
+    fun wallNotificationIdTreatsSameEventAsSameNotificationEvenIfMessageChanges() {
+        assertEquals(
+            wallNotificationId(wallNotification(eventId = 55L, message = "hello one")),
+            wallNotificationId(wallNotification(eventId = 55L, message = "hello two")),
+        )
+        assertEquals(
+            wallNotificationTag(wallNotification(eventId = 55L, message = "hello one")),
+            wallNotificationTag(wallNotification(eventId = 55L, message = "hello two")),
+        )
+    }
+
+    @Test
+    fun wallNotificationIdScopesEventIdentityByEndpoint() {
+        assertNotEquals(
+            wallNotificationId(wallNotification(eventId = 42L, endpoint = "https://one.test", message = "hello")),
+            wallNotificationId(wallNotification(eventId = 42L, endpoint = "https://two.test", message = "hello")),
+        )
     }
 
     @Test
@@ -43,10 +67,26 @@ class AndroidWallNotifierTest {
     }
 
     @Test
-    fun wallNotificationIdKeepsContentInIdentityEvenWhenEventIdMatches() {
-        assertNotEquals(
-            wallNotificationId(wallNotification(eventId = 55L, message = "hello one")),
-            wallNotificationId(wallNotification(eventId = 55L, message = "hello two")),
+    fun wallNotificationIdTrimsFallbackIdentityFields() {
+        assertEquals(
+            wallNotificationId(
+                wallNotification(
+                    eventId = 0L,
+                    endpoint = " https://example.test ",
+                    sender = " alice@10.0.0.1 ",
+                    sourceSessionName = " build-host ",
+                    message = " hello ",
+                ),
+            ),
+            wallNotificationId(
+                wallNotification(
+                    eventId = 0L,
+                    endpoint = "https://example.test",
+                    sender = "alice@10.0.0.1",
+                    sourceSessionName = "build-host",
+                    message = "hello",
+                ),
+            ),
         )
     }
 
@@ -82,12 +122,18 @@ class AndroidWallNotifierTest {
         )
     }
 
-    private fun wallNotification(eventId: Long, message: String): WallNotification {
+    private fun wallNotification(
+        eventId: Long,
+        endpoint: String = "https://example.test",
+        sender: String = "alice@10.0.0.1",
+        sourceSessionName: String = "build-host",
+        message: String,
+    ): WallNotification {
         return WallNotification(
-            endpoint = "https://example.test",
+            endpoint = endpoint,
             eventId = eventId,
-            sender = "alice@10.0.0.1",
-            sourceSessionName = "build-host",
+            sender = sender,
+            sourceSessionName = sourceSessionName,
             message = message,
         )
     }

@@ -180,6 +180,60 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
+    fun `horizontal cursor follow keeps temporary camera when cursor fits neither preference nor current edge`() {
+        assertEquals(
+            100f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 100f,
+                preferredCameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 40,
+                cursorX = 12,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow pans right from saved preference only when cursor does not fit`() {
+        assertEquals(
+            130f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 40,
+                cursorX = 21,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow clamps stale preferred edge to terminal bounds`() {
+        assertEquals(
+            200f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 200f,
+                preferredCameraOffsetXPx = 500f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 25,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
     fun `horizontal cursor follow is disabled while panning or in scrollback`() {
         assertEquals(
             42f,
