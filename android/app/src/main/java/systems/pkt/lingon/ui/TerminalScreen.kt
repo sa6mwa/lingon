@@ -97,6 +97,7 @@ fun TerminalScreen(
     var requestInputFocus by remember { mutableStateOf<(() -> Unit)?>(null) }
     var requestInputBlur by remember { mutableStateOf<(() -> Unit)?>(null) }
     var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
+    var previousImeVisible by remember { mutableStateOf<Boolean?>(null) }
     val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
     val config = LocalConfiguration.current
     val isCompact = config.screenWidthDp < 360 || config.screenHeightDp < 700
@@ -121,6 +122,13 @@ fun TerminalScreen(
         }
     }
     LaunchedEffect(state.activeSessionId) { focusInputIfImeRestoreAllowed() }
+    LaunchedEffect(imeVisible, state.activeSessionId) {
+        val wasVisible = previousImeVisible
+        previousImeVisible = imeVisible
+        if (wasVisible == true && !imeVisible) {
+            requestInputBlur?.invoke()
+        }
+    }
 
     val handleSelectSession: (String) -> Unit = { nextSessionId ->
         val currentSessionId = state.activeSessionId
@@ -522,7 +530,6 @@ private fun TerminalPanel(
         var restoredSessionId by remember { mutableStateOf<String?>(null) }
         var lifecycleRestoreNonce by remember { mutableStateOf(0) }
         var restoredLifecycleNonce by remember { mutableStateOf(0) }
-        var restoredImeVisible by remember { mutableStateOf<Boolean?>(null) }
         val sessionId = state.activeSessionId
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
@@ -608,7 +615,6 @@ private fun TerminalPanel(
             )
             LaunchedEffect(sessionId) {
                 restoredSessionId = null
-                restoredImeVisible = null
             }
             LaunchedEffect(
                 sessionId,
@@ -618,14 +624,12 @@ private fun TerminalPanel(
                 state.scrollbackOffsetRows,
                 fitToViewWidth,
                 lifecycleRestoreNonce,
-                imeVisible,
             ) {
                 val view = terminalGridView ?: return@LaunchedEffect
                 val activeSessionId = sessionId ?: return@LaunchedEffect
                 if (
                     restoredSessionId == activeSessionId &&
-                    restoredLifecycleNonce == lifecycleRestoreNonce &&
-                    restoredImeVisible == imeVisible
+                    restoredLifecycleNonce == lifecycleRestoreNonce
                 ) {
                     return@LaunchedEffect
                 }
@@ -633,7 +637,6 @@ private fun TerminalPanel(
                 view.scheduleViewportRestore(viewportCache[activeSessionId])
                 restoredSessionId = activeSessionId
                 restoredLifecycleNonce = lifecycleRestoreNonce
-                restoredImeVisible = imeVisible
             }
             if (showStatusOverlay) {
                 StatusBanner(
@@ -935,6 +938,7 @@ private class TerminalInputView(
     private var onBackspaceCallback: (Int) -> Unit = {}
     private var onEnterCallback: () -> Unit = {}
     private var onHardwareKeyCallback: (AndroidKeyEvent) -> Boolean = { false }
+    private var focusRequestGeneration: Int = 0
 
     init {
         layoutParams = ViewGroup.LayoutParams(1, 1)
@@ -1063,27 +1067,29 @@ private class TerminalInputView(
     }
 
     fun requestTerminalFocus() {
+        val generation = ++focusRequestGeneration
         if (!hasFocus()) {
             requestFocus()
         }
-        post {
+        fun showKeyboardIfCurrent() {
+            if (generation != focusRequestGeneration || !hasFocus()) {
+                return
+            }
             try {
                 val imm = context.getSystemService(InputMethodManager::class.java)
                 imm?.restartInput(this)
-                val shown = imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT) ?: false
-                if (!shown) {
-                    postDelayed(
-                        { imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT) },
-                        120L,
-                    )
-                }
+                imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
             } catch (_: RuntimeException) {
                 // Some OEM/emulator IMEs can throw while view focus is transitioning.
             }
         }
+        post { showKeyboardIfCurrent() }
+        postDelayed({ showKeyboardIfCurrent() }, 120L)
+        postDelayed({ showKeyboardIfCurrent() }, 360L)
     }
 
     fun clearTerminalFocus() {
+        focusRequestGeneration++
         try {
             val imm = context.getSystemService(InputMethodManager::class.java)
             imm?.hideSoftInputFromWindow(windowToken, 0)

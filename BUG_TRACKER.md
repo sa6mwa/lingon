@@ -29,6 +29,39 @@ Required status values:
 
 ## Active Items
 
+### B-047 Android IME toggle breaks live bottom alignment
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `keyboard`, `viewport`
+- Summary: Toggling the Android IME between hidden and visible can leave the live terminal camera misaligned from the bottom of the screen or keyboard.
+- Report:
+  When going from hidden IME keyboard to visible IME keyboard, the terminal bottom is no longer aligned correctly. With IME hidden, live output should align to the screen bottom; with IME visible, live output should align to the keyboard top. Existing screenshot-only coverage did not assert this.
+- Repro:
+  1. Load enough terminal output that the live terminal overflows the Android viewport.
+  2. Hide the IME and assert the live viewport ends at the final terminal row.
+  3. Show the IME and assert the live viewport still ends at the final terminal row above the keyboard.
+  4. Observe stale viewport restore can override the height-change bottom anchor.
+- Investigation notes:
+  - Reproduced the missing coverage first: the existing visual hide/show and tab-switch tests only captured screenshots and did not assert the live camera offset against the bottom-aligned pixel offset.
+  - A first tall-session attempt using a shell fixture was invalid because the harness registered the session but never produced a usable first frame. A second attempt using the default slow echo fixture was also invalid because the cursor still fit near the top, so bottom-follow was not the correct expectation.
+  - Added a harness `initial_lines` fixture that creates real PTY output before the host echo loop, so the Android test can deterministically load a terminal where the live bottom is below the viewport.
+  - The production bug was the viewport restore effect treating ordinary IME visibility changes as restore events. That let cached viewport state override the terminal view's height-change bottom anchor when toggling keyboard visibility.
+  - While verifying adjacent lifecycle behavior, the IME focus path also needed cancellable delayed keyboard-show attempts so hiding the keyboard invalidates pending `showSoftInput` retries.
+- Regression coverage:
+  - Added pixel-level live-bottom assertions to `keyboard_hide_show_preserves_bottom_anchor_visual`.
+  - Added pixel-level live-bottom assertions to each hop in `keyboard_tab_switch_preserves_bottom_anchor_visual`.
+  - Added `keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions`, which creates two tall host PTY sessions with deterministic initial output, toggles the IME hidden/visible per session, and verifies cached cross-session restores remain bottom-aligned.
+  - Kept IME lifecycle coverage split into the existing hidden/visible background-resume tests, and tightened the camera refocus test so it asserts camera preservation independently from IME state.
+- Verification:
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_visual make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_tab_switch_preserves_bottom_anchor_visual make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=focused_background_resume_preserves_live_camera_when_cursor_still_fits make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `go test ./cmd/lingon-android-harness` passed.
+
 ### B-046 Android IME state is not preserved across app refocus
 
 - Status: `resolved`

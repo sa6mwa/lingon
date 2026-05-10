@@ -55,7 +55,7 @@ func TestWriteHostScriptDoesNotTouchCallerTTY(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	scriptPath, err := writeHostScript(dir, "host-1", "/tmp/lingon-android-harness")
+	scriptPath, err := writeHostScript(dir, "host-1", "/tmp/lingon-android-harness", "", 0)
 	if err != nil {
 		t.Fatalf("writeHostScript: %v", err)
 	}

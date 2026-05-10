@@ -307,9 +307,28 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 					count = value
 				}
 			}
+			cols := h.cols
+			rows := h.rows
+			if raw := r.URL.Query().Get("cols"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					cols = value
+				}
+			}
+			if raw := r.URL.Query().Get("rows"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					rows = value
+				}
+			}
+			initialLines := 0
+			if raw := r.URL.Query().Get("initial_lines"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					initialLines = value
+				}
+			}
+			shellPath := strings.TrimSpace(r.URL.Query().Get("shell"))
 			ids := make([]string, 0, count)
 			for i := 0; i < count; i++ {
-				id, err := h.startHost(h.access)
+				id, err := h.startHost(h.access, cols, rows, shellPath, initialLines)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
@@ -445,7 +464,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 
 	if opts.sessionCount > 0 {
 		for i := 1; i <= opts.sessionCount; i++ {
-			id, err := h.startHost(access.Token)
+			id, err := h.startHost(access.Token, h.cols, h.rows, "", 0)
 			if err != nil {
 				h.stop()
 				return nil, err
@@ -454,7 +473,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 		}
 
 		secondID := fmt.Sprintf("host-%d", opts.sessionCount+1)
-		scriptPath, err := writeHostScript(root, secondID, selfPath)
+		scriptPath, err := writeHostScript(root, secondID, selfPath, "", 0)
 		if err != nil {
 			h.stop()
 			return nil, err
@@ -587,17 +606,17 @@ func (h *harness) stop() {
 	}
 }
 
-func (h *harness) startHost(token string) (string, error) {
+func (h *harness) startHost(token string, cols int, rows int, shellPath string, initialLines int) (string, error) {
 	if h.ctx.Err() != nil {
 		return "", h.ctx.Err()
 	}
 	h.hostIndex++
 	id := fmt.Sprintf("host-%d", h.hostIndex)
-	scriptPath, err := writeHostScript(h.baseDir, id, h.selfPath)
+	scriptPath, err := writeHostScript(h.baseDir, id, h.selfPath, shellPath, initialLines)
 	if err != nil {
 		return "", err
 	}
-	cancel, err := startHostSession(h.ctx, h.endpoint, token, id, scriptPath, h.cols, h.rows, filepath.Join(h.configDir, "tls"))
+	cancel, err := startHostSession(h.ctx, h.endpoint, token, id, scriptPath, cols, rows, filepath.Join(h.configDir, "tls"))
 	if err != nil {
 		return "", err
 	}
@@ -828,9 +847,13 @@ func buildHostSessionOptions(endpoint, token, id, scriptPath string, cols, rows 
 	}
 }
 
-func writeHostScript(baseDir, id, harnessPath string) (string, error) {
+func writeHostScript(baseDir, id, harnessPath string, shellOverride string, initialLines int) (string, error) {
 	scriptPath := filepath.Join(baseDir, fmt.Sprintf("lingon-host-%s.sh", id))
-	if shellPath := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_HOST_SHELL")); shellPath != "" {
+	shellPath := strings.TrimSpace(shellOverride)
+	if shellPath == "" {
+		shellPath = strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_HOST_SHELL"))
+	}
+	if shellPath != "" {
 		content := fmt.Sprintf(`#!/bin/sh
 export PS1='%s$ '
 exec "%s" -i
@@ -840,9 +863,13 @@ exec "%s" -i
 		}
 		return scriptPath, nil
 	}
+	initialLinesEnv := ""
+	if initialLines > 0 {
+		initialLinesEnv = fmt.Sprintf("export LINGON_HOST_ECHO_INITIAL_LINES=%d\n", initialLines)
+	}
 	content := fmt.Sprintf(`#!/bin/sh
-exec "%s" -host-echo -host-id "%s"
-`, harnessPath, id)
+%sexec "%s" -host-echo -host-id "%s"
+`, initialLinesEnv, harnessPath, id)
 	if err := os.WriteFile(scriptPath, []byte(content), 0o700); err != nil {
 		return "", err
 	}
@@ -881,6 +908,13 @@ func runHostEcho(id string) {
 	}
 
 	writer := bufio.NewWriterSize(os.Stdout, 4096)
+	if raw := strings.TrimSpace(os.Getenv("LINGON_HOST_ECHO_INITIAL_LINES")); raw != "" {
+		if initialLines, err := strconv.Atoi(raw); err == nil && initialLines > 0 {
+			for i := 0; i < initialLines; i++ {
+				_, _ = fmt.Fprintf(writer, "LINE_%s %03d\r\n", id, i)
+			}
+		}
+	}
 	_, _ = fmt.Fprintf(writer, "LINGON_READY %s\r\n", id)
 	_ = writer.Flush()
 

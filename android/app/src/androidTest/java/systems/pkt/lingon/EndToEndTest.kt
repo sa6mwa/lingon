@@ -1081,6 +1081,7 @@ class EndToEndTest {
             }
             composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
             waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            assertLiveBottomAnchored("first tab hop $hopNumber")
             captureScreenshot("tab-first-hop-${hopNumber}-settled")
             if (hop == 0) {
                 firstRestored = readTerminalDebugInfo()
@@ -1100,6 +1101,7 @@ class EndToEndTest {
             }
             composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
             waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            assertLiveBottomAnchored("second tab hop $hopNumber")
             captureScreenshot("tab-second-hop-${hopNumber}-settled")
         }
 
@@ -1136,19 +1138,87 @@ class EndToEndTest {
                 info.lastFrameSeq > beforeLoad.lastFrameSeq &&
                 info.hash != beforeLoad.hash
         }
+        assertLiveBottomAnchored("keyboard precheck")
         captureScreenshot("keyboard-precheck")
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        assertLiveBottomAnchored("keyboard visible initial")
         captureScreenshot("keyboard-visible-initial")
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        assertLiveBottomAnchored("keyboard hidden")
         captureScreenshot("keyboard-hidden")
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        assertLiveBottomAnchored("keyboard visible restored")
         captureScreenshot("keyboard-visible-restored")
+    }
+
+    @Test
+    fun keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val tallHosts = startHostsViaHarness(count = 2, rows = 240, initialLines = 260)
+        val first = tallHosts[0]
+        val second = tallHosts[1]
+        val sessions = listOf(first, second)
+        sessions.forEach { sessionId ->
+            waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+            selectSessionTab(sessionId, timeoutMs = 10_000L)
+            waitUntilNoError(10_000L) { activeSessionId() == sessionId && !stateForTest().sessionSyncing }
+            composeRule.runOnIdle {
+                appViewModel().resetZoomAndPan()
+            }
+            focusTerminalInput()
+            waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+                info.activeSessionId == sessionId &&
+                    info.rows > info.viewRows &&
+                    info.isLiveBottomAnchored()
+            } ?: throw AssertionError("tall session $sessionId did not settle at live bottom")
+
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+            waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == sessionId &&
+                    info.isLiveBottomAnchored()
+            } ?: throw AssertionError("hidden keyboard misaligned live bottom for $sessionId")
+
+            focusTerminalInput()
+            waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == sessionId &&
+                    info.isLiveBottomAnchored()
+            } ?: throw AssertionError("visible keyboard misaligned live bottom for $sessionId")
+        }
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first && !stateForTest().sessionSyncing }
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == first && info.isLiveBottomAnchored()
+        } ?: throw AssertionError("hidden keyboard misaligned live bottom for cached first tall session")
+
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == second && !stateForTest().sessionSyncing }
+        focusTerminalInput()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == second && info.isLiveBottomAnchored()
+        } ?: throw AssertionError("visible keyboard misaligned live bottom for second tall session before cross-switch")
+
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first && !stateForTest().sessionSyncing }
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == first && info.isLiveBottomAnchored()
+        } ?: throw AssertionError("visible keyboard misaligned live bottom after restoring cached first tall session")
     }
 
     @Test
@@ -1227,7 +1297,6 @@ class EndToEndTest {
 
         backgroundAndResumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
-        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
         val resumed = waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
             info.activeSessionId == headlessId &&
                 info.viewRows > 0 &&
@@ -2511,6 +2580,16 @@ class EndToEndTest {
         return info?.hash ?: 0L
     }
 
+    private fun assertLiveBottomAnchored(label: String) {
+        val info = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info for $label")
+        assertTrue(
+            "$label should align live bottom: visible=${info.visibleStartRow}-${info.visibleEndRowExclusive} rows=${info.rows} " +
+                "camera=${info.cameraOffsetYPx} viewport=${info.viewportHeightPx} cell=${info.scaledCellHeightPx}",
+            info.isLiveBottomAnchored(),
+        )
+    }
+
     private fun readTerminalDebugInfo(): TerminalDebugInfo? {
         var info: TerminalDebugInfo? = null
         composeRule.runOnIdle {
@@ -2570,6 +2649,7 @@ class EndToEndTest {
                 renderScaleX = terminalView?.getRenderScaleX() ?: 0f,
                 renderScaleY = terminalView?.getRenderScaleY() ?: 0f,
                 cameraOffsetYPx = terminalView?.getCameraOffsetYForTesting() ?: 0f,
+                viewportHeightPx = terminalView?.height ?: 0,
                 scaledCellHeightPx = terminalView?.getScaledCellHeightForTesting() ?: 0f,
                 visibleStartRow = terminalView?.getVisibleStartRow() ?: 0,
                 visibleEndRowExclusive = terminalView?.getVisibleEndRowExclusive() ?: 0,
@@ -3264,6 +3344,39 @@ class EndToEndTest {
         }
     }
 
+    private fun startHostsViaHarness(
+        count: Int,
+        cols: Int = 120,
+        rows: Int = testConfig.hostRows,
+        shell: String? = null,
+        initialLines: Int = 0,
+    ): List<String> {
+        val shellQuery = shell?.takeIf { it.isNotBlank() }?.let { "&shell=${java.net.URLEncoder.encode(it, "UTF-8")}" }.orEmpty()
+        val initialLinesQuery = if (initialLines > 0) "&initial_lines=$initialLines" else ""
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-host?count=$count&cols=$cols&rows=$rows$shellQuery$initialLinesQuery")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness start-host failed with HTTP $code")
+            }
+            val body = InputStreamReader(connection.inputStream).use { it.readText() }
+            val ids = org.json.JSONObject(body).getJSONArray("ids")
+            return List(ids.length()) { index -> ids.getString(index) }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun startHeadlessViaHarness(cols: Int = 120, rows: Int = 50): String {
         val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless?cols=$cols&rows=$rows")
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -3614,6 +3727,7 @@ class EndToEndTest {
         val renderScaleX: Float,
         val renderScaleY: Float,
         val cameraOffsetYPx: Float,
+        val viewportHeightPx: Int,
         val scaledCellHeightPx: Float,
         val visibleStartRow: Int,
         val visibleEndRowExclusive: Int,
@@ -3622,6 +3736,12 @@ class EndToEndTest {
         fun liveTopRows(): Float {
             if (scaledCellHeightPx <= 0f) return 0f
             return (cameraOffsetYPx / scaledCellHeightPx) - scrollbackOffsetRows.toFloat()
+        }
+
+        fun isLiveBottomAnchored(): Boolean {
+            if (rows <= 0 || scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return true
+            val expected = maxOf(0f, (rows * scaledCellHeightPx) - viewportHeightPx.toFloat())
+            return kotlin.math.abs(cameraOffsetYPx - expected) <= maxOf(1f, scaledCellHeightPx * 0.1f)
         }
     }
 
