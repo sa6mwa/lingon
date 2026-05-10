@@ -31,7 +31,7 @@ Required status values:
 
 ### B-059 Android IME visibility is not preserved across app refocus
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Area: `android`, `ime`, `keyboard`, `lifecycle`, `e2e`
 - Summary: If the soft keyboard is visible when the Android app is backgrounded, it reappears briefly on refocus and then auto-hides about one second later.
 - Report:
@@ -65,7 +65,7 @@ Required status values:
   - Added `lifecycle_viewport_restore_survives_ime_height_bounce_without_new_frame`, which failed before the viewport follow-up fix with the restored camera moving from `0` to `2680.8003px`, then passed after retaining the same-frame restored viewport.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the viewport follow-up fix.
   - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed as the final smoke test after the viewport follow-up fix.
-  - Waiting for engineer confirmation on the physical phone before marking this resolved.
+  - Physical phone confirmation passed after the viewport follow-up fix; IME stays visible across refocus and the terminal camera no longer shifts down.
 
 ### B-058 Full Android integration sweep remains unsafe on developer workstation
 
