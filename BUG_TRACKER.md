@@ -29,6 +29,46 @@ Required status values:
 
 ## Active Items
 
+### B-058 Full Android integration sweep remains unsafe on developer workstation
+
+- Status: `in_progress`
+- Area: `android`, `integration-test`, `emulator`, `performance`, `safety`
+- Summary: The unqualified Android integration sweep can still freeze the workstation even after cgroup containment, so containment and the offending tests/phases must be investigated before another full run.
+- Report:
+  A contained full Android integration run froze the laptop hard enough to require a reboot. The engineer explicitly prohibited further full Android suite runs until the issue is resolved beyond doubt.
+- Repro:
+  1. Start the full Android integration sweep.
+  2. During the long 30-test connected instrumentation batch, the host can become unresponsive and require reboot.
+  3. Resource artifacts from the interrupted run show the emulator/Gradle/UTP path still held roughly 5.4-6.5 GiB in the test cgroup, with the host-GPU emulator as the dominant process.
+- Regression coverage:
+  - Pending; this item is investigation-only until containment and the offending tests/phases are identified.
+- Verification:
+  - Existing interrupted-run artifacts were inspected enough to identify emulator/Gradle/UTP as the dominant resource path.
+  - Full Android integration verification is intentionally blocked by this item until containment is proven.
+
+### B-057 Android integration suite needs per-test cost attribution and performance fixes
+
+- Status: `in_progress`
+- Area: `android`, `integration-test`, `performance`, `e2e`
+- Summary: The Android integration suite is expensive enough that we need to identify the worst CPU/time offenders and improve the test flow instead of only containing it.
+- Report:
+  After adding cgroup containment, the next issue is to zero in on which Android e2e tests or phases are extremely CPU expensive, then optimize the expensive paths.
+- Repro:
+  1. Run the contained full Android integration suite.
+  2. Attribute high CPU/wall time to tests or phases, not just the aggregate run.
+  3. Reduce unnecessary overhead and keep the cost visible in run artifacts.
+- Regression coverage:
+  - Android integration resource profiles now copy connected-test JUnit XML into the run profile directory and write a sorted `test-times.txt` file so expensive instrumentation cases are attributable from artifacts.
+  - Added Android tool unit coverage for sorting JUnit timings by descending duration.
+  - Added Android instrumentation geometry coverage for small, production-sized, and large terminal dimensions without relying on the default harness size.
+  - Added harness unit coverage for stopping only the requested temporary host fixture.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh` passed.
+  - `go test ./cmd/lingon-android-harness` passed.
+  - `cd android && go test ./cmd/lingon-android-tools` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Full Android integration verification is intentionally incomplete because B-058 makes full-suite execution unsafe until containment and offending tests/phases are investigated.
+
 ### B-056 Android integration tests can saturate the workstation
 
 - Status: `resolved`

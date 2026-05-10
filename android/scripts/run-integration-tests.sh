@@ -252,6 +252,20 @@ stop_cgroup_monitor() {
 
 maybe_wrap_in_cgroup_scope "$@"
 
+collect_test_timing_profile() {
+  local profile_dir="${LINGON_IT_CGROUP_PROFILE_DIR:-}"
+  if [[ -z "${profile_dir}" ]]; then
+    return 0
+  fi
+  local result_dir="${ANDROID_DIR}/app/build/outputs/androidTest-results/connected/debug"
+  if [[ ! -d "${result_dir}" ]]; then
+    return 0
+  fi
+  mkdir -p "${profile_dir}/android-test-results"
+  find "${result_dir}" -maxdepth 1 -type f -name 'TEST-*.xml' -exec cp {} "${profile_dir}/android-test-results/" \; 2>/dev/null || true
+  run_android_tools test-times --dir "${result_dir}" > "${profile_dir}/test-times.txt" 2>"${profile_dir}/test-times.err" || true
+}
+
 resolve_avd_name() {
   if [[ -n "${AVD_NAME}" ]]; then
     echo "${AVD_NAME}"
@@ -375,10 +389,13 @@ QUIET_HOST_TEST="tab_switch_does_not_rearm_wall_inactivity_without_terminal_inpu
 if [[ -z "${HOST_COLS_OVERRIDE}" ]]; then
   HOST_COLS_OVERRIDE="120"
 fi
+if [[ -z "${HOST_ROWS_OVERRIDE}" ]]; then
+  HOST_ROWS_OVERRIDE="50"
+fi
 if [[ "${HOST_COLS_OVERRIDE}" =~ ^[0-9]+$ ]]; then
   HARNESS_ARGS+=("-cols" "${HOST_COLS_OVERRIDE}")
 fi
-if [[ -n "${HOST_ROWS_OVERRIDE}" ]] && [[ "${HOST_ROWS_OVERRIDE}" =~ ^[0-9]+$ ]]; then
+if [[ "${HOST_ROWS_OVERRIDE}" =~ ^[0-9]+$ ]]; then
   HARNESS_ARGS+=("-rows" "${HOST_ROWS_OVERRIDE}")
 fi
 
@@ -617,6 +634,7 @@ set +e
 )
 TEST_EXIT=$?
 set -e
+collect_test_timing_profile
 
 echo "Collecting test artifacts..."
 ARTIFACT_DIRS=(

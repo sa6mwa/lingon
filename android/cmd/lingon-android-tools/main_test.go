@@ -34,6 +34,46 @@ class ExampleTest {
 	}
 }
 
+func TestReadJUnitTestTimingsSortsByDuration(t *testing.T) {
+	dir := t.TempDir()
+	xmlPath := filepath.Join(dir, "TEST-emulator.xml")
+	const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<testsuite name="systems.pkt.lingon.EndToEndTest" tests="3" failures="0" errors="0" skipped="0" time="7.0">
+  <testcase name="fast_test" classname="systems.pkt.lingon.EndToEndTest" time="0.250" />
+  <testcase name="slow_test" classname="systems.pkt.lingon.EndToEndTest" time="4.500" />
+  <testcase name="medium_test" classname="systems.pkt.lingon.EndToEndTest" time="1.250" />
+</testsuite>`
+	if err := os.WriteFile(xmlPath, []byte(xml), 0o600); err != nil {
+		t.Fatalf("write junit xml: %v", err)
+	}
+
+	timings, err := readJUnitTestTimings(dir)
+	if err != nil {
+		t.Fatalf("readJUnitTestTimings: %v", err)
+	}
+	got := make([]string, 0, len(timings))
+	for _, timing := range timings {
+		got = append(got, timing.Name)
+	}
+	want := []string{"slow_test", "medium_test", "fast_test"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("timing order = %v, want %v", got, want)
+	}
+
+	var out bytes.Buffer
+	writeTestTimings(&out, timings)
+	for _, wantLine := range []string{
+		"seconds\tclass\ttest",
+		"4.500\tsystems.pkt.lingon.EndToEndTest\tslow_test",
+		"1.250\tsystems.pkt.lingon.EndToEndTest\tmedium_test",
+		"0.250\tsystems.pkt.lingon.EndToEndTest\tfast_test",
+	} {
+		if !strings.Contains(out.String(), wantLine) {
+			t.Fatalf("timing output missing %q:\n%s", wantLine, out.String())
+		}
+	}
+}
+
 func TestRunConfigEnv(t *testing.T) {
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.pem")

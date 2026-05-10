@@ -585,6 +585,15 @@ class AppViewModel(
     }
 
     fun selectSession(sessionId: String) {
+        selectSession(sessionId, persistSelection = true)
+    }
+
+    @VisibleForTesting
+    fun selectSessionForTesting(sessionId: String) {
+        selectSession(sessionId, persistSelection = false)
+    }
+
+    private fun selectSession(sessionId: String, persistSelection: Boolean) {
         val current = _state.value
         val wallState = currentWallInactivityState(sessionId)
         if (sessionId == current.activeSessionId) {
@@ -614,7 +623,7 @@ class AppViewModel(
             )
         }
         activateSessionViewState()
-        if (current.shareToken.isNullOrBlank()) {
+        if (persistSelection && current.shareToken.isNullOrBlank()) {
             persistActiveSession(current.endpoint, sessionId)
         }
         connectActiveSession()

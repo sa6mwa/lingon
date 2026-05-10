@@ -292,52 +292,61 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
-        resetZoomPan()
-        val baseline = waitForTerminalDebugInfo { info ->
-            info.viewCols > 0 && info.viewRows > 0 && info.renderScaleX > 0f
-        } ?: throw AssertionError("missing baseline terminal debug info")
-
-        var zoomed = baseline
-        repeat(2) {
-            setZoomFactor(zoomed.zoomFactor + 0.35f)
-            zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
-                info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+        val original = readTerminalDebugInfo()
+            ?: throw AssertionError("missing original terminal debug info")
+        val originalSessionId = original.activeSessionId
+        val tallSessionId = startHostsViaHarness(count = 1, cols = 110, rows = 50).single()
+        try {
+            selectSessionForFixture(tallSessionId, expectedCols = 110, expectedRows = 50)
+            resetZoomPan()
+            val baseline = waitForTerminalDebugInfo { info ->
+                info.activeSessionId == tallSessionId &&
+                    info.cols == 110 &&
+                    info.rows == 50 &&
                     info.viewCols > 0 &&
-                    info.viewRows > 0
-            } ?: throw AssertionError("missing zoomed terminal debug info")
+                    info.viewRows > 0 &&
+                    info.renderScaleX > 0f
+            } ?: throw AssertionError("missing baseline terminal debug info")
+
+            var zoomed = baseline
+            repeat(2) {
+                setZoomFactor(zoomed.zoomFactor + 0.35f)
+                zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                    info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+                        info.viewCols > 0 &&
+                        info.viewRows > 0
+                } ?: throw AssertionError("missing zoomed terminal debug info")
+            }
+
+            sendTerminalInput("echo ZOOM-STABILITY")
+            sendTerminalEnter()
+            val afterFrame = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+                info.lastFrameSeq > zoomed.lastFrameSeq &&
+                    kotlin.math.abs(info.renderScaleX - zoomed.renderScaleX) <= 0.03f &&
+                    kotlin.math.abs(info.viewCols - zoomed.viewCols) <= 2
+            } ?: throw AssertionError("zoomed viewport changed after a new terminal frame")
+
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+            val beforeBackground = waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == afterFrame.activeSessionId &&
+                    kotlin.math.abs(info.zoomFactor - afterFrame.zoomFactor) <= 0.03f &&
+                    info.viewCols > 0 &&
+                    info.viewRows > 0 &&
+                    info.renderScaleX > 0f
+            } ?: throw AssertionError("missing keyboard-hidden zoomed terminal debug info")
+
+            backgroundAndResumeActivity()
+            waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+            waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == beforeBackground.activeSessionId &&
+                    kotlin.math.abs(info.zoomFactor - beforeBackground.zoomFactor) <= 0.03f &&
+                    kotlin.math.abs(info.renderScaleX - beforeBackground.renderScaleX) <= 0.03f &&
+                    kotlin.math.abs(info.viewCols - beforeBackground.viewCols) <= 2
+            } ?: throw AssertionError("zoomed viewport reset after background/foreground cycle")
+        } finally {
+            cleanupFixtureSessions(originalSessionId, original.cols, original.rows, listOf(tallSessionId))
         }
-
-        sendTerminalInput("echo ZOOM-STABILITY")
-        sendTerminalEnter()
-        val afterFrame = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
-            info.lastFrameSeq > zoomed.lastFrameSeq &&
-                info.hash != zoomed.hash &&
-                kotlin.math.abs(info.renderScaleX - zoomed.renderScaleX) <= 0.03f &&
-                kotlin.math.abs(info.viewCols - zoomed.viewCols) <= 2 &&
-                kotlin.math.abs(info.viewRows - zoomed.viewRows) <= 2
-        } ?: throw AssertionError("zoomed viewport changed after a new terminal frame")
-
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
-        val beforeBackground = waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
-            info.activeSessionId == afterFrame.activeSessionId &&
-                kotlin.math.abs(info.zoomFactor - afterFrame.zoomFactor) <= 0.03f &&
-                info.viewCols > 0 &&
-                info.viewRows > 0 &&
-                info.renderScaleX > 0f
-        } ?: throw AssertionError("missing keyboard-hidden zoomed terminal debug info")
-
-        backgroundAndResumeActivity()
-        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
-        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
-            info.activeSessionId == beforeBackground.activeSessionId &&
-                kotlin.math.abs(info.zoomFactor - beforeBackground.zoomFactor) <= 0.03f &&
-                kotlin.math.abs(info.renderScaleX - beforeBackground.renderScaleX) <= 0.03f &&
-                kotlin.math.abs(info.viewCols - beforeBackground.viewCols) <= 2 &&
-                kotlin.math.abs(info.viewRows - beforeBackground.viewRows) <= 2 &&
-                info.visibleStartRow == beforeBackground.visibleStartRow &&
-                info.visibleEndRowExclusive == beforeBackground.visibleEndRowExclusive
-        } ?: throw AssertionError("zoomed viewport reset after background/foreground cycle")
     }
 
     @Test
@@ -1125,47 +1134,58 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
-        resetZoomPan()
-        val baseline = waitForTerminalDebugInfo(TERMINAL_READY_TIMEOUT_MS) { info ->
-            info.viewRows > 0 &&
-                info.visibleStartRow == 0 &&
-                info.visibleEndRowExclusive > info.visibleStartRow &&
-                info.renderScaleX > 0f
-        } ?: throw AssertionError("missing baseline terminal debug info")
-        var zoomed = baseline
-        for (attempt in 0 until 3) {
-            setZoomFactor(zoomed.zoomFactor + 0.35f)
-            zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
-                info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+        val original = readTerminalDebugInfo()
+            ?: throw AssertionError("missing original terminal debug info")
+        val originalSessionId = original.activeSessionId
+        val tallSessionId = startHostsViaHarness(count = 1, cols = 110, rows = 50).single()
+        try {
+            selectSessionForFixture(tallSessionId, expectedCols = 110, expectedRows = 50)
+            resetZoomPan()
+            val baseline = waitForTerminalDebugInfo(TERMINAL_READY_TIMEOUT_MS) { info ->
+                info.activeSessionId == tallSessionId &&
+                    info.cols == 110 &&
+                    info.rows == 50 &&
+                    info.viewRows > 0 &&
                     info.visibleStartRow == 0 &&
-                    info.viewRows > 0
-            } ?: throw AssertionError("missing zoomed terminal debug info")
-            val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
-            if (visibleRows < zoomed.rows) {
-                break
+                    info.visibleEndRowExclusive > info.visibleStartRow &&
+                    info.renderScaleX > 0f
+            } ?: throw AssertionError("missing baseline terminal debug info")
+            var zoomed = baseline
+            for (attempt in 0 until 3) {
+                setZoomFactor(zoomed.zoomFactor + 0.35f)
+                zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                    info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+                        info.visibleStartRow == 0 &&
+                        info.viewRows > 0
+                } ?: throw AssertionError("missing zoomed terminal debug info")
+                val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
+                if (visibleRows < zoomed.rows) {
+                    break
+                }
             }
-        }
-        val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
-        if (visibleRows >= zoomed.rows) {
-            throw AssertionError(
-                "zoomed viewport still fits the whole host screen " +
-                    "(visibleRows=$visibleRows, rows=${zoomed.rows})",
+            val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
+            if (visibleRows >= zoomed.rows) {
+                throw AssertionError(
+                    "zoomed viewport still fits the whole host screen " +
+                        "(visibleRows=$visibleRows, rows=${zoomed.rows})",
+                )
+            }
+
+            val partialCount = max(3, visibleRows - 4)
+            val partialEnd = 100 + partialCount
+            sendTerminalInput("seq 101 $partialEnd")
+            sendTerminalEnter()
+            val partial = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+                info.lastFrameSeq > zoomed.lastFrameSeq &&
+                    info.hash != zoomed.hash
+            } ?: throw AssertionError("partial terminal output did not render")
+            assertTrue(
+                "invalid visible range ${partial.visibleStartRow}..${partial.visibleEndRowExclusive}",
+                partial.visibleEndRowExclusive > partial.visibleStartRow,
             )
+        } finally {
+            cleanupFixtureSessions(originalSessionId, original.cols, original.rows, listOf(tallSessionId))
         }
-
-        val partialCount = max(3, visibleRows - 4)
-        val partialEnd = 100 + partialCount
-        sendTerminalInput("seq 101 $partialEnd")
-        sendTerminalEnter()
-        val partial = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
-            info.lastFrameSeq > zoomed.lastFrameSeq &&
-                info.hash != zoomed.hash
-        } ?: throw AssertionError("partial terminal output did not render")
-        assertTrue(
-            "invalid visible range ${partial.visibleStartRow}..${partial.visibleEndRowExclusive}",
-            partial.visibleEndRowExclusive > partial.visibleStartRow,
-        )
-
     }
 
     @Test
@@ -1207,6 +1227,70 @@ class EndToEndTest {
                 "(viewCols=${info.viewCols}, hostCols=${info.cols}, ink=${render.inkLeft},${render.inkTop}..${render.inkRight},${render.inkBottom})",
             info.viewCols == info.cols,
         )
+    }
+
+    @Test
+    fun terminal_geometry_invariants_cover_small_production_and_large_sizes() {
+        data class GeometryCase(val label: String, val cols: Int, val rows: Int)
+
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val original = readTerminalDebugInfo()
+            ?: throw AssertionError("missing original terminal debug info")
+
+        val cases = listOf(
+            GeometryCase("small", cols = 80, rows = 24),
+            GeometryCase("production-minimum", cols = 110, rows = 50),
+            GeometryCase("large", cols = 132, rows = 70),
+        )
+        val originalSessionId = original.activeSessionId
+        val fixtureSessionIds = mutableListOf<String>()
+        try {
+            for (case in cases) {
+                val sessionId = startHostsViaHarness(count = 1, cols = case.cols, rows = case.rows).single()
+                fixtureSessionIds += sessionId
+                selectSessionForFixture(sessionId, expectedCols = case.cols, expectedRows = case.rows)
+                composeRule.runOnIdle {
+                    appViewModel().resetZoomAndPan()
+                }
+
+                val base = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                    info.activeSessionId == sessionId &&
+                        info.cols == case.cols &&
+                        info.rows == case.rows &&
+                        info.viewCols > 0 &&
+                        info.viewRows > 0 &&
+                        info.visibleStartRow == 0 &&
+                        info.visibleEndRowExclusive > info.visibleStartRow &&
+                        info.visibleEndRowExclusive <= info.rows &&
+                        info.renderScaleX > 0f
+                } ?: throw AssertionError("missing measured ${case.label} terminal geometry")
+                assertEquals("${case.label} terminal should fit width at default zoom", case.cols, base.viewCols)
+
+                setZoomFactor(DefaultTerminalZoom + 0.55f)
+                val zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                    info.activeSessionId == sessionId &&
+                        info.cols == case.cols &&
+                        info.rows == case.rows &&
+                        info.renderScaleX > base.renderScaleX + 0.03f &&
+                        info.visibleStartRow == 0 &&
+                        info.visibleEndRowExclusive > info.visibleStartRow &&
+                        info.visibleEndRowExclusive <= info.rows
+                } ?: throw AssertionError("missing zoomed ${case.label} terminal geometry")
+                if (case.rows >= 50) {
+                    assertTrue(
+                        "${case.label} zoomed production-sized terminal should not still fit every row " +
+                            "(visible=${zoomed.visibleStartRow}-${zoomed.visibleEndRowExclusive}, rows=${zoomed.rows})",
+                        zoomed.visibleEndRowExclusive - zoomed.visibleStartRow < zoomed.rows,
+                    )
+                }
+            }
+        } finally {
+            cleanupFixtureSessions(originalSessionId, original.cols, original.rows, fixtureSessionIds)
+        }
     }
 
     @Test
@@ -2403,6 +2487,64 @@ class EndToEndTest {
             Thread.sleep(POLL_INTERVAL_MS)
         }
         throw AssertionError("Timed out waiting for session tab $sessionId")
+    }
+
+    private fun selectSessionForFixture(
+        sessionId: String,
+        timeoutMs: Long = 10_000L,
+        expectedCols: Int? = null,
+        expectedRows: Int? = null,
+    ) {
+        waitUntilNoError(timeoutMs) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        composeRule.runOnIdle {
+            appViewModel().selectSessionForTesting(sessionId)
+        }
+        waitUntilNoError(timeoutMs) {
+            val info = readTerminalDebugInfo()
+            info != null &&
+                info.activeSessionId == sessionId &&
+                !stateForTest().sessionSyncing &&
+                (expectedCols == null || info.cols == expectedCols) &&
+                (expectedRows == null || info.rows == expectedRows)
+        }
+    }
+
+    private fun cleanupFixtureSessions(
+        originalSessionId: String,
+        originalCols: Int,
+        originalRows: Int,
+        fixtureSessionIds: List<String>,
+    ) {
+        var restoreError: Throwable? = null
+        runCatching {
+            selectSessionForFixture(originalSessionId, expectedCols = originalCols, expectedRows = originalRows)
+        }.onFailure { restoreError = it }
+
+        val stopError = runCatching {
+            stopHostsViaHarness(fixtureSessionIds)
+            if (fixtureSessionIds.isNotEmpty()) {
+                waitUntilNoError(10_000L) { stateForTest().sessions.none { it.id in fixtureSessionIds } }
+            }
+        }.exceptionOrNull()
+
+        if (restoreError != null) {
+            val retryError = runCatching {
+                selectSessionForFixture(originalSessionId, expectedCols = originalCols, expectedRows = originalRows)
+            }.exceptionOrNull()
+            if (retryError == null) {
+                restoreError = null
+            } else {
+                restoreError.addSuppressed(retryError)
+            }
+        }
+        if (stopError != null) {
+            if (restoreError != null) {
+                restoreError.addSuppressed(stopError)
+            } else {
+                throw stopError
+            }
+        }
+        restoreError?.let { throw it }
     }
 
     private fun waitForSessionTick(sessionId: String, timeoutMs: Long = 10_000L) {
@@ -3815,6 +3957,36 @@ class EndToEndTest {
         }
     }
 
+    private fun stopHostsViaHarness(sessionIds: List<String>) {
+        sessionIds.map { it.trim() }.filter { it.isNotBlank() }.forEach { sessionId ->
+            val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/stop-host")
+            val body = org.json.JSONObject()
+                .put("session_id", sessionId)
+                .toString()
+                .toByteArray(Charsets.UTF_8)
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 5_000
+                readTimeout = 5_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+                val sslContext = trustContextFor(testConfig.caPem)
+                connection.sslSocketFactory = sslContext.socketFactory
+            }
+            try {
+                connection.outputStream.use { it.write(body) }
+                val code = connection.responseCode
+                if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_NOT_FOUND) {
+                    throw AssertionError("harness stop-host failed with HTTP $code for $sessionId")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
     private fun startHeadlessViaHarness(cols: Int = 120, rows: Int = 50): String {
         val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless?cols=$cols&rows=$rows")
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -4105,8 +4277,8 @@ class EndToEndTest {
                     ?.filter { it.isNotBlank() }
                     .orEmpty()
                 val viewToken2 = args.getString("view_token2")?.trim()?.takeIf { it.isNotBlank() }
-                val hostCols = args.getString("host_cols")?.toIntOrNull() ?: 80
-                val hostRows = args.getString("host_rows")?.toIntOrNull() ?: 24
+                val hostCols = args.getString("host_cols")?.toIntOrNull() ?: 120
+                val hostRows = args.getString("host_rows")?.toIntOrNull() ?: 50
                 return TestConfig(
                     endpoint = endpoint,
                     username = username,

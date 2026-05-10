@@ -110,8 +110,8 @@ func main() {
 		basePath     = flag.String("base-path", "/v1", "API base path")
 		user         = flag.String("user", "test", "login username")
 		pass         = flag.String("pass", "pass", "login password")
-		cols         = flag.Int("cols", 80, "terminal columns")
-		rows         = flag.Int("rows", 24, "terminal rows")
+		cols         = flag.Int("cols", 120, "terminal columns")
+		rows         = flag.Int("rows", 50, "terminal rows")
 		configPath   = flag.String("config", "", "write JSON config to this path")
 		hostEcho     = flag.Bool("host-echo", false, "run the host echo loop instead of the harness")
 		hostID       = flag.String("host-id", "", "host echo session id")
@@ -281,6 +281,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	}
 
 	controlPath := ensureBasePath(opts.basePath) + "/__harness/start-host"
+	stopHostPath := ensureBasePath(opts.basePath) + "/__harness/stop-host"
 	wallPath := ensureBasePath(opts.basePath) + "/__harness/send-wall"
 	wallInactivityPath := ensureBasePath(opts.basePath) + "/__harness/wall-inactivity"
 	startHeadlessPath := ensureBasePath(opts.basePath) + "/__harness/start-headless"
@@ -337,6 +338,24 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"ids": ids})
+			return
+		case stopHostPath:
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req harnessHeadlessRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := h.stopHost(strings.TrimSpace(req.SessionID)); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "stopped"})
 			return
 		case wallPath:
 			if r.Method != http.MethodPost {
@@ -624,6 +643,25 @@ func (h *harness) startHost(token string, cols int, rows int, shellPath string, 
 	h.sessions = append(h.sessions, sessionHandle{id: id, stop: cancel})
 	h.sessionsMu.Unlock()
 	return id, nil
+}
+
+func (h *harness) stopHost(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	h.sessionsMu.Lock()
+	defer h.sessionsMu.Unlock()
+	for i, sess := range h.sessions {
+		if sess.id != sessionID {
+			continue
+		}
+		if sess.stop != nil {
+			sess.stop()
+		}
+		h.sessions = append(h.sessions[:i], h.sessions[i+1:]...)
+		return nil
+	}
+	return fmt.Errorf("host session %s not found", sessionID)
 }
 
 func (h *harness) startHeadless(cols int, rows int) (string, error) {
