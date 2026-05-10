@@ -29,6 +29,34 @@ Required status values:
 
 ## Active Items
 
+### B-060 Disabled Android wall notification channel can consume wall cursor
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `cursor`
+- Summary: `AndroidWallNotifier` can return success when Android accepts a wall `notify()` call but suppresses the notification, allowing `WallDeliveryCoordinator` to advance the durable wall cursor for an event the user never saw.
+- Report:
+  Review found that if the existing `lingon_wall` notification channel is disabled by the user, `notify()` can return normally without surfacing an active notification. The current notifier returns `true` unconditionally after `notify()`, so suppressed wall posts are treated as delivered.
+- Repro:
+  1. Disable the app's `lingon_wall` notification channel while wall/background notifications are otherwise enabled.
+  2. Receive a wall event while the app delivery path is posting system notifications.
+  3. Android suppresses the notification but `notify()` returns normally.
+  4. The durable wall cursor advances, so the missed event is not retried after the channel is re-enabled.
+- Investigation notes:
+  - The review finding is real. `MonotonicWallDeliveryCoordinator` advances the durable cursor only when `WallNotifier.notifyWall()` returns true, and `AndroidWallNotifier` had dropped the previous active-notification visibility check when wall posts moved from one fixed notification ID to per-event tag/id delivery.
+  - Disabled notification channels are not fixed by `ensureChannel()` because an existing disabled channel is preserved. The notifier must reject non-postable channel state before posting and prove the expected tag/id/channel is active after posting.
+  - Targeted managed-device verification exposed two more boundary details: `activeNotifications` is not always populated in the same instant that `notify()` returns, and Android can preserve disabled-channel state for a channel ID during an app install. The visibility proof must poll for a bounded interval, and instrumentation must use isolated test channel IDs instead of mutating the production `lingon_wall` channel.
+  - The bounded visibility wait runs through the suspend coordinator on `Dispatchers.IO`, so websocket/background delivery does not block the main dispatcher while waiting for Android notification state.
+- Regression coverage:
+  - Added unit coverage for `IMPORTANCE_NONE` being non-postable and visible channel importances being postable.
+  - Added unit coverage that active notification matching requires the exact wall channel, tag, and ID, including Java `String.hashCode()` notification-ID collision fixtures.
+  - Added targeted instrumentation coverage that a `lingon_wall` channel created with `IMPORTANCE_NONE` makes `AndroidWallNotifier.notifyWall()` return false, and that an enabled channel reports success only after the expected wall notification is active.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Targeted managed-device instrumentation failed before the final fix because `activeNotifications` was not immediately visible after `notify()`, then passed with isolated test channel IDs and bounded visibility polling: `systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=7G -p MemorySwapMax=0 ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" :app:phoneApi35DebugAndroidTest --no-configuration-cache -Plingon.it.class=systems.pkt.lingon.AndroidWallNotifierInstrumentedTest`.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `git diff --check` passed.
+
 ### B-059 Android IME visibility is not preserved across app refocus
 
 - Status: `resolved`

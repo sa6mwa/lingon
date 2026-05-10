@@ -1,8 +1,10 @@
 package systems.pkt.lingon.notifications
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import systems.pkt.lingon.data.WallWorkStateStore
 import systems.pkt.lingon.data.relay.RelayWallEventsPage
 import systems.pkt.lingon.viewmodel.WallNotification
@@ -104,7 +106,7 @@ class MonotonicWallDeliveryCoordinator(
         }
     }
 
-    private fun deliverNotificationLocked(notification: WallNotification): Boolean {
+    private suspend fun deliverNotificationLocked(notification: WallNotification): Boolean {
         val body = notification.message.trim()
         if (body.isBlank()) {
             return true
@@ -113,7 +115,9 @@ class MonotonicWallDeliveryCoordinator(
             return false
         }
         return try {
-            notifier.notifyWall(notification.copy(message = body))
+            withContext(Dispatchers.IO) {
+                notifier.notifyWall(notification.copy(message = body))
+            }
         } catch (err: CancellationException) {
             throw err
         } catch (_: Exception) {

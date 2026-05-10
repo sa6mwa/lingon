@@ -1,6 +1,8 @@
 package systems.pkt.lingon.notifications
 
+import android.app.NotificationManager
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -93,6 +95,85 @@ class AndroidWallNotifierTest {
         assertEquals(tag, wallNotificationTag(notification.copy()))
         assertEquals("wall:".length + 64, tag.length)
         assertTrue("tag should be a stable lowercase SHA-256 hex digest: $tag", tag.matches(Regex("wall:[0-9a-f]{64}")))
+    }
+
+    @Test
+    fun wallNotificationChannelImportanceNoneIsNotPostable() {
+        assertFalse(wallNotificationChannelCanPost(NotificationManager.IMPORTANCE_NONE))
+    }
+
+    @Test
+    fun wallNotificationChannelVisibleImportancesArePostable() {
+        assertTrue(wallNotificationChannelCanPost(NotificationManager.IMPORTANCE_MIN))
+        assertTrue(wallNotificationChannelCanPost(NotificationManager.IMPORTANCE_LOW))
+        assertTrue(wallNotificationChannelCanPost(NotificationManager.IMPORTANCE_DEFAULT))
+        assertTrue(wallNotificationChannelCanPost(NotificationManager.IMPORTANCE_HIGH))
+    }
+
+    @Test
+    fun wallNotificationVisibilityRequiresMatchingChannelTagAndId() {
+        val notification = wallNotification(eventId = 42L, message = "hello")
+        val tag = wallNotificationTag(notification)
+        val id = wallNotificationId(notification)
+
+        assertTrue(
+            isWallNotificationStatusBarEntry(
+                channelId = wallNotificationChannelId,
+                tag = tag,
+                id = id,
+                expectedChannelId = wallNotificationChannelId,
+                expectedTag = tag,
+                expectedId = id,
+            ),
+        )
+        assertFalse(
+            isWallNotificationStatusBarEntry(
+                channelId = "other",
+                tag = tag,
+                id = id,
+                expectedChannelId = wallNotificationChannelId,
+                expectedTag = tag,
+                expectedId = id,
+            ),
+        )
+        assertFalse(
+            isWallNotificationStatusBarEntry(
+                channelId = wallNotificationChannelId,
+                tag = "wall:other",
+                id = id,
+                expectedChannelId = wallNotificationChannelId,
+                expectedTag = tag,
+                expectedId = id,
+            ),
+        )
+        assertFalse(
+            isWallNotificationStatusBarEntry(
+                channelId = wallNotificationChannelId,
+                tag = tag,
+                id = id + 1,
+                expectedChannelId = wallNotificationChannelId,
+                expectedTag = tag,
+                expectedId = id,
+            ),
+        )
+    }
+
+    @Test
+    fun wallNotificationVisibilityKeepsCollidingIntegerIdsDistinctByTag() {
+        val first = wallNotification(eventId = 0L, message = "Aa")
+        val second = wallNotification(eventId = 0L, message = "BB")
+
+        assertEquals(wallNotificationId(first), wallNotificationId(second))
+        assertFalse(
+            isWallNotificationStatusBarEntry(
+                channelId = wallNotificationChannelId,
+                tag = wallNotificationTag(second),
+                id = wallNotificationId(second),
+                expectedChannelId = wallNotificationChannelId,
+                expectedTag = wallNotificationTag(first),
+                expectedId = wallNotificationId(first),
+            ),
+        )
     }
 
     @Test
