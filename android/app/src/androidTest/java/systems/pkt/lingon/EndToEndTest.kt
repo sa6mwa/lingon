@@ -379,6 +379,7 @@ class EndToEndTest {
             view.restoreViewportState(
                 TerminalViewportState(
                     cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = cellHeight * 3.5f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
@@ -459,6 +460,7 @@ class EndToEndTest {
             view.restoreViewportState(
                 TerminalViewportState(
                     cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
@@ -531,6 +533,7 @@ class EndToEndTest {
             view.restoreViewportState(
                 TerminalViewportState(
                     cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
@@ -547,6 +550,87 @@ class EndToEndTest {
                 0.01f,
             )
             assertEquals(0, view.getVisibleStartRow())
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera() {
+        lateinit var view: TerminalGridView
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(200), exactlyMeasureSpec(240))
+                layout(0, 0, 200, 240)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 20, cols = 80, cursorX = 4),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 80,
+                    hostRows = 20,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 80f,
+                    preferredCameraOffsetXPx = 0f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 20,
+                ),
+            )
+
+            assertEquals(
+                "restore should apply the saved camera for the current frame",
+                80f,
+                view.getCameraOffsetXForTesting(),
+                0.01f,
+            )
+            assertEquals(
+                "restore must not promote a temporary cursor-follow camera to the preferred horizontal offset",
+                0f,
+                view.getPreferredCameraOffsetXForTesting(),
+                0.01f,
+            )
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 20, cols = 80, cursorX = 5),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 80,
+                hostRows = 20,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(200, 240, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "later cursor-follow should return to the saved horizontal preference when the cursor still fits",
+                0f,
+                view.getCameraOffsetXForTesting(),
+                0.01f,
+            )
         }
         composeRule.waitForIdle()
     }
@@ -718,6 +802,7 @@ class EndToEndTest {
             view.restoreViewportState(
                 TerminalViewportState(
                     cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
@@ -829,6 +914,7 @@ class EndToEndTest {
             view.restoreViewportState(
                 TerminalViewportState(
                     cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
@@ -1845,6 +1931,65 @@ class EndToEndTest {
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
         assertEquals(message, text)
+    }
+
+    @Test
+    fun background_distinct_wall_messages_post_distinct_system_notifications() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.activity.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilDeviceCondition(10_000L, "background wall service notification") {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        val suffix = System.currentTimeMillis()
+        val firstMessage = "background distinct wall first $suffix"
+        val secondMessage = "background distinct wall second $suffix"
+        sendWallViaHarness(firstMessage)
+        waitForWallNotificationBody(firstMessage, "first distinct background wall notification")
+        sendWallViaHarness(secondMessage)
+        waitForWallNotificationBody(secondMessage, "second distinct background wall notification")
+
+        val notifications = wallNotifications()
+            .filter {
+                val text = wallNotificationFullText(it)
+                text == firstMessage || text == secondMessage
+            }
+        val visibleMessages = notifications.map { wallNotificationFullText(it) }
+        assertEquals(
+            "distinct wall messages must remain separate notifications so Android can alert each event",
+            listOf(firstMessage, secondMessage).sorted(),
+            visibleMessages.sorted(),
+        )
+        assertEquals(
+            "distinct wall messages must use distinct notification ids",
+            notifications.size,
+            notifications.map { it.id }.distinct().size,
+        )
+        assertEquals(
+            "distinct wall messages must use distinct notification tags",
+            notifications.size,
+            notifications.map { it.tag }.distinct().size,
+        )
+        notifications.forEach { wallNotification ->
+            assertTrue(
+                "wall notification retries must still be update-only for id=${wallNotification.id}",
+                wallNotification.notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0,
+            )
+        }
     }
 
     @Test
@@ -3182,7 +3327,12 @@ class EndToEndTest {
         return View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY)
     }
 
-    private fun terminalSnapshotForViewTest(rows: Int, cols: Int, cursorY: Int = rows - 1): TerminalSnapshot {
+    private fun terminalSnapshotForViewTest(
+        rows: Int,
+        cols: Int,
+        cursorY: Int = rows - 1,
+        cursorX: Int = 0,
+    ): TerminalSnapshot {
         val size = rows * cols
         return TerminalSnapshot(
             cols = cols,
@@ -3192,7 +3342,7 @@ class EndToEndTest {
             fg = IntArray(size),
             bg = IntArray(size),
             graphemes = null,
-            cursorX = 0,
+            cursorX = cursorX.coerceIn(0, cols - 1),
             cursorY = cursorY.coerceIn(0, rows - 1),
             cursorVisible = true,
             mode = 0,

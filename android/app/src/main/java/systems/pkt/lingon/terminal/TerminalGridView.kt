@@ -274,6 +274,10 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun getRenderScaleY(): Float = renderScaleY
 
+    fun getCameraOffsetXForTesting(): Float = cameraOffsetXPx
+
+    fun getPreferredCameraOffsetXForTesting(): Float = preferredCameraOffsetXPx
+
     fun getCameraOffsetYForTesting(): Float = cameraOffsetYPx
 
     fun getScaledCellHeightForTesting(): Float = scaledCellHeight
@@ -301,6 +305,7 @@ class TerminalGridView @JvmOverloads constructor(
     fun captureViewportState(): TerminalViewportState {
         return TerminalViewportState(
             cameraOffsetXPx = cameraOffsetXPx,
+            preferredCameraOffsetXPx = preferredCameraOffsetXPx,
             cameraOffsetYPx = cameraOffsetYPx,
             scrollRemainderY = scrollRemainderY,
             viewportHeightPx = height,
@@ -329,7 +334,7 @@ class TerminalGridView @JvmOverloads constructor(
 
     private fun applyViewportRestore(state: TerminalViewportState) {
         cameraOffsetXPx = state.cameraOffsetXPx
-        preferredCameraOffsetXPx = state.cameraOffsetXPx
+        preferredCameraOffsetXPx = state.preferredCameraOffsetXPx
         cameraOffsetYPx = TerminalViewportPolicy.restoreCameraOffsetY(
             savedCameraOffsetYPx = state.cameraOffsetYPx,
             savedViewportHeightPx = state.viewportHeightPx,

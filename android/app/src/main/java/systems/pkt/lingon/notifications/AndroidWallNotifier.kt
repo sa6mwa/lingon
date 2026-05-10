@@ -46,7 +46,7 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             launchIntent,
             pendingFlags,
         )
-        val notification = NotificationCompat.Builder(context, channelID)
+        val androidNotification = NotificationCompat.Builder(context, channelID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(content)
@@ -59,7 +59,11 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             .setContentIntent(pendingIntent)
             .build()
         return try {
-            notificationManager.notify(notificationId, notification)
+            notificationManager.notify(
+                wallNotificationTag(notification),
+                wallNotificationId(notification),
+                androidNotification,
+            )
             true
         } catch (_: SecurityException) {
             false
@@ -86,8 +90,29 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
 
     private companion object {
         const val channelID = "lingon_wall"
-        const val notificationId = 1002
     }
+}
+
+private const val wallNotificationFallbackIdBase = 300_000_000
+private const val wallNotificationIdMask = 0x0fffffff
+
+internal fun wallNotificationId(notification: WallNotification): Int {
+    val folded = wallNotificationKey(notification).hashCode() and wallNotificationIdMask
+    return wallNotificationFallbackIdBase + folded
+}
+
+internal fun wallNotificationTag(notification: WallNotification): String {
+    return "wall:${wallNotificationId(notification)}"
+}
+
+private fun wallNotificationKey(notification: WallNotification): String {
+    return listOf(
+        notification.endpoint.trim(),
+        notification.eventId.coerceAtLeast(0L).toString(),
+        notification.sender.trim(),
+        notification.sourceSessionName.trim(),
+        notification.message.trim(),
+    ).joinToString(separator = "\u001f")
 }
 
 internal fun formatWallSource(sender: String, sourceSessionName: String): String {

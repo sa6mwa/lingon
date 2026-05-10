@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-051 Review follow-up: wall alert dedupe silences distinct messages and viewport restore loses horizontal preference
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `terminal`, `viewport`, `lifecycle`
+- Summary: Review identified two regressions in the previous wall notification and viewport restore changes: notification alert dedupe was tied to one constant Android notification ID, and lifecycle restore could promote a temporary horizontal cursor-follow camera into the user's preferred horizontal camera.
+- Report:
+  1. Distinct wall events posted while an earlier wall notification remains visible should still be allowed to alert; only retries/updates for the same wall event should be update-only.
+  2. A viewport captured after horizontal cursor-follow panned right for wide output should restore the current camera for the restore frame, but must keep the user's saved horizontal preference separate so later prompts that still fit can return to that preference.
+- Repro:
+  1. Enable background wall notifications, background the app, send two distinct wall messages, and observe they need distinct Android notification records/IDs while each still carries update-only retry semantics.
+  2. Restore a `TerminalGridView` state with a temporary `cameraOffsetXPx` and a separate saved `preferredCameraOffsetXPx`; then update with a cursor that fits the saved preference and observe the camera should return to the preference instead of staying at the temporary offset.
+- Investigation notes:
+  - The notification review finding was real. `setOnlyAlertOnce(true)` is correct for retries of the same event, but using one constant `notificationId` made Android treat distinct wall events as updates of the same notification.
+  - Device verification also showed that relying on a numeric ID alone was insufficient for the Android-visible behavior. Wall notifications now use a stable Android notification tag plus ID derived from the wall identity. Same immutable event retries update the same notification key; distinct messages get distinct keys.
+  - The viewport review finding was real. Capturing only `cameraOffsetXPx` made restore conflate the transient camera with the user-preferred horizontal origin.
+  - `TerminalViewportState` now captures `preferredCameraOffsetXPx` separately. Restore applies the saved current camera for the restore frame but keeps the saved preferred horizontal camera for later cursor-follow decisions.
+- Regression coverage:
+  - Added `AndroidWallNotifierTest` coverage for stable same-event notification IDs and distinct IDs for distinct wall events.
+  - Added `EndToEndTest.background_distinct_wall_messages_post_distinct_system_notifications`.
+  - Added `EndToEndTest.lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera`.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest` passed.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera make integration-test` failed before the test fixture modeled cursor movement correctly, then passed with the restored preference behavior.
+  - `cd android && LINGON_IT_ONLY=background_distinct_wall_messages_post_distinct_system_notifications make integration-test` failed with only the second notification visible before explicit notification tags, then passed after the fix.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
 ### B-050 Android wall notifications can alert twice and wall banners dismiss too quickly
 
 - Status: `resolved`
