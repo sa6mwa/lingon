@@ -78,7 +78,7 @@ help:
 	@echo "  make emulator PRESET=medium AVD_RAM_MB=2048   - lower emulator RAM when needed"
 	@echo "  make adb-install ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
 	@echo "  make integration-test LINGON_IT_CPU_QUOTA_PERCENT=400 LINGON_IT_MEMORY_MAX=6G"
-	@echo "                      (default: systemd cgroup, half of online CPUs, MemoryMax=8G, fresh managed emulator)"
+	@echo "                      (default: systemd cgroup, CPUQuota=min(half of online CPUs, 200%), MemoryMax=7G, fresh managed emulator)"
 	@echo "                      set LINGON_IT_REUSE_DEVICE=1 only when deliberately using an existing device/emulator"
 
 list-presets:

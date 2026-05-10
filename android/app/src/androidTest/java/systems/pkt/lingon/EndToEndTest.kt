@@ -2742,7 +2742,7 @@ class EndToEndTest {
                 it.notification.channelId == "lingon_wall" ||
                     it.notification.channelId == "lingon_background_wall"
             }
-            .forEach { manager.cancel(it.id) }
+            .forEach { manager.cancelNotification(it) }
     }
 
     private fun syncWallCursorToLatest() {
@@ -2921,6 +2921,15 @@ class EndToEndTest {
     private fun notificationManager(): NotificationManager? {
         return InstrumentationRegistry.getInstrumentation().targetContext
             .getSystemService(NotificationManager::class.java)
+    }
+
+    private fun NotificationManager.cancelNotification(notification: StatusBarNotification) {
+        val tag = notification.tag
+        if (tag != null) {
+            cancel(tag, notification.id)
+            return
+        }
+        cancel(notification.id)
     }
 
     private fun wallNotifications(): List<StatusBarNotification> {

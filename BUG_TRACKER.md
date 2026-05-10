@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-061 Tagged wall notification cleanup must cancel by tag and ID
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `e2e`
+- Summary: Android wall notifications are posted with non-null tags, but the Android e2e cleanup path still cancelled by ID only, leaving stale wall notifications active across tests.
+- Report:
+  Review found that `clearWallNotifications()` calls `NotificationManager.cancel(id)` even for tagged `lingon_wall` notifications. Android requires `cancel(tag, id)` for tagged notifications, so stale wall notifications can survive cleanup and confuse later waits/assertions.
+- Repro:
+  1. Post a tagged wall notification.
+  2. Call `NotificationManager.cancel(id)`.
+  3. Observe the notification remains active.
+  4. Call `NotificationManager.cancel(tag, id)`.
+  5. Observe the notification is cleared.
+- Investigation notes:
+  - The review finding is real. The bug was introduced when wall posts moved from a single id-only notification to per-event tag/id notifications.
+  - Background-wall service notifications still use id-only posts, so cleanup must support both tagged and untagged notifications.
+- Regression coverage:
+  - Added targeted instrumentation coverage proving id-only cancellation does not clear a tagged wall notification and tagged cancellation does.
+  - Updated e2e wall-notification cleanup to cancel with `tag,id` when a tag exists and fall back to id-only cancellation otherwise.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Targeted managed-device instrumentation passed with 3 tests: `systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=7G -p MemorySwapMax=0 ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" :app:phoneApi35DebugAndroidTest --no-configuration-cache -Plingon.it.class=systems.pkt.lingon.AndroidWallNotifierInstrumentedTest`.
+  - `cd android && make help` shows the corrected cgroup defaults.
+  - `git diff --check` passed.
+
 ### B-060 Disabled Android wall notification channel can consume wall cursor
 
 - Status: `resolved`

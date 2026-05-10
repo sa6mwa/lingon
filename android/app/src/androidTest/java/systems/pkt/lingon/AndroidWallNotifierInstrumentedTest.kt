@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.FileInputStream
@@ -72,18 +73,26 @@ class AndroidWallNotifierInstrumentedTest {
         val id = wallNotificationId(notification)
 
         assertTrue(AndroidWallNotifier(context, visibleTestChannelId).notifyWall(notification))
-        assertTrue(
-            notificationManager.activeNotifications.any {
-                isWallNotificationStatusBarEntry(
-                    channelId = it.notification.channelId,
-                    tag = it.tag,
-                    id = it.id,
-                    expectedChannelId = visibleTestChannelId,
-                    expectedTag = tag,
-                    expectedId = id,
-                )
-            },
-        )
+        assertTrue(hasActiveWallNotification(tag, id))
+    }
+
+    @Test
+    fun taggedWallNotificationRequiresTaggedCancellation() {
+        val notification = wallNotification(message = "tagged cancellation")
+        val tag = wallNotificationTag(notification)
+        val id = wallNotificationId(notification)
+
+        assertTrue(AndroidWallNotifier(context, visibleTestChannelId).notifyWall(notification))
+        assertTrue(hasActiveWallNotification(tag, id))
+
+        notificationManager.cancel(id)
+        SystemClock.sleep(250L)
+        assertTrue("id-only cancellation must not clear a tagged wall notification", hasActiveWallNotification(tag, id))
+
+        notificationManager.cancel(tag, id)
+        waitUntil("tagged wall notification cancelled") {
+            !hasActiveWallNotification(tag, id)
+        }
     }
 
     private fun resetWallChannel() {
@@ -118,6 +127,33 @@ class AndroidWallNotifierInstrumentedTest {
         descriptor.close()
     }
 
+    private fun hasActiveWallNotification(tag: String, id: Int): Boolean {
+        return notificationManager.activeNotifications.any {
+            isWallNotificationStatusBarEntry(
+                channelId = it.notification.channelId,
+                tag = it.tag,
+                id = it.id,
+                expectedChannelId = visibleTestChannelId,
+                expectedTag = tag,
+                expectedId = id,
+            )
+        }
+    }
+
+    private fun waitUntil(description: String, condition: () -> Boolean) {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (condition()) {
+                return
+            }
+            SystemClock.sleep(pollIntervalMs)
+        }
+        if (condition()) {
+            return
+        }
+        throw AssertionError("Timed out waiting for $description")
+    }
+
     private fun wallNotification(message: String): WallNotification {
         return WallNotification(
             endpoint = "https://relay.example/v1",
@@ -131,5 +167,7 @@ class AndroidWallNotifierInstrumentedTest {
     private companion object {
         const val disabledTestChannelId = "lingon_wall_instrumented_disabled"
         const val visibleTestChannelId = "lingon_wall_instrumented_visible"
+        const val timeoutMs = 2_000L
+        const val pollIntervalMs = 25L
     }
 }
