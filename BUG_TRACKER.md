@@ -31,7 +31,7 @@ Required status values:
 
 ### B-059 Android IME visibility is not preserved across app refocus
 
-- Status: `resolved`
+- Status: `needs_verification`
 - Area: `android`, `ime`, `keyboard`, `lifecycle`, `e2e`
 - Summary: If the soft keyboard is visible when the Android app is backgrounded, it reappears briefly on refocus and then auto-hides about one second later.
 - Report:
@@ -49,11 +49,18 @@ Required status values:
   - Normal input readiness was sharing the same "restore in progress" suppression as lifecycle ON_START. That allowed a user-hidden IME transition to be ignored as if it were a transient lifecycle restore inset.
   - The hidden input view could be focused directly by tests and platform focus without going through the terminal tap path that records IME intent.
   - Refocus via `am start` can re-enter the activity path; `.MainActivity` now uses `singleTop` so foregrounding targets the existing activity instance instead of stacking a fresh one.
+  - Reopened: the real phone still auto-hides after refocus. The missing invariant is that a platform-driven post-resume IME hide must not be interpreted as a user hide when the saved lifecycle preference is visible.
+  - Follow-up fix: IME inset changes now go through `TerminalImeLifecyclePolicy`. A false inset while the saved lifecycle preference is visible re-requests focus instead of persisting hidden. User dismissal is explicit through pre-IME Back and ignores stale visible insets until Android reports the hidden inset.
 - Verification:
   - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed before the final fix, then passed.
   - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` failed before the delayed assertion fix, then passed.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
   - `git diff --check` passed.
+  - Added `TerminalImeLifecyclePolicyTest.platformHiddenInsetAfterVisibleLifecycleRestoreDoesNotPersistHidden`, which failed before the follow-up fix and passed after the policy change.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the follow-up fix.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed as a targeted smoke test.
+  - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed after the first follow-up fix because stale visible insets could undo explicit Back dismissal, then passed after adding dismissal-in-progress handling.
+  - Waiting for engineer confirmation on the physical phone before marking this resolved.
 
 ### B-058 Full Android integration sweep remains unsafe on developer workstation
 
