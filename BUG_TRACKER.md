@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-056 Android integration tests can saturate the workstation
+
+- Status: `resolved`
+- Area: `android`, `integration-test`, `harness`, `emulator`, `gradle`
+- Summary: The Android integration harness can consume enough CPU and memory to freeze the laptop, making the full e2e suite unsafe to run normally.
+- Report:
+  Running Android integration tests can make the workstation effectively unresponsive. The full stack must be contained by default, including emulator, harness, Gradle, and test collection, with a hard CPU cap around half the online cores and a memory ceiling around 8 GB.
+- Repro:
+  1. Run `make integration-test` from `android/`.
+  2. Observe emulator/harness/Gradle load can saturate the machine.
+  3. The integration runner should instead enter a systemd user scope before starting the stack, apply dynamic CPU quota and memory limits, and record resource samples for diagnosis.
+- Investigation notes:
+  - The existing integration script owned emulator, harness, Gradle, artifact collection, and logcat, so the containment point belongs at the start of `run-integration-tests.sh`, before any of those processes start.
+  - `systemd-run --user --scope` supports the needed hard limits in this environment. Default CPU quota is computed from online CPUs as `cores * 50%`, which is half the machine because systemd expresses `CPUQuota` as percent of one core.
+  - The script now defaults to a fresh managed emulator so the emulator is created inside the cgroup. Reusing an already-running device/emulator is explicit via `LINGON_IT_REUSE_DEVICE=1`.
+  - Gradle now runs with `--no-daemon` and in-process Kotlin compilation for integration tests, avoiding reuse of unconstrained Gradle/Kotlin daemons outside the cgroup.
+  - Cgroups cap real memory, not virtual address space. The runner enforces `MemoryMax=8G` and `MemorySwapMax=0`, and logs peak per-process VSZ separately for diagnosis.
+- Regression coverage:
+  - `run-integration-tests.sh` now self-wraps normal invocations in a systemd user scope unless `LINGON_IT_CGROUP=0` is set deliberately.
+  - Each run writes `samples.jsonl`, `summary.txt`, and `top-processes.txt` under `android/test-artifacts/resource-profile-*`.
+  - `android/Makefile` documents CPU/memory knobs and the explicit device-reuse escape hatch.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh` passed.
+  - `cd android && LINGON_IT_ONLY=top_bar_menu_is_accessible make integration-test` passed with the cgroup wrapper enabled.
+  - Final smoke profile: `CPUQuota=600%` on 12 online CPUs, `MemoryMax=8G`, `MemorySwapMax=0`, `peak_cpu_cores=5.75`, `peak_memory_peak_bytes=5574295552`, `peak_process_vsz_kb=12293840`.
+
 ### B-054 Review follow-up: manual viewport restore drifts across height changes
 
 - Status: `resolved`
