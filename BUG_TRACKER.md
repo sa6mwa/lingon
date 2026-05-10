@@ -29,6 +29,35 @@ Required status values:
 
 ## Active Items
 
+### B-053 Refactor: wall polling must not expose in-flight delivery as durable cursor
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `worker`, `service`
+- Summary: The wall delivery surface was too primitive: workers/services could separately load and advance the same cursor that notification delivery used for in-flight claims, allowing failed notifications to be skipped by concurrent pollers.
+- Report:
+  Review found that persisting event 42 as a normal cursor before `notifyWall` succeeds lets another poller observe 42 as delivered, advance past it, and make rollback skip the unposted event.
+- Repro:
+  1. Start a poll for event 42 and block inside `notifyWall`.
+  2. While blocked, read the durable cursor.
+  3. The durable cursor must remain at the previous delivered value, not 42.
+  4. If event 42 fails and event 43 is blank/later in the page, the cursor must not advance past 42.
+- Investigation notes:
+  - The review finding was a design issue, not a narrow exception-handling bug. `WallWorkStateStore.claimDelivery` persisted in-flight notification claims into the same cursor read by poll workers/services.
+  - Refactor: removed persistent delivery claims and rollback state. `WallWorkStateStore` now only stores durable delivered cursors.
+  - Refactor: `MonotonicWallDeliveryCoordinator.pollOnce` owns loading the cursor, fetching one page, processing events, posting notifications, and advancing the durable cursor under one process-wide mutex.
+  - `WallPollWorker` and `BackgroundWallForegroundService` now call the shared `pollOnce` page processor instead of duplicating cursor/page loops.
+  - Direct websocket delivery paths still use the same coordinator mutex and only advance the durable cursor after notification delivery succeeds or in-app consumption is accepted.
+- Regression coverage:
+  - Added `WallDeliveryCoordinatorTest.pollDoesNotExposeInFlightNotificationAsDeliveredCursor`.
+  - Added `WallDeliveryCoordinatorTest.pollDoesNotSkipFailedNotificationWhenLaterBlankEventExists`.
+  - Added `WallDeliveryCoordinatorTest.concurrentPollsSerializeAndSecondPollSeesCommittedCursor`.
+  - Updated `WallWorkStateStoreTest` to remove claim/rollback behavior and assert only monotonic durable cursor semantics.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest --tests systems.pkt.lingon.data.WallWorkStateStoreTest --tests systems.pkt.lingon.work.BackgroundWallForegroundServiceTest` passed.
+  - `cd android && LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=background_distinct_wall_messages_post_distinct_system_notifications make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
 ### B-052 Review follow-up: wall delivery exceptions and live height-change bottom alignment
 
 - Status: `resolved`

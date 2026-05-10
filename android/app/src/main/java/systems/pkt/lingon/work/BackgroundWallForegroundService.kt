@@ -26,7 +26,7 @@ import systems.pkt.lingon.LingonApplication
 import systems.pkt.lingon.MainActivity
 import systems.pkt.lingon.R
 import systems.pkt.lingon.data.ApiException
-import systems.pkt.lingon.viewmodel.WallNotification
+import systems.pkt.lingon.notifications.WallPollStatus
 
 class BackgroundWallForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -73,54 +73,22 @@ class BackgroundWallForegroundService : Service() {
                 delay(pollIntervalMs)
                 continue
             }
-            val since = app.wallWorkStateStore.loadCursor(endpoint)
             try {
-                val page = app.repository.listWallEvents(sinceId = since, limit = servicePageLimit)
-                if (shouldResetWallCursor(since, page.nextId, page.events.size)) {
-                    Log.w(logTag, "poll cursor reset detected endpoint=$endpoint since=$since next=${page.nextId}")
-                    app.wallWorkStateStore.clearCursor(endpoint)
+                val result = app.wallDeliveryCoordinator.pollOnce(endpoint, servicePageLimit) { since, limit ->
+                    app.repository.listWallEvents(sinceId = since, limit = limit)
+                }
+                if (result.status == WallPollStatus.Reset) {
+                    Log.w(logTag, "poll cursor reset detected endpoint=$endpoint since=${result.since}")
                     continue
                 }
-                var next = since
-                var blocked = false
-                for (event in page.events) {
-                    if (event.message.isBlank()) {
-                        if (event.id > next) {
-                            next = event.id
-                        }
-                        continue
-                    }
-                    val consumed = app.wallDeliveryCoordinator.deliver(
-                        WallNotification(
-                            endpoint = endpoint,
-                            eventId = event.id,
-                            sender = event.sender,
-                            sourceSessionName = event.sessionName ?: "",
-                            message = event.message,
-                        ),
-                    )
-                    if (!consumed) {
-                        blocked = true
-                        break
-                    }
-                    if (event.id > next) {
-                        next = event.id
-                    }
-                }
-                if (!blocked && page.nextId > next) {
-                    next = page.nextId
-                }
-                if (next > since) {
-                    app.wallDeliveryCoordinator.advanceCursor(endpoint, next)
-                }
             } catch (err: ApiException) {
-                Log.w(logTag, "poll api failed endpoint=$endpoint since=$since status=${err.statusCode}", err)
+                Log.w(logTag, "poll api failed endpoint=$endpoint status=${err.statusCode}", err)
                 if (err.statusCode == 401) {
                     stopSelf()
                     return
                 }
             } catch (err: Exception) {
-                Log.w(logTag, "poll failed endpoint=$endpoint since=$since", err)
+                Log.w(logTag, "poll failed endpoint=$endpoint", err)
             }
             delay(pollIntervalMs)
         }
@@ -191,8 +159,5 @@ class BackgroundWallForegroundService : Service() {
 
     }
 }
-
-internal fun shouldResetWallCursor(since: Long, nextId: Long, eventCount: Int): Boolean =
-    since > 0L && eventCount == 0 && nextId in 0 until since
 
 internal fun shouldPollBackgroundWall(appInForeground: Boolean): Boolean = !appInForeground

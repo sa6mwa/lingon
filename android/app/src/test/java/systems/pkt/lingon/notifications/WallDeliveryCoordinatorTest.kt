@@ -16,6 +16,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import systems.pkt.lingon.data.WallWorkStateStore
+import systems.pkt.lingon.data.relay.RelayWallEvent
+import systems.pkt.lingon.data.relay.RelayWallEventsPage
 import systems.pkt.lingon.viewmodel.WallNotification
 import systems.pkt.lingon.viewmodel.WallNotifier
 
@@ -163,6 +165,101 @@ class WallDeliveryCoordinatorTest {
     }
 
     @Test
+    fun pollDoesNotExposeInFlightNotificationAsDeliveredCursor() = runTest {
+        val store = newStore()
+        val notifier = BlockingFailingNotifier()
+        val coordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val endpoint = "https://relay.example/v1"
+        store.advanceCursor(endpoint, 40L)
+
+        val poll = async(Dispatchers.Default) {
+            coordinator.pollOnce(endpoint, pageLimit = 100) { since, _ ->
+                assertEquals(40L, since)
+                page(wallEvent(42L, message = "notify me"), nextId = 42L)
+            }
+        }
+        notifier.awaitEntered()
+
+        assertEquals(
+            "in-flight notification claims must not be visible as durable delivered cursor",
+            40L,
+            store.loadCursor(endpoint),
+        )
+
+        notifier.release()
+        val result = poll.await()
+        assertEquals(WallPollStatus.Blocked, result.status)
+        assertEquals(40L, store.loadCursor(endpoint))
+    }
+
+    @Test
+    fun pollDoesNotSkipFailedNotificationWhenLaterBlankEventExists() = runTest {
+        val store = newStore()
+        val failingCoordinator = MonotonicWallDeliveryCoordinator(store, RecordingNotifier(succeeds = false))
+        val endpoint = "https://relay.example/v1"
+
+        val failed = failingCoordinator.pollOnce(endpoint, pageLimit = 100) { since, _ ->
+            assertEquals(0L, since)
+            page(
+                wallEvent(42L, message = "notify me"),
+                wallEvent(43L, message = "   "),
+                nextId = 43L,
+            )
+        }
+
+        assertEquals(WallPollStatus.Blocked, failed.status)
+        assertEquals(0L, store.loadCursor(endpoint))
+
+        val notifier = RecordingNotifier(succeeds = true)
+        val recoveringCoordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val recovered = recoveringCoordinator.pollOnce(endpoint, pageLimit = 100) { since, _ ->
+            assertEquals(0L, since)
+            page(
+                wallEvent(42L, message = "notify me"),
+                wallEvent(43L, message = "   "),
+                nextId = 43L,
+            )
+        }
+
+        assertEquals(WallPollStatus.Completed, recovered.status)
+        assertEquals(43L, store.loadCursor(endpoint))
+        assertEquals(listOf(42L), notifier.deliveries.map { it.eventId })
+    }
+
+    @Test
+    fun concurrentPollsSerializeAndSecondPollSeesCommittedCursor() = runTest {
+        val store = newStore()
+        val notifier = BlockingSuccessNotifier()
+        val coordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val endpoint = "https://relay.example/v1"
+        val secondFetches = AtomicInteger(0)
+
+        val first = async(Dispatchers.Default) {
+            coordinator.pollOnce(endpoint, pageLimit = 100) { since, _ ->
+                assertEquals(0L, since)
+                page(wallEvent(42L, message = "notify me"), nextId = 42L)
+            }
+        }
+        notifier.awaitEntered()
+
+        val second = async(Dispatchers.Default) {
+            coordinator.pollOnce(endpoint, pageLimit = 100) { since, _ ->
+                secondFetches.incrementAndGet()
+                assertEquals(42L, since)
+                page(nextId = 42L)
+            }
+        }
+        delay(100L)
+        assertEquals("second poll should wait for first poll transaction", 0, secondFetches.get())
+
+        notifier.release()
+        assertEquals(WallPollStatus.Completed, first.await().status)
+        assertEquals(WallPollStatus.Completed, second.await().status)
+        assertEquals(42L, store.loadCursor(endpoint))
+        assertEquals(1, notifier.deliveries.get())
+    }
+
+    @Test
     fun notificationSuppressionDoesNotConsumeEvent() = runTest {
         val store = newStore()
         val notifier = RecordingNotifier(succeeds = true)
@@ -201,6 +298,19 @@ class WallDeliveryCoordinatorTest {
             sender = "alice@example",
             sourceSessionName = "host-1",
             message = "hello",
+        )
+    }
+
+    private fun page(vararg events: RelayWallEvent, nextId: Long): RelayWallEventsPage {
+        return RelayWallEventsPage(events = events.toList(), nextId = nextId, hasMore = false)
+    }
+
+    private fun wallEvent(id: Long, message: String): RelayWallEvent {
+        return RelayWallEvent(
+            id = id,
+            sender = "alice@example",
+            sessionName = "host-1",
+            message = message,
         )
     }
 
@@ -258,6 +368,31 @@ class WallDeliveryCoordinatorTest {
                 error("timed out waiting to release failing notification")
             }
             return false
+        }
+
+        fun awaitEntered() {
+            if (!entered.await(5, TimeUnit.SECONDS)) {
+                error("timed out waiting for notification attempt")
+            }
+        }
+
+        fun release() {
+            release.countDown()
+        }
+    }
+
+    private class BlockingSuccessNotifier : WallNotifier {
+        val deliveries = AtomicInteger(0)
+        private val entered = CountDownLatch(1)
+        private val release = CountDownLatch(1)
+
+        override fun notifyWall(notification: WallNotification): Boolean {
+            deliveries.incrementAndGet()
+            entered.countDown()
+            if (!release.await(5, TimeUnit.SECONDS)) {
+                error("timed out waiting to release successful notification")
+            }
+            return true
         }
 
         fun awaitEntered() {

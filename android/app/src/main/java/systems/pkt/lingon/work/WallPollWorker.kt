@@ -7,7 +7,7 @@ import androidx.work.WorkerParameters
 import kotlinx.coroutines.flow.first
 import systems.pkt.lingon.LingonApplication
 import systems.pkt.lingon.data.ApiException
-import systems.pkt.lingon.viewmodel.WallNotification
+import systems.pkt.lingon.notifications.WallPollStatus
 
 class WallPollWorker(
     appContext: Context,
@@ -19,50 +19,17 @@ class WallPollWorker(
         if (endpoint.isBlank()) {
             return Result.success()
         }
-        val since = app.wallWorkStateStore.loadCursor(endpoint)
         return try {
-            // Keep worker runs lightweight: one wall events page per cadence.
-            val page = app.repository.listWallEvents(sinceId = since, limit = workerPageLimit)
-            if (shouldResetWallCursor(since, page.nextId, page.events.size)) {
-                Log.w(logTag, "worker cursor reset detected endpoint=$endpoint since=$since next=${page.nextId}")
-                app.wallWorkStateStore.clearCursor(endpoint)
+            val result = app.wallDeliveryCoordinator.pollOnce(endpoint, workerPageLimit) { since, limit ->
+                app.repository.listWallEvents(sinceId = since, limit = limit)
+            }
+            if (result.status == WallPollStatus.Reset) {
+                Log.w(logTag, "worker cursor reset detected endpoint=$endpoint since=${result.since}")
                 return Result.retry()
-            }
-            var next = since
-            var blocked = false
-            for (event in page.events) {
-                if (event.message.isBlank()) {
-                    if (event.id > next) {
-                        next = event.id
-                    }
-                    continue
-                }
-                val consumed = app.wallDeliveryCoordinator.deliver(
-                    WallNotification(
-                        endpoint = endpoint,
-                        eventId = event.id,
-                        sender = event.sender,
-                        sourceSessionName = event.sessionName ?: "",
-                        message = event.message,
-                    ),
-                )
-                if (!consumed) {
-                    blocked = true
-                    break
-                }
-                if (event.id > next) {
-                    next = event.id
-                }
-            }
-            if (!blocked && page.nextId > next) {
-                next = page.nextId
-            }
-            if (next > since) {
-                app.wallDeliveryCoordinator.advanceCursor(endpoint, next)
             }
             Result.success()
         } catch (err: ApiException) {
-            Log.w(logTag, "worker api failed endpoint=$endpoint since=$since status=${err.statusCode}", err)
+            Log.w(logTag, "worker api failed endpoint=$endpoint status=${err.statusCode}", err)
             // Keep periodic cadence stable; auth/logout state will toggle scheduling.
             if (err.statusCode == 401) {
                 app.wallWorkScheduler.setEnabled(false)
@@ -70,7 +37,7 @@ class WallPollWorker(
             }
             Result.success()
         } catch (err: Exception) {
-            Log.w(logTag, "worker failed endpoint=$endpoint since=$since", err)
+            Log.w(logTag, "worker failed endpoint=$endpoint", err)
             Result.success()
         }
     }

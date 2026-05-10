@@ -42,64 +42,17 @@ class WallWorkStateStoreTest {
     }
 
     @Test
-    fun shouldDeliverAndAdvanceSuppressesReplayForSameEndpoint() = runTest {
-        val store = newStore()
-
-        assertEquals(true, store.shouldDeliverAndAdvance("https://a.example/v1", 42L))
-        assertEquals(false, store.shouldDeliverAndAdvance("https://a.example/v1", 42L))
-        assertEquals(false, store.shouldDeliverAndAdvance("https://a.example/v1", 41L))
-        assertEquals(true, store.shouldDeliverAndAdvance("https://a.example/v1", 43L))
-    }
-
-    @Test
-    fun deliveryChecksAndRecordsAreMonotonic() = runTest {
+    fun deliveryChecksAndAdvancesAreMonotonic() = runTest {
         val store = newStore()
 
         assertEquals(true, store.shouldDeliver("https://a.example/v1", 42L))
-        store.recordDelivered("https://a.example/v1", 42L)
+        store.advanceCursor("https://a.example/v1", 42L)
         assertEquals(false, store.shouldDeliver("https://a.example/v1", 42L))
         assertEquals(false, store.shouldDeliver("https://a.example/v1", 41L))
 
-        store.recordDelivered("https://a.example/v1", 40L)
+        store.advanceCursor("https://a.example/v1", 40L)
         assertEquals(42L, store.loadCursor("https://a.example/v1"))
         assertEquals(true, store.shouldDeliver("https://a.example/v1", 43L))
-    }
-
-    @Test
-    fun deliveryClaimAtomicallySuppressesReplay() = runTest {
-        val store = newStore()
-
-        val claim = store.claimDelivery("https://a.example/v1", 42L)
-
-        assertEquals(42L, claim?.eventId)
-        assertEquals(null, store.claimDelivery("https://a.example/v1", 42L))
-        assertEquals(null, store.claimDelivery("https://a.example/v1", 41L))
-        assertEquals(42L, store.loadCursor("https://a.example/v1"))
-    }
-
-    @Test
-    fun deliveryClaimRollbackRestoresPreviousCursor() = runTest {
-        val store = newStore()
-        store.saveCursor("https://a.example/v1", 41L)
-        val claim = store.claimDelivery("https://a.example/v1", 42L)
-            ?: throw AssertionError("missing claim")
-
-        store.rollbackDeliveryClaim(claim)
-
-        assertEquals(41L, store.loadCursor("https://a.example/v1"))
-        assertEquals(42L, store.claimDelivery("https://a.example/v1", 42L)?.eventId)
-    }
-
-    @Test
-    fun deliveryClaimRollbackDoesNotMoveNewerCursorBackward() = runTest {
-        val store = newStore()
-        val claim = store.claimDelivery("https://a.example/v1", 42L)
-            ?: throw AssertionError("missing claim")
-        store.advanceCursor("https://a.example/v1", 43L)
-
-        store.rollbackDeliveryClaim(claim)
-
-        assertEquals(43L, store.loadCursor("https://a.example/v1"))
     }
 
     @Test

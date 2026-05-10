@@ -2457,7 +2457,7 @@ class EndToEndTest {
             since
         }
         runBlocking {
-            app.wallDeliveryCoordinator.advanceCursor(endpoint, latest)
+            app.wallWorkStateStore.advanceCursor(endpoint, latest)
         }
     }
 
@@ -2481,7 +2481,7 @@ class EndToEndTest {
             since
         }
         runBlocking {
-            app.wallDeliveryCoordinator.advanceCursor(endpoint, latest + 100)
+            app.wallWorkStateStore.advanceCursor(endpoint, latest + 100)
         }
         return latest
     }

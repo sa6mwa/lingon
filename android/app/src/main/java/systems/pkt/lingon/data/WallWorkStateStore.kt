@@ -39,60 +39,6 @@ class WallWorkStateStore(
         return nextCursor
     }
 
-    suspend fun shouldDeliverAndAdvance(endpoint: String, eventId: Long): Boolean {
-        val cleaned = endpoint.trim()
-        if (cleaned.isBlank() || eventId <= 0L) {
-            return true
-        }
-        var shouldDeliver = false
-        dataStore.edit { prefs ->
-            val cursorMap = parseCursorMap(prefs[cursorsKey])
-            val current = cursorMap[cleaned] ?: 0L
-            if (eventId > current) {
-                cursorMap[cleaned] = eventId
-                prefs[cursorsKey] = encodeCursorMap(cursorMap)
-                shouldDeliver = true
-            }
-        }
-        return shouldDeliver
-    }
-
-    suspend fun claimDelivery(endpoint: String, eventId: Long): WallDeliveryClaim? {
-        val cleaned = endpoint.trim()
-        if (cleaned.isBlank() || eventId <= 0L) {
-            return WallDeliveryClaim(cleaned, eventId, previousCursor = 0L, cursorBacked = false)
-        }
-        var claim: WallDeliveryClaim? = null
-        dataStore.edit { prefs ->
-            val cursorMap = parseCursorMap(prefs[cursorsKey])
-            val current = cursorMap[cleaned] ?: 0L
-            if (eventId > current) {
-                cursorMap[cleaned] = eventId
-                prefs[cursorsKey] = encodeCursorMap(cursorMap)
-                claim = WallDeliveryClaim(cleaned, eventId, previousCursor = current, cursorBacked = true)
-            }
-        }
-        return claim
-    }
-
-    suspend fun rollbackDeliveryClaim(claim: WallDeliveryClaim) {
-        if (!claim.cursorBacked) {
-            return
-        }
-        dataStore.edit { prefs ->
-            val cursorMap = parseCursorMap(prefs[cursorsKey])
-            if (cursorMap[claim.endpoint] != claim.eventId) {
-                return@edit
-            }
-            if (claim.previousCursor > 0L) {
-                cursorMap[claim.endpoint] = claim.previousCursor
-            } else {
-                cursorMap.remove(claim.endpoint)
-            }
-            prefs[cursorsKey] = encodeCursorMap(cursorMap)
-        }
-    }
-
     suspend fun shouldDeliver(endpoint: String, eventId: Long): Boolean {
         val cleaned = endpoint.trim()
         if (cleaned.isBlank() || eventId <= 0L) {
@@ -101,18 +47,6 @@ class WallWorkStateStore(
         val prefs = dataStore.data.first()
         val current = parseCursorMap(prefs[cursorsKey])[cleaned] ?: 0L
         return eventId > current
-    }
-
-    suspend fun recordDelivered(endpoint: String, eventId: Long) {
-        val cleaned = endpoint.trim()
-        if (cleaned.isBlank() || eventId <= 0L) {
-            return
-        }
-        dataStore.edit { prefs ->
-            val cursorMap = parseCursorMap(prefs[cursorsKey])
-            cursorMap[cleaned] = maxOf(cursorMap[cleaned] ?: 0L, eventId)
-            prefs[cursorsKey] = encodeCursorMap(cursorMap)
-        }
     }
 
     suspend fun clearCursor(endpoint: String) {
@@ -183,10 +117,3 @@ class WallWorkStateStore(
         }
     }
 }
-
-class WallDeliveryClaim internal constructor(
-    val endpoint: String,
-    val eventId: Long,
-    val previousCursor: Long,
-    internal val cursorBacked: Boolean,
-)
