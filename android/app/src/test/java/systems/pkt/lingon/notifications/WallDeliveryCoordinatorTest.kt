@@ -2,12 +2,15 @@ package systems.pkt.lingon.notifications
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -93,6 +96,27 @@ class WallDeliveryCoordinatorTest {
     }
 
     @Test
+    fun inFlightFailedDeliveryThroughSeparateCoordinatorIsNotConsumed() = runTest {
+        val store = newStore()
+        val notifier = BlockingFailingNotifier()
+        val firstCoordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val secondCoordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val notification = notification(eventId = 42L)
+
+        val firstResult = async(Dispatchers.Default) { firstCoordinator.deliver(notification) }
+        notifier.awaitEntered()
+
+        val secondResult = async(Dispatchers.Default) { secondCoordinator.deliver(notification) }
+        delay(100L)
+        assertEquals(false, secondResult.isCompleted)
+
+        notifier.release()
+        assertEquals(false, firstResult.await())
+        assertEquals(false, secondResult.await())
+        assertEquals(0L, store.loadCursor(notification.endpoint))
+    }
+
+    @Test
     fun notificationSuppressionDoesNotConsumeEvent() = runTest {
         val store = newStore()
         val notifier = RecordingNotifier(succeeds = true)
@@ -158,6 +182,29 @@ class WallDeliveryCoordinatorTest {
             deliveries.incrementAndGet()
             Thread.sleep(100L)
             return true
+        }
+    }
+
+    private class BlockingFailingNotifier : WallNotifier {
+        private val entered = CountDownLatch(1)
+        private val release = CountDownLatch(1)
+
+        override fun notifyWall(notification: WallNotification): Boolean {
+            entered.countDown()
+            if (!release.await(5, TimeUnit.SECONDS)) {
+                error("timed out waiting to release failing notification")
+            }
+            return false
+        }
+
+        fun awaitEntered() {
+            if (!entered.await(5, TimeUnit.SECONDS)) {
+                error("timed out waiting for notification attempt")
+            }
+        }
+
+        fun release() {
+            release.countDown()
         }
     }
 }

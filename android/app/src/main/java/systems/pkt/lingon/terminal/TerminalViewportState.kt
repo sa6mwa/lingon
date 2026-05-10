@@ -5,4 +5,5 @@ data class TerminalViewportState(
     val cameraOffsetYPx: Float,
     val scrollRemainderY: Float,
     val viewportHeightPx: Int,
+    val scaledCellHeightPx: Float,
 )

@@ -304,6 +304,7 @@ class TerminalGridView @JvmOverloads constructor(
             cameraOffsetYPx = cameraOffsetYPx,
             scrollRemainderY = scrollRemainderY,
             viewportHeightPx = height,
+            scaledCellHeightPx = scaledCellHeight,
         )
     }
 
@@ -328,7 +329,14 @@ class TerminalGridView @JvmOverloads constructor(
     private fun applyViewportRestore(state: TerminalViewportState) {
         cameraOffsetXPx = state.cameraOffsetXPx
         preferredCameraOffsetXPx = state.cameraOffsetXPx
-        cameraOffsetYPx = state.cameraOffsetYPx
+        cameraOffsetYPx = TerminalViewportPolicy.restoreCameraOffsetY(
+            savedCameraOffsetYPx = state.cameraOffsetYPx,
+            savedViewportHeightPx = state.viewportHeightPx,
+            savedScaledCellHeightPx = state.scaledCellHeightPx,
+            nextViewportHeightPx = height,
+            nextScaledCellHeightPx = scaledCellHeight,
+            totalRows = snapshot?.rows ?: 0,
+        )
         scrollRemainderY = state.scrollRemainderY
         snapshot?.takeIf { it.cursorVisible }?.let { snap ->
             lastCursorX = snap.cursorX

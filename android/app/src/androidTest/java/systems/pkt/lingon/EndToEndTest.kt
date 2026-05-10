@@ -382,6 +382,7 @@ class EndToEndTest {
                     cameraOffsetYPx = cellHeight * 3.5f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
                 ),
             )
             val beforeReentry = view.getCameraOffsetYForTesting()
@@ -460,6 +461,7 @@ class EndToEndTest {
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
                 ),
             )
             assertEquals(0f, view.getCameraOffsetYForTesting(), 0.01f)
@@ -530,6 +532,7 @@ class EndToEndTest {
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
                 ),
             )
             view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
@@ -541,6 +544,73 @@ class EndToEndTest {
                 0.01f,
             )
             assertEquals(0, view.getVisibleStartRow())
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun lifecycle_viewport_restore_preserves_live_bottom_across_height_change() {
+        lateinit var view: TerminalGridView
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 59),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 60,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val saved = view.captureViewportState()
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            assertEquals(
+                "fixture should save a live-bottom viewport",
+                (60 * cellHeight) - 480f,
+                saved.cameraOffsetYPx,
+                0.01f,
+            )
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
+            view.layout(0, 0, 480, 240)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 59),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 20,
+                hostRows = 60,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            view.restoreViewportState(saved)
+
+            assertEquals(
+                "restoring a saved live-bottom viewport after IME shrink should preserve the live bottom",
+                (60 * cellHeight) - 240f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
         }
         composeRule.waitForIdle()
     }
@@ -583,6 +653,7 @@ class EndToEndTest {
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
                 ),
             )
             val partialPanPx = cellHeight * 0.35f
@@ -692,6 +763,7 @@ class EndToEndTest {
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
                 ),
             )
             val partialPanPx = cellHeight * 0.35f

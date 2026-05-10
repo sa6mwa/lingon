@@ -1,6 +1,7 @@
 package systems.pkt.lingon.terminal
 
 import systems.pkt.lingon.DefaultTerminalZoom
+import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -148,5 +149,38 @@ internal object TerminalViewportPolicy {
     ): Float {
         if (totalRows <= 0 || scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return 0f
         return max(0f, (totalRows * scaledCellHeightPx) - viewportHeightPx.toFloat())
+    }
+
+    fun restoreCameraOffsetY(
+        savedCameraOffsetYPx: Float,
+        savedViewportHeightPx: Int,
+        savedScaledCellHeightPx: Float,
+        nextViewportHeightPx: Int,
+        nextScaledCellHeightPx: Float,
+        totalRows: Int,
+    ): Float {
+        if (
+            totalRows <= 0 ||
+            savedViewportHeightPx <= 0 ||
+            nextViewportHeightPx <= 0 ||
+            savedScaledCellHeightPx <= 0f ||
+            nextScaledCellHeightPx <= 0f
+        ) {
+            return savedCameraOffsetYPx
+        }
+        val savedBottom = bottomAlignedCameraOffsetY(
+            totalRows = totalRows,
+            scaledCellHeightPx = savedScaledCellHeightPx,
+            viewportHeightPx = savedViewportHeightPx,
+        )
+        val tolerance = max(1f, savedScaledCellHeightPx * 0.1f)
+        if (abs(savedCameraOffsetYPx - savedBottom) > tolerance) {
+            return savedCameraOffsetYPx
+        }
+        return bottomAlignedCameraOffsetY(
+            totalRows = totalRows,
+            scaledCellHeightPx = nextScaledCellHeightPx,
+            viewportHeightPx = nextViewportHeightPx,
+        )
     }
 }

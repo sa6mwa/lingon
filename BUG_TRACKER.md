@@ -29,6 +29,30 @@ Required status values:
 
 ## Active Items
 
+### B-048 Review follow-up: viewport restore height drift and wall notification delivery race
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `notifications`, `wall`
+- Summary: Review identified two regressions: restoring a cached live-bottom viewport across IME-height changes could preserve the old camera exactly, and concurrent wall delivery coordinators could treat an in-flight failed notification as consumed.
+- Report:
+  1. A viewport captured at live bottom with one viewport height can be restored after the IME changes the viewport height. Restoring the old `cameraOffsetYPx` exactly leaves the terminal above the current live bottom.
+  2. Two wall delivery paths can race. One path claims the cursor and blocks/fails in `notifyWall`; another path observes the cursor as already advanced and returns success, allowing workers to advance/skip without a posted notification.
+- Repro:
+  1. Create a `TerminalGridView` with overflowing live content, draw it at live bottom, capture viewport state, shrink the view height, restore the captured state, and assert the camera is at the new live bottom.
+  2. Start delivery through one coordinator with a blocking failing notifier, start delivery through a second coordinator for the same event, and assert the second delivery does not complete as consumed while the first claim is in flight.
+- Investigation notes:
+  - Both review comments were relevant. The new tests failed before the fixes.
+  - `TerminalViewportState` captured `viewportHeightPx` but not scaled cell height, so restore could not reliably identify that a saved camera represented live bottom after IME-related scale/height changes.
+  - `MonotonicWallDeliveryCoordinator` used an instance mutex, so two coordinator instances could observe the same cursor claim concurrently through the shared store.
+- Regression coverage:
+  - Added `EndToEndTest.lifecycle_viewport_restore_preserves_live_bottom_across_height_change`.
+  - Added `WallDeliveryCoordinatorTest.inFlightFailedDeliveryThroughSeparateCoordinatorIsNotConsumed`.
+- Verification:
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_live_bottom_across_height_change make integration-test` failed before the fix, then passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest.inFlightFailedDeliveryThroughSeparateCoordinatorIsNotConsumed` failed before the fix, then passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed.
+
 ### B-047 Android IME toggle breaks live bottom alignment
 
 - Status: `resolved`

@@ -17,8 +17,6 @@ class MonotonicWallDeliveryCoordinator(
     private val notifier: WallNotifier,
     private val shouldPostNotification: () -> Boolean = { true },
 ) : WallDeliveryCoordinator {
-    private val deliveryMu = Mutex()
-
     override suspend fun deliver(notification: WallNotification): Boolean {
         return deliveryMu.withLock {
             val body = notification.message.trim()
@@ -52,6 +50,10 @@ class MonotonicWallDeliveryCoordinator(
 
     override suspend fun advanceCursor(endpoint: String, cursor: Long) {
         stateStore.advanceCursor(endpoint, cursor)
+    }
+
+    private companion object {
+        val deliveryMu = Mutex()
     }
 }
 
