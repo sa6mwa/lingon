@@ -775,6 +775,76 @@ class EndToEndTest {
     }
 
     @Test
+    fun lifecycle_viewport_restore_preserves_manual_bottom_anchor_across_height_change() {
+        lateinit var view: TerminalGridView
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 20),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 60,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val savedCamera = cellHeight * 10f
+            val saved = TerminalViewportState(
+                cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
+                cameraOffsetYPx = savedCamera,
+                scrollRemainderY = 0f,
+                viewportHeightPx = view.height,
+                scaledCellHeightPx = cellHeight,
+                totalRows = 60,
+            )
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
+            view.layout(0, 0, 480, 240)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 20),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 20,
+                hostRows = 60,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 0.8f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            view.restoreViewportState(saved)
+
+            assertEquals(
+                "restoring a saved manual viewport after IME shrink should preserve the visible content bottom edge",
+                savedCamera + 240f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
     fun lifecycle_viewport_restore_preserves_live_bottom_when_rows_advance() {
         lateinit var view: TerminalGridView
         composeRule.activity.runOnUiThread {

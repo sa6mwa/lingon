@@ -177,7 +177,11 @@ internal object TerminalViewportPolicy {
         )
         val tolerance = max(1f, savedScaledCellHeightPx * 0.1f)
         if (abs(savedCameraOffsetYPx - savedBottom) > tolerance) {
-            return savedCameraOffsetYPx
+            val savedContentBottomRows =
+                (savedCameraOffsetYPx + savedViewportHeightPx.toFloat()) / savedScaledCellHeightPx
+            val nextMaxOffsetYPx = max(0f, (nextTotalRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
+            return ((savedContentBottomRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
+                .coerceIn(0f, nextMaxOffsetYPx)
         }
         return bottomAlignedCameraOffsetY(
             totalRows = nextTotalRows,

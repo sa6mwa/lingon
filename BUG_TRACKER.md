@@ -29,6 +29,33 @@ Required status values:
 
 ## Active Items
 
+### B-054 Review follow-up: manual viewport restore drifts across height changes
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `lifecycle`
+- Summary: Restoring a non-live/manual cached viewport after an IME or orientation height change can preserve the old top camera offset instead of preserving the saved visible content bottom edge.
+- Report:
+  Review found that `TerminalViewportPolicy.restoreCameraOffsetY` returns the saved Y offset unchanged for non-bottom/manual restores. If a zoomed or scrollback viewport is captured at one height and restored at another, the visible rows shift by the height delta.
+- Repro:
+  1. Capture a manual viewport with camera Y 350 px, viewport height 200 px, 10 px cells, and 60 rows.
+  2. Restore it into the same terminal content with viewport height 150 px.
+  3. The restored camera should be 400 px so the same content bottom edge remains anchored; current behavior restores 350 px.
+- Investigation notes:
+  - The review finding was real. The policy-level repro and Android lifecycle restore repro both failed before the fix.
+  - Live-bottom restore and manual restore need different anchors: live-bottom restores to the current terminal bottom, while manual/zoomed/scrollback restore preserves the saved visible content bottom.
+  - `restoreCameraOffsetY` now maps manual saved content bottom through row-space, so it preserves the same content edge across viewport height and cell-height changes, then clamps to the current terminal bounds.
+- Regression coverage:
+  - Added `TerminalViewportPolicyTest.restore preserves manual bottom anchor when viewport shrinks`.
+  - Added `TerminalViewportPolicyTest.restore preserves manual bottom anchor when viewport grows`.
+  - Added `TerminalViewportPolicyTest.restore clamps manual bottom anchor to current terminal bounds`.
+  - Added `TerminalViewportPolicyTest.restore preserves manual bottom content when cell height changes`.
+  - Added `EndToEndTest.lifecycle_viewport_restore_preserves_manual_bottom_anchor_across_height_change`.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_manual_bottom_anchor_across_height_change make integration-test` failed before the fix, then passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `git diff --check` passed.
+
 ### B-053 Refactor: wall polling must not expose in-flight delivery as durable cursor
 
 - Status: `resolved`

@@ -424,4 +424,72 @@ class TerminalViewportPolicyTest {
             0.001f,
         )
     }
+
+    @Test
+    fun `restore preserves manual bottom anchor when viewport shrinks`() {
+        assertEquals(
+            400f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 150,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 60,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `restore preserves manual bottom anchor when viewport grows`() {
+        assertEquals(
+            300f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 250,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 60,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `restore clamps manual bottom anchor to current terminal bounds`() {
+        assertEquals(
+            200f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 300,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 50,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `restore preserves manual bottom content when cell height changes`() {
+        assertEquals(
+            850f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 250,
+                nextScaledCellHeightPx = 20f,
+                nextTotalRows = 60,
+            ),
+            0.001f,
+        )
+    }
 }
