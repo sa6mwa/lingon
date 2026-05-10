@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import java.security.MessageDigest
 import systems.pkt.lingon.MainActivity
 import systems.pkt.lingon.R
 import systems.pkt.lingon.viewmodel.WallNotification
@@ -102,7 +103,7 @@ internal fun wallNotificationId(notification: WallNotification): Int {
 }
 
 internal fun wallNotificationTag(notification: WallNotification): String {
-    return "wall:${wallNotificationId(notification)}"
+    return "wall:${sha256Hex(wallNotificationKey(notification))}"
 }
 
 private fun wallNotificationKey(notification: WallNotification): String {
@@ -117,6 +118,12 @@ private fun wallNotificationKey(notification: WallNotification): String {
         notification.sourceSessionName.trim(),
         notification.message.trim(),
     ).joinToString(separator = "\u001f")
+}
+
+private fun sha256Hex(input: String): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest(input.toByteArray(Charsets.UTF_8))
+    return digest.joinToString(separator = "") { byte -> "%02x".format(byte) }
 }
 
 internal fun formatWallSource(sender: String, sourceSessionName: String): String {

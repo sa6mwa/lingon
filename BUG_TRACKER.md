@@ -43,16 +43,18 @@ Required status values:
 - Investigation notes:
   - The notification review finding was real. `setOnlyAlertOnce(true)` is correct for retries of the same event, but using one constant `notificationId` made Android treat distinct wall events as updates of the same notification.
   - Device verification also showed that relying on a numeric ID alone was insufficient for the Android-visible behavior. Wall notifications now use a stable Android notification tag plus ID derived from the wall identity. Real relay event IDs are authoritative for retry dedupe; content-derived identity is only used when the event ID is missing.
+  - Review found that using the hashed integer notification ID as the tag left fallback messages vulnerable to Java `String.hashCode()` collisions. The notification tag now uses a SHA-256 digest of the full stable key, so Android's `(package, tag, id)` replacement key remains distinct even if the integer ID collides.
   - The viewport review finding was real. Capturing only `cameraOffsetXPx` made restore conflate the transient camera with the user-preferred horizontal origin.
   - `TerminalViewportState` now captures `preferredCameraOffsetXPx` separately. Restore applies the saved current camera for the restore frame but keeps the saved preferred horizontal camera for later cursor-follow decisions.
 - Regression coverage:
-  - Added `AndroidWallNotifierTest` coverage for stable same-event notification tags/IDs, distinct event tags/IDs, endpoint scoping, missing-event fallback identity, trimmed fallback fields, and same-event retry behavior when message text changes.
+  - Added `AndroidWallNotifierTest` coverage for stable same-event notification tags/IDs, distinct event tags/IDs, endpoint scoping, missing-event fallback identity, trimmed fallback fields, same-event retry behavior when message text changes, fallback hash collisions such as `Aa`/`BB`, and long fallback messages.
   - Added `TerminalViewportPolicyTest` coverage for restoring the saved horizontal preference, preserving temporary camera when the cursor still fits there, panning right only when needed, and clamping stale preferred offsets.
   - Added `EndToEndTest.background_distinct_wall_messages_post_distinct_system_notifications`, including assertions for distinct Android notification IDs and tags.
   - Added `EndToEndTest.lifecycle_viewport_capture_keeps_horizontal_preference_separate_from_temporary_camera`.
   - Added `EndToEndTest.lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera`.
 - Verification:
   - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest` passed after adding the fallback collision coverage.
   - `cd android && LINGON_IT_ONLY=lifecycle_viewport_capture_keeps_horizontal_preference_separate_from_temporary_camera make integration-test` passed.
   - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera make integration-test` passed.
   - `cd android && LINGON_IT_ONLY=background_distinct_wall_messages_post_distinct_system_notifications make integration-test` failed with only the second notification visible before explicit notification tags, then passed after the fix.
