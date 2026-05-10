@@ -336,4 +336,38 @@ class TerminalViewportPolicyTest {
             0.001f,
         )
     }
+
+    @Test
+    fun `restore preserves live bottom when row count advanced after capture`() {
+        assertEquals(
+            410f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 400f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 200,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 61,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `restore preserves manual camera when row count advanced after capture`() {
+        assertEquals(
+            350f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 200,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 61,
+            ),
+            0.001f,
+        )
+    }
 }

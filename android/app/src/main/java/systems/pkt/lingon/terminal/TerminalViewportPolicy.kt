@@ -155,12 +155,14 @@ internal object TerminalViewportPolicy {
         savedCameraOffsetYPx: Float,
         savedViewportHeightPx: Int,
         savedScaledCellHeightPx: Float,
+        savedTotalRows: Int,
         nextViewportHeightPx: Int,
         nextScaledCellHeightPx: Float,
-        totalRows: Int,
+        nextTotalRows: Int,
     ): Float {
         if (
-            totalRows <= 0 ||
+            savedTotalRows <= 0 ||
+            nextTotalRows <= 0 ||
             savedViewportHeightPx <= 0 ||
             nextViewportHeightPx <= 0 ||
             savedScaledCellHeightPx <= 0f ||
@@ -169,7 +171,7 @@ internal object TerminalViewportPolicy {
             return savedCameraOffsetYPx
         }
         val savedBottom = bottomAlignedCameraOffsetY(
-            totalRows = totalRows,
+            totalRows = savedTotalRows,
             scaledCellHeightPx = savedScaledCellHeightPx,
             viewportHeightPx = savedViewportHeightPx,
         )
@@ -178,7 +180,7 @@ internal object TerminalViewportPolicy {
             return savedCameraOffsetYPx
         }
         return bottomAlignedCameraOffsetY(
-            totalRows = totalRows,
+            totalRows = nextTotalRows,
             scaledCellHeightPx = nextScaledCellHeightPx,
             viewportHeightPx = nextViewportHeightPx,
         )

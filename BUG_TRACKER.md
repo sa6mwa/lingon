@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-049 Review follow-up: live-bottom viewport restore loses rows added while stopped
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `lifecycle`
+- Summary: Restoring a viewport captured at live bottom could fail to remain at live bottom if terminal output added rows between capture and restore.
+- Report:
+  A cached viewport captured at live bottom for N rows was compared against the bottom offset for the current row count during restore. If rows advanced while the app was stopped or syncing, the saved camera looked like a manual non-bottom offset and live auto-follow was suppressed for the restore frame.
+- Repro:
+  1. Render a `TerminalGridView` with 60 rows and capture viewport state at live bottom.
+  2. Update the snapshot to 61 rows before restoring the captured viewport state.
+  3. Observe the camera restores to the old 60-row bottom instead of the current 61-row bottom.
+- Investigation notes:
+  - The review finding was real. Both the policy-level test and the Android view-level instrumentation test failed before the fix.
+  - `TerminalViewportState` had viewport height and scaled cell height, but not the captured row count, so `TerminalViewportPolicy.restoreCameraOffsetY` could not distinguish saved live-bottom from manual offset after row-count changes.
+  - Fix: store captured `totalRows` in `TerminalViewportState`; use saved row count to detect whether the saved camera represented live bottom, and use current row count to compute the restored live-bottom camera.
+- Regression coverage:
+  - Added `TerminalViewportPolicyTest.restore preserves live bottom when row count advanced after capture`.
+  - Added `TerminalViewportPolicyTest.restore preserves manual camera when row count advanced after capture`.
+  - Added `EndToEndTest.lifecycle_viewport_restore_preserves_live_bottom_when_rows_advance`.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_live_bottom_when_rows_advance make integration-test` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_live_bottom_across_height_change make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed.
+
 ### B-048 Review follow-up: viewport restore height drift and wall notification delivery race
 
 - Status: `resolved`

@@ -6,4 +6,5 @@ data class TerminalViewportState(
     val scrollRemainderY: Float,
     val viewportHeightPx: Int,
     val scaledCellHeightPx: Float,
+    val totalRows: Int,
 )

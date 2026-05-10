@@ -305,6 +305,7 @@ class TerminalGridView @JvmOverloads constructor(
             scrollRemainderY = scrollRemainderY,
             viewportHeightPx = height,
             scaledCellHeightPx = scaledCellHeight,
+            totalRows = snapshot?.rows ?: 0,
         )
     }
 
@@ -333,9 +334,10 @@ class TerminalGridView @JvmOverloads constructor(
             savedCameraOffsetYPx = state.cameraOffsetYPx,
             savedViewportHeightPx = state.viewportHeightPx,
             savedScaledCellHeightPx = state.scaledCellHeightPx,
+            savedTotalRows = state.totalRows,
             nextViewportHeightPx = height,
             nextScaledCellHeightPx = scaledCellHeight,
-            totalRows = snapshot?.rows ?: 0,
+            nextTotalRows = snapshot?.rows ?: 0,
         )
         scrollRemainderY = state.scrollRemainderY
         snapshot?.takeIf { it.cursorVisible }?.let { snap ->
