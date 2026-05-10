@@ -1687,10 +1687,12 @@ class EndToEndTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        waitUntilNoError(10_000L) { stateForTest().restoreTerminalImeOnLifecycleStart == false }
 
         backgroundAndResumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
         Thread.sleep(1_000L)
+        assertFalse("IME lifecycle preference changed after hidden background resume", stateForTest().restoreTerminalImeOnLifecycleStart == true)
         assertFalse("IME controls were restored even though keyboard was hidden before background", hasTextNode("CTRL"))
     }
 
@@ -1707,6 +1709,8 @@ class EndToEndTest {
         backgroundAndResumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        Thread.sleep(1_500L)
+        assertTrue("IME controls disappeared after the delayed post-resume hide window", hasTextNode("CTRL"))
     }
 
     @Test

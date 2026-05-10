@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-059 Android IME visibility is not preserved across app refocus
+
+- Status: `resolved`
+- Area: `android`, `ime`, `keyboard`, `lifecycle`, `e2e`
+- Summary: If the soft keyboard is visible when the Android app is backgrounded, it reappears briefly on refocus and then auto-hides about one second later.
+- Report:
+  On the latest branch build, backgrounding and refocusing the Android app always returns with the keyboard hidden. The visible/hidden IME state from the moment of backgrounding is not honored.
+- Repro:
+  1. Open the Android app and focus the terminal input so the IME quick keys are visible.
+  2. Background the app.
+  3. Refocus the app.
+  4. Observe the keyboard/quick keys initially return, then disappear after roughly one second.
+- Regression coverage:
+  - Strengthened `keyboard_visible_before_background_is_restored_after_resume` to assert the quick-key row remains visible after the delayed post-resume hide window, not only immediately after resume.
+  - Strengthened `keyboard_hidden_before_background_stays_hidden_after_resume` to assert that hiding the IME records a false lifecycle preference before backgrounding, and that refocus does not flip it back to visible.
+- Investigation notes:
+  - The original regression test only proved immediate visible restore. It did not cover the delayed post-resume hide window that reproduced the phone behavior.
+  - Normal input readiness was sharing the same "restore in progress" suppression as lifecycle ON_START. That allowed a user-hidden IME transition to be ignored as if it were a transient lifecycle restore inset.
+  - The hidden input view could be focused directly by tests and platform focus without going through the terminal tap path that records IME intent.
+  - Refocus via `am start` can re-enter the activity path; `.MainActivity` now uses `singleTop` so foregrounding targets the existing activity instance instead of stacking a fresh one.
+- Verification:
+  - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed before the final fix, then passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` failed before the delayed assertion fix, then passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `git diff --check` passed.
+
 ### B-058 Full Android integration sweep remains unsafe on developer workstation
 
 - Status: `needs_verification`

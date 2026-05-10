@@ -96,10 +96,14 @@ fun TerminalScreen(
     var altActive by remember { mutableStateOf(false) }
     var requestInputFocus by remember { mutableStateOf<(() -> Unit)?>(null) }
     var requestInputBlur by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var inputReadyNonce by remember { mutableStateOf(0) }
     var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
-    var previousImeVisible by remember { mutableStateOf<Boolean?>(null) }
+    var imeRestoreInProgress by remember { mutableStateOf(false) }
+    var captureImeInsetChanges by remember { mutableStateOf(true) }
+    var observedTerminalImeVisible by remember { mutableStateOf(false) }
     val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
     val config = LocalConfiguration.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val isCompact = config.screenWidthDp < 360 || config.screenHeightDp < 700
     val isLandscape = config.screenWidthDp > config.screenHeightDp
     val screenPadding = if (isCompact) 8.dp else 12.dp
@@ -111,22 +115,64 @@ fun TerminalScreen(
     )
     val palette = rememberTerminalPalette()
     val focusInput: () -> Unit = {
+        viewModel.recordTerminalImeVisibilityForLifecycle(true)
         requestInputFocus?.invoke()
         Unit
     }
-    val focusInputIfImeRestoreAllowed: () -> Unit = {
+    fun maybeFocusInputForImeRestore(suppressHiddenCapture: Boolean) {
         if (state.restoreTerminalImeOnLifecycleStart == false) {
+            imeRestoreInProgress = false
             requestInputBlur?.invoke()
         } else {
+            imeRestoreInProgress = suppressHiddenCapture && state.restoreTerminalImeOnLifecycleStart == true
             focusInput()
         }
     }
-    LaunchedEffect(state.activeSessionId) { focusInputIfImeRestoreAllowed() }
-    LaunchedEffect(imeVisible, state.activeSessionId) {
-        val wasVisible = previousImeVisible
-        previousImeVisible = imeVisible
-        if (wasVisible == true && !imeVisible) {
-            requestInputBlur?.invoke()
+    val focusInputIfImeRestoreAllowed: () -> Unit = {
+        maybeFocusInputForImeRestore(suppressHiddenCapture = false)
+    }
+    val restoreInputFocusOnLifecycleStart: () -> Unit = {
+        maybeFocusInputForImeRestore(suppressHiddenCapture = true)
+    }
+    LaunchedEffect(state.activeSessionId, inputReadyNonce) { focusInputIfImeRestoreAllowed() }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> captureImeInsetChanges = false
+                Lifecycle.Event.ON_RESUME -> captureImeInsetChanges = true
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+    LaunchedEffect(imeVisible, state.activeSessionId, captureImeInsetChanges) {
+        if (
+            !captureImeInsetChanges ||
+            !lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        ) {
+            return@LaunchedEffect
+        }
+        if (imeVisible) {
+            observedTerminalImeVisible = true
+            imeRestoreInProgress = false
+            viewModel.recordTerminalImeVisibilityForLifecycle(true)
+        } else if (!imeRestoreInProgress) {
+            when (state.restoreTerminalImeOnLifecycleStart) {
+                true -> {
+                    requestInputBlur?.invoke()
+                    viewModel.recordTerminalImeVisibilityForLifecycle(false)
+                }
+                false -> requestInputBlur?.invoke()
+                null -> {
+                    if (observedTerminalImeVisible) {
+                        requestInputBlur?.invoke()
+                        viewModel.recordTerminalImeVisibilityForLifecycle(false)
+                    }
+                }
+            }
         }
     }
 
@@ -274,11 +320,15 @@ fun TerminalScreen(
                     onToggleAlt = { altActive = !altActive },
                     onSendKey = ::sendTextFromSoftInput,
                     onSendBytes = ::sendBytesFromSoftInput,
-                    onInputReady = { requestInputFocus = it },
-                    onInputBlurReady = { requestInputBlur = it },
+                    onInputReady = { requestFocus ->
+                        requestInputFocus = requestFocus
+                        inputReadyNonce += 1
+                    },
+                    onInputBlurReady = { requestBlur ->
+                        requestInputBlur = requestBlur
+                    },
                     focusInput = focusInput,
-                    focusInputIfImeRestoreAllowed = focusInputIfImeRestoreAllowed,
-                    onImeVisibilityCapturedForLifecycle = viewModel::recordTerminalImeVisibilityForLifecycle,
+                    focusInputIfImeRestoreAllowed = restoreInputFocusOnLifecycleStart,
                     showStatusOverlay = true,
                     modifier = Modifier
                         .weight(1f)
@@ -353,11 +403,15 @@ fun TerminalScreen(
                     onToggleAlt = { altActive = !altActive },
                     onSendKey = ::sendTextFromSoftInput,
                     onSendBytes = ::sendBytesFromSoftInput,
-                    onInputReady = { requestInputFocus = it },
-                    onInputBlurReady = { requestInputBlur = it },
+                    onInputReady = { requestFocus ->
+                        requestInputFocus = requestFocus
+                        inputReadyNonce += 1
+                    },
+                    onInputBlurReady = { requestBlur ->
+                        requestInputBlur = requestBlur
+                    },
                     focusInput = focusInput,
-                    focusInputIfImeRestoreAllowed = focusInputIfImeRestoreAllowed,
-                    onImeVisibilityCapturedForLifecycle = viewModel::recordTerminalImeVisibilityForLifecycle,
+                    focusInputIfImeRestoreAllowed = restoreInputFocusOnLifecycleStart,
                     showStatusOverlay = false,
                     modifier = Modifier
                         .weight(1f)
@@ -522,7 +576,6 @@ private fun TerminalPanel(
     onInputBlurReady: ((() -> Unit) -> Unit),
     focusInput: () -> Unit,
     focusInputIfImeRestoreAllowed: () -> Unit,
-    onImeVisibilityCapturedForLifecycle: (Boolean) -> Unit,
     showStatusOverlay: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -534,20 +587,13 @@ private fun TerminalPanel(
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
         val lifecycleOwner = LocalLifecycleOwner.current
-        val currentImeVisible by rememberUpdatedState(imeVisible)
         val currentFocusInputIfImeRestoreAllowed by rememberUpdatedState(focusInputIfImeRestoreAllowed)
-        LaunchedEffect(imeVisible, sessionId) {
-            if (sessionId != null && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-                onImeVisibilityCapturedForLifecycle(imeVisible)
-            }
-        }
         DisposableEffect(lifecycleOwner, terminalGridView, sessionId) {
             val observer = LifecycleEventObserver { _, event ->
                 val activeSessionId = sessionId ?: return@LifecycleEventObserver
                 val view = terminalGridView
                 when (event) {
                     Lifecycle.Event.ON_STOP -> {
-                        onImeVisibilityCapturedForLifecycle(currentImeVisible)
                         if (view != null) {
                             viewportCache[activeSessionId] = view.captureViewportState()
                         }
@@ -695,6 +741,15 @@ private fun TerminalPanel(
                             onSendBytes(byteArrayOf('\r'.code.toByte()))
                         }
                         setOnHardwareKey(onHardwareKey)
+                        setOnClickListener {
+                            focusInput()
+                        }
+                        onInputReady {
+                            requestTerminalFocus()
+                        }
+                        onInputBlurReady {
+                            clearTerminalFocus()
+                        }
                     }
                 },
                 update = { view ->
@@ -710,12 +765,6 @@ private fun TerminalPanel(
                         onSendBytes(byteArrayOf('\r'.code.toByte()))
                     }
                     view.setOnHardwareKey(onHardwareKey)
-                    onInputReady {
-                        view.requestTerminalFocus()
-                    }
-                    onInputBlurReady {
-                        view.clearTerminalFocus()
-                    }
                 },
                 modifier = Modifier
                     .size(1.dp)
@@ -1048,6 +1097,17 @@ private class TerminalInputView(
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun dispatchKeyEventPreIme(event: AndroidKeyEvent): Boolean {
+        if (event.keyCode == AndroidKeyEvent.KEYCODE_BACK) {
+            if (event.action == AndroidKeyEvent.ACTION_DOWN) {
+                focusRequestGeneration++
+            } else if (event.action == AndroidKeyEvent.ACTION_UP) {
+                clearTerminalFocus()
+            }
+        }
+        return super.dispatchKeyEventPreIme(event)
     }
 
     fun setOnCommitText(listener: (String) -> Unit) {
