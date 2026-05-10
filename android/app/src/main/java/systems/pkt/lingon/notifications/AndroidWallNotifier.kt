@@ -52,6 +52,7 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             .setContentText(content)
             .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -59,16 +60,9 @@ class AndroidWallNotifier(private val context: Context) : WallNotifier {
             .build()
         return try {
             notificationManager.notify(notificationId, notification)
-            isWallNotificationVisible()
+            true
         } catch (_: SecurityException) {
             false
-        }
-    }
-
-    private fun isWallNotificationVisible(): Boolean {
-        val manager = context.getSystemService(NotificationManager::class.java) ?: return false
-        return manager.activeNotifications.any {
-            it.id == notificationId && it.notification.channelId == channelID
         }
     }
 

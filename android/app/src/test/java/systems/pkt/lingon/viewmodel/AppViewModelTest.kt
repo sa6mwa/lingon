@@ -1428,7 +1428,7 @@ class AppViewModelTest {
 
         assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
 
-        advanceTimeBy(2999)
+        advanceTimeBy(4999)
         runCurrent()
         assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
 
@@ -1474,7 +1474,7 @@ class AppViewModelTest {
         runCurrent()
         assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
 
-        advanceTimeBy(2999)
+        advanceTimeBy(4999)
         runCurrent()
         assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
 

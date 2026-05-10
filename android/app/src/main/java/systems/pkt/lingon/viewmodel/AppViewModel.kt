@@ -2030,7 +2030,7 @@ class AppViewModel(
         private const val sharedSessionId = "shared"
         private const val MissingSessionGraceMs = 5_000L
         private const val foregroundRecoveryMinIntervalMs = 30_000L
-        private const val transientStatusDurationMs = 3000L
+        private const val transientStatusDurationMs = 5000L
 
         @VisibleForTesting
         internal fun shouldRequireAppUnlock(

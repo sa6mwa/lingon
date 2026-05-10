@@ -1833,6 +1833,10 @@ class EndToEndTest {
             .firstOrNull { wallNotificationFullText(it) == message }
             ?: throw AssertionError("missing lingon_wall notification for message=$message")
         assertTrue(
+            "wall notification replacements must not alert again: flags=${wallNotification.notification.flags}",
+            wallNotification.notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0,
+        )
+        assertTrue(
             "wall notification should not be grouped: group=${wallNotification.notification.group.orEmpty()}",
             wallNotification.notification.group.isNullOrBlank(),
         )

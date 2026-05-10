@@ -29,6 +29,34 @@ Required status values:
 
 ## Active Items
 
+### B-050 Android wall notifications can alert twice and wall banners dismiss too quickly
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `status`
+- Summary: Background wall notifications can play duplicate sounds even when Android visually replaces/deduplicates the notification, and wall status banners disappear too quickly.
+- Report:
+  On a recent branch build, all wall notifications appear to be visually deduped by the phone but the notification sound plays twice. Background notifications are enabled. The in-app status box also disappears too quickly and should stay visible for a couple more seconds.
+- Repro:
+  1. Enable background wall notifications.
+  2. Background the Android app.
+  3. Send a wall message.
+  4. Observe one visible wall notification but duplicate notification sound.
+  5. Trigger a wall status banner and observe it disappears after the previous short timeout.
+- Investigation notes:
+  - Android visually dedupes wall notifications by replacing the same notification ID. Replacement can still alert again unless the notification is marked `onlyAlertOnce`.
+  - `AndroidWallNotifier.notifyWall()` also posted the notification and then immediately checked `activeNotifications` to decide whether delivery succeeded. That check can lag the accepted post; a false negative rolls the wall cursor back and can retry the same event, causing another alert while the visible notification is replaced.
+  - Fix: wall notifications now set `onlyAlertOnce`, and `notifyWall()` treats a successful `NotificationManagerCompat.notify(...)` call as accepted. Permission-disabled and `SecurityException` paths still return false before/around the post.
+  - The transient status duration was 3 seconds. It is now 5 seconds.
+- Regression coverage:
+  - Strengthened `background_manual_wall_delivery_posts_system_notification` to assert posted wall notifications carry `Notification.FLAG_ONLY_ALERT_ONCE`.
+  - Updated `wallInactivityBannerAutoDismisses` and `wallInactivityBannerReplacementRearmsDismissTimer` to require the banner to remain visible for 4,999 ms and dismiss at 5,000 ms under the coroutine test clock.
+  - Kept the existing instrumentation test `wall_inactivity_banner_auto_dismisses_without_tab_switch` as an Android-visible smoke test without wall-clock timing assertions.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.wallInactivityBannerAutoDismisses --tests systems.pkt.lingon.viewmodel.AppViewModelTest.wallInactivityBannerReplacementRearmsDismissTimer` failed before the timeout change, then passed.
+  - `cd android && LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make integration-test` passed with the `FLAG_ONLY_ALERT_ONCE` assertion.
+  - `cd android && LINGON_IT_ONLY=wall_inactivity_banner_auto_dismisses_without_tab_switch make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
 ### B-049 Review follow-up: live-bottom viewport restore loses rows added while stopped
 
 - Status: `resolved`
