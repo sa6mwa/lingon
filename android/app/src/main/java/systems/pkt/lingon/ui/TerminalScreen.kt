@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -109,10 +108,25 @@ fun TerminalScreen(
     val screenPadding = if (isCompact) 8.dp else 12.dp
     val spacing = if (isCompact) 6.dp else 8.dp
 
-    val imeVisible = isTerminalImeVisible(
-        imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current),
-        navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current),
+    val density = LocalDensity.current
+    val rawImeBottomPx = WindowInsets.ime.getBottom(density)
+    val navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(density)
+    val rawImeVisible = isTerminalImeVisible(
+        imeBottomPx = rawImeBottomPx,
+        navigationBarsBottomPx = navigationBarsBottomPx,
     )
+    var retainedImeBottomPx by remember { mutableStateOf(0) }
+    if (rawImeVisible) {
+        retainedImeBottomPx = rawImeBottomPx
+    }
+    val retainImePadding =
+        state.restoreTerminalImeOnLifecycleStart == true &&
+            !rawImeVisible &&
+            !userImeDismissInProgress &&
+            retainedImeBottomPx > navigationBarsBottomPx
+    val effectiveImeBottomPx = if (retainImePadding) retainedImeBottomPx else rawImeBottomPx
+    val imeVisible = rawImeVisible || retainImePadding
+    val terminalImePadding = with(density) { effectiveImeBottomPx.toDp() }
     val palette = rememberTerminalPalette()
     val focusInput: () -> Unit = {
         userImeDismissInProgress = false
@@ -280,7 +294,7 @@ fun TerminalScreen(
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding(),
+                    .padding(bottom = terminalImePadding),
                 horizontalArrangement = Arrangement.spacedBy(spacing),
             ) {
                 Column(
@@ -364,7 +378,7 @@ fun TerminalScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding(),
+                    .padding(bottom = terminalImePadding),
                 verticalArrangement = Arrangement.spacedBy(spacing),
             ) {
                 TopBar(
