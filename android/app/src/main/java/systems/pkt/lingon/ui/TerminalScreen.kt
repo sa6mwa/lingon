@@ -125,6 +125,11 @@ fun TerminalScreen(
         if (state.restoreTerminalImeOnLifecycleStart == false) {
             imeRestoreInProgress = false
             requestInputBlur?.invoke()
+        } else if (imeVisible) {
+            imeRestoreInProgress = false
+            userImeDismissInProgress = false
+            observedTerminalImeVisible = true
+            viewModel.recordTerminalImeVisibilityForLifecycle(true)
         } else {
             imeRestoreInProgress = suppressHiddenCapture && state.restoreTerminalImeOnLifecycleStart == true
             focusInput()
