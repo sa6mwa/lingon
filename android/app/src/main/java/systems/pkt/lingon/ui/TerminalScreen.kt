@@ -108,11 +108,6 @@ fun TerminalScreen(
     val isLandscape = config.screenWidthDp > config.screenHeightDp
     val screenPadding = if (isCompact) 8.dp else 12.dp
     val spacing = if (isCompact) 6.dp else 8.dp
-    val terminalReadyForImeFocus =
-        !state.activeSessionId.isNullOrBlank() &&
-            state.activeSnapshot != null &&
-            !state.sessionSyncing &&
-            state.connectionState == ConnectionState.Connected
 
     val rawImeVisible = isTerminalImeVisible(
         imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current),
@@ -143,34 +138,19 @@ fun TerminalScreen(
         Unit
     }
     fun maybeFocusInputForImeRestore(suppressHiddenCapture: Boolean) {
-        when (
-            decideTerminalImeFocusAction(
-                TerminalImeFocusInput(
-                    terminalReady = terminalReadyForImeFocus,
-                    restoreTerminalImeOnLifecycleStart = state.restoreTerminalImeOnLifecycleStart,
-                    imeVisible = imeVisible,
-                    suppressHiddenCapture = suppressHiddenCapture,
-                ),
-            )
-        ) {
-            TerminalImeFocusAction.Ignore -> Unit
-            TerminalImeFocusAction.Blur -> {
-                imeRestoreInProgress = false
-                requestInputBlur?.invoke()
-            }
-            TerminalImeFocusAction.RecordVisible -> {
-                imeRestoreInProgress = false
-                userImeDismissInProgress = false
-                observedTerminalImeVisible = true
-                viewModel.recordTerminalImeVisibilityForLifecycle(true)
-            }
-            TerminalImeFocusAction.MarkRestoreInProgress -> {
-                imeRestoreInProgress = true
-            }
-            TerminalImeFocusAction.Focus -> {
-                imeRestoreInProgress = false
-                focusInput()
-            }
+        if (state.restoreTerminalImeOnLifecycleStart == false) {
+            imeRestoreInProgress = false
+            requestInputBlur?.invoke()
+        } else if (imeVisible) {
+            imeRestoreInProgress = false
+            userImeDismissInProgress = false
+            observedTerminalImeVisible = true
+            viewModel.recordTerminalImeVisibilityForLifecycle(true)
+        } else if (suppressHiddenCapture && state.restoreTerminalImeOnLifecycleStart == true) {
+            imeRestoreInProgress = true
+        } else {
+            imeRestoreInProgress = false
+            focusInput()
         }
     }
     val focusInputIfImeRestoreAllowed: () -> Unit = {
@@ -181,13 +161,7 @@ fun TerminalScreen(
         userImeDismissInProgress = true
         viewModel.recordTerminalImeVisibilityForLifecycle(false)
     }
-    LaunchedEffect(
-        state.activeSessionId,
-        inputReadyNonce,
-        terminalReadyForImeFocus,
-    ) {
-        focusInputIfImeRestoreAllowed()
-    }
+    LaunchedEffect(state.activeSessionId, inputReadyNonce) { focusInputIfImeRestoreAllowed() }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {

@@ -43,16 +43,13 @@ Required status values:
   4. Hide/show the IME; observe the viewport does not visibly reanchor until the terminal is panned.
 - Investigation:
   - `TerminalGridView.onSizeChanged()` recalculated layout and camera state for IME/Compose height changes but did not invalidate the view.
-  - Physical-phone verification showed the invalidation-only fix was insufficient.
-  - The startup failure path is broader: automatic IME focus/restore was allowed before the active terminal had a loaded snapshot and settled session state, so the first long terminal frame could initialize while keyboard layout was still in flux.
+  - That matches the visible behavior: the state can be corrected internally while pixels remain from the old larger viewport until a later touch/pan triggers `invalidate()`.
 - Fix:
   - `TerminalGridView.onSizeChanged()` now invalidates immediately after recomputing layout and applying any pending restore.
-  - Automatic terminal IME focus/restore now waits until the active session is connected, has a snapshot, and is no longer syncing. Manual terminal taps can still focus the IME directly.
 - Regression coverage:
   - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
-  - Added `TerminalImeFocusPolicyTest` coverage that automatic focus and visible-IME restore are ignored before terminal readiness, while saved-hidden blur still applies and ready terminals focus/restore normally.
 - Verification:
-  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the automatic-focus gating fix.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
   - Physical-phone confirmation is still pending.
 
 ### B-063 Android viewport cache leaks across logout and identity changes
