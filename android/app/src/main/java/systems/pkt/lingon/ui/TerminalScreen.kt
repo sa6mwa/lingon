@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -658,61 +659,63 @@ private fun TerminalPanel(
             val hostRows = state.activeSnapshot?.let { snapshot ->
                 (snapshot.rows - state.scrollbackOffsetRows).coerceAtLeast(0)
             } ?: 0
-            AndroidView(
-                factory = { context ->
-                    TerminalGridView(context).apply {
-                        onTerminalGridViewChanged(this)
-                        tag = "terminal_view"
-                        setOnZoomChanged { value ->
-                            viewModel.updateZoomFactor(value)
-                        }
-                        setOnTap { focusInput() }
-                        setOnScrollback { deltaRows ->
-                            viewModel.adjustScrollback(deltaRows)
-                        }
-                    }
-                },
-                update = { view ->
-                    onTerminalGridViewChanged(view)
-                    viewportCacheKey?.let { activeViewportKey ->
-                        val alreadyRestored =
-                            restoredSessionId == activeViewportKey &&
-                                restoredLifecycleNonce == lifecycleRestoreNonce &&
-                                restoredView === view
-                        if (!alreadyRestored && !shouldDelayViewportRestore) {
-                            viewportCache[activeViewportKey]?.let { cachedViewport ->
-                                view.scheduleViewportRestore(cachedViewport)
-                                restoredSessionId = activeViewportKey
-                                restoredView = view
-                                restoredLifecycleNonce = lifecycleRestoreNonce
+            key(viewportCacheKey) {
+                AndroidView(
+                    factory = { context ->
+                        TerminalGridView(context).apply {
+                            onTerminalGridViewChanged(this)
+                            tag = "terminal_view"
+                            setOnZoomChanged { value ->
+                                viewModel.updateZoomFactor(value)
+                            }
+                            setOnTap { focusInput() }
+                            setOnScrollback { deltaRows ->
+                                viewModel.adjustScrollback(deltaRows)
                             }
                         }
-                    }
-                    view.update(
-                        snapshot = state.activeSnapshot,
-                        fontSizeSp = state.fontSizeSp,
-                        minFontSizeSp = MinTerminalFontSizeSp,
-                        palette = palette,
-                        frameSeq = state.lastFrameSeq,
-                        hostCols = hostCols,
-                        hostRows = hostRows,
-                        fitToViewWidth = fitToViewWidth,
-                        zoomFactor = state.zoomFactor,
-                        panResetNonce = state.panResetNonce,
-                        scrollbackOffsetRows = state.scrollbackOffsetRows,
-                        imeVisible = imeVisible,
-                        isLoading = state.sessionSyncing || state.connectionState == ConnectionState.Connecting,
-                    )
-                    view.applyScheduledViewportRestoreIfReady()
-                    view.setOnViewSizeChanged { cols, rows ->
-                        if (cols <= 0 || rows <= 0) return@setOnViewSizeChanged
-                        viewModel.updateTerminalSize(cols, rows)
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .testTag(TestTags.TerminalList),
-            )
+                    },
+                    update = { view ->
+                        onTerminalGridViewChanged(view)
+                        viewportCacheKey?.let { activeViewportKey ->
+                            val alreadyRestored =
+                                restoredSessionId == activeViewportKey &&
+                                    restoredLifecycleNonce == lifecycleRestoreNonce &&
+                                    restoredView === view
+                            if (!alreadyRestored && !shouldDelayViewportRestore) {
+                                viewportCache[activeViewportKey]?.let { cachedViewport ->
+                                    view.scheduleViewportRestore(cachedViewport)
+                                    restoredSessionId = activeViewportKey
+                                    restoredView = view
+                                    restoredLifecycleNonce = lifecycleRestoreNonce
+                                }
+                            }
+                        }
+                        view.update(
+                            snapshot = state.activeSnapshot,
+                            fontSizeSp = state.fontSizeSp,
+                            minFontSizeSp = MinTerminalFontSizeSp,
+                            palette = palette,
+                            frameSeq = state.lastFrameSeq,
+                            hostCols = hostCols,
+                            hostRows = hostRows,
+                            fitToViewWidth = fitToViewWidth,
+                            zoomFactor = state.zoomFactor,
+                            panResetNonce = state.panResetNonce,
+                            scrollbackOffsetRows = state.scrollbackOffsetRows,
+                            imeVisible = imeVisible,
+                            isLoading = state.sessionSyncing || state.connectionState == ConnectionState.Connecting,
+                        )
+                        view.applyScheduledViewportRestoreIfReady()
+                        view.setOnViewSizeChanged { cols, rows ->
+                            if (cols <= 0 || rows <= 0) return@setOnViewSizeChanged
+                            viewModel.updateTerminalSize(cols, rows)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag(TestTags.TerminalList),
+                )
+            }
             LaunchedEffect(viewportCacheKey) {
                 restoredSessionId = null
                 restoredView = null
