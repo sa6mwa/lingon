@@ -44,12 +44,16 @@ Required status values:
 - Investigation:
   - `TerminalGridView.onSizeChanged()` recalculated layout and camera state for IME/Compose height changes but did not invalidate the view.
   - That matches the visible behavior: the state can be corrected internally while pixels remain from the old larger viewport until a later touch/pan triggers `invalidate()`.
+  - Physical-phone verification showed the invalidation-only fix was insufficient, and delaying IME focus only moved the keyboard timing without fixing the terminal/content boundary.
+  - The terminal panel, its weighted viewport box, and embedded `AndroidView` did not explicitly clip at the Compose viewport boundary, so any parent/AndroidView placement mismatch can let terminal content visibly bleed below the intended viewport until a pan/zoom forces a new interactive draw/layout path.
 - Fix:
   - `TerminalGridView.onSizeChanged()` now invalidates immediately after recomputing layout and applying any pending restore.
+  - The terminal panel, terminal viewport box, embedded Android terminal view, and quick-key bar are now clipped to their Compose bounds.
 - Regression coverage:
   - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
+  - Tagged the quick-key container and strengthened keyboard/tall-session instrumentation coverage to assert the terminal viewport bottom never overlaps the quick-key top when the IME controls are visible.
 - Verification:
-  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the clipping fix.
   - Physical-phone confirmation is still pending.
 
 ### B-063 Android viewport cache leaks across logout and identity changes

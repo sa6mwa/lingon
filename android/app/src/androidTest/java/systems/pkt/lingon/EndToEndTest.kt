@@ -1944,6 +1944,7 @@ class EndToEndTest {
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        assertTerminalViewportAboveQuickKeys("keyboard visible initial")
         assertLiveBottomAnchored("keyboard visible initial")
         captureScreenshot("keyboard-visible-initial")
 
@@ -1954,6 +1955,7 @@ class EndToEndTest {
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        assertTerminalViewportAboveQuickKeys("keyboard visible restored")
         assertLiveBottomAnchored("keyboard visible restored")
         captureScreenshot("keyboard-visible-restored")
     }
@@ -1978,6 +1980,7 @@ class EndToEndTest {
             }
             focusTerminalInput()
             waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            assertTerminalViewportAboveQuickKeys("tall session $sessionId keyboard visible")
             waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
                 info.activeSessionId == sessionId &&
                     info.rows > info.viewRows &&
@@ -1993,6 +1996,7 @@ class EndToEndTest {
 
             focusTerminalInput()
             waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            assertTerminalViewportAboveQuickKeys("tall session $sessionId keyboard visible restored")
             waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
                 info.activeSessionId == sessionId &&
                     info.isLiveBottomAnchored()
@@ -2011,12 +2015,14 @@ class EndToEndTest {
         waitUntilNoError(10_000L) { activeSessionId() == second && !stateForTest().sessionSyncing }
         focusTerminalInput()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        assertTerminalViewportAboveQuickKeys("second tall session visible before cross-switch")
         waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
             info.activeSessionId == second && info.isLiveBottomAnchored()
         } ?: throw AssertionError("visible keyboard misaligned live bottom for second tall session before cross-switch")
 
         selectSessionTab(first, timeoutMs = 10_000L)
         waitUntilNoError(10_000L) { activeSessionId() == first && !stateForTest().sessionSyncing }
+        assertTerminalViewportAboveQuickKeys("first tall session visible after cross-switch")
         waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
             info.activeSessionId == first && info.isLiveBottomAnchored()
         } ?: throw AssertionError("visible keyboard misaligned live bottom after restoring cached first tall session")
@@ -3522,6 +3528,16 @@ class EndToEndTest {
             "$label should align live bottom: visible=${info.visibleStartRow}-${info.visibleEndRowExclusive} rows=${info.rows} " +
                 "camera=${info.cameraOffsetYPx} viewport=${info.viewportHeightPx} cell=${info.scaledCellHeightPx}",
             info.isLiveBottomAnchored(),
+        )
+    }
+
+    private fun assertTerminalViewportAboveQuickKeys(label: String) {
+        composeRule.waitForIdle()
+        val terminal = nodeBounds(TestTags.TerminalList)
+        val quickKeys = nodeBounds(TestTags.TerminalQuickKeys)
+        assertTrue(
+            "$label terminal viewport overlaps quick keys: terminal=$terminal quickKeys=$quickKeys",
+            terminal.bottom <= quickKeys.top + 0.5f,
         )
     }
 

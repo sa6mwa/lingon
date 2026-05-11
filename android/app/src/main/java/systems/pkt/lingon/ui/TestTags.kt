@@ -37,6 +37,7 @@ object TestTags {
     const val TerminalList = "terminal_list"
     const val TerminalDebug = "terminal_debug"
     const val TerminalFocus = "terminal_focus"
+    const val TerminalQuickKeys = "terminal_quick_keys"
     const val TabList = "tab_list"
     const val StatusBanner = "status_banner"
     const val StatusDismiss = "status_dismiss"

@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -612,7 +613,11 @@ private fun TerminalPanel(
     showStatusOverlay: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
+    Column(
+        modifier = modifier
+            .clipToBounds()
+            .testTag(TestTags.TerminalFocus),
+    ) {
         var restoredSessionId by remember { mutableStateOf<String?>(null) }
         var restoredView by remember { mutableStateOf<TerminalGridView?>(null) }
         var lifecycleRestoreNonce by remember { mutableStateOf(0) }
@@ -627,7 +632,8 @@ private fun TerminalPanel(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .weight(1f)
+                .clipToBounds(),
         ) {
             val hostCols = state.activeSnapshot?.cols ?: 0
             val hostRows = state.activeSnapshot?.let { snapshot ->
@@ -716,6 +722,7 @@ private fun TerminalPanel(
                     },
                     modifier = Modifier
                         .fillMaxSize()
+                        .clipToBounds()
                         .testTag(TestTags.TerminalList),
                 )
             }
@@ -817,6 +824,8 @@ private fun TerminalPanel(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clipToBounds()
+                    .testTag(TestTags.TerminalQuickKeys)
                     .navigationBarsPadding()
                     .padding(horizontal = screenPadding, vertical = verticalPadding),
             ) {
