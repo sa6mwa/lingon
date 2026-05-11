@@ -1684,6 +1684,7 @@ class AppViewModel(
                 connectionState = reconnectState,
                 hasControl = false,
                 sessionSyncing = true,
+                terminalConnectionEpoch = it.terminalConnectionEpoch + 1,
             )
         }
         syncWallPollingSchedule()

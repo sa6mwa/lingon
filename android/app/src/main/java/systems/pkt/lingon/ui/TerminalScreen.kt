@@ -605,7 +605,9 @@ private fun TerminalPanel(
         var lifecycleRestoreNonce by remember { mutableStateOf(0) }
         var restoredLifecycleNonce by remember { mutableStateOf(0) }
         val sessionId = state.activeSessionId
-        val viewportCacheKey = terminalViewportCacheKey(viewportCacheIdentity, sessionId)
+        val viewportCacheKey = terminalViewportCacheKey(viewportCacheIdentity, sessionId)?.let { key ->
+            "$key:${state.terminalConnectionEpoch}"
+        }
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
         val lifecycleOwner = LocalLifecycleOwner.current

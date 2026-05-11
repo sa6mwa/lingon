@@ -62,6 +62,7 @@ data class UiState(
     val lastFrameType: String? = null,
     val lastFrameAtMs: Long = 0,
     val lastFrameError: String? = null,
+    val terminalConnectionEpoch: Long = 0,
     val panResetNonce: Int = 0,
     val sessionSyncing: Boolean = false,
     val isRefreshing: Boolean = false,

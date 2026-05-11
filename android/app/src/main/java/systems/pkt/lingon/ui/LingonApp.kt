@@ -60,7 +60,7 @@ internal fun LingonAppContent(
     }
     var menuExpanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(viewportCacheIdentity) {
+    LaunchedEffect(viewportCacheIdentity, state.terminalConnectionEpoch) {
         viewportCache.clear()
     }
 
