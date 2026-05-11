@@ -34,7 +34,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -91,6 +90,7 @@ fun TerminalScreen(
     menuExpanded: Boolean,
     onToggleMenu: () -> Unit,
     onDismissMenu: () -> Unit,
+    viewportCache: MutableMap<String, TerminalViewportState>,
 ) {
     var ctrlActive by remember { mutableStateOf(false) }
     var altActive by remember { mutableStateOf(false) }
@@ -102,7 +102,6 @@ fun TerminalScreen(
     var userImeDismissInProgress by remember { mutableStateOf(false) }
     var captureImeInsetChanges by remember { mutableStateOf(true) }
     var observedTerminalImeVisible by remember { mutableStateOf(false) }
-    val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
     val config = LocalConfiguration.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val isCompact = config.screenWidthDp < 360 || config.screenHeightDp < 700
@@ -608,6 +607,7 @@ private fun TerminalPanel(
 ) {
     Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
         var restoredSessionId by remember { mutableStateOf<String?>(null) }
+        var restoredView by remember { mutableStateOf<TerminalGridView?>(null) }
         var lifecycleRestoreNonce by remember { mutableStateOf(0) }
         var restoredLifecycleNonce by remember { mutableStateOf(0) }
         val sessionId = state.activeSessionId
@@ -616,6 +616,8 @@ private fun TerminalPanel(
         val lifecycleOwner = LocalLifecycleOwner.current
         val currentFocusInputIfImeRestoreAllowed by rememberUpdatedState(focusInputIfImeRestoreAllowed)
         DisposableEffect(lifecycleOwner, terminalGridView, sessionId) {
+            val disposableSessionId = sessionId
+            val disposableView = terminalGridView
             val observer = LifecycleEventObserver { _, event ->
                 val activeSessionId = sessionId ?: return@LifecycleEventObserver
                 val view = terminalGridView
@@ -634,6 +636,9 @@ private fun TerminalPanel(
             }
             lifecycleOwner.lifecycle.addObserver(observer)
             onDispose {
+                if (!disposableSessionId.isNullOrBlank() && disposableView != null) {
+                    viewportCache[disposableSessionId] = disposableView.captureViewportState()
+                }
                 lifecycleOwner.lifecycle.removeObserver(observer)
             }
         }
@@ -688,6 +693,7 @@ private fun TerminalPanel(
             )
             LaunchedEffect(sessionId) {
                 restoredSessionId = null
+                restoredView = null
             }
             LaunchedEffect(
                 sessionId,
@@ -702,13 +708,16 @@ private fun TerminalPanel(
                 val activeSessionId = sessionId ?: return@LaunchedEffect
                 if (
                     restoredSessionId == activeSessionId &&
-                    restoredLifecycleNonce == lifecycleRestoreNonce
+                    restoredLifecycleNonce == lifecycleRestoreNonce &&
+                    restoredView === view
                 ) {
                     return@LaunchedEffect
                 }
                 if (shouldDelayViewportRestore) return@LaunchedEffect
-                view.scheduleViewportRestore(viewportCache[activeSessionId])
+                val cachedViewport = viewportCache[activeSessionId] ?: return@LaunchedEffect
+                view.scheduleViewportRestore(cachedViewport)
                 restoredSessionId = activeSessionId
+                restoredView = view
                 restoredLifecycleNonce = lifecycleRestoreNonce
             }
             if (showStatusOverlay) {

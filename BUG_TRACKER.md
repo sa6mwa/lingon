@@ -29,6 +29,31 @@ Required status values:
 
 ## Active Items
 
+### B-062 Android app lock unlock loses terminal camera viewport
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `app-lock`, `lifecycle`
+- Summary: Unlocking the Android app after app lock can recreate the terminal without the saved camera viewport, so the restored view pans to keep the cursor at the bottom-left instead of preserving the previous camera.
+- Report:
+  When restoring a session in the Android app after unlocking from the app-lock screen, the camera is not restored to the same position as before lock. It pans to keep the cursor bottom-left.
+- Repro:
+  1. Open a terminal session with enough content that the camera can be away from cursor-follow bottom.
+  2. Position the camera at a saved viewport.
+  3. Let app lock replace the terminal with the locked screen.
+  4. Unlock the app.
+  5. Observe the recreated terminal camera follows the cursor instead of restoring the previous camera.
+- Investigation notes:
+  - The app-lock branch removes `TerminalScreen` from composition while showing `LockedScreen`.
+  - The terminal viewport cache lived inside `TerminalScreen`, so app-lock disposal destroyed the cache that reconnect/refocus restore paths rely on.
+  - `TerminalPanel` also only captured viewport on lifecycle `ON_STOP`, not when it was disposed by an in-app lock state transition.
+  - The first regression run reproduced the unlock failure: after unlocking, the viewport restored to row 38 instead of the saved row 10.
+  - Hoisting the viewport cache kept the captured state alive across app-lock composition changes, but restore still needed ordering guards: a recreated `TerminalGridView` can be laid out before it has a snapshot/frame, and a no-cache restore attempt must not mark the view as restored.
+- Regression coverage:
+  - Added instrumentation coverage for the app-lock branch that disposes `TerminalScreen`, captures a top camera viewport, unlocks, and asserts the recreated terminal preserves the saved visible start row and camera offset instead of cursor-following to the bottom.
+- Verification:
+  - `LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260511-050339-1354744/summary.txt`.
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
 ### B-061 Tagged wall notification cleanup must cancel by tag and ID
 
 - Status: `resolved`

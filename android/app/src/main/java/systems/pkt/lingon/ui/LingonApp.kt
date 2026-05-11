@@ -12,6 +12,7 @@ import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -20,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import systems.pkt.lingon.share.ShareTokens
+import systems.pkt.lingon.terminal.TerminalViewportState
 import systems.pkt.lingon.ui.dialogs.AppLockTimeoutDialog
 import systems.pkt.lingon.ui.dialogs.EndpointDialog
 import systems.pkt.lingon.ui.dialogs.ShareTokenDialog
@@ -27,10 +29,26 @@ import systems.pkt.lingon.ui.dialogs.ThemeDialog
 import systems.pkt.lingon.ui.theme.LingonTheme
 import systems.pkt.lingon.viewmodel.AppViewModel
 import systems.pkt.lingon.viewmodel.StatusLevel
+import systems.pkt.lingon.viewmodel.UiState
 
 @Composable
 fun LingonApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
+
+    LingonAppContent(
+        state = state,
+        viewModel = viewModel,
+        viewportCache = viewportCache,
+    )
+}
+
+@Composable
+internal fun LingonAppContent(
+    state: UiState,
+    viewModel: AppViewModel,
+    viewportCache: MutableMap<String, TerminalViewportState>,
+) {
     val title = if (state.canAttach && !state.showCertificates) {
         endpointHost(state.endpoint) ?: "Lingon"
     } else {
@@ -82,6 +100,7 @@ fun LingonApp(viewModel: AppViewModel) {
                         menuExpanded = menuExpanded,
                         onToggleMenu = { menuExpanded = true },
                         onDismissMenu = { menuExpanded = false },
+                        viewportCache = viewportCache,
                     )
                 } else {
                     LoginScreen(state = state, viewModel = viewModel)

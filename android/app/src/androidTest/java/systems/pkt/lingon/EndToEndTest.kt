@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.ParcelFileDescriptor
 import android.view.KeyEvent
+import androidx.activity.compose.setContent
 import androidx.core.app.NotificationManagerCompat
 import androidx.test.rule.GrantPermissionRule
 import androidx.compose.ui.test.assertCountEquals
@@ -25,6 +26,8 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -59,9 +62,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.rules.RuleChain
 import systems.pkt.lingon.test.FailureCaptureRule
+import systems.pkt.lingon.ui.LingonAppContent
 import systems.pkt.lingon.ui.TestTags
 import systems.pkt.lingon.viewmodel.AppViewModel
 import systems.pkt.lingon.viewmodel.AppViewModelFactory
+import systems.pkt.lingon.viewmodel.UiState
 import systems.pkt.lingon.terminal.TerminalGridView
 import systems.pkt.lingon.terminal.TerminalPalette
 import systems.pkt.lingon.terminal.TerminalSnapshot
@@ -561,6 +566,108 @@ class EndToEndTest {
             assertEquals(0, view.getVisibleStartRow())
         }
         composeRule.waitForIdle()
+    }
+
+    @Test
+    fun app_lock_unlock_preserves_terminal_camera_viewport() {
+        val sessionId = "lock-viewport"
+        val snapshot = terminalSnapshotForViewTest(rows = 120, cols = 40, cursorY = 110)
+        val locked = mutableStateOf(false)
+        val viewportCache = mutableStateMapOf<String, TerminalViewportState>()
+        val baseState = UiState(
+            endpoint = "https://relay.example/v1",
+            username = "alice",
+            loggedIn = true,
+            activeSessionId = sessionId,
+            activeSnapshot = snapshot,
+            connectionState = ConnectionState.Connected,
+            hasControl = true,
+            terminalCols = 40,
+            terminalRows = 120,
+            lastFrameSeq = 42L,
+            lastFrameType = "snapshot",
+            appLockTimeoutMinutes = 3,
+            zoomFactor = DefaultTerminalZoom + 0.5f,
+            restoreTerminalImeOnLifecycleStart = false,
+        )
+        val viewModel = appViewModel()
+        composeRule.activity.runOnUiThread {
+            composeRule.activity.setContent {
+                LingonAppContent(
+                    state = baseState.copy(requiresAppUnlock = locked.value),
+                    viewModel = viewModel,
+                    viewportCache = viewportCache,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val view = findTerminalView() as? TerminalGridView
+            view != null &&
+                view.width > 0 &&
+                view.height > 0 &&
+                view.getScaledCellHeightForTesting() > 0f &&
+                view.getVisibleEndRowExclusive() > 0
+        }
+
+        composeRule.runOnIdle {
+            val view = findTerminalView() as? TerminalGridView
+                ?: throw AssertionError("missing terminal view before app lock")
+            val cellHeight = view.getScaledCellHeightForTesting()
+            val savedCamera = cellHeight * 10f
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
+                    cameraOffsetYPx = savedCamera,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = snapshot.rows,
+                ),
+            )
+            view.draw(Canvas(Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)))
+            assertEquals(
+                "fixture should place a manual camera before app lock",
+                10,
+                view.getVisibleStartRow(),
+            )
+        }
+        val before = terminalViewCameraSnapshot("before app lock")
+
+        composeRule.runOnIdle { locked.value = true }
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { hasTextNode("App locked") }
+        composeRule.runOnIdle {
+            assertTrue(
+                "app lock disposal should capture the terminal viewport",
+                viewportCache.containsKey(sessionId),
+            )
+            assertEquals(
+                "app lock disposal should capture the pre-lock camera offset",
+                before.cameraOffsetYPx,
+                viewportCache.getValue(sessionId).cameraOffsetYPx,
+                maxOf(1f, before.scaledCellHeightPx * 0.1f),
+            )
+        }
+
+        composeRule.runOnIdle { locked.value = false }
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val view = findTerminalView() as? TerminalGridView
+            view != null && view.width > 0 && view.height > 0 && view.getScaledCellHeightForTesting() > 0f
+        }
+        val restored = terminalViewCameraSnapshot("after app unlock")
+
+        assertEquals(
+            "unlock should preserve the saved visible start row instead of cursor-following to the bottom",
+            before.visibleStartRow,
+            restored.visibleStartRow,
+        )
+        assertEquals(
+            "unlock should preserve the saved camera offset instead of cursor-following to the bottom",
+            before.cameraOffsetYPx,
+            restored.cameraOffsetYPx,
+            maxOf(1f, before.scaledCellHeightPx * 0.1f),
+        )
     }
 
     @Test
@@ -3339,6 +3446,20 @@ class EndToEndTest {
         return info
     }
 
+    private fun terminalViewCameraSnapshot(label: String): TerminalCameraSnapshot {
+        var snapshot: TerminalCameraSnapshot? = null
+        composeRule.runOnIdle {
+            val terminalView = findTerminalView() as? TerminalGridView
+                ?: throw AssertionError("missing terminal view for $label")
+            snapshot = TerminalCameraSnapshot(
+                cameraOffsetYPx = terminalView.getCameraOffsetYForTesting(),
+                scaledCellHeightPx = terminalView.getScaledCellHeightForTesting(),
+                visibleStartRow = terminalView.getVisibleStartRow(),
+            )
+        }
+        return snapshot ?: throw AssertionError("missing terminal camera snapshot for $label")
+    }
+
     private fun waitForTerminalDebugInfo(
         timeoutMs: Long = SHORT_UI_TIMEOUT_MS,
         predicate: (TerminalDebugInfo) -> Boolean,
@@ -4459,6 +4580,12 @@ class EndToEndTest {
             return kotlin.math.abs(cameraOffsetYPx - expected) <= maxOf(1f, scaledCellHeightPx * 0.1f)
         }
     }
+
+    data class TerminalCameraSnapshot(
+        val cameraOffsetYPx: Float,
+        val scaledCellHeightPx: Float,
+        val visibleStartRow: Int,
+    )
 
     private fun List<TerminalDebugInfo>.describePanSamples(): String {
         return joinToString(prefix = "[", postfix = "]") { info ->

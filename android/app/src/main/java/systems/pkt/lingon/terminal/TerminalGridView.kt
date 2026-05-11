@@ -334,6 +334,8 @@ class TerminalGridView @JvmOverloads constructor(
     private fun applyPendingViewportRestoreIfReady() {
         val state = pendingViewportState ?: return
         if (height <= 0 || scaledCellHeight <= 0f) return
+        if (snapshot == null) return
+        if (frameSeq == Long.MIN_VALUE) return
         pendingViewportState = null
         applyViewportRestore(state)
     }
@@ -445,7 +447,8 @@ class TerminalGridView @JvmOverloads constructor(
             cursorFollowAfterInput = false
             suppressCursorFollowForScrollbackReentry = false
         }
-        if (snap.cursorVisible && cursorFollowAfterInput) {
+        val suppressLiveAutoFollow = suppressLiveAutoFollowFrameSeq == frameSeq
+        if (snap.cursorVisible && cursorFollowAfterInput && !suppressLiveAutoFollow) {
             val adjustedX = TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
                 panActive = panActive,
                 scrollbackOffsetRows = scrollbackOffsetRows,
@@ -469,7 +472,6 @@ class TerminalGridView @JvmOverloads constructor(
         val panOffsetRows = floor(cameraY / scaledH).toInt()
         val maxOffsetRows = max(0, rows - visibleRows)
         var followCameraYPx: Float? = null
-        val suppressLiveAutoFollow = suppressLiveAutoFollowFrameSeq == frameSeq
         val startRow = if (isLoading) {
             panOffsetRows.coerceIn(0, maxOffsetRows)
         } else if (!suppressLiveAutoFollow && TerminalViewportPolicy.shouldAutoFollowCursor(
@@ -489,7 +491,7 @@ class TerminalGridView @JvmOverloads constructor(
                 cursorY = cursorY,
             )
             floor(followCameraYPx / scaledH).toInt().coerceIn(0, maxOffsetRows)
-        } else if (!isLoading && snap.cursorVisible && cursorFollowAfterInput) {
+        } else if (!suppressLiveAutoFollow && !isLoading && snap.cursorVisible && cursorFollowAfterInput) {
             val cursorY = snap.cursorY.coerceIn(0, rows - 1)
             followCameraYPx = TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
                 cameraOffsetYPx = cameraY,
