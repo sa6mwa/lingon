@@ -109,10 +109,17 @@ fun TerminalScreen(
     val screenPadding = if (isCompact) 8.dp else 12.dp
     val spacing = if (isCompact) 6.dp else 8.dp
 
-    val imeVisible = isTerminalImeVisible(
+    val rawImeVisible = isTerminalImeVisible(
         imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current),
         navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current),
     )
+    val imeVisible =
+        rawImeVisible ||
+            (
+                state.restoreTerminalImeOnLifecycleStart == true &&
+                    !userImeDismissInProgress &&
+                    observedTerminalImeVisible
+                )
     val palette = rememberTerminalPalette()
     val focusInput: () -> Unit = {
         userImeDismissInProgress = false
@@ -159,7 +166,7 @@ fun TerminalScreen(
         }
     }
     LaunchedEffect(
-        imeVisible,
+        rawImeVisible,
         state.activeSessionId,
         captureImeInsetChanges,
         state.restoreTerminalImeOnLifecycleStart,
@@ -170,7 +177,7 @@ fun TerminalScreen(
         when (
             decideTerminalImeLifecycleAction(
                 TerminalImeLifecycleInput(
-                    imeVisible = imeVisible,
+                    imeVisible = rawImeVisible,
                     captureImeInsetChanges = captureImeInsetChanges,
                     lifecycleResumed = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
                     restoreTerminalImeOnLifecycleStart = state.restoreTerminalImeOnLifecycleStart,
