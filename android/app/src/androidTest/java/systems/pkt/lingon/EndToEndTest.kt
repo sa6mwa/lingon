@@ -640,12 +640,13 @@ class EndToEndTest {
         composeRule.runOnIdle {
             assertTrue(
                 "app lock disposal should capture the terminal viewport",
-                viewportCache.containsKey(sessionId),
+                viewportCache.isNotEmpty(),
             )
+            assertEquals("app lock should cache one scoped viewport", 1, viewportCache.size)
             assertEquals(
                 "app lock disposal should capture the pre-lock camera offset",
                 before.cameraOffsetYPx,
-                viewportCache.getValue(sessionId).cameraOffsetYPx,
+                viewportCache.values.single().cameraOffsetYPx,
                 maxOf(1f, before.scaledCellHeightPx * 0.1f),
             )
         }
@@ -667,6 +668,105 @@ class EndToEndTest {
             before.cameraOffsetYPx,
             restored.cameraOffsetYPx,
             maxOf(1f, before.scaledCellHeightPx * 0.1f),
+        )
+    }
+
+    @Test
+    fun logout_clears_viewport_cache_and_reused_session_id_does_not_restore_stale_camera() {
+        val sessionId = "host-1"
+        val firstSnapshot = terminalSnapshotForViewTest(rows = 120, cols = 40, cursorY = 110)
+        val secondSnapshot = terminalSnapshotForViewTest(rows = 120, cols = 40, cursorY = 110)
+        val state = mutableStateOf(
+            UiState(
+                endpoint = "https://relay-a.example/v1",
+                username = "alice",
+                loggedIn = true,
+                activeSessionId = sessionId,
+                activeSnapshot = firstSnapshot,
+                connectionState = ConnectionState.Connected,
+                hasControl = true,
+                terminalCols = 40,
+                terminalRows = 120,
+                lastFrameSeq = 100L,
+                lastFrameType = "snapshot",
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                restoreTerminalImeOnLifecycleStart = false,
+            ),
+        )
+        val viewportCache = mutableStateMapOf<String, TerminalViewportState>()
+        val viewModel = appViewModel()
+        composeRule.activity.runOnUiThread {
+            composeRule.activity.setContent {
+                LingonAppContent(
+                    state = state.value,
+                    viewModel = viewModel,
+                    viewportCache = viewportCache,
+                )
+            }
+        }
+        waitForTerminalViewReady()
+
+        composeRule.runOnIdle {
+            val view = findTerminalView() as? TerminalGridView
+                ?: throw AssertionError("missing first identity terminal view")
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
+                    cameraOffsetYPx = cellHeight * 10f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = firstSnapshot.rows,
+                ),
+            )
+            view.draw(Canvas(Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)))
+            assertEquals("fixture should place first identity camera at row 10", 10, view.getVisibleStartRow())
+        }
+        val staleCamera = terminalViewCameraSnapshot("before logout")
+
+        composeRule.runOnIdle {
+            state.value = UiState(
+                endpoint = "https://relay-a.example/v1",
+                username = null,
+                loggedIn = false,
+                restoreTerminalImeOnLifecycleStart = false,
+            )
+        }
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            findTerminalView() == null && viewportCache.isEmpty()
+        }
+
+        composeRule.runOnIdle {
+            state.value = UiState(
+                endpoint = "https://relay-b.example/v1",
+                username = "bob",
+                loggedIn = true,
+                activeSessionId = sessionId,
+                activeSnapshot = secondSnapshot,
+                connectionState = ConnectionState.Connected,
+                hasControl = true,
+                terminalCols = 40,
+                terminalRows = 120,
+                lastFrameSeq = 200L,
+                lastFrameType = "snapshot",
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                restoreTerminalImeOnLifecycleStart = false,
+            )
+        }
+        waitForTerminalViewReady()
+        val afterRelogin = terminalViewCameraSnapshot("after relogin with reused session id")
+
+        assertFalse(
+            "a reused session id after logout must not restore the previous identity's camera row",
+            afterRelogin.visibleStartRow == staleCamera.visibleStartRow,
+        )
+        assertFalse(
+            "a reused session id after logout must not restore the previous identity's camera offset",
+            kotlin.math.abs(afterRelogin.cameraOffsetYPx - staleCamera.cameraOffsetYPx) <=
+                maxOf(1f, staleCamera.scaledCellHeightPx * 0.1f),
         )
     }
 
@@ -3458,6 +3558,17 @@ class EndToEndTest {
             )
         }
         return snapshot ?: throw AssertionError("missing terminal camera snapshot for $label")
+    }
+
+    private fun waitForTerminalViewReady() {
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val view = findTerminalView() as? TerminalGridView
+            view != null &&
+                view.width > 0 &&
+                view.height > 0 &&
+                view.getScaledCellHeightForTesting() > 0f &&
+                view.getVisibleEndRowExclusive() > 0
+        }
     }
 
     private fun waitForTerminalDebugInfo(

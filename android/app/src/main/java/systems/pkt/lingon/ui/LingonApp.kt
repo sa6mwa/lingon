@@ -10,6 +10,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -35,11 +36,13 @@ import systems.pkt.lingon.viewmodel.UiState
 fun LingonApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
+    val viewportCacheIdentity = terminalViewportCacheIdentity(state)
 
     LingonAppContent(
         state = state,
         viewModel = viewModel,
         viewportCache = viewportCache,
+        viewportCacheIdentity = viewportCacheIdentity,
     )
 }
 
@@ -48,6 +51,7 @@ internal fun LingonAppContent(
     state: UiState,
     viewModel: AppViewModel,
     viewportCache: MutableMap<String, TerminalViewportState>,
+    viewportCacheIdentity: String? = terminalViewportCacheIdentity(state),
 ) {
     val title = if (state.canAttach && !state.showCertificates) {
         endpointHost(state.endpoint) ?: "Lingon"
@@ -55,6 +59,10 @@ internal fun LingonAppContent(
         "Lingon"
     }
     var menuExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(viewportCacheIdentity) {
+        viewportCache.clear()
+    }
 
     LingonTheme(themeName = state.theme) {
         Surface(color = MaterialTheme.colorScheme.background) {
@@ -101,6 +109,7 @@ internal fun LingonAppContent(
                         onToggleMenu = { menuExpanded = true },
                         onDismissMenu = { menuExpanded = false },
                         viewportCache = viewportCache,
+                        viewportCacheIdentity = viewportCacheIdentity,
                     )
                 } else {
                     LoginScreen(state = state, viewModel = viewModel)
@@ -201,4 +210,19 @@ private fun endpointHost(endpoint: String): String? {
     if (trimmed.isBlank()) return null
     val withScheme = if (trimmed.contains("://")) trimmed else "https://$trimmed"
     return withScheme.toHttpUrlOrNull()?.host
+}
+
+internal fun terminalViewportCacheIdentity(state: UiState): String? {
+    if (!state.canAttach) return null
+    val endpoint = state.endpoint.trim()
+    val principal = state.shareToken
+        ?.takeIf { it.isNotBlank() }
+        ?.let { "share:$it" }
+        ?: "user:${state.username.orEmpty()}"
+    return listOf(endpoint, principal).joinToString(separator = "\u001f")
+}
+
+internal fun terminalViewportCacheKey(identity: String?, sessionId: String?): String? {
+    if (identity.isNullOrBlank() || sessionId.isNullOrBlank()) return null
+    return "$identity\u001f$sessionId"
 }

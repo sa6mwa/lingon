@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-063 Android viewport cache leaks across logout and identity changes
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `logout`, `identity`
+- Summary: The top-level Android terminal viewport cache can survive logout or identity changes and restore a stale camera when another relay/user reuses the same session ID.
+- Report:
+  Review found that hoisting the viewport cache above `TerminalScreen` lets it outlive logout, endpoint changes, and login/cert screens while restore indexes only by `activeSessionId`.
+- Repro:
+  1. Attach as one endpoint/user with a session ID such as `host-1`.
+  2. Move the terminal camera away from the default cursor-follow position.
+  3. Logout so `TerminalScreen` is disposed.
+  4. Attach as another endpoint/user that reuses `host-1`.
+  5. Observe that the new terminal can restore the stale camera from the previous identity.
+- Investigation notes:
+  - The finding is real. The cache lives at top-level app composition and the key was only the session ID.
+  - Clearing alone is fragile because `TerminalScreen` disposal can capture the old viewport during the transition. Restore lookup must also be scoped to the attached identity.
+  - The fix scopes cache entries by endpoint/principal/session and clears the cache whenever the attached identity changes or disappears.
+- Regression coverage:
+  - Added instrumentation coverage that moves the camera for one identity, logs out, asserts the cache is empty, then logs in as another identity with the same session ID and asserts the previous camera is not restored.
+  - Reran the app-lock viewport regression to prove same-identity app-lock restore still preserves the cached camera.
+- Verification:
+  - `LINGON_IT_ONLY=logout_clears_viewport_cache_and_reused_session_id_does_not_restore_stale_camera make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260511-091517-1858597/summary.txt`.
+  - `LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260511-091645-1864750/summary.txt`.
+  - `./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `./gradlew :app:testDebugUnitTest` passed.
+
 ### B-062 Android app lock unlock loses terminal camera viewport
 
 - Status: `resolved`
