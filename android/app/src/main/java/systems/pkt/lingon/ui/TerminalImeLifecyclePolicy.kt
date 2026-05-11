@@ -3,7 +3,6 @@ package systems.pkt.lingon.ui
 internal enum class TerminalImeLifecycleAction {
     Ignore,
     RecordVisible,
-    RequestFocus,
     BlurOnly,
     CompleteUserDismissAndBlur,
     RecordHiddenAndBlur,
@@ -37,7 +36,7 @@ internal fun decideTerminalImeLifecycleAction(input: TerminalImeLifecycleInput):
         return TerminalImeLifecycleAction.Ignore
     }
     return when (input.restoreTerminalImeOnLifecycleStart) {
-        true -> TerminalImeLifecycleAction.RequestFocus
+        true -> TerminalImeLifecycleAction.Ignore
         false -> TerminalImeLifecycleAction.BlurOnly
         null -> {
             if (input.observedTerminalImeVisible) {

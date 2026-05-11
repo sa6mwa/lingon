@@ -35,7 +35,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -130,16 +129,15 @@ fun TerminalScreen(
             userImeDismissInProgress = false
             observedTerminalImeVisible = true
             viewModel.recordTerminalImeVisibilityForLifecycle(true)
+        } else if (suppressHiddenCapture && state.restoreTerminalImeOnLifecycleStart == true) {
+            imeRestoreInProgress = true
         } else {
-            imeRestoreInProgress = suppressHiddenCapture && state.restoreTerminalImeOnLifecycleStart == true
+            imeRestoreInProgress = false
             focusInput()
         }
     }
     val focusInputIfImeRestoreAllowed: () -> Unit = {
         maybeFocusInputForImeRestore(suppressHiddenCapture = false)
-    }
-    val restoreInputFocusOnLifecycleStart: () -> Unit = {
-        maybeFocusInputForImeRestore(suppressHiddenCapture = true)
     }
     val handleUserDismissIme: () -> Unit = {
         imeRestoreInProgress = false
@@ -187,11 +185,6 @@ fun TerminalScreen(
                 observedTerminalImeVisible = true
                 imeRestoreInProgress = false
                 viewModel.recordTerminalImeVisibilityForLifecycle(true)
-            }
-            TerminalImeLifecycleAction.RequestFocus -> {
-                imeRestoreInProgress = false
-                userImeDismissInProgress = false
-                requestInputFocus?.invoke()
             }
             TerminalImeLifecycleAction.BlurOnly -> requestInputBlur?.invoke()
             TerminalImeLifecycleAction.CompleteUserDismissAndBlur -> {
@@ -361,7 +354,6 @@ fun TerminalScreen(
                         requestInputBlur = requestBlur
                     },
                     focusInput = focusInput,
-                    focusInputIfImeRestoreAllowed = restoreInputFocusOnLifecycleStart,
                     showStatusOverlay = true,
                     modifier = Modifier
                         .weight(1f)
@@ -446,7 +438,6 @@ fun TerminalScreen(
                         requestInputBlur = requestBlur
                     },
                     focusInput = focusInput,
-                    focusInputIfImeRestoreAllowed = restoreInputFocusOnLifecycleStart,
                     showStatusOverlay = false,
                     modifier = Modifier
                         .weight(1f)
@@ -612,7 +603,6 @@ private fun TerminalPanel(
     onInputReady: ((() -> Unit) -> Unit),
     onInputBlurReady: ((() -> Unit) -> Unit),
     focusInput: () -> Unit,
-    focusInputIfImeRestoreAllowed: () -> Unit,
     showStatusOverlay: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -626,7 +616,6 @@ private fun TerminalPanel(
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
         val lifecycleOwner = LocalLifecycleOwner.current
-        val currentFocusInputIfImeRestoreAllowed by rememberUpdatedState(focusInputIfImeRestoreAllowed)
         DisposableEffect(lifecycleOwner, terminalGridView, viewportCacheKey) {
             val disposableViewportKey = viewportCacheKey
             val disposableView = terminalGridView
@@ -641,7 +630,6 @@ private fun TerminalPanel(
                     }
                     Lifecycle.Event.ON_START -> {
                         lifecycleRestoreNonce += 1
-                        currentFocusInputIfImeRestoreAllowed()
                     }
                     else -> Unit
                 }

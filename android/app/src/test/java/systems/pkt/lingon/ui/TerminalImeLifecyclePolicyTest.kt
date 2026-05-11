@@ -5,7 +5,7 @@ import org.junit.Test
 
 class TerminalImeLifecyclePolicyTest {
     @Test
-    fun platformHiddenInsetAfterVisibleLifecycleRestoreDoesNotPersistHidden() {
+    fun platformHiddenInsetAfterVisibleLifecycleRestoreDoesNotForceImeRelayout() {
         val action = decideTerminalImeLifecycleAction(
             TerminalImeLifecycleInput(
                 imeVisible = false,
@@ -18,7 +18,7 @@ class TerminalImeLifecyclePolicyTest {
             ),
         )
 
-        assertEquals(TerminalImeLifecycleAction.RequestFocus, action)
+        assertEquals(TerminalImeLifecycleAction.Ignore, action)
     }
 
     @Test
