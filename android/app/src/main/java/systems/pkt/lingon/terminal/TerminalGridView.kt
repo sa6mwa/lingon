@@ -339,7 +339,6 @@ class TerminalGridView @JvmOverloads constructor(
         if (height <= 0 || scaledCellHeight <= 0f) return
         if (snapshot == null) return
         if (frameSeq == Long.MIN_VALUE) return
-        if (state.viewportHeightPx > 0 && abs(height - state.viewportHeightPx) > 1) return
         pendingViewportState = null
         applyViewportRestore(state)
     }
