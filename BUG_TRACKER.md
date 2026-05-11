@@ -43,13 +43,16 @@ Required status values:
   4. Hide/show the IME; observe the viewport does not visibly reanchor until the terminal is panned.
 - Investigation:
   - `TerminalGridView.onSizeChanged()` recalculated layout and camera state for IME/Compose height changes but did not invalidate the view.
-  - That matches the visible behavior: the state can be corrected internally while pixels remain from the old larger viewport until a later touch/pan triggers `invalidate()`.
+  - Physical-phone verification showed that was insufficient; the app was still measuring the terminal against a layout that could extend under an overlay IME.
+  - The stronger failure mode is that `WindowInsets.ime` can be missing or ineffective on the phone path while the global visible display frame still reports bottom occlusion from the keyboard.
 - Fix:
   - `TerminalGridView.onSizeChanged()` now invalidates immediately after recomputing layout and applying any pending restore.
+  - `TerminalScreen` now measures bottom visible-frame occlusion and applies it as a fallback IME padding only when Compose is not already reporting a real IME inset, so the terminal panel is constrained above the keyboard instead of drawing underneath it.
 - Regression coverage:
   - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
+  - Added unit coverage for fallback IME padding: no double-padding when Compose reports IME, subtract navigation-bar-only occlusion, and synthesize an effective IME bottom when Compose misses the keyboard.
 - Verification:
-  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the fallback occlusion fix.
   - Physical-phone confirmation is still pending.
 
 ### B-063 Android viewport cache leaks across logout and identity changes

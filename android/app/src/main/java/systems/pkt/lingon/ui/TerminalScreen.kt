@@ -42,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -56,12 +57,14 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.content.Context
+import android.graphics.Rect
 import android.text.Editable
 import android.text.InputType
 import android.util.Log
 import android.view.InputDevice
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -103,15 +106,52 @@ fun TerminalScreen(
     var captureImeInsetChanges by remember { mutableStateOf(true) }
     var observedTerminalImeVisible by remember { mutableStateOf(false) }
     val config = LocalConfiguration.current
+    val density = LocalDensity.current
+    val localView = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val isCompact = config.screenWidthDp < 360 || config.screenHeightDp < 700
     val isLandscape = config.screenWidthDp > config.screenHeightDp
     val screenPadding = if (isCompact) 8.dp else 12.dp
     val spacing = if (isCompact) 6.dp else 8.dp
 
+    var visibleFrameBottomOcclusionPx by remember { mutableStateOf(0) }
+    DisposableEffect(localView) {
+        val rect = Rect()
+        fun updateVisibleFrameOcclusion() {
+            val rootView = localView.rootView ?: localView
+            rootView.getWindowVisibleDisplayFrame(rect)
+            visibleFrameBottomOcclusionPx = (rootView.height - rect.bottom).coerceAtLeast(0)
+        }
+        val listener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            updateVisibleFrameOcclusion()
+        }
+        val globalLayoutListener = ViewTreeObserver.OnGlobalLayoutListener {
+            updateVisibleFrameOcclusion()
+        }
+        localView.addOnLayoutChangeListener(listener)
+        localView.viewTreeObserver.addOnGlobalLayoutListener(globalLayoutListener)
+        updateVisibleFrameOcclusion()
+        onDispose {
+            localView.removeOnLayoutChangeListener(listener)
+            localView.viewTreeObserver.removeOnGlobalLayoutListener(globalLayoutListener)
+        }
+    }
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(density)
+    val fallbackImePaddingPx = terminalImeFallbackPaddingPx(
+        imeBottomPx = imeBottomPx,
+        navigationBarsBottomPx = navigationBarsBottomPx,
+        visibleFrameBottomOcclusionPx = visibleFrameBottomOcclusionPx,
+    )
+    val effectiveImeBottomPx = effectiveTerminalImeBottomPx(
+        imeBottomPx = imeBottomPx,
+        navigationBarsBottomPx = navigationBarsBottomPx,
+        fallbackPaddingPx = fallbackImePaddingPx,
+    )
+    val fallbackImePadding = with(density) { fallbackImePaddingPx.toDp() }
     val rawImeVisible = isTerminalImeVisible(
-        imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current),
-        navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current),
+        imeBottomPx = effectiveImeBottomPx,
+        navigationBarsBottomPx = navigationBarsBottomPx,
     )
     val waitingForRestoredImeInset =
         state.restoreTerminalImeOnLifecycleStart == true &&
@@ -289,7 +329,8 @@ fun TerminalScreen(
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding(),
+                    .imePadding()
+                    .padding(bottom = fallbackImePadding),
                 horizontalArrangement = Arrangement.spacedBy(spacing),
             ) {
                 Column(
@@ -372,7 +413,8 @@ fun TerminalScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding(),
+                    .imePadding()
+                    .padding(bottom = fallbackImePadding),
                 verticalArrangement = Arrangement.spacedBy(spacing),
             ) {
                 TopBar(
