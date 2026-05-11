@@ -46,14 +46,16 @@ Required status values:
   - That matches the visible behavior: the state can be corrected internally while pixels remain from the old larger viewport until a later touch/pan triggers `invalidate()`.
   - Physical-phone verification showed the invalidation-only fix was insufficient, and delaying IME focus only moved the keyboard timing without fixing the terminal/content boundary.
   - The terminal panel, its weighted viewport box, and embedded `AndroidView` did not explicitly clip at the Compose viewport boundary, so any parent/AndroidView placement mismatch can let terminal content visibly bleed below the intended viewport until a pan/zoom forces a new interactive draw/layout path.
+  - Physical-phone verification showed clipping was also insufficient. The remaining behavior points at IME intent not immediately driving terminal layout: the app can request/show the keyboard while terminal layout still waits for Android's IME inset observation, and interaction later causes the expected IME-visible layout path.
 - Fix:
   - `TerminalGridView.onSizeChanged()` now invalidates immediately after recomputing layout and applying any pending restore.
   - The terminal panel, terminal viewport box, embedded Android terminal view, and quick-key bar are now clipped to their Compose bounds.
+  - Focusing the terminal now immediately marks the terminal IME as visible for app layout purposes; explicit user dismissal clears that optimistic visibility. This avoids waiting for a delayed or missing platform inset before shrinking/re-scaling the terminal for IME mode.
 - Regression coverage:
   - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
   - Tagged the quick-key container and strengthened keyboard/tall-session instrumentation coverage to assert the terminal viewport bottom never overlaps the quick-key top when the IME controls are visible.
 - Verification:
-  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the clipping fix.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the IME-intent layout fix.
   - Physical-phone confirmation is still pending.
 
 ### B-063 Android viewport cache leaks across logout and identity changes

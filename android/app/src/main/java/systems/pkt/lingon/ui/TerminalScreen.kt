@@ -134,6 +134,7 @@ fun TerminalScreen(
     val palette = rememberTerminalPalette()
     val focusInput: () -> Unit = {
         userImeDismissInProgress = false
+        observedTerminalImeVisible = true
         viewModel.recordTerminalImeVisibilityForLifecycle(true)
         requestInputFocus?.invoke()
         Unit
@@ -160,6 +161,7 @@ fun TerminalScreen(
     val handleUserDismissIme: () -> Unit = {
         imeRestoreInProgress = false
         userImeDismissInProgress = true
+        observedTerminalImeVisible = false
         viewModel.recordTerminalImeVisibilityForLifecycle(false)
     }
     LaunchedEffect(state.activeSessionId, inputReadyNonce) { focusInputIfImeRestoreAllowed() }
