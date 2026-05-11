@@ -68,6 +68,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var suppressCursorFollowForScrollbackReentry: Boolean = false
     private var suppressLiveAutoFollowFrameSeq: Long? = null
     private var initialLiveCameraApplied: Boolean = false
+    private var sizeChangeInvalidateCountForTesting: Int = 0
 
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
@@ -294,6 +295,8 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun getScaledCellHeightForTesting(): Float = scaledCellHeight
 
+    fun getSizeChangeInvalidateCountForTesting(): Int = sizeChangeInvalidateCountForTesting
+
     fun getVisibleStartRow(): Int {
         val snap = snapshot ?: return 0
         val rows = snap.rows
@@ -397,6 +400,8 @@ class TerminalGridView @JvmOverloads constructor(
         super.onSizeChanged(w, h, oldw, oldh)
         updateLayout()
         applyPendingViewportRestoreIfReady()
+        sizeChangeInvalidateCountForTesting += 1
+        invalidate()
     }
 
     override fun performClick(): Boolean {

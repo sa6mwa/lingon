@@ -29,6 +29,29 @@ Required status values:
 
 ## Active Items
 
+### B-064 Android terminal viewport can show stale oversized content after initial/IME resize
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `IME`, `render`
+- Summary: When the IME is already visible before terminal content finishes loading, long session content can initially render as if the terminal viewport still extends below the visible app viewport. Hiding/showing the IME does not visibly correct the camera until the user pans.
+- Report:
+  The engineer reports that sufficiently long sessions consistently start with terminal content cropped below the bottom of the visible viewport. With the IME already up before session load, the terminal appears to load underneath the keyboard; toggling the keyboard does not move the viewport until a pan/touch forces another redraw.
+- Repro steps:
+  1. Start the Android app with enough terminal content to exceed the phone viewport.
+  2. Let the IME appear before the terminal session finishes loading/reconnecting.
+  3. Observe that bottom content is drawn/cropped below the visible viewport and keyboard.
+  4. Hide/show the IME; observe the viewport does not visibly reanchor until the terminal is panned.
+- Investigation:
+  - `TerminalGridView.onSizeChanged()` recalculated layout and camera state for IME/Compose height changes but did not invalidate the view.
+  - That matches the visible behavior: the state can be corrected internally while pixels remain from the old larger viewport until a later touch/pan triggers `invalidate()`.
+- Fix:
+  - `TerminalGridView.onSizeChanged()` now invalidates immediately after recomputing layout and applying any pending restore.
+- Regression coverage:
+  - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - Physical-phone confirmation is still pending.
+
 ### B-063 Android viewport cache leaks across logout and identity changes
 
 - Status: `resolved`

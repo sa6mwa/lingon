@@ -516,6 +516,54 @@ class EndToEndTest {
     }
 
     @Test
+    fun terminal_resize_invalidates_after_live_bottom_reanchor() {
+        lateinit var view: TerminalGridView
+        composeRule.activity.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(1600))
+                layout(0, 0, 480, 1600)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 59),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 60,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.activity.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val sizeChangeInvalidations = view.getSizeChangeInvalidateCountForTesting()
+
+            val keyboardHeight = (cellHeight * 24f).toInt().coerceAtLeast(1)
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(keyboardHeight))
+            view.layout(0, 0, 480, keyboardHeight)
+
+            assertEquals(
+                "terminal resize should bottom-align live content immediately",
+                60,
+                view.getVisibleEndRowExclusive(),
+            )
+            assertTrue(
+                "terminal resize must invalidate so the first frame after IME/session layout cannot show stale pixels",
+                view.getSizeChangeInvalidateCountForTesting() > sizeChangeInvalidations,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
     fun lifecycle_viewport_restore_preserves_saved_camera_without_new_frame() {
         lateinit var view: TerminalGridView
         composeRule.activity.runOnUiThread {
@@ -4719,4 +4767,5 @@ class EndToEndTest {
         val inkRight: Int,
         val inkBottom: Int,
     )
+
 }
