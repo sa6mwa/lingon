@@ -322,6 +322,9 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun scheduleViewportRestore(state: TerminalViewportState?) {
         pendingViewportState = state
+    }
+
+    fun applyScheduledViewportRestoreIfReady() {
         applyPendingViewportRestoreIfReady()
     }
 

@@ -703,6 +703,7 @@ private fun TerminalPanel(
                         imeVisible = imeVisible,
                         isLoading = state.sessionSyncing || state.connectionState == ConnectionState.Connecting,
                     )
+                    view.applyScheduledViewportRestoreIfReady()
                     view.setOnViewSizeChanged { cols, rows ->
                         if (cols <= 0 || rows <= 0) return@setOnViewSizeChanged
                         viewModel.updateTerminalSize(cols, rows)
