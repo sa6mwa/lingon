@@ -23,10 +23,12 @@ internal object TerminalViewportPolicy {
         panOffsetRows: Int,
         totalRows: Int,
         visibleRows: Int,
+        cursorY: Int,
     ): Boolean {
         if (zoomFactor > DefaultTerminalZoom + zoomEpsilon) return false
         if (panOffsetCols != 0 || panOffsetRows != 0) return false
         if (totalRows <= 0 || visibleRows <= 0) return false
+        if (cursorY.coerceIn(0, totalRows - 1) < totalRows - 1) return false
         return visibleRows < totalRows
     }
 

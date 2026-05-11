@@ -98,7 +98,6 @@ fun TerminalScreen(
     var requestInputFocus by remember { mutableStateOf<(() -> Unit)?>(null) }
     var requestInputBlur by remember { mutableStateOf<(() -> Unit)?>(null) }
     var inputReadyNonce by remember { mutableStateOf(0) }
-    var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
     var imeRestoreInProgress by remember { mutableStateOf(false) }
     var userImeDismissInProgress by remember { mutableStateOf(false) }
     var captureImeInsetChanges by remember { mutableStateOf(true) }
@@ -330,8 +329,6 @@ fun TerminalScreen(
                     viewModel = viewModel,
                     viewportCache = viewportCache,
                     viewportCacheIdentity = viewportCacheIdentity,
-                    terminalGridView = terminalGridView,
-                    onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
                     fitToViewWidth = true,
                     screenPadding = screenPadding,
@@ -414,8 +411,6 @@ fun TerminalScreen(
                     viewModel = viewModel,
                     viewportCache = viewportCache,
                     viewportCacheIdentity = viewportCacheIdentity,
-                    terminalGridView = terminalGridView,
-                    onTerminalGridViewChanged = { terminalGridView = it },
                     palette = palette,
                     fitToViewWidth = true,
                     screenPadding = screenPadding,
@@ -584,8 +579,6 @@ private fun TerminalPanel(
     viewModel: AppViewModel,
     viewportCache: MutableMap<String, TerminalViewportState>,
     viewportCacheIdentity: String?,
-    terminalGridView: TerminalGridView?,
-    onTerminalGridViewChanged: (TerminalGridView?) -> Unit,
     palette: TerminalPalette,
     fitToViewWidth: Boolean,
     screenPadding: Dp,
@@ -616,32 +609,6 @@ private fun TerminalPanel(
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
         val lifecycleOwner = LocalLifecycleOwner.current
-        DisposableEffect(lifecycleOwner, terminalGridView, viewportCacheKey) {
-            val disposableViewportKey = viewportCacheKey
-            val disposableView = terminalGridView
-            val observer = LifecycleEventObserver { _, event ->
-                val activeViewportKey = viewportCacheKey ?: return@LifecycleEventObserver
-                val view = terminalGridView
-                when (event) {
-                    Lifecycle.Event.ON_STOP -> {
-                        if (view != null) {
-                            viewportCache[activeViewportKey] = view.captureViewportState()
-                        }
-                    }
-                    Lifecycle.Event.ON_START -> {
-                        lifecycleRestoreNonce += 1
-                    }
-                    else -> Unit
-                }
-            }
-            lifecycleOwner.lifecycle.addObserver(observer)
-            onDispose {
-                if (!disposableViewportKey.isNullOrBlank() && disposableView != null) {
-                    viewportCache[disposableViewportKey] = disposableView.captureViewportState()
-                }
-                lifecycleOwner.lifecycle.removeObserver(observer)
-            }
-        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -652,10 +619,37 @@ private fun TerminalPanel(
                 (snapshot.rows - state.scrollbackOffsetRows).coerceAtLeast(0)
             } ?: 0
             key(viewportCacheKey) {
+                var keyedTerminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
+                DisposableEffect(lifecycleOwner, keyedTerminalGridView, viewportCacheKey) {
+                    val disposableViewportKey = viewportCacheKey
+                    val disposableView = keyedTerminalGridView
+                    val observer = LifecycleEventObserver { _, event ->
+                        val activeViewportKey = viewportCacheKey ?: return@LifecycleEventObserver
+                        val view = keyedTerminalGridView
+                        when (event) {
+                            Lifecycle.Event.ON_STOP -> {
+                                if (view != null) {
+                                    viewportCache[activeViewportKey] = view.captureViewportState()
+                                }
+                            }
+                            Lifecycle.Event.ON_START -> {
+                                lifecycleRestoreNonce += 1
+                            }
+                            else -> Unit
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose {
+                        if (!disposableViewportKey.isNullOrBlank() && disposableView != null) {
+                            viewportCache[disposableViewportKey] = disposableView.captureViewportState()
+                        }
+                        lifecycleOwner.lifecycle.removeObserver(observer)
+                    }
+                }
                 AndroidView(
                     factory = { context ->
                         TerminalGridView(context).apply {
-                            onTerminalGridViewChanged(this)
+                            keyedTerminalGridView = this
                             tag = "terminal_view"
                             setOnZoomChanged { value ->
                                 viewModel.updateZoomFactor(value)
@@ -667,7 +661,7 @@ private fun TerminalPanel(
                         }
                     },
                     update = { view ->
-                        onTerminalGridViewChanged(view)
+                        keyedTerminalGridView = view
                         viewportCacheKey?.let { activeViewportKey ->
                             val alreadyRestored =
                                 restoredSessionId == activeViewportKey &&

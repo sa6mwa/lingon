@@ -274,6 +274,7 @@ class TerminalViewportPolicyTest {
                 panOffsetRows = 0,
                 totalRows = 100,
                 visibleRows = 20,
+                cursorY = 99,
             ),
         )
         assertFalse(
@@ -283,6 +284,7 @@ class TerminalViewportPolicyTest {
                 panOffsetRows = 0,
                 totalRows = 100,
                 visibleRows = 20,
+                cursorY = 99,
             ),
         )
         assertFalse(
@@ -292,6 +294,7 @@ class TerminalViewportPolicyTest {
                 panOffsetRows = 1,
                 totalRows = 100,
                 visibleRows = 20,
+                cursorY = 99,
             ),
         )
         assertFalse(
@@ -301,6 +304,17 @@ class TerminalViewportPolicyTest {
                 panOffsetRows = 0,
                 totalRows = 20,
                 visibleRows = 20,
+                cursorY = 19,
+            ),
+        )
+        assertFalse(
+            TerminalViewportPolicy.shouldAutoFollowCursor(
+                zoomFactor = DefaultTerminalZoom,
+                panOffsetCols = 0,
+                panOffsetRows = 0,
+                totalRows = 100,
+                visibleRows = 20,
+                cursorY = 92,
             ),
         )
     }
@@ -314,6 +328,7 @@ class TerminalViewportPolicyTest {
                 panOffsetRows = 0,
                 totalRows = 100,
                 visibleRows = 20,
+                cursorY = 99,
             ),
         )
     }

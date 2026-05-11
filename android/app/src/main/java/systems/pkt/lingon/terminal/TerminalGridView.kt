@@ -477,6 +477,7 @@ class TerminalGridView @JvmOverloads constructor(
         val panOffsetRows = floor(cameraY / scaledH).toInt()
         val maxOffsetRows = max(0, rows - visibleRows)
         var followCameraYPx: Float? = null
+        val cursorY = if (snap.cursorVisible) snap.cursorY.coerceIn(0, rows - 1) else rows - 1
         val startRow = if (isLoading) {
             panOffsetRows.coerceIn(0, maxOffsetRows)
         } else if (!suppressLiveAutoFollow && TerminalViewportPolicy.shouldAutoFollowCursor(
@@ -485,9 +486,9 @@ class TerminalGridView @JvmOverloads constructor(
                 panOffsetRows = panOffsetRows.coerceAtLeast(0),
                 totalRows = rows,
                 visibleRows = visibleRows,
+                cursorY = cursorY,
             )
         ) {
-            val cursorY = if (snap.cursorVisible) snap.cursorY else rows - 1
             followCameraYPx = TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
                 cameraOffsetYPx = cameraY,
                 scaledCellHeightPx = scaledH,
