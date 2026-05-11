@@ -437,6 +437,22 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
+    fun `viewport change preserves bottom anchor across cell scale changes`() {
+        assertEquals(
+            1700f,
+            TerminalViewportPolicy.preserveBottomAnchorOnViewportChange(
+                cameraOffsetYPx = 400f,
+                previousViewportHeightPx = 600,
+                previousScaledCellHeightPx = 10f,
+                nextViewportHeightPx = 300,
+                nextScaledCellHeightPx = 20f,
+                totalRows = 100,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
     fun `restore preserves live bottom when row count advanced after capture`() {
         assertEquals(
             410f,

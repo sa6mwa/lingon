@@ -164,6 +164,29 @@ internal object TerminalViewportPolicy {
         return (cameraOffsetYPx + (previousViewportHeightPx - nextViewportHeightPx)).coerceIn(0f, maxOffsetYPx)
     }
 
+    fun preserveBottomAnchorOnViewportChange(
+        cameraOffsetYPx: Float,
+        previousViewportHeightPx: Int,
+        previousScaledCellHeightPx: Float,
+        nextViewportHeightPx: Int,
+        nextScaledCellHeightPx: Float,
+        totalRows: Int,
+    ): Float {
+        if (
+            previousViewportHeightPx <= 0 ||
+            nextViewportHeightPx <= 0 ||
+            previousScaledCellHeightPx <= 0f ||
+            nextScaledCellHeightPx <= 0f ||
+            totalRows <= 0
+        ) {
+            return cameraOffsetYPx
+        }
+        val previousBottomRows = (cameraOffsetYPx + previousViewportHeightPx.toFloat()) / previousScaledCellHeightPx
+        val maxOffsetYPx = max(0f, (totalRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
+        return ((previousBottomRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
+            .coerceIn(0f, maxOffsetYPx)
+    }
+
     fun shouldSnapToLiveBottom(
         zoomFactor: Float,
         scrollbackOffsetRows: Int,
