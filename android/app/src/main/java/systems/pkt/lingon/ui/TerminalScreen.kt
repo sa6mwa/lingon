@@ -609,6 +609,8 @@ private fun TerminalPanel(
     Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
         var restoredSessionId by remember { mutableStateOf<String?>(null) }
         var restoredView by remember { mutableStateOf<TerminalGridView?>(null) }
+        var lifecycleRestoreNonce by remember { mutableStateOf(0) }
+        var restoredLifecycleNonce by remember { mutableStateOf(0) }
         val sessionId = state.activeSessionId
         val viewportCacheKey = terminalViewportCacheKey(viewportCacheIdentity, sessionId)
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
@@ -625,6 +627,9 @@ private fun TerminalPanel(
                         if (view != null) {
                             viewportCache[activeViewportKey] = view.captureViewportState()
                         }
+                    }
+                    Lifecycle.Event.ON_START -> {
+                        lifecycleRestoreNonce += 1
                     }
                     else -> Unit
                 }
@@ -697,11 +702,13 @@ private fun TerminalPanel(
                 state.lastFrameSeq,
                 state.scrollbackOffsetRows,
                 fitToViewWidth,
+                lifecycleRestoreNonce,
             ) {
                 val view = terminalGridView ?: return@LaunchedEffect
                 val activeViewportKey = viewportCacheKey ?: return@LaunchedEffect
                 if (
                     restoredSessionId == activeViewportKey &&
+                    restoredLifecycleNonce == lifecycleRestoreNonce &&
                     restoredView === view
                 ) {
                     return@LaunchedEffect
@@ -711,6 +718,7 @@ private fun TerminalPanel(
                 view.scheduleViewportRestore(cachedViewport)
                 restoredSessionId = activeViewportKey
                 restoredView = view
+                restoredLifecycleNonce = lifecycleRestoreNonce
             }
             if (showStatusOverlay) {
                 StatusBanner(
