@@ -334,6 +334,36 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
+    fun `initial live camera bottom aligns when cursor fits bottom viewport`() {
+        assertEquals(
+            800f,
+            TerminalViewportPolicy.initialLiveCameraOffsetY(
+                scaledCellHeightPx = 10f,
+                viewportHeightPx = 200,
+                totalRows = 100,
+                cursorVisible = true,
+                cursorY = 88,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `initial live camera follows cursor when bottom viewport would hide cursor`() {
+        assertEquals(
+            100f,
+            TerminalViewportPolicy.initialLiveCameraOffsetY(
+                scaledCellHeightPx = 10f,
+                viewportHeightPx = 200,
+                totalRows = 100,
+                cursorVisible = true,
+                cursorY = 10,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
     fun `live reentry rows consume pan rows while preserving viewport continuity`() {
         assertEquals(
             0,

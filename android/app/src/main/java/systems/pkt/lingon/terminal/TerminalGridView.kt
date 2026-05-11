@@ -66,6 +66,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var cursorFollowAfterInput: Boolean = false
     private var suppressCursorFollowForScrollbackReentry: Boolean = false
     private var suppressLiveAutoFollowFrameSeq: Long? = null
+    private var initialLiveCameraApplied: Boolean = false
 
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
@@ -189,6 +190,9 @@ class TerminalGridView @JvmOverloads constructor(
         var invalidate = false
         if (this.snapshot !== snapshot) {
             this.snapshot = snapshot
+            if (snapshot == null) {
+                initialLiveCameraApplied = false
+            }
             invalidate = true
         }
         if (this.palette !== palette) {
@@ -252,6 +256,7 @@ class TerminalGridView @JvmOverloads constructor(
         if (invalidate) {
             updateLayout()
             applyPendingViewportRestoreIfReady()
+            applyInitialLiveCameraIfReady()
             invalidate()
         }
     }
@@ -343,6 +348,24 @@ class TerminalGridView @JvmOverloads constructor(
         applyViewportRestore(state)
     }
 
+    private fun applyInitialLiveCameraIfReady() {
+        if (initialLiveCameraApplied) return
+        if (pendingViewportState != null || restoredViewportState != null) return
+        if (isLoading || scrollbackOffsetRows > 0) return
+        if (height <= 0 || scaledCellHeight <= 0f) return
+        val snap = snapshot ?: return
+        if (snap.rows <= 0) return
+        cameraOffsetYPx = TerminalViewportPolicy.initialLiveCameraOffsetY(
+            scaledCellHeightPx = scaledCellHeight,
+            viewportHeightPx = height,
+            totalRows = snap.rows,
+            cursorVisible = snap.cursorVisible,
+            cursorY = snap.cursorY,
+        )
+        scrollRemainderY = 0f
+        initialLiveCameraApplied = true
+    }
+
     private fun applyViewportRestore(state: TerminalViewportState) {
         restoredViewportState = state
         restoredViewportFrameSeq = frameSeq
@@ -363,6 +386,7 @@ class TerminalGridView @JvmOverloads constructor(
             lastCursorY = snap.cursorY
         }
         cursorFollowAfterInput = false
+        initialLiveCameraApplied = true
         suppressLiveAutoFollowFrameSeq = frameSeq
         clampCameraOffsets(resetScrollRemainder = false)
         invalidate()
@@ -773,6 +797,7 @@ class TerminalGridView @JvmOverloads constructor(
     private fun resetPan() {
         restoredViewportState = null
         restoredViewportFrameSeq = Long.MIN_VALUE
+        initialLiveCameraApplied = false
         cameraOffsetXPx = 0f
         preferredCameraOffsetXPx = 0f
         cameraOffsetYPx = 0f
