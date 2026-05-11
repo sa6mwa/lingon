@@ -397,7 +397,6 @@ class TerminalGridView @JvmOverloads constructor(
         super.onSizeChanged(w, h, oldw, oldh)
         updateLayout()
         applyPendingViewportRestoreIfReady()
-        applyInitialLiveCameraIfReady()
     }
 
     override fun performClick(): Boolean {
