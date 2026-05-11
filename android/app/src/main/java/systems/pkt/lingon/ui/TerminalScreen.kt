@@ -207,14 +207,6 @@ fun TerminalScreen(
     }
 
     val handleSelectSession: (String) -> Unit = { nextSessionId ->
-        val currentSessionId = state.activeSessionId
-        if (!currentSessionId.isNullOrBlank() && currentSessionId != nextSessionId) {
-            terminalGridView?.let { view ->
-                terminalViewportCacheKey(viewportCacheIdentity, currentSessionId)?.let { key ->
-                    viewportCache[key] = view.captureViewportState()
-                }
-            }
-        }
         viewModel.selectSession(nextSessionId)
     }
 
