@@ -2029,6 +2029,34 @@ class EndToEndTest {
     }
 
     @Test
+    fun soft_keyboard_inset_keeps_terminal_viewport_above_keyboard() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        enableSoftKeyboardWithHardwareKeyboard()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val sessionId = startHostsViaHarness(count = 1, rows = 240, initialLines = 260).single()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        selectSessionTab(sessionId, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == sessionId && !stateForTest().sessionSyncing }
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+
+        focusTerminalInput()
+        waitUntilNoError(15_000L) { hasTextNode("CTRL") && readImeBottomInsetPx() > readNavigationBottomInsetPx() }
+        assertTerminalViewportAboveIme("focused tall terminal with real soft keyboard")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == sessionId &&
+                info.rows > info.viewRows &&
+                info.isLiveBottomAnchored()
+        } ?: throw AssertionError("real soft keyboard did not leave tall terminal bottom-anchored in camera mode")
+        assertTerminalCameraUsesVisibleImeViewport("focused tall terminal with real soft keyboard")
+        assertTerminalViewportStable("focused tall terminal with real soft keyboard")
+    }
+
+    @Test
     fun keyboard_hidden_before_background_stays_hidden_after_resume() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -3396,7 +3424,7 @@ class EndToEndTest {
     }
 
     private fun focusTerminalInput() {
-        composeRule.onNodeWithTag(TestTags.TerminalInput, useUnmergedTree = true).performClick()
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         composeRule.waitForIdle()
     }
 
@@ -3541,6 +3569,63 @@ class EndToEndTest {
         )
     }
 
+    private fun assertTerminalViewportAboveIme(label: String) {
+        composeRule.waitForIdle()
+        val imeBottom = readImeBottomInsetPx()
+        assertTrue("$label expected real IME inset to be visible", imeBottom > 0)
+        val rootHeight = readRootViewHeightPx()
+        val imeTop = rootHeight - imeBottom
+        val terminal = nodeBounds(TestTags.TerminalList)
+        val quickKeys = nodeBounds(TestTags.TerminalQuickKeys)
+        assertTrue(
+            "$label terminal viewport overlaps real IME: terminal=$terminal imeTop=$imeTop imeBottom=$imeBottom rootHeight=$rootHeight",
+            terminal.bottom <= imeTop + 0.5f,
+        )
+        assertTrue(
+            "$label quick keys overlap real IME: quickKeys=$quickKeys imeTop=$imeTop imeBottom=$imeBottom rootHeight=$rootHeight",
+            quickKeys.bottom <= imeTop + 0.5f,
+        )
+    }
+
+    private fun assertTerminalCameraUsesVisibleImeViewport(label: String) {
+        composeRule.waitForIdle()
+        val imeBottom = readImeBottomInsetPx()
+        assertTrue("$label expected real IME inset to be visible", imeBottom > 0)
+        val rootHeight = readRootViewHeightPx()
+        val imeTop = rootHeight - imeBottom
+        val terminal = nodeBounds(TestTags.TerminalList)
+        val info = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info for $label")
+        val expectedVisibleHeight = (imeTop - terminal.top).coerceAtLeast(0f)
+        assertTrue(
+            "$label terminal camera viewport must be the visible area above IME: " +
+                "viewport=${info.viewportHeightPx} expectedVisibleHeight=$expectedVisibleHeight terminal=$terminal imeTop=$imeTop",
+            info.viewportHeightPx <= kotlin.math.ceil(expectedVisibleHeight).toInt() + 1,
+        )
+    }
+
+    private fun assertTerminalViewportStable(label: String) {
+        val initialTerminal = nodeBounds(TestTags.TerminalList)
+        val initialQuickKeys = nodeBounds(TestTags.TerminalQuickKeys)
+        val initialInfo = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before stability check for $label")
+        val deadline = System.currentTimeMillis() + 1_200L
+        while (System.currentTimeMillis() < deadline) {
+            safeWaitForIdle()
+            val terminal = nodeBounds(TestTags.TerminalList)
+            val quickKeys = nodeBounds(TestTags.TerminalQuickKeys)
+            val info = readTerminalDebugInfo()
+                ?: throw AssertionError("missing terminal debug info during stability check for $label")
+            assertEquals("$label terminal bounds flickered", initialTerminal, terminal)
+            assertEquals("$label quick-key bounds flickered", initialQuickKeys, quickKeys)
+            assertTrue(
+                "$label camera moved during stable IME viewport check: before=${initialInfo.cameraOffsetYPx} after=${info.cameraOffsetYPx}",
+                kotlin.math.abs(initialInfo.cameraOffsetYPx - info.cameraOffsetYPx) <= maxOf(1f, info.scaledCellHeightPx * 0.1f),
+            )
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+    }
+
     private fun readTerminalDebugInfo(): TerminalDebugInfo? {
         var info: TerminalDebugInfo? = null
         composeRule.runOnIdle {
@@ -3600,7 +3685,7 @@ class EndToEndTest {
                 renderScaleX = terminalView?.getRenderScaleX() ?: 0f,
                 renderScaleY = terminalView?.getRenderScaleY() ?: 0f,
                 cameraOffsetYPx = terminalView?.getCameraOffsetYForTesting() ?: 0f,
-                viewportHeightPx = terminalView?.height ?: 0,
+                viewportHeightPx = terminalView?.getViewportHeightForTesting() ?: 0,
                 scaledCellHeightPx = terminalView?.getScaledCellHeightForTesting() ?: 0f,
                 visibleStartRow = terminalView?.getVisibleStartRow() ?: 0,
                 visibleEndRowExclusive = terminalView?.getVisibleEndRowExclusive() ?: 0,
@@ -3881,6 +3966,38 @@ class EndToEndTest {
         val resources = composeRule.activity.resources
         val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
         return if (resId > 0) resources.getDimensionPixelSize(resId) else 0
+    }
+
+    private fun enableSoftKeyboardWithHardwareKeyboard() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
+            "settings put secure show_ime_with_hard_keyboard 1",
+        ).close()
+    }
+
+    private fun readRootViewHeightPx(): Int {
+        var height = 0
+        composeRule.runOnIdle {
+            height = composeRule.activity.window.decorView.rootView.height
+        }
+        return height
+    }
+
+    private fun readImeBottomInsetPx(): Int {
+        var bottom = 0
+        composeRule.runOnIdle {
+            val insets = composeRule.activity.window.decorView.rootWindowInsets
+            bottom = insets?.getInsets(android.view.WindowInsets.Type.ime())?.bottom ?: 0
+        }
+        return bottom
+    }
+
+    private fun readNavigationBottomInsetPx(): Int {
+        var bottom = 0
+        composeRule.runOnIdle {
+            val insets = composeRule.activity.window.decorView.rootWindowInsets
+            bottom = insets?.getInsets(android.view.WindowInsets.Type.navigationBars())?.bottom ?: 0
+        }
+        return bottom
     }
 
     private fun waitUntil(timeoutMs: Long = DEFAULT_TIMEOUT_MS, condition: () -> Boolean) {

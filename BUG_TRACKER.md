@@ -46,14 +46,23 @@ Required status values:
   - That matches the visible behavior: the state can be corrected internally while pixels remain from the old larger viewport until a later touch/pan triggers `invalidate()`.
   - Physical-phone verification showed the invalidation-only fix was insufficient, and delaying IME focus only moved the keyboard timing without fixing the terminal/content boundary.
   - The terminal panel, its weighted viewport box, and embedded `AndroidView` did not explicitly clip at the Compose viewport boundary, so any parent/AndroidView placement mismatch can let terminal content visibly bleed below the intended viewport until a pan/zoom forces a new interactive draw/layout path.
+  - The existing Android keyboard tests focused the hidden `TerminalInput` node directly. That bypassed the production terminal tap path and could miss bugs where the real terminal surface and Android IME insets disagreed.
+  - The emulator reproducer can force a real soft-keyboard inset with `show_ime_with_hard_keyboard=1`. On devices where the `AndroidView` remains physically behind the IME overlay, Compose bounds can look correct while the renderer still computes camera height from the full view height.
 - Fix:
   - `TerminalGridView.onSizeChanged()` now invalidates immediately after recomputing layout and applying any pending restore.
   - The terminal panel, terminal viewport box, embedded Android terminal view, and quick-key bar are now clipped to their Compose bounds.
+  - Keyboard integration helpers now focus `TerminalFocus`, matching the production tap path instead of clicking the hidden input node.
+  - `TerminalGridView` now derives its effective camera viewport height from the actual visible portion of the view above the current IME inset. If Compose has already resized the view above the IME, this is a no-op; if Android leaves the view behind an overlay keyboard, camera layout, live-bottom anchoring, panning, clipping, restore, and debug visibility use the reduced visible height.
 - Regression coverage:
   - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
   - Tagged the quick-key container and strengthened keyboard/tall-session instrumentation coverage to assert the terminal viewport bottom never overlaps the quick-key top when the IME controls are visible.
+  - Added `soft_keyboard_inset_keeps_terminal_viewport_above_keyboard`, which forces a real soft IME on the emulator, loads a 240-row session, focuses the real terminal surface, and asserts the effective terminal camera viewport is bounded by the visible area above the IME, stays live-bottom anchored, and does not move during the settle window.
 - Verification:
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the clipping fix.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the effective IME viewport fix.
+  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-015200-4064878/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-015323-4070926/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-015506-4077816/summary.txt`.
   - Physical-phone confirmation is still pending.
 
 ### B-063 Android viewport cache leaks across logout and identity changes
