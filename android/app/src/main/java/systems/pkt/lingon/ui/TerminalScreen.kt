@@ -667,6 +667,20 @@ private fun TerminalPanel(
                 },
                 update = { view ->
                     onTerminalGridViewChanged(view)
+                    viewportCacheKey?.let { activeViewportKey ->
+                        val alreadyRestored =
+                            restoredSessionId == activeViewportKey &&
+                                restoredLifecycleNonce == lifecycleRestoreNonce &&
+                                restoredView === view
+                        if (!alreadyRestored && !shouldDelayViewportRestore) {
+                            viewportCache[activeViewportKey]?.let { cachedViewport ->
+                                view.scheduleViewportRestore(cachedViewport)
+                                restoredSessionId = activeViewportKey
+                                restoredView = view
+                                restoredLifecycleNonce = lifecycleRestoreNonce
+                            }
+                        }
+                    }
                     view.update(
                         snapshot = state.activeSnapshot,
                         fontSizeSp = state.fontSizeSp,
@@ -694,31 +708,6 @@ private fun TerminalPanel(
             LaunchedEffect(viewportCacheKey) {
                 restoredSessionId = null
                 restoredView = null
-            }
-            LaunchedEffect(
-                viewportCacheKey,
-                terminalGridView,
-                state.sessionSyncing,
-                state.lastFrameSeq,
-                state.scrollbackOffsetRows,
-                fitToViewWidth,
-                lifecycleRestoreNonce,
-            ) {
-                val view = terminalGridView ?: return@LaunchedEffect
-                val activeViewportKey = viewportCacheKey ?: return@LaunchedEffect
-                if (
-                    restoredSessionId == activeViewportKey &&
-                    restoredLifecycleNonce == lifecycleRestoreNonce &&
-                    restoredView === view
-                ) {
-                    return@LaunchedEffect
-                }
-                if (shouldDelayViewportRestore) return@LaunchedEffect
-                val cachedViewport = viewportCache[activeViewportKey] ?: return@LaunchedEffect
-                view.scheduleViewportRestore(cachedViewport)
-                restoredSessionId = activeViewportKey
-                restoredView = view
-                restoredLifecycleNonce = lifecycleRestoreNonce
             }
             if (showStatusOverlay) {
                 StatusBanner(
