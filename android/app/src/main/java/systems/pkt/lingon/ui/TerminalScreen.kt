@@ -113,9 +113,19 @@ fun TerminalScreen(
         imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current),
         navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current),
     )
+    val waitingForRestoredImeInset =
+        state.restoreTerminalImeOnLifecycleStart == true &&
+            !rawImeVisible &&
+            !userImeDismissInProgress &&
+            (
+                !observedTerminalImeVisible ||
+                    state.sessionSyncing ||
+                    state.connectionState != ConnectionState.Connected
+                )
     val imeVisible =
         rawImeVisible ||
             (
+                !waitingForRestoredImeInset &&
                 state.restoreTerminalImeOnLifecycleStart == true &&
                     !userImeDismissInProgress &&
                     observedTerminalImeVisible
@@ -335,6 +345,7 @@ fun TerminalScreen(
                     isCompact = isCompact,
                     isLandscape = true,
                     imeVisible = imeVisible,
+                    waitForImeInsetBeforeTerminalLayout = waitingForRestoredImeInset,
                     onHardwareKey = ::handleHardwareKey,
                     ctrlActive = ctrlActive,
                     altActive = altActive,
@@ -417,6 +428,7 @@ fun TerminalScreen(
                     isCompact = isCompact,
                     isLandscape = false,
                     imeVisible = imeVisible,
+                    waitForImeInsetBeforeTerminalLayout = waitingForRestoredImeInset,
                     onHardwareKey = ::handleHardwareKey,
                     ctrlActive = ctrlActive,
                     altActive = altActive,
@@ -585,6 +597,7 @@ private fun TerminalPanel(
     isCompact: Boolean,
     isLandscape: Boolean,
     imeVisible: Boolean,
+    waitForImeInsetBeforeTerminalLayout: Boolean,
     onHardwareKey: (AndroidKeyEvent) -> Boolean,
     ctrlActive: Boolean,
     altActive: Boolean,
@@ -691,7 +704,9 @@ private fun TerminalPanel(
                             panResetNonce = state.panResetNonce,
                             scrollbackOffsetRows = state.scrollbackOffsetRows,
                             imeVisible = imeVisible,
-                            isLoading = state.sessionSyncing || state.connectionState == ConnectionState.Connecting,
+                            isLoading = state.sessionSyncing ||
+                                state.connectionState == ConnectionState.Connecting ||
+                                waitForImeInsetBeforeTerminalLayout,
                         )
                         view.applyScheduledViewportRestoreIfReady()
                         view.setOnViewSizeChanged { cols, rows ->
