@@ -298,6 +298,8 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun getViewportHeightForTesting(): Int = effectiveViewportHeightPx()
 
+    fun getPhysicalHeightForTesting(): Int = height
+
     fun getSizeChangeInvalidateCountForTesting(): Int = sizeChangeInvalidateCountForTesting
 
     fun getVisibleStartRow(): Int {
@@ -305,7 +307,7 @@ class TerminalGridView @JvmOverloads constructor(
         val rows = snap.rows
         val viewportHeightPx = effectiveViewportHeightPx()
         if (rows <= 0 || scaledCellHeight <= 0f || viewportHeightPx <= 0) return 0
-        val maxRows = floor(viewportHeightPx / scaledCellHeight).toInt().coerceAtLeast(0)
+        val maxRows = ceil(viewportHeightPx / scaledCellHeight).toInt().coerceAtLeast(0)
         val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
         val maxOffsetRows = max(0, rows - visibleRows)
         val startRow = floor(cameraOffsetYPx.coerceAtLeast(0f) / scaledCellHeight).toInt()
@@ -317,7 +319,7 @@ class TerminalGridView @JvmOverloads constructor(
         val rows = snap.rows
         val viewportHeightPx = effectiveViewportHeightPx()
         if (rows <= 0 || scaledCellHeight <= 0f || viewportHeightPx <= 0) return 0
-        val maxRows = floor(viewportHeightPx / scaledCellHeight).toInt().coerceAtLeast(0)
+        val maxRows = ceil(viewportHeightPx / scaledCellHeight).toInt().coerceAtLeast(0)
         val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
         return (getVisibleStartRow() + visibleRows).coerceAtMost(rows)
     }
@@ -475,7 +477,7 @@ class TerminalGridView @JvmOverloads constructor(
         if (cellW <= 0f || cellH <= 0f || scaledW <= 0f || scaledH <= 0f) return
 
         val maxCols = floor(width / scaledW).toInt().coerceAtLeast(0)
-        val maxRows = floor(viewportHeightPx / scaledH).toInt().coerceAtLeast(0)
+        val maxRows = ceil(viewportHeightPx / scaledH).toInt().coerceAtLeast(0)
         val visibleCols = if (maxCols <= 0) cols else minOf(cols, maxCols)
         val visibleRows = if (maxRows <= 0) rows else minOf(rows, maxRows)
         val maxOffsetXPx = max(0f, (cols * scaledW) - width.toFloat())

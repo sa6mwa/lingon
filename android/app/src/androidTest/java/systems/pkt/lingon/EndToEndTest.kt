@@ -36,6 +36,10 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
+import android.widget.FrameLayout
 import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -103,10 +107,11 @@ class EndToEndTest {
     @After
     fun restoreDeviceState() {
         runCatching { restoreNotificationDelivery() }
+        runCatching { restoreSoftInputAdjustResize() }
         runCatching { resumeActivity() }
         runCatching { detachStartedHeadlessSessions() }
         runCatching {
-            composeRule.activity.runOnUiThread {
+            composeRule.runOnUiThread {
                 appViewModel().setBackgroundWallEnabled(false)
             }
             composeRule.waitForIdle()
@@ -358,7 +363,7 @@ class EndToEndTest {
     fun zoomed_scrollback_live_reentry_waits_for_matching_snapshot() {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 setOnScrollback { scrollbackDelta += it }
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
@@ -387,7 +392,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             view.restoreViewportState(
@@ -445,7 +450,7 @@ class EndToEndTest {
     @Test
     fun keyboard_height_change_bottom_aligns_live_view_when_cursor_still_fits() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(1600))
                 layout(0, 0, 480, 1600)
@@ -468,7 +473,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             view.restoreViewportState(
@@ -518,7 +523,7 @@ class EndToEndTest {
     @Test
     fun terminal_resize_invalidates_after_live_bottom_reanchor() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(1600))
                 layout(0, 0, 480, 1600)
@@ -541,7 +546,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             val sizeChangeInvalidations = view.getSizeChangeInvalidateCountForTesting()
@@ -564,9 +569,134 @@ class EndToEndTest {
     }
 
     @Test
+    fun terminal_view_reanchors_when_soft_keyboard_overlays_physical_view() {
+        lateinit var terminalView: TerminalGridView
+        lateinit var input: EditText
+        composeRule.runOnUiThread {
+            composeRule.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+            terminalView = TerminalGridView(composeRule.activity)
+            input = EditText(composeRule.activity).apply {
+                isFocusable = true
+                isFocusableInTouchMode = true
+                alpha = 0f
+            }
+            val root = FrameLayout(composeRule.activity).apply {
+                addView(
+                    terminalView,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                    ),
+                )
+                addView(input, FrameLayout.LayoutParams(1, 1))
+            }
+            composeRule.activity.setContentView(root)
+        }
+        waitForViewLayout(terminalView)
+
+        composeRule.runOnUiThread {
+            terminalView.update(
+                snapshot = terminalSnapshotForViewTest(rows = 240, cols = 80, cursorY = 239),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 80,
+                hostRows = 240,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
+        }
+
+        showKeyboard(input)
+        waitForImeOverlay(terminalView)
+        composeRule.runOnUiThread {
+            terminalView.requestApplyInsets()
+            terminalView.update(
+                snapshot = terminalSnapshotForViewTest(rows = 240, cols = 80, cursorY = 239),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 80,
+                hostRows = 240,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
+            assertOverlayCameraBottomAnchored("overlay keyboard visible", terminalView)
+        }
+        val visibleViewportHeight = terminalView.getViewportHeightForTesting()
+
+        hideKeyboard(input)
+        waitForImeHidden()
+        composeRule.runOnUiThread {
+            terminalView.requestApplyInsets()
+            terminalView.update(
+                snapshot = terminalSnapshotForViewTest(rows = 240, cols = 80, cursorY = 239),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 80,
+                hostRows = 240,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
+            assertEquals(
+                "hidden IME should restore full physical terminal viewport",
+                terminalView.getPhysicalHeightForTesting(),
+                terminalView.getViewportHeightForTesting(),
+            )
+            assertOverlayCameraBottomAnchored("overlay keyboard hidden", terminalView)
+        }
+
+        showKeyboard(input)
+        waitForImeOverlay(terminalView)
+        composeRule.runOnUiThread {
+            terminalView.requestApplyInsets()
+            terminalView.update(
+                snapshot = terminalSnapshotForViewTest(rows = 240, cols = 80, cursorY = 239),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 4,
+                hostCols = 80,
+                hostRows = 240,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
+            assertTrue(
+                "showing IME again should shrink the effective viewport without requiring a pan",
+                terminalView.getViewportHeightForTesting() <= visibleViewportHeight + 1,
+            )
+            assertOverlayCameraBottomAnchored("overlay keyboard visible again", terminalView)
+        }
+    }
+
+    @Test
     fun lifecycle_viewport_restore_preserves_saved_camera_without_new_frame() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
                 layout(0, 0, 480, 480)
@@ -589,7 +719,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             view.restoreViewportState(
@@ -639,7 +769,7 @@ class EndToEndTest {
             restoreTerminalImeOnLifecycleStart = false,
         )
         val viewModel = appViewModel()
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             composeRule.activity.setContent {
                 LingonAppContent(
                     state = baseState.copy(requiresAppUnlock = locked.value),
@@ -743,7 +873,7 @@ class EndToEndTest {
         )
         val viewportCache = mutableStateMapOf<String, TerminalViewportState>()
         val viewModel = appViewModel()
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             composeRule.activity.setContent {
                 LingonAppContent(
                     state = state.value,
@@ -821,7 +951,7 @@ class EndToEndTest {
     @Test
     fun lifecycle_viewport_restore_survives_ime_height_bounce_without_new_frame() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(640))
                 layout(0, 0, 480, 640)
@@ -844,7 +974,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             val saved = TerminalViewportState(
@@ -913,7 +1043,7 @@ class EndToEndTest {
     @Test
     fun lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(200), exactlyMeasureSpec(240))
                 layout(0, 0, 200, 240)
@@ -936,7 +1066,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             view.restoreViewportState(
@@ -994,7 +1124,7 @@ class EndToEndTest {
     @Test
     fun lifecycle_viewport_capture_keeps_horizontal_preference_separate_from_temporary_camera() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(200), exactlyMeasureSpec(240))
                 layout(0, 0, 200, 240)
@@ -1017,7 +1147,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             view.restoreViewportState(
@@ -1066,7 +1196,7 @@ class EndToEndTest {
     @Test
     fun lifecycle_viewport_restore_preserves_live_bottom_across_height_change() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
                 layout(0, 0, 480, 480)
@@ -1089,7 +1219,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
             val saved = view.captureViewportState()
             val cellHeight = view.getScaledCellHeightForTesting()
@@ -1133,7 +1263,7 @@ class EndToEndTest {
     @Test
     fun lifecycle_viewport_restore_preserves_manual_bottom_anchor_across_height_change() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
                 layout(0, 0, 480, 480)
@@ -1156,7 +1286,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
@@ -1203,7 +1333,7 @@ class EndToEndTest {
     @Test
     fun lifecycle_viewport_restore_preserves_live_bottom_when_rows_advance() {
         lateinit var view: TerminalGridView
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
                 layout(0, 0, 480, 480)
@@ -1226,7 +1356,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
             val saved = view.captureViewportState()
             val cellHeight = view.getScaledCellHeightForTesting()
@@ -1269,7 +1399,7 @@ class EndToEndTest {
     fun zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 setOnScrollback { scrollbackDelta += it }
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
@@ -1293,7 +1423,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             val live = terminalSnapshotForViewTest(rows = 30, cols = 20)
@@ -1381,7 +1511,7 @@ class EndToEndTest {
     ) {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 setOnScrollback { scrollbackDelta += it }
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
@@ -1405,7 +1535,7 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             val live = terminalSnapshotForViewTest(rows = 30, cols = 20)
@@ -2350,7 +2480,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -2473,7 +2603,7 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(false)
         }
         composeRule.waitForIdle()
@@ -2509,7 +2639,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -2555,7 +2685,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -2614,7 +2744,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -2655,7 +2785,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -2701,7 +2831,7 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureAllWallInactivityOff()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -2738,7 +2868,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -3341,7 +3471,7 @@ class EndToEndTest {
     }
 
     private fun setResizeHostEnabled(enabled: Boolean) {
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setResizeHostEnabledForTesting(enabled)
         }
         composeRule.waitForIdle()
@@ -3443,7 +3573,7 @@ class EndToEndTest {
 
     private fun ensureLoggedOut() {
         if (hasTag(TestTags.LoginUsername)) return
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().logout()
         }
         waitForTag(TestTags.LoginUsername, timeoutMs = 10_000L)
@@ -3626,6 +3756,67 @@ class EndToEndTest {
         }
     }
 
+    private fun waitForViewLayout(view: View) {
+        waitUntilWithoutCompose(timeoutMs = 10_000L) {
+            view.width > 0 && view.height > 0 && view.isAttachedToWindow
+        }
+    }
+
+    private fun showKeyboard(input: EditText) {
+        composeRule.runOnUiThread {
+            input.requestFocus()
+            composeRule.activity.getSystemService(InputMethodManager::class.java)
+                .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun hideKeyboard(input: EditText) {
+        composeRule.runOnUiThread {
+            composeRule.activity.getSystemService(InputMethodManager::class.java)
+                .hideSoftInputFromWindow(input.windowToken, 0)
+            input.clearFocus()
+        }
+    }
+
+    private fun waitForImeOverlay(view: TerminalGridView) {
+        waitUntilWithoutCompose(timeoutMs = 15_000L) {
+            val imeBottom = readImeBottomInsetPx()
+            val rootHeight = readRootViewHeightPx()
+            imeBottom > readNavigationBottomInsetPx() &&
+                view.height > 0 &&
+                view.getViewportHeightForTesting() < view.getPhysicalHeightForTesting() &&
+                viewBottomInRoot(view) > rootHeight - imeBottom
+        }
+    }
+
+    private fun waitForImeHidden() {
+        waitUntilWithoutCompose(timeoutMs = 10_000L) {
+            readImeBottomInsetPx() <= readNavigationBottomInsetPx()
+        }
+    }
+
+    private fun assertOverlayCameraBottomAnchored(label: String, view: TerminalGridView) {
+        val cellHeight = view.getScaledCellHeightForTesting()
+        val viewportHeight = view.getViewportHeightForTesting()
+        val expected = maxOf(0f, (240 * cellHeight) - viewportHeight.toFloat())
+        assertTrue("$label cell height was not measured", cellHeight > 0f)
+        assertEquals(
+            "$label should use effective viewport height for live-bottom camera anchoring",
+            expected,
+            view.getCameraOffsetYForTesting(),
+            maxOf(1f, cellHeight * 0.1f),
+        )
+        assertEquals("$label should render through the terminal bottom", 240, view.getVisibleEndRowExclusive())
+    }
+
+    private fun viewBottomInRoot(view: View): Int {
+        val rootLocation = IntArray(2)
+        val viewLocation = IntArray(2)
+        composeRule.activity.window.decorView.rootView.getLocationInWindow(rootLocation)
+        view.getLocationInWindow(viewLocation)
+        return viewLocation[1] - rootLocation[1] + view.height
+    }
+
     private fun readTerminalDebugInfo(): TerminalDebugInfo? {
         var info: TerminalDebugInfo? = null
         composeRule.runOnIdle {
@@ -3686,6 +3877,7 @@ class EndToEndTest {
                 renderScaleY = terminalView?.getRenderScaleY() ?: 0f,
                 cameraOffsetYPx = terminalView?.getCameraOffsetYForTesting() ?: 0f,
                 viewportHeightPx = terminalView?.getViewportHeightForTesting() ?: 0,
+                physicalHeightPx = terminalView?.getPhysicalHeightForTesting() ?: 0,
                 scaledCellHeightPx = terminalView?.getScaledCellHeightForTesting() ?: 0f,
                 visibleStartRow = terminalView?.getVisibleStartRow() ?: 0,
                 visibleEndRowExclusive = terminalView?.getVisibleEndRowExclusive() ?: 0,
@@ -3974,6 +4166,20 @@ class EndToEndTest {
         ).close()
     }
 
+    private fun forceSoftInputOverlay() {
+        composeRule.runOnUiThread {
+            composeRule.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+        }
+        composeRule.waitForIdle()
+    }
+
+    private fun restoreSoftInputAdjustResize() {
+        composeRule.runOnUiThread {
+            composeRule.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        composeRule.waitForIdle()
+    }
+
     private fun readRootViewHeightPx(): Int {
         var height = 0
         composeRule.runOnIdle {
@@ -4005,6 +4211,15 @@ class EndToEndTest {
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return
             safeWaitForIdle()
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        throw AssertionError("Timed out waiting for UI condition after ${timeoutMs}ms")
+    }
+
+    private fun waitUntilWithoutCompose(timeoutMs: Long = DEFAULT_TIMEOUT_MS, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
             Thread.sleep(POLL_INTERVAL_MS)
         }
         throw AssertionError("Timed out waiting for UI condition after ${timeoutMs}ms")
@@ -4121,7 +4336,7 @@ class EndToEndTest {
     }
 
     private fun setZoomFactor(value: Float) {
-        composeRule.activity.runOnUiThread { appViewModel().updateZoomFactor(value) }
+        composeRule.runOnUiThread { appViewModel().updateZoomFactor(value) }
         composeRule.waitForIdle()
     }
 
@@ -4856,6 +5071,7 @@ class EndToEndTest {
         val renderScaleY: Float,
         val cameraOffsetYPx: Float,
         val viewportHeightPx: Int,
+        val physicalHeightPx: Int,
         val scaledCellHeightPx: Float,
         val visibleStartRow: Int,
         val visibleEndRowExclusive: Int,
