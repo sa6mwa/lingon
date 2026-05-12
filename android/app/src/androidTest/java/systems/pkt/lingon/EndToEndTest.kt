@@ -635,6 +635,7 @@ class EndToEndTest {
             terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
             assertOverlayCameraBottomAnchored("overlay keyboard visible", terminalView)
         }
+        assertOverlayTerminalViewportDoesNotFlicker("overlay keyboard visible", terminalView)
         val visibleViewportHeight = terminalView.getViewportHeightForTesting()
 
         hideKeyboard(input)
@@ -664,6 +665,7 @@ class EndToEndTest {
             )
             assertOverlayCameraBottomAnchored("overlay keyboard hidden", terminalView)
         }
+        assertOverlayTerminalViewportDoesNotFlicker("overlay keyboard hidden", terminalView)
 
         showKeyboard(input)
         waitForImeOverlay(terminalView)
@@ -691,6 +693,7 @@ class EndToEndTest {
             )
             assertOverlayCameraBottomAnchored("overlay keyboard visible again", terminalView)
         }
+        assertOverlayTerminalViewportDoesNotFlicker("overlay keyboard visible again", terminalView)
     }
 
     @Test
@@ -3809,6 +3812,45 @@ class EndToEndTest {
         assertEquals("$label should render through the terminal bottom", 240, view.getVisibleEndRowExclusive())
     }
 
+    private fun assertOverlayTerminalViewportDoesNotFlicker(label: String, view: TerminalGridView) {
+        val initial = overlayViewportSample(view)
+        assertTrue("$label initial sample is not bottom anchored: $initial", initial.isBottomAnchored())
+        val deadline = System.currentTimeMillis() + 1_200L
+        while (System.currentTimeMillis() < deadline) {
+            composeRule.runOnUiThread {
+                view.draw(Canvas(Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)))
+            }
+            val sample = overlayViewportSample(view)
+            assertEquals("$label physical height flickered", initial.physicalHeightPx, sample.physicalHeightPx)
+            assertEquals("$label effective viewport height flickered", initial.viewportHeightPx, sample.viewportHeightPx)
+            assertEquals("$label visible start row flickered", initial.visibleStartRow, sample.visibleStartRow)
+            assertEquals("$label visible end row flickered", initial.visibleEndRowExclusive, sample.visibleEndRowExclusive)
+            assertEquals(
+                "$label camera Y flickered",
+                initial.cameraOffsetYPx,
+                sample.cameraOffsetYPx,
+                maxOf(1f, initial.scaledCellHeightPx * 0.1f),
+            )
+            assertTrue("$label lost bottom anchoring during settle window: $sample", sample.isBottomAnchored())
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+    }
+
+    private fun overlayViewportSample(view: TerminalGridView): OverlayViewportSample {
+        var sample: OverlayViewportSample? = null
+        composeRule.runOnUiThread {
+            sample = OverlayViewportSample(
+                physicalHeightPx = view.getPhysicalHeightForTesting(),
+                viewportHeightPx = view.getViewportHeightForTesting(),
+                scaledCellHeightPx = view.getScaledCellHeightForTesting(),
+                cameraOffsetYPx = view.getCameraOffsetYForTesting(),
+                visibleStartRow = view.getVisibleStartRow(),
+                visibleEndRowExclusive = view.getVisibleEndRowExclusive(),
+            )
+        }
+        return sample ?: throw AssertionError("missing overlay viewport sample")
+    }
+
     private fun viewBottomInRoot(view: View): Int {
         val rootLocation = IntArray(2)
         val viewLocation = IntArray(2)
@@ -5094,6 +5136,22 @@ class EndToEndTest {
         val scaledCellHeightPx: Float,
         val visibleStartRow: Int,
     )
+
+    data class OverlayViewportSample(
+        val physicalHeightPx: Int,
+        val viewportHeightPx: Int,
+        val scaledCellHeightPx: Float,
+        val cameraOffsetYPx: Float,
+        val visibleStartRow: Int,
+        val visibleEndRowExclusive: Int,
+    ) {
+        fun isBottomAnchored(): Boolean {
+            if (scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return false
+            val expected = maxOf(0f, (240 * scaledCellHeightPx) - viewportHeightPx.toFloat())
+            return kotlin.math.abs(cameraOffsetYPx - expected) <= maxOf(1f, scaledCellHeightPx * 0.1f) &&
+                visibleEndRowExclusive == 240
+        }
+    }
 
     private fun List<TerminalDebugInfo>.describePanSamples(): String {
         return joinToString(prefix = "[", postfix = "]") { info ->

@@ -60,6 +60,7 @@ Required status values:
   - Tagged the quick-key container and strengthened keyboard/tall-session instrumentation coverage to assert the terminal viewport bottom never overlaps the quick-key top when the IME controls are visible.
   - Added `soft_keyboard_inset_keeps_terminal_viewport_above_keyboard`, which forces a real soft IME on the emulator, loads a 240-row session, focuses the real terminal surface, and asserts the effective terminal camera viewport is bounded by the visible area above the IME, stays live-bottom anchored, and does not move during the settle window.
   - Added `terminal_view_reanchors_when_soft_keyboard_overlays_physical_view`, which mounts the real `TerminalGridView` behind a real soft IME, reproduces the overlay condition, and asserts keyboard show/hide/show changes the effective camera viewport and remains bottom-anchored without any pan.
+  - The overlay regression now also samples for 1.2 seconds after each IME transition and fails on any flicker in physical height, effective viewport height, camera Y, visible start row, or visible end row.
 - Verification:
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the clipping fix.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the effective IME viewport fix.
@@ -68,6 +69,7 @@ Required status values:
   - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-015506-4077816/summary.txt`.
   - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` failed before the partial-row fix, then passed. Passing resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-022202-4170918/summary.txt`.
   - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed after the partial-row fix. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-022343-4177623/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed after adding the no-flicker settle-window assertions. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-070023-531523/summary.txt`.
   - Physical-phone confirmation is still pending.
 
 ### B-063 Android viewport cache leaks across logout and identity changes
