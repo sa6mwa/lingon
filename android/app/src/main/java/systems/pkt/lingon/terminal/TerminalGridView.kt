@@ -92,7 +92,7 @@ class TerminalGridView @JvmOverloads constructor(
             distanceX: Float,
             distanceY: Float,
         ): Boolean {
-            if (scaleDetector.isInProgress || panActive) {
+            if (scaleDetector.isInProgress || shouldUseTouchPan()) {
                 return false
             }
             if (kotlin.math.abs(distanceY) < kotlin.math.abs(distanceX)) {
@@ -474,7 +474,7 @@ class TerminalGridView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = event.x
                 lastTouchY = event.y
-                panActive = zoomFactor > DefaultTerminalZoom + zoomEpsilon
+                panActive = shouldUseTouchPan()
                 if (panActive) {
                     cameraMode = TerminalViewportMode.Manual
                     cursorFollowReturnMode = TerminalViewportMode.Manual
@@ -494,6 +494,16 @@ class TerminalGridView @JvmOverloads constructor(
             }
         }
         return true
+    }
+
+    private fun shouldUseTouchPan(): Boolean {
+        val snap = snapshot ?: return false
+        if (scaledCellWidth <= 0f || scaledCellHeight <= 0f) return false
+        val viewportHeightPx = effectiveViewportHeightPx()
+        if (viewportHeightPx <= 0) return false
+        if (snap.cols * scaledCellWidth > width.toFloat() + 0.5f) return true
+        if (snap.rows * scaledCellHeight > viewportHeightPx.toFloat() + 0.5f) return true
+        return scrollbackOffsetRows > 0
     }
 
     override fun onDraw(canvas: Canvas) {

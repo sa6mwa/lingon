@@ -962,6 +962,79 @@ class EndToEndTest {
     }
 
     @Test
+    fun terminal_default_zoom_drag_pans_wide_live_content() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(320), exactlyMeasureSpec(360))
+                layout(0, 0, 320, 360)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 39, cursorX = 0),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 120,
+                    hostRows = 40,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+                draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            assertEquals(0f, view.getCameraOffsetXForTesting(), 0.01f)
+            dispatchSinglePointerDrag(view, startX = 220f, startY = 180f, endX = 80f, endY = 180f)
+            assertTrue(
+                "default/full-zoom terminal should allow horizontal panning when live content is wider than the viewport",
+                view.getCameraOffsetXForTesting() > 0f,
+            )
+        }
+    }
+
+    @Test
+    fun terminal_default_zoom_drag_can_enter_scrollback_from_live_edge() {
+        lateinit var view: TerminalGridView
+        var scrollbackDelta = 0
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                setOnScrollback { scrollbackDelta += it }
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(720))
+                layout(0, 0, 480, 720)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 8, cols = 20, cursorY = 7, cursorX = 0),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 8,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+                draw(Canvas(Bitmap.createBitmap(480, 720, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            dispatchSinglePointerDrag(view, startX = 240f, startY = 180f, endX = 240f, endY = 420f)
+            assertTrue(
+                "default/full-zoom terminal should request scrollback when dragging down from the live top edge",
+                scrollbackDelta > 0,
+            )
+        }
+    }
+
+    @Test
     fun terminal_follow_on_read_toggle_preserves_existing_cursor_follow() {
         lateinit var view: TerminalGridView
         composeRule.runOnUiThread {

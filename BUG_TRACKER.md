@@ -29,6 +29,25 @@ Required status values:
 
 ## Active Items
 
+### B-068 Android panning/scrollback does not work when fully zoomed out
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `pan`, `scrollback`, `zoom`
+- Summary: At full zoom-out/default zoom, the Android terminal does not allow normal panning, making scrollback and horizontal camera movement impossible or unreliable.
+- Report:
+  The engineer reports that the scrollbuffer does not work when fully zoomed out and that panning in general does not work at that zoom level.
+- Repro:
+  1. Use the Android terminal at fully zoomed-out/default zoom.
+  2. Try to pan a terminal whose content is wider or taller than the visible viewport, or try to pan upward into scrollback.
+  3. Observe that the camera does not pan as expected.
+- Regression coverage:
+  - Added `terminal_default_zoom_drag_pans_wide_live_content`, an Android view regression proving default/full-zoom drag can pan horizontally when terminal content is wider than the viewport.
+  - Added `terminal_default_zoom_drag_can_enter_scrollback_from_live_edge`, an Android view regression proving default/full-zoom drag can request scrollback when the live view is already at the edge.
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `./gradlew :app:testDebugUnitTest`
+  - Connected instrumentation still needs a device/emulator confirmation for the new Android view regressions.
+
 ### B-067 Android input-follow consumes Enter before cursor returns left
 
 - Status: `needs_verification`
