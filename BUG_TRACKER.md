@@ -41,11 +41,11 @@ Required status values:
   2. Observe that the popup overlaps the top bar menu/close button hit target.
   3. Attempt to press the close button; the popup intercepts the hit.
 - Regression coverage:
-  - Added `menu_overlay_does_not_cover_close_button`, an Android UI regression that opens the top-bar menu and asserts the popup bounds do not intersect the menu/close button bounds.
+  - Added `menu_overlay_does_not_cover_close_button`, an Android UI regression that opens the top-bar menu and asserts the popup top is below the menu/close button bottom with an 8dp minimum gap.
 - Verification:
   - `./gradlew :app:compileDebugAndroidTestKotlin`
   - `./gradlew :app:testDebugUnitTest`
-  - Connected instrumentation still needs a device/emulator confirmation for the new UI bounds regression.
+  - This was not reproduced locally: no Android device is currently connected on this host (`/home/mike/Android/Sdk/platform-tools/adb devices` listed none). Connected instrumentation still needs a device/emulator confirmation for the UI bounds regression.
 
 ### B-069 Android scrollback panning becomes line-stepped when fully zoomed out
 

@@ -82,6 +82,7 @@ fun TopBar(
     @Composable
     fun MenuActionButton(compactVertical: Boolean) {
         val buttonSize = if (compactVertical) 28.dp else 40.dp
+        val menuOffsetY = buttonSize * 2 + 8.dp
         Box(
             modifier = Modifier.wrapContentSize(Alignment.TopEnd),
             contentAlignment = Alignment.TopEnd,
@@ -109,7 +110,7 @@ fun TopBar(
             DropdownMenu(
                 expanded = menuExpanded,
                 onDismissRequest = onDismissMenu,
-                offset = DpOffset(x = 0.dp, y = buttonSize),
+                offset = DpOffset(x = 0.dp, y = menuOffsetY),
                 modifier = Modifier
                     .testTag(TestTags.TopBarMenu),
             ) {

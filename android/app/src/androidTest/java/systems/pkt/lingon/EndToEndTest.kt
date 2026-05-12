@@ -158,8 +158,9 @@ class EndToEndTest {
 
         val button = nodeBounds(TestTags.TopBarMenuButton)
         val menu = nodeBounds(TestTags.TopBarMenu)
-        if (button.overlaps(menu)) {
-            throw AssertionError("top-bar menu popup overlaps close button: button=$button menu=$menu")
+        val minGapPx = composeRule.activity.resources.displayMetrics.density * 8f
+        if (menu.top < button.bottom + minGapPx) {
+            throw AssertionError("top-bar menu popup is too close to close button: button=$button menu=$menu minGapPx=$minGapPx")
         }
 
         composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
