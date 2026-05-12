@@ -29,6 +29,25 @@ Required status values:
 
 ## Active Items
 
+### B-065 Android integration runner starts expensive work when no tests are selected
+
+- Status: `resolved`
+- Area: `android`, `integration`, `test-harness`, `DX`
+- Summary: The Android integration wrapper could start expensive harness/emulator/Gradle work even when `LINGON_IT_ONLY` selected no tests.
+- Report:
+  The engineer reported JVM/Gradle activity when there were no tests to run. That is wasteful and misleading; an empty or invalid test selection should fail before emulator, harness, or Gradle work starts.
+- Repro:
+  1. Run the Android integration wrapper with a `LINGON_IT_ONLY` value that does not match an `EndToEndTest` method.
+  2. Observe setup work proceeding before the runner discovers there is nothing useful to run.
+- Fix:
+  - The runner now discovers and filters `EndToEndTest` methods before building the harness, starting the emulator, starting the harness, or invoking Gradle.
+  - Invalid `LINGON_IT_ONLY` entries now fail immediately with a specific error.
+  - `LINGON_IT_ONLY` now accepts a comma-separated list so related targeted instrumentation tests can run in one Gradle/emulator invocation instead of repeatedly starting and stopping the emulator.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh` passed.
+  - Gradle daemons were stopped with `./gradlew --stop`; `pgrep -af 'Gradle|gradle'` showed no remaining Gradle process except the `pgrep` command itself.
+  - Per engineer instruction, no tests or integration runs were executed for this fix.
+
 ### B-064 Android terminal viewport can show stale oversized content after initial/IME resize
 
 - Status: `needs_verification`

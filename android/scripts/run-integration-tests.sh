@@ -387,12 +387,6 @@ if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" && "${KEEP_EMULATOR}" == "1" ]]; t
   KEEP_EMULATOR="0"
 fi
 
-echo "Building harness..."
-(
-  cd "${ROOT_DIR}"
-  go build -buildvcs=true -o "${HARNESS_BIN}" ./cmd/lingon-android-harness
-)
-
 HARNESS_ARGS=()
 SPECIAL_TEST="refreshes_sessions_when_host_starts_late"
 QUIET_HOST_TEST="tab_switch_does_not_rearm_wall_inactivity_without_terminal_input"
@@ -412,6 +406,52 @@ fi
 run_android_tools() {
   (cd "${ANDROID_DIR}" && go run -buildvcs=true ./cmd/lingon-android-tools "$@")
 }
+
+TEST_SRC="${ANDROID_DIR}/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt"
+TESTS=()
+SELECTED_TESTS=()
+ONLY_TEST="${LINGON_IT_ONLY:-}"
+if [[ -f "${TEST_SRC}" ]]; then
+  mapfile -t TESTS < <(run_android_tools test-names --file "${TEST_SRC}")
+fi
+if [[ "${#TESTS[@]}" -eq 0 ]]; then
+  echo "No tests found in ${TEST_SRC}" >&2
+  exit 1
+fi
+if [[ -n "${ONLY_TEST}" ]]; then
+  IFS=',' read -r -a REQUESTED_TESTS <<< "${ONLY_TEST}"
+  for requested in "${REQUESTED_TESTS[@]}"; do
+    requested="${requested#"${requested%%[![:space:]]*}"}"
+    requested="${requested%"${requested##*[![:space:]]}"}"
+    if [[ -z "${requested}" ]]; then
+      continue
+    fi
+    matched=false
+    for test_name in "${TESTS[@]}"; do
+      if [[ "${test_name}" == "${requested}" ]]; then
+        SELECTED_TESTS+=("${test_name}")
+        matched=true
+        break
+      fi
+    done
+    if [[ "${matched}" != true ]]; then
+      echo "No Android integration test matched LINGON_IT_ONLY entry: ${requested}" >&2
+      exit 1
+    fi
+  done
+  if [[ "${#SELECTED_TESTS[@]}" -eq 0 ]]; then
+    echo "No Android integration tests selected by LINGON_IT_ONLY=${ONLY_TEST}" >&2
+    exit 1
+  fi
+else
+  SELECTED_TESTS=("${TESTS[@]}")
+fi
+
+echo "Building harness..."
+(
+  cd "${ROOT_DIR}"
+  go build -buildvcs=true -o "${HARNESS_BIN}" ./cmd/lingon-android-harness
+)
 
 read_config() {
   run_android_tools config-env --config "${CONFIG_PATH}"
@@ -537,16 +577,6 @@ echo "Running connectedDebugAndroidTest..."
 set +e
 (
   cd "${ANDROID_DIR}"
-  TEST_SRC="${ANDROID_DIR}/app/src/androidTest/java/systems/pkt/lingon/EndToEndTest.kt"
-  TESTS=()
-  ONLY_TEST="${LINGON_IT_ONLY:-}"
-  if [[ -f "${TEST_SRC}" ]]; then
-    mapfile -t TESTS < <(run_android_tools test-names --file "${TEST_SRC}")
-  fi
-  if [[ "${#TESTS[@]}" -eq 0 ]]; then
-    echo "No tests found in ${TEST_SRC}"
-    exit 1
-  fi
   TEST_EXIT=0
 
   run_test_batch() {
@@ -609,10 +639,7 @@ set +e
     return "${status}"
   }
 
-  for test_name in "${TESTS[@]}"; do
-    if [[ -n "${ONLY_TEST}" ]] && [[ "${test_name}" != "${ONLY_TEST}" ]]; then
-      continue
-    fi
+  for test_name in "${SELECTED_TESTS[@]}"; do
     if [[ "${test_name}" == "${SPECIAL_TEST}" ]]; then
       flush_batch || break
       stop_harness
