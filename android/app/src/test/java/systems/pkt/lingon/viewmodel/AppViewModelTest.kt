@@ -1870,15 +1870,18 @@ private class FakeRepository(
     private val refreshAuthError: Throwable? = null,
     backgroundWallEnabled: Boolean = false,
     backgroundWallEnabledFlowOverride: Flow<Boolean>? = null,
+    followOnReadEnabled: Boolean = false,
     initialSessionZooms: Map<String, Float> = emptyMap(),
     initialLastActiveSessionByEndpoint: Map<String, String> = emptyMap(),
 ) : LingonClient {
     private val backgroundWallEnabledState = MutableStateFlow(backgroundWallEnabled)
+    private val followOnReadEnabledState = MutableStateFlow(followOnReadEnabled)
     override val endpointFlow: Flow<String> = MutableStateFlow("https://localhost:12843/v1")
     override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
     override val resizeHostFlow: Flow<Boolean> = MutableStateFlow(false)
     override val backgroundWallEnabledFlow: Flow<Boolean> =
         backgroundWallEnabledFlowOverride ?: backgroundWallEnabledState
+    override val followOnReadEnabledFlow: Flow<Boolean> = followOnReadEnabledState
     override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
     override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(listOf("https://localhost:12843/v1"))
     override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
@@ -1909,6 +1912,10 @@ private class FakeRepository(
         onSetBackgroundWallEnabled?.invoke(value) ?: run {
             backgroundWallEnabledState.value = value
         }
+    }
+
+    override fun setFollowOnReadEnabled(value: Boolean) {
+        followOnReadEnabledState.value = value
     }
 
     override fun setAppLockTimeoutMinutes(value: Int) {

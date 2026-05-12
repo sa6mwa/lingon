@@ -43,6 +43,11 @@ class TerminalGridView @JvmOverloads constructor(
     private var panResetNonce: Int = 0
     private var imeVisible: Boolean = false
     private var isLoading: Boolean = false
+    private var followOnReadEnabled: Boolean = false
+    private var localInputNonce: Long = 0
+    private var hasObservedLocalInputNonce: Boolean = false
+    private var pendingInputFollowNonce: Long = 0
+    private var consumedInputFollowNonce: Long = 0
     private var scrollbackOffsetRows: Int = 0
     private var cameraOffsetXPx: Float = 0f
     private var cameraOffsetYPx: Float = 0f
@@ -189,6 +194,8 @@ class TerminalGridView @JvmOverloads constructor(
         scrollbackOffsetRows: Int,
         imeVisible: Boolean,
         isLoading: Boolean,
+        followOnReadEnabled: Boolean = false,
+        localInputNonce: Long = 0,
     ) {
         var invalidate = false
         if (this.snapshot !== snapshot) {
@@ -254,6 +261,18 @@ class TerminalGridView @JvmOverloads constructor(
         }
         if (this.isLoading != isLoading) {
             this.isLoading = isLoading
+            invalidate = true
+        }
+        if (this.followOnReadEnabled != followOnReadEnabled) {
+            this.followOnReadEnabled = followOnReadEnabled
+            invalidate = true
+        }
+        if (!hasObservedLocalInputNonce) {
+            this.localInputNonce = localInputNonce
+            hasObservedLocalInputNonce = true
+        } else if (this.localInputNonce != localInputNonce) {
+            this.localInputNonce = localInputNonce
+            pendingInputFollowNonce = localInputNonce
             invalidate = true
         }
         if (invalidate) {
@@ -489,11 +508,13 @@ class TerminalGridView @JvmOverloads constructor(
             val cursorX = snap.cursorX.coerceIn(0, cols - 1)
             val cursorY = snap.cursorY.coerceIn(0, rows - 1)
             val cursorMoved = cursorX != lastCursorX || cursorY != lastCursorY
+            val inputFollowArmed = pendingInputFollowNonce > consumedInputFollowNonce
             if (
                 !isLoading &&
                 cursorMoved &&
                 scrollbackOffsetRows <= 0 &&
-                !suppressCursorFollowForScrollbackReentry
+                !suppressCursorFollowForScrollbackReentry &&
+                (followOnReadEnabled || inputFollowArmed)
             ) {
                 cursorFollowAfterInput = true
             }
@@ -534,7 +555,7 @@ class TerminalGridView @JvmOverloads constructor(
         val cursorY = if (snap.cursorVisible) snap.cursorY.coerceIn(0, rows - 1) else rows - 1
         val startRow = if (isLoading) {
             panOffsetRows.coerceIn(0, maxOffsetRows)
-        } else if (!suppressLiveAutoFollow && TerminalViewportPolicy.shouldAutoFollowCursor(
+        } else if (!suppressLiveAutoFollow && (followOnReadEnabled || cursorFollowAfterInput) && TerminalViewportPolicy.shouldAutoFollowCursor(
                 zoomFactor = zoomFactor,
                 panOffsetCols = panOffsetCols.coerceAtLeast(0),
                 panOffsetRows = panOffsetRows.coerceAtLeast(0),
@@ -573,6 +594,10 @@ class TerminalGridView @JvmOverloads constructor(
         }
         if (effectiveOffsetY != cameraOffsetYPx) {
             cameraOffsetYPx = effectiveOffsetY
+        }
+        if (!followOnReadEnabled && cursorFollowAfterInput) {
+            consumedInputFollowNonce = pendingInputFollowNonce
+            cursorFollowAfterInput = false
         }
         val fracX = effectiveOffsetX - (startCol * scaledW)
         val fracY = effectiveOffsetY - (startRow * scaledH)

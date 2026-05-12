@@ -91,6 +91,8 @@ internal fun LingonAppContent(
                         onShowCertificates = { viewModel.showCertificates(true) },
                         backgroundWallEnabled = state.backgroundWallEnabled,
                         onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
+                        followOnReadEnabled = state.followOnReadEnabled,
+                        onToggleFollowOnRead = { enabled -> viewModel.setFollowOnReadEnabled(enabled) },
                         onLogout = { viewModel.logout() },
                         compact = false,
                         vertical = false,

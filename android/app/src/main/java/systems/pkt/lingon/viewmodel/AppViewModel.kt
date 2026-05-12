@@ -125,6 +125,11 @@ class AppViewModel(
             }
         }
         viewModelScope.launch {
+            repository.followOnReadEnabledFlow.collectLatest { enabled ->
+                _state.update { it.copy(followOnReadEnabled = enabled) }
+            }
+        }
+        viewModelScope.launch {
             repository.appLockTimeoutMinutesFlow.collectLatest { minutes ->
                 _state.update { state ->
                     if (minutes == 0 && state.requiresAppUnlock) {
@@ -202,6 +207,11 @@ class AppViewModel(
         repository.setBackgroundWallEnabled(enabled)
         _state.update { it.copy(backgroundWallEnabled = enabled) }
         syncWallPollingSchedule()
+    }
+
+    fun setFollowOnReadEnabled(enabled: Boolean) {
+        repository.setFollowOnReadEnabled(enabled)
+        _state.update { it.copy(followOnReadEnabled = enabled) }
     }
 
     fun showCertificates(show: Boolean) {
@@ -971,6 +981,7 @@ class AppViewModel(
             return
         }
         wsClient.sendInput(webSocket, payload)
+        _state.update { it.copy(localInputNonce = it.localInputNonce + 1) }
     }
 
     private suspend fun bootstrapSessions() {

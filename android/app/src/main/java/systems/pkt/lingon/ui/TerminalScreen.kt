@@ -323,6 +323,8 @@ fun TerminalScreen(
                         onShowCertificates = { viewModel.showCertificates(true) },
                         backgroundWallEnabled = state.backgroundWallEnabled,
                         onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
+                        followOnReadEnabled = state.followOnReadEnabled,
+                        onToggleFollowOnRead = { enabled -> viewModel.setFollowOnReadEnabled(enabled) },
                         onLogout = { viewModel.logout() },
                         compact = true,
                         vertical = true,
@@ -399,6 +401,8 @@ fun TerminalScreen(
                     onShowCertificates = { viewModel.showCertificates(true) },
                     backgroundWallEnabled = state.backgroundWallEnabled,
                     onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
+                    followOnReadEnabled = state.followOnReadEnabled,
+                    onToggleFollowOnRead = { enabled -> viewModel.setFollowOnReadEnabled(enabled) },
                     onLogout = { viewModel.logout() },
                     compact = isCompact,
                     vertical = false,
@@ -713,6 +717,8 @@ private fun TerminalPanel(
                             isLoading = state.sessionSyncing ||
                                 state.connectionState == ConnectionState.Connecting ||
                                 waitForImeInsetBeforeTerminalLayout,
+                            followOnReadEnabled = state.followOnReadEnabled,
+                            localInputNonce = state.localInputNonce,
                         )
                         view.applyScheduledViewportRestoreIfReady()
                         view.setOnViewSizeChanged { cols, rows ->

@@ -10,6 +10,7 @@ import systems.pkt.lingon.data.BackgroundWallStore
 import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.data.EndpointStore
 import systems.pkt.lingon.data.FontSizeStore
+import systems.pkt.lingon.data.FollowOnReadStore
 import systems.pkt.lingon.data.LastActiveSessionStore
 import systems.pkt.lingon.data.LingonRepository
 import systems.pkt.lingon.data.PersistentCookieJar
@@ -59,6 +60,7 @@ class LingonApplication : Application() {
         val zoomStore = ZoomStore(dataStore, appScope)
         val terminalResizeStore = TerminalResizeStore(dataStore, appScope)
         val backgroundWallStore = BackgroundWallStore(dataStore, appScope)
+        val followOnReadStore = FollowOnReadStore(dataStore, appScope)
         val appLockStore = AppLockStore(dataStore, appScope)
         val cookieJar = PersistentCookieJar(dataStore, appScope)
         wallWorkStateStore = WallWorkStateStore(dataStore)
@@ -84,6 +86,7 @@ class LingonApplication : Application() {
             zoomStore,
             terminalResizeStore,
             backgroundWallStore,
+            followOnReadStore,
             appLockStore,
         )
     }

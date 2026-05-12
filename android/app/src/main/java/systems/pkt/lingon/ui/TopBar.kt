@@ -61,6 +61,8 @@ fun TopBar(
     onShowCertificates: () -> Unit,
     backgroundWallEnabled: Boolean,
     onToggleBackgroundWall: (Boolean) -> Unit,
+    followOnReadEnabled: Boolean,
+    onToggleFollowOnRead: (Boolean) -> Unit,
     onLogout: () -> Unit,
     compact: Boolean,
     vertical: Boolean,
@@ -162,6 +164,24 @@ fun TopBar(
                             )
                         },
                         modifier = Modifier.testTag(TestTags.BackgroundWallMenuItem),
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Follow on read") },
+                        onClick = {
+                            onToggleFollowOnRead(!followOnReadEnabled)
+                            onDismissMenu()
+                        },
+                        trailingIcon = {
+                            Switch(
+                                checked = followOnReadEnabled,
+                                onCheckedChange = { checked ->
+                                    onToggleFollowOnRead(checked)
+                                    onDismissMenu()
+                                },
+                                modifier = Modifier.testTag(TestTags.FollowOnReadToggle),
+                            )
+                        },
+                        modifier = Modifier.testTag(TestTags.FollowOnReadMenuItem),
                     )
                     DropdownMenuItem(
                         text = { Text("Select theme") },

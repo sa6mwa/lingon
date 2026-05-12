@@ -45,6 +45,7 @@ data class UiState(
     val zoomFactor: Float = DefaultTerminalZoom,
     val resizeHostEnabled: Boolean = false,
     val backgroundWallEnabled: Boolean = false,
+    val followOnReadEnabled: Boolean = false,
     val wallInactivityEnabled: Boolean = false,
     val wallInactivityLabel: String? = null,
     val shareToken: String? = null,
@@ -71,6 +72,7 @@ data class UiState(
     val requiresAppUnlock: Boolean = false,
     val unlockPromptPending: Boolean = false,
     val restoreTerminalImeOnLifecycleStart: Boolean? = null,
+    val localInputNonce: Long = 0,
 ) {
     val bannerStatus: StatusMessage?
         get() = transientStatus ?: status

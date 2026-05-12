@@ -14,6 +14,8 @@ import androidx.test.rule.GrantPermissionRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -113,6 +115,7 @@ class EndToEndTest {
         runCatching {
             composeRule.runOnUiThread {
                 appViewModel().setBackgroundWallEnabled(false)
+                appViewModel().setFollowOnReadEnabled(false)
             }
             composeRule.waitForIdle()
         }
@@ -162,6 +165,28 @@ class EndToEndTest {
         composeRule.onNodeWithTag(TestTags.ReloadButton, useUnmergedTree = true).performClick()
         waitUntilNoError(5_000) { appViewModel().state.value.lastManualRefreshAtMs > refreshBefore }
         waitUntilNoError(10_000) { !appViewModel().state.value.isRefreshing }
+    }
+
+    @Test
+    fun follow_on_read_menu_toggle_defaults_off_and_toggles() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        composeRule.runOnUiThread {
+            appViewModel().setFollowOnReadEnabled(false)
+        }
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { !appViewModel().state.value.followOnReadEnabled }
+
+        openMenu()
+        composeRule.onNodeWithTag(TestTags.FollowOnReadToggle, useUnmergedTree = true).assertIsOff()
+        composeRule.onNodeWithTag(TestTags.FollowOnReadMenuItem, useUnmergedTree = true).performClick()
+        waitForTagToDisappear(TestTags.TopBarMenu)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { appViewModel().state.value.followOnReadEnabled }
+
+        openMenu()
+        composeRule.onNodeWithTag(TestTags.FollowOnReadToggle, useUnmergedTree = true).assertIsOn()
+        composeRule.onNodeWithTag(TestTags.FollowOnReadMenuItem, useUnmergedTree = true).performClick()
+        waitForTagToDisappear(TestTags.TopBarMenu)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { !appViewModel().state.value.followOnReadEnabled }
     }
 
     @Test
@@ -387,6 +412,7 @@ class EndToEndTest {
                     scrollbackOffsetRows = 4,
                     imeVisible = false,
                     isLoading = false,
+                    localInputNonce = 7,
                 )
             }
         }
@@ -468,6 +494,7 @@ class EndToEndTest {
                     scrollbackOffsetRows = 0,
                     imeVisible = false,
                     isLoading = false,
+                    localInputNonce = 7,
                 )
             }
         }
@@ -541,6 +568,7 @@ class EndToEndTest {
                     scrollbackOffsetRows = 0,
                     imeVisible = false,
                     isLoading = false,
+                    localInputNonce = 7,
                 )
             }
         }
@@ -694,6 +722,159 @@ class EndToEndTest {
             assertOverlayCameraBottomAnchored("overlay keyboard visible again", terminalView)
         }
         assertOverlayTerminalViewportDoesNotFlicker("overlay keyboard visible again", terminalView)
+    }
+
+    @Test
+    fun terminal_cursor_follow_defaults_to_keyboard_input_only() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 10),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    localInputNonce = 7,
+                )
+                restoreViewportState(
+                    TerminalViewportState(
+                        cameraOffsetXPx = 0f,
+                        preferredCameraOffsetXPx = 0f,
+                        cameraOffsetYPx = 0f,
+                        scrollRemainderY = 0f,
+                        viewportHeightPx = height,
+                        scaledCellHeightPx = getScaledCellHeightForTesting(),
+                        totalRows = 80,
+                    ),
+                )
+                draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 70),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 7,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            assertEquals(
+                "read-driven cursor movement must not move the camera when follow-on-read is disabled",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 8,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            assertTrue(
+                "keyboard-associated cursor movement should move the camera when follow-on-read is disabled",
+                view.getCameraOffsetYForTesting() > 0f,
+            )
+        }
+    }
+
+    @Test
+    fun terminal_follow_on_read_toggle_preserves_existing_cursor_follow() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 10),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    followOnReadEnabled = true,
+                )
+                restoreViewportState(
+                    TerminalViewportState(
+                        cameraOffsetXPx = 0f,
+                        preferredCameraOffsetXPx = 0f,
+                        cameraOffsetYPx = 0f,
+                        scrollRemainderY = 0f,
+                        viewportHeightPx = height,
+                        scaledCellHeightPx = getScaledCellHeightForTesting(),
+                        totalRows = 80,
+                    ),
+                )
+                draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = true,
+                localInputNonce = 0,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            assertTrue(
+                "follow-on-read enabled should keep existing read-driven cursor-follow behavior",
+                view.getCameraOffsetYForTesting() > 0f,
+            )
+        }
     }
 
     @Test
