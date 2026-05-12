@@ -25,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -108,6 +109,7 @@ fun TopBar(
             DropdownMenu(
                 expanded = menuExpanded,
                 onDismissRequest = onDismissMenu,
+                offset = DpOffset(x = 0.dp, y = buttonSize),
                 modifier = Modifier
                     .testTag(TestTags.TopBarMenu),
             ) {

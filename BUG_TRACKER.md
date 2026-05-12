@@ -29,6 +29,24 @@ Required status values:
 
 ## Active Items
 
+### B-070 Android menu popup overlaps top bar close button
+
+- Status: `needs_verification`
+- Area: `android`, `topbar`, `menu`, `ui`, `hit-target`
+- Summary: Opening the Android top-bar menu can place the popup over the top-bar menu/close button, making the close button impossible to press.
+- Report:
+  The engineer reports that the menu overlaps the top bar and covers the close button underneath. This is unacceptable and a regression from earlier behavior.
+- Repro:
+  1. Open the Android top-bar menu.
+  2. Observe that the popup overlaps the top bar menu/close button hit target.
+  3. Attempt to press the close button; the popup intercepts the hit.
+- Regression coverage:
+  - Added `menu_overlay_does_not_cover_close_button`, an Android UI regression that opens the top-bar menu and asserts the popup bounds do not intersect the menu/close button bounds.
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `./gradlew :app:testDebugUnitTest`
+  - Connected instrumentation still needs a device/emulator confirmation for the new UI bounds regression.
+
 ### B-069 Android scrollback panning becomes line-stepped when fully zoomed out
 
 - Status: `needs_verification`

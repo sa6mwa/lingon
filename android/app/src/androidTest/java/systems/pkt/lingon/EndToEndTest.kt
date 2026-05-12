@@ -148,6 +148,25 @@ class EndToEndTest {
     }
 
     @Test
+    fun menu_overlay_does_not_cover_close_button() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        waitForTag(TestTags.LoginUsername)
+        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
+        waitForTag(TestTags.TopBarMenu)
+
+        val button = nodeBounds(TestTags.TopBarMenuButton)
+        val menu = nodeBounds(TestTags.TopBarMenu)
+        if (button.overlaps(menu)) {
+            throw AssertionError("top-bar menu popup overlaps close button: button=$button menu=$menu")
+        }
+
+        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
+        waitForTagToDisappear(TestTags.TopBarMenu)
+    }
+
+    @Test
     fun menu_toggle_closes_and_reload_triggers() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
