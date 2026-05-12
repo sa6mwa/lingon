@@ -29,6 +29,27 @@ Required status values:
 
 ## Active Items
 
+### B-066 Host local PTY long readline line corrupts after resize and Ctrl+A/Ctrl+E
+
+- Status: `resolved`
+- Area: `host`, `local-pty`, `resize`, `readline`, `terminal-render`
+- Summary: After resizing a Lingon host local PTY, a long readline command initially renders correctly, but `Ctrl+A` cuts/corrupts the last visible line and `Ctrl+E` leaves the prompt/command rendering inconsistent.
+- Report:
+  The bug is visible in the host local PTY after a terminal window resize. A long command line renders correctly after typing; pressing `Ctrl+A` cuts the last line; pressing `Ctrl+E` does not restore the expected stable rendering.
+- Repro:
+  1. Start a host local PTY with a bash/readline prompt.
+  2. Resize the local PTY terminal viewport.
+  3. Type a long command that wraps onto the bottom prompt rows.
+  4. Press `Ctrl+A`, then `Ctrl+E`.
+  5. Observe the bottom line being cut/corrupted after cursor motion.
+- Regression coverage:
+  - Added `TestHostResizeReadlineLongLineCtrlACtrlEPreservesWrappedPrompt`, an isolated `ptytest` host/local-PTY regression that resizes a test-owned PTY, fills the viewport, types a wrapped readline command, and asserts `Ctrl+A`/`Ctrl+E` leave the wrapped command text stable.
+- Verification:
+  - Reproduced the corruption before the fix with the new regression: `Ctrl+A` shifted/truncated the visible wrapped command rows.
+  - `go test -tags=integration -count=1 ./integration/pty/session -run 'TestHostResize(ReadlineLongLineCtrlACtrlEPreservesWrappedPrompt|TypingWhileShrunkAfterPsAuxKeepsPromptOnBottomRow)' -v`
+  - `go test -tags=integration -count=1 ./integration/pty/session -run 'TestHostResize(ReadlineLongLineCtrlACtrlEPreservesWrappedPrompt|PreservesWideScreenWithoutInput|PreservesWideScreenWithBottomCursorWithoutInput|PreservesScrolledWideOutputWithoutInput|PreservesScrolledWideOutputWithTabBarVisible|TypingWhileShrunkKeepsPromptOnBottomRowWithTabBarVisible|TypingWhileShrunkAfterPsAuxKeepsPromptOnBottomRow|BashClearWhileShrunkThenExpandMatchesControl|LargeViewportClearWhileShrunkThenExpandMatchesControl|LargeViewportClearWhileShrunkThenExpandPsAuxMatchesControl|TypingWhileShrunkThenExpandPreservesCommandLine|TypingAfterExpandMatchesControl)' -v`
+  - `go test -count=1 ./internal/session`
+
 ### B-065 Android integration runner starts expensive work when no tests are selected
 
 - Status: `resolved`
