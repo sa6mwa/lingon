@@ -503,7 +503,7 @@ class TerminalGridView @JvmOverloads constructor(
         if (viewportHeightPx <= 0) return false
         if (snap.cols * scaledCellWidth > width.toFloat() + 0.5f) return true
         if (snap.rows * scaledCellHeight > viewportHeightPx.toFloat() + 0.5f) return true
-        return scrollbackOffsetRows > 0
+        return scrollbackOffsetRows > 0 || onScrollback != null
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -1081,6 +1081,7 @@ class TerminalGridView @JvmOverloads constructor(
             onScrollback?.invoke(deltaRows)
             return
         }
+        if (scrollbackOffsetRows <= 0) return
         scrollRemainderY += -overflowYPx
         val deltaRows = (scrollRemainderY / scaledCellHeight).toInt()
         if (deltaRows == 0) return

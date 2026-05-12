@@ -29,6 +29,25 @@ Required status values:
 
 ## Active Items
 
+### B-069 Android scrollback panning becomes line-stepped when fully zoomed out
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `pan`, `scrollback`, `zoom`
+- Summary: When fully zoomed out, some sessions lose smooth pixel panning in scrollback and fall back to per-line movement.
+- Report:
+  The engineer reports that scrolling into the scrollbuffer on some sessions is no longer smooth per-pixel scrolling and is instead per-line. The invariant is that all panning, scrollback entry/reentry, and zoom-related camera movement must preserve pixel-level offsets everywhere.
+- Repro:
+  1. Use the Android terminal fully zoomed out.
+  2. In a session where the live terminal content fits the viewport, drag into scrollback.
+  3. Observe that movement only happens after whole-line thresholds instead of preserving partial-cell camera displacement.
+- Regression coverage:
+  - Extended the existing pixel-continuity regression to cover `DefaultTerminalZoom`, not only zoomed-in mode.
+  - Extended the existing reverse-before-snapshot regression to cover `DefaultTerminalZoom`, not only zoomed-in/keyboard-visible modes.
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `./gradlew :app:testDebugUnitTest`
+  - Connected instrumentation still needs a device/emulator confirmation for the expanded Android view regressions.
+
 ### B-068 Android panning/scrollback does not work when fully zoomed out
 
 - Status: `needs_verification`

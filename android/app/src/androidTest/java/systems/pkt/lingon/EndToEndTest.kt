@@ -1884,6 +1884,15 @@ class EndToEndTest {
 
     @Test
     fun zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
+        assertScrollbackEntryPreservesPixelPanBeforeRowBoundary(DefaultTerminalZoom + 0.8f)
+    }
+
+    @Test
+    fun default_zoom_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
+        assertScrollbackEntryPreservesPixelPanBeforeRowBoundary(DefaultTerminalZoom)
+    }
+
+    private fun assertScrollbackEntryPreservesPixelPanBeforeRowBoundary(zoomFactor: Float) {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
         composeRule.runOnUiThread {
@@ -1900,7 +1909,7 @@ class EndToEndTest {
                     hostCols = 20,
                     hostRows = 30,
                     fitToViewWidth = false,
-                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    zoomFactor = zoomFactor,
                     panResetNonce = 0,
                     scrollbackOffsetRows = 0,
                     imeVisible = false,
@@ -1953,7 +1962,7 @@ class EndToEndTest {
                 hostCols = 20,
                 hostRows = 30,
                 fitToViewWidth = false,
-                zoomFactor = DefaultTerminalZoom + 0.8f,
+                zoomFactor = zoomFactor,
                 panResetNonce = 0,
                 scrollbackOffsetRows = 1,
                 imeVisible = false,
@@ -1989,12 +1998,23 @@ class EndToEndTest {
         assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
             imeVisible = true,
             fitToViewWidth = false,
+            zoomFactor = DefaultTerminalZoom + 0.8f,
+        )
+    }
+
+    @Test
+    fun default_zoom_scrollback_entry_reverse_before_snapshot_preserves_live_position() {
+        assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
+            imeVisible = false,
+            fitToViewWidth = false,
+            zoomFactor = DefaultTerminalZoom,
         )
     }
 
     private fun assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
         imeVisible: Boolean,
         fitToViewWidth: Boolean,
+        zoomFactor: Float = DefaultTerminalZoom + 0.8f,
     ) {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
@@ -2012,7 +2032,7 @@ class EndToEndTest {
                     hostCols = 20,
                     hostRows = 30,
                     fitToViewWidth = fitToViewWidth,
-                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    zoomFactor = zoomFactor,
                     panResetNonce = 0,
                     scrollbackOffsetRows = 0,
                     imeVisible = imeVisible,
@@ -2074,7 +2094,7 @@ class EndToEndTest {
                 hostCols = 20,
                 hostRows = 30,
                 fitToViewWidth = fitToViewWidth,
-                zoomFactor = DefaultTerminalZoom + 0.8f,
+                zoomFactor = zoomFactor,
                 panResetNonce = 0,
                 scrollbackOffsetRows = 1,
                 imeVisible = imeVisible,
