@@ -1,8 +1,6 @@
 package systems.pkt.lingon.terminal
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import systems.pkt.lingon.DefaultTerminalZoom
 
@@ -41,23 +39,6 @@ class TerminalViewportPolicyTest {
             ),
             0.001f,
         )
-    }
-
-    @Test
-    fun `auto follow start row fills viewport before scrolling`() {
-        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 0, totalRows = 100, visibleRows = 20))
-        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 9, totalRows = 100, visibleRows = 20))
-        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 19, totalRows = 100, visibleRows = 20))
-        assertEquals(1, TerminalViewportPolicy.autoFollowStartRow(cursorY = 20, totalRows = 100, visibleRows = 20))
-        assertEquals(31, TerminalViewportPolicy.autoFollowStartRow(cursorY = 50, totalRows = 100, visibleRows = 20))
-        assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 99, totalRows = 100, visibleRows = 20))
-        assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 200, totalRows = 100, visibleRows = 20))
-        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = -5, totalRows = 100, visibleRows = 20))
-    }
-
-    @Test
-    fun `auto follow bottom anchor matches full bottom when cursor at prompt row`() {
-        assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 99, totalRows = 100, visibleRows = 20))
     }
 
     @Test
@@ -266,104 +247,6 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `auto follow disabled when not eligible`() {
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom + 0.1f,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
-                cursorY = 99,
-            ),
-        )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 1,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
-                cursorY = 99,
-            ),
-        )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 1,
-                totalRows = 100,
-                visibleRows = 20,
-                cursorY = 99,
-            ),
-        )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 20,
-                visibleRows = 20,
-                cursorY = 19,
-            ),
-        )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
-                cursorY = 92,
-            ),
-        )
-    }
-
-    @Test
-    fun `auto follow enabled in live camera mode at default zoom`() {
-        assertTrue(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
-                cursorY = 99,
-            ),
-        )
-    }
-
-    @Test
-    fun `initial live camera bottom aligns when cursor fits bottom viewport`() {
-        assertEquals(
-            800f,
-            TerminalViewportPolicy.initialLiveCameraOffsetY(
-                scaledCellHeightPx = 10f,
-                viewportHeightPx = 200,
-                totalRows = 100,
-                cursorVisible = true,
-                cursorY = 88,
-            ),
-            0.001f,
-        )
-    }
-
-    @Test
-    fun `initial live camera bottom aligns even when cursor is above bottom viewport`() {
-        assertEquals(
-            800f,
-            TerminalViewportPolicy.initialLiveCameraOffsetY(
-                scaledCellHeightPx = 10f,
-                viewportHeightPx = 200,
-                totalRows = 100,
-                cursorVisible = true,
-                cursorY = 10,
-            ),
-            0.001f,
-        )
-    }
-
-    @Test
     fun `live reentry rows consume pan rows while preserving viewport continuity`() {
         assertEquals(
             0,
@@ -396,43 +279,6 @@ class TerminalViewportPolicyTest {
                 cameraOffsetYPx = 92f,
                 scaledCellHeightPx = 10f,
             ),
-        )
-    }
-
-    @Test
-    fun `height change preserves viewport bottom anchor`() {
-        assertEquals(
-            300f,
-            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
-                cameraOffsetYPx = 0f,
-                previousViewportHeightPx = 1000,
-                nextViewportHeightPx = 700,
-                totalRows = 100,
-                scaledCellHeightPx = 20f,
-            ),
-            0.001f,
-        )
-        assertEquals(
-            0f,
-            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
-                cameraOffsetYPx = 50f,
-                previousViewportHeightPx = 700,
-                nextViewportHeightPx = 1000,
-                totalRows = 100,
-                scaledCellHeightPx = 20f,
-            ),
-            0.001f,
-        )
-        assertEquals(
-            900f,
-            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
-                cameraOffsetYPx = 1200f,
-                previousViewportHeightPx = 700,
-                nextViewportHeightPx = 1000,
-                totalRows = 100,
-                scaledCellHeightPx = 20f,
-            ),
-            0.001f,
         )
     }
 

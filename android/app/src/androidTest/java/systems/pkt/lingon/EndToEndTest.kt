@@ -597,14 +597,14 @@ class EndToEndTest {
     }
 
     @Test
-    fun loading_terminal_content_initializes_at_live_bottom() {
+    fun loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom() {
         lateinit var view: TerminalGridView
         composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
                 layout(0, 0, 480, 480)
                 update(
-                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 12),
                     fontSizeSp = 14,
                     minFontSizeSp = 8,
                     palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
@@ -612,7 +612,7 @@ class EndToEndTest {
                     hostCols = 20,
                     hostRows = 80,
                     fitToViewWidth = false,
-                    zoomFactor = DefaultTerminalZoom,
+                    zoomFactor = DefaultTerminalZoom + 2.2f,
                     panResetNonce = 0,
                     scrollbackOffsetRows = 0,
                     imeVisible = false,

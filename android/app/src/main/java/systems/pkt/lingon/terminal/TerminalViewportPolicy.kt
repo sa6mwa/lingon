@@ -7,44 +7,12 @@ import kotlin.math.max
 import kotlin.math.min
 
 internal object TerminalViewportPolicy {
-    private const val zoomEpsilon = 0.001f
-
     fun effectiveRenderScale(
         zoomFactor: Float,
         fitScale: Float,
     ): Float {
         if (fitScale <= 0f) return zoomFactor
         return fitScale * (zoomFactor / DefaultTerminalZoom)
-    }
-
-    fun shouldAutoFollowCursor(
-        zoomFactor: Float,
-        panOffsetCols: Int,
-        panOffsetRows: Int,
-        totalRows: Int,
-        visibleRows: Int,
-        cursorY: Int,
-    ): Boolean {
-        if (zoomFactor > DefaultTerminalZoom + zoomEpsilon) return false
-        if (panOffsetCols != 0 || panOffsetRows != 0) return false
-        if (totalRows <= 0 || visibleRows <= 0) return false
-        if (cursorY.coerceIn(0, totalRows - 1) < totalRows - 1) return false
-        return visibleRows < totalRows
-    }
-
-    fun autoFollowStartRow(
-        cursorY: Int,
-        totalRows: Int,
-        visibleRows: Int,
-    ): Int {
-        if (totalRows <= 0 || visibleRows <= 0 || visibleRows >= totalRows) return 0
-        val maxOffset = totalRows - visibleRows
-        val clampedCursor = cursorY.coerceIn(0, totalRows - 1)
-        val filledRows = clampedCursor + 1
-        if (filledRows <= visibleRows) {
-            return 0
-        }
-        return (filledRows - visibleRows).coerceIn(0, maxOffset)
     }
 
     fun autoFollowCursorCameraOffsetY(
@@ -69,21 +37,6 @@ internal object TerminalViewportPolicy {
             else -> current
         }
         return desired.coerceIn(0f, maxOffsetYPx)
-    }
-
-    fun initialLiveCameraOffsetY(
-        scaledCellHeightPx: Float,
-        viewportHeightPx: Int,
-        totalRows: Int,
-        cursorVisible: Boolean,
-        cursorY: Int,
-    ): Float {
-        if (totalRows <= 0 || scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return 0f
-        return bottomAlignedCameraOffsetY(
-            totalRows = totalRows,
-            scaledCellHeightPx = scaledCellHeightPx,
-            viewportHeightPx = viewportHeightPx,
-        )
     }
 
     fun autoFollowCursorCameraOffsetX(
@@ -135,21 +88,6 @@ internal object TerminalViewportPolicy {
         return min(topRow, scrollbackOffsetRows)
     }
 
-    fun preserveBottomAnchorOnHeightChange(
-        cameraOffsetYPx: Float,
-        previousViewportHeightPx: Int,
-        nextViewportHeightPx: Int,
-        totalRows: Int,
-        scaledCellHeightPx: Float,
-    ): Float {
-        if (previousViewportHeightPx <= 0 || nextViewportHeightPx <= 0) return cameraOffsetYPx
-        if (previousViewportHeightPx == nextViewportHeightPx) return cameraOffsetYPx
-        if (totalRows <= 0 || scaledCellHeightPx <= 0f) return cameraOffsetYPx
-
-        val maxOffsetYPx = max(0f, (totalRows * scaledCellHeightPx) - nextViewportHeightPx.toFloat())
-        return (cameraOffsetYPx + (previousViewportHeightPx - nextViewportHeightPx)).coerceIn(0f, maxOffsetYPx)
-    }
-
     fun preserveBottomAnchorOnViewportChange(
         cameraOffsetYPx: Float,
         previousViewportHeightPx: Int,
@@ -171,15 +109,6 @@ internal object TerminalViewportPolicy {
         val maxOffsetYPx = max(0f, (totalRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
         return ((previousBottomRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
             .coerceIn(0f, maxOffsetYPx)
-    }
-
-    fun shouldSnapToLiveBottom(
-        zoomFactor: Float,
-        scrollbackOffsetRows: Int,
-    ): Boolean {
-        if (zoomFactor > DefaultTerminalZoom + zoomEpsilon) return false
-        if (scrollbackOffsetRows > 0) return false
-        return true
     }
 
     fun bottomAlignedCameraOffsetY(
