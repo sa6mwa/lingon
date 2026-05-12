@@ -1622,6 +1622,88 @@ class EndToEndTest {
     }
 
     @Test
+    fun lifecycle_capture_does_not_persist_transient_keyboard_cursor_follow() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 70),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 2.2f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = true,
+                    followOnReadEnabled = false,
+                    localInputNonce = 1,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 2.2f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 2,
+            )
+            val capturedBeforeDraw = view.captureViewportState()
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
+            view.layout(0, 0, 480, 240)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 12),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 2.2f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = true,
+                followOnReadEnabled = false,
+                localInputNonce = 2,
+            )
+            view.restoreViewportState(capturedBeforeDraw)
+
+            assertEquals(
+                "capturing during a pending keyboard-follow frame must restore as live-bottom, not durable cursor-follow",
+                (80 * cellHeight) - 240f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+            assertEquals(80, view.getVisibleEndRowExclusive())
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
     fun zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0

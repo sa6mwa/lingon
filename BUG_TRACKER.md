@@ -84,6 +84,8 @@ Required status values:
   - Resetting zoom/pan now also clears any pending cached viewport restore, so a stale restore cannot override the requested live-bottom reset.
   - Refactored `TerminalGridView` camera behavior into explicit viewport modes: `LiveBottom` for initial/reconnect/passive content display, `Manual` for user pan/zoom/scrollback/restored manual camera, and `CursorFollow` for local input or the optional follow-on-read mode. Persisted zoom no longer implies manual camera and can fresh-load at the live bottom.
   - Removed dead viewport policy helpers for the old default-zoom cursor-follow decision so tests no longer preserve stale behavior that production no longer uses.
+  - Lifecycle capture now records a pending keyboard-input cursor-follow frame as its durable return mode when follow-on-read is disabled, so a stop/dispose before the draw pass cannot persist transient cursor-follow as the session camera.
+  - Restoring a live-bottom viewport clears scroll remainder instead of reviving stale manual scroll state.
 - Regression coverage:
   - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
   - Tagged the quick-key container and strengthened keyboard/tall-session instrumentation coverage to assert the terminal viewport bottom never overlaps the quick-key top when the IME controls are visible.
@@ -92,6 +94,7 @@ Required status values:
   - The overlay regression now also samples for 1.2 seconds after each IME transition and fails on any flicker in physical height, effective viewport height, camera Y, visible start row, or visible end row.
   - Strengthened `terminal_view_reanchors_when_soft_keyboard_overlays_physical_view` so hidden-IME overlay state asserts the effective camera viewport is bounded by the system-visible bottom instead of the full physical view.
   - Added `loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom`, which creates a zoomed tall terminal snapshot with `isLoading=true`, a cursor near the top, and asserts the first content frame is already live-bottom anchored and renders through the final row.
+  - Added `lifecycle_capture_does_not_persist_transient_keyboard_cursor_follow`, which captures after local input arms cursor-follow but before draw consumes it, then restores across a height change with the cursor above the bottom and asserts live-bottom anchoring is preserved.
   - Added `loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle`, which loads a real tall host session, zooms it so content exceeds the camera, and asserts hidden keyboard, shown keyboard, and hidden-again states all use the system-visible bottom and remain live-bottom anchored without a pan.
   - Kept live-bottom behavior covered at the `TerminalGridView` boundary instead of the older policy helper boundary, so the regression asserts the observable camera mode rather than a removed implementation detail.
   - Reran `terminal_cursor_follow_defaults_to_keyboard_input_only` to ensure passive read-driven cursor movement still does not move the camera when follow-on-read is disabled.
@@ -115,6 +118,8 @@ Required status values:
   - `cd android && ./gradlew :app:testDebugUnitTest` passed after the explicit viewport-mode refactor.
   - `cd android && LINGON_IT_ONLY=loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom,terminal_cursor_follow_defaults_to_keyboard_input_only,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed in one instrumentation batch on one cgroup-contained emulator. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-161405-1851959/summary.txt`; peak CPU `2.09` cores, average CPU `1.33` cores, peak cgroup memory current `7226732544` bytes.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after removing unused legacy viewport-policy helpers.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after hardening transient cursor-follow capture.
+  - `cd android && LINGON_IT_ONLY=lifecycle_capture_does_not_persist_transient_keyboard_cursor_follow,loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom,terminal_cursor_follow_defaults_to_keyboard_input_only,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed in one instrumentation batch on one cgroup-contained emulator. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-163727-1914329/summary.txt`; peak CPU `2.07` cores, average CPU `1.30` cores, peak cgroup memory current `6925447168` bytes.
   - Physical-phone confirmation is still pending.
 
 ### B-063 Android viewport cache leaks across logout and identity changes

@@ -350,6 +350,11 @@ class TerminalGridView @JvmOverloads constructor(
     }
 
     fun captureViewportState(): TerminalViewportState {
+        val capturedMode = if (cameraMode == TerminalViewportMode.CursorFollow && !followOnReadEnabled) {
+            cursorFollowReturnMode
+        } else {
+            cameraMode
+        }
         return TerminalViewportState(
             cameraOffsetXPx = cameraOffsetXPx,
             preferredCameraOffsetXPx = preferredCameraOffsetXPx,
@@ -358,7 +363,7 @@ class TerminalGridView @JvmOverloads constructor(
             viewportHeightPx = effectiveViewportHeightPx(),
             scaledCellHeightPx = scaledCellHeight,
             totalRows = snapshot?.rows ?: 0,
-            mode = cameraMode,
+            mode = capturedMode,
         )
     }
 
@@ -431,7 +436,7 @@ class TerminalGridView @JvmOverloads constructor(
                 nextTotalRows = snapshot?.rows ?: 0,
             )
         }
-        scrollRemainderY = state.scrollRemainderY
+        scrollRemainderY = if (state.mode == TerminalViewportMode.LiveBottom) 0f else state.scrollRemainderY
         snapshot?.takeIf { it.cursorVisible }?.let { snap ->
             lastCursorX = snap.cursorX
             lastCursorY = snap.cursorY
