@@ -1,6 +1,8 @@
 package systems.pkt.lingon.terminal
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import systems.pkt.lingon.DefaultTerminalZoom
 
@@ -243,6 +245,30 @@ class TerminalViewportPolicyTest {
                 cursorX = 25,
             ),
             0.001f,
+        )
+    }
+
+    @Test
+    fun `keyboard cursor follow waits for terminal cursor movement before consuming input`() {
+        assertFalse(
+            "a redraw after Enter but before terminal echo must not consume the pending keyboard follow",
+            TerminalViewportPolicy.shouldApplyKeyboardCursorFollow(
+                inputFollowArmed = true,
+                cursorMoved = false,
+            ),
+        )
+        assertTrue(
+            "the same pending keyboard follow must apply once the terminal cursor moves",
+            TerminalViewportPolicy.shouldApplyKeyboardCursorFollow(
+                inputFollowArmed = true,
+                cursorMoved = true,
+            ),
+        )
+        assertFalse(
+            TerminalViewportPolicy.shouldApplyKeyboardCursorFollow(
+                inputFollowArmed = false,
+                cursorMoved = true,
+            ),
         )
     }
 

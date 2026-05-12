@@ -76,6 +76,11 @@ internal object TerminalViewportPolicy {
         return desired.coerceIn(0f, maxOffsetXPx)
     }
 
+    fun shouldApplyKeyboardCursorFollow(
+        inputFollowArmed: Boolean,
+        cursorMoved: Boolean,
+    ): Boolean = inputFollowArmed && cursorMoved
+
     fun scrollbackRowsToExitForLiveReentry(
         scrollbackOffsetRows: Int,
         cameraOffsetYPx: Float,

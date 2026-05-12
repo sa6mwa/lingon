@@ -275,10 +275,6 @@ class TerminalGridView @JvmOverloads constructor(
         } else if (this.localInputNonce != localInputNonce) {
             this.localInputNonce = localInputNonce
             pendingInputFollowNonce = localInputNonce
-            if (cameraMode != TerminalViewportMode.CursorFollow) {
-                cursorFollowReturnMode = cameraMode
-            }
-            cameraMode = TerminalViewportMode.CursorFollow
             invalidate = true
         }
         if (invalidate) {
@@ -540,7 +536,7 @@ class TerminalGridView @JvmOverloads constructor(
                 !suppressCursorFollowForScrollbackReentry &&
                 !suppressLiveAutoFollow
             ) {
-                if (inputFollowArmed) {
+                if (TerminalViewportPolicy.shouldApplyKeyboardCursorFollow(inputFollowArmed, cursorMoved)) {
                     if (cameraMode != TerminalViewportMode.CursorFollow) {
                         cursorFollowReturnMode = cameraMode
                     }

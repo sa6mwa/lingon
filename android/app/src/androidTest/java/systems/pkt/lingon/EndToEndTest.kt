@@ -856,6 +856,112 @@ class EndToEndTest {
     }
 
     @Test
+    fun terminal_keyboard_enter_follow_waits_for_cursor_movement_before_consuming_input() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(320), exactlyMeasureSpec(360))
+                layout(0, 0, 320, 360)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 38, cursorX = 68),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 120,
+                    hostRows = 40,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 1.6f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    followOnReadEnabled = false,
+                    localInputNonce = 1,
+                )
+                draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 38, cursorX = 69),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 120,
+                hostRows = 40,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 1.6f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 2,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+            assertTrue(
+                "typing a long command should pan right before Enter",
+                view.getCameraOffsetXForTesting() > view.getPreferredCameraOffsetXForTesting(),
+            )
+            val pannedRight = view.getCameraOffsetXForTesting()
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 38, cursorX = 69),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 120,
+                hostRows = 40,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 1.6f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 3,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+            assertEquals(
+                "a redraw before terminal echo must not consume Enter follow or move the existing camera",
+                pannedRight,
+                view.getCameraOffsetXForTesting(),
+                0.01f,
+            )
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 39, cursorX = 0),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 4,
+                hostCols = 120,
+                hostRows = 40,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 1.6f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 3,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "Enter-associated cursor movement should restore the preferred horizontal camera when the cursor fits there",
+                view.getPreferredCameraOffsetXForTesting(),
+                view.getCameraOffsetXForTesting(),
+                0.01f,
+            )
+        }
+    }
+
+    @Test
     fun terminal_follow_on_read_toggle_preserves_existing_cursor_follow() {
         lateinit var view: TerminalGridView
         composeRule.runOnUiThread {

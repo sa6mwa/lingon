@@ -29,6 +29,26 @@ Required status values:
 
 ## Active Items
 
+### B-067 Android input-follow consumes Enter before cursor returns left
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `input-follow`, `horizontal-camera`
+- Summary: With follow-on-read disabled, typing can pan horizontally to keep the cursor visible, but pressing Enter can leave the camera far to the right instead of restoring to the preferred horizontal offset when the cursor returns to the left.
+- Report:
+  The Android terminal follows the cursor while writing a long line. After pressing Enter, the cursor returns to the left/new prompt, but the camera can remain horizontally panned right with the cursor outside the camera view. Expected behavior is that keyboard-associated cursor movement on Enter restores the horizontal camera to the preferred column, typically `0`, when the cursor fits there.
+- Repro:
+  1. Use a zoomed terminal where the full terminal width is wider than the phone viewport.
+  2. Type far enough to pan the camera right.
+  3. Press Enter.
+  4. Observe the camera remains right-panned instead of returning to the preferred left column with the cursor visible.
+- Regression coverage:
+  - Added unit coverage for the input-follow invariant: a pending keyboard follow is not consumed until the terminal cursor actually moves.
+  - Added `terminal_keyboard_enter_follow_waits_for_cursor_movement_before_consuming_input`, an Android view regression that simulates typing a long zoomed line, an intermediate redraw before Enter echo, and the final newline cursor at column 0.
+- Verification:
+  - `./gradlew :app:testDebugUnitTest --tests 'systems.pkt.lingon.terminal.TerminalViewportPolicyTest'`
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - Targeted `:app:connectedDebugAndroidTest` for the new instrumentation regression was attempted but could not run because Gradle reported `No connected devices!`.
+
 ### B-066 Host local PTY long readline line corrupts after resize and Ctrl+A/Ctrl+E
 
 - Status: `resolved`
