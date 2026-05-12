@@ -257,6 +257,9 @@ class TerminalGridView @JvmOverloads constructor(
         }
         if (this.imeVisible != imeVisible) {
             this.imeVisible = imeVisible
+            if (TerminalViewportPolicy.shouldSnapToLiveBottom(zoomFactor = zoomFactor, scrollbackOffsetRows = this.scrollbackOffsetRows)) {
+                initialLiveCameraApplied = false
+            }
             invalidate = true
         }
         if (this.isLoading != isLoading) {
@@ -382,7 +385,7 @@ class TerminalGridView @JvmOverloads constructor(
     private fun applyInitialLiveCameraIfReady() {
         if (initialLiveCameraApplied) return
         if (pendingViewportState != null || restoredViewportState != null) return
-        if (isLoading || scrollbackOffsetRows > 0) return
+        if (scrollbackOffsetRows > 0) return
         val viewportHeightPx = effectiveViewportHeightPx()
         if (viewportHeightPx <= 0 || scaledCellHeight <= 0f) return
         val snap = snapshot ?: return
@@ -542,12 +545,32 @@ class TerminalGridView @JvmOverloads constructor(
             cameraOffsetXPx = adjustedX
         }
         val cameraX = cameraOffsetXPx.coerceIn(0f, maxOffsetXPx)
-        val cameraY = cameraOffsetYPx.coerceIn(0f, maxOffsetYPx)
+        var cameraY = cameraOffsetYPx.coerceIn(0f, maxOffsetYPx)
         if (cameraX != cameraOffsetXPx || cameraY != cameraOffsetYPx) {
             cameraOffsetXPx = cameraX
             cameraOffsetYPx = cameraY
         }
         preferredCameraOffsetXPx = preferredCameraOffsetXPx.coerceIn(0f, maxOffsetXPx)
+        if (
+            !suppressLiveAutoFollow &&
+            !followOnReadEnabled &&
+            !cursorFollowAfterInput &&
+            !initialLiveCameraApplied &&
+            TerminalViewportPolicy.shouldSnapToLiveBottom(
+                zoomFactor = zoomFactor,
+                scrollbackOffsetRows = scrollbackOffsetRows,
+            )
+        ) {
+            cameraY = TerminalViewportPolicy.bottomAlignedCameraOffsetY(
+                totalRows = rows,
+                scaledCellHeightPx = scaledH,
+                viewportHeightPx = viewportHeightPx,
+            )
+            if (cameraY != cameraOffsetYPx) {
+                cameraOffsetYPx = cameraY
+            }
+            initialLiveCameraApplied = true
+        }
         val panOffsetCols = floor(cameraX / scaledW).toInt()
         val panOffsetRows = floor(cameraY / scaledH).toInt()
         val maxOffsetRows = max(0, rows - visibleRows)
@@ -862,6 +885,7 @@ class TerminalGridView @JvmOverloads constructor(
     }
 
     private fun resetPan() {
+        pendingViewportState = null
         restoredViewportState = null
         restoredViewportFrameSeq = Long.MIN_VALUE
         initialLiveCameraApplied = false
@@ -936,7 +960,9 @@ class TerminalGridView @JvmOverloads constructor(
         if (viewHeight <= 0) return 0
         val insets = rootWindowInsets ?: return viewHeight
         val imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom
-        if (imeBottom <= 0) return viewHeight
+        val navigationBottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+        val bottomInset = max(imeBottom, navigationBottom)
+        if (bottomInset <= 0) return viewHeight
         val root = rootView ?: return viewHeight
         val rootHeight = root.height
         if (rootHeight <= 0) return viewHeight
@@ -944,8 +970,8 @@ class TerminalGridView @JvmOverloads constructor(
         val viewLocation = IntArray(2)
         root.getLocationInWindow(rootLocation)
         getLocationInWindow(viewLocation)
-        val imeTopInWindow = rootLocation[1] + rootHeight - imeBottom
-        val visibleHeight = imeTopInWindow - viewLocation[1]
+        val visibleBottomInWindow = rootLocation[1] + rootHeight - bottomInset
+        val visibleHeight = visibleBottomInWindow - viewLocation[1]
         return visibleHeight.coerceIn(0, viewHeight)
     }
 

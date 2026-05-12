@@ -349,9 +349,9 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `initial live camera follows cursor when bottom viewport would hide cursor`() {
+    fun `initial live camera bottom aligns even when cursor is above bottom viewport`() {
         assertEquals(
-            100f,
+            800f,
             TerminalViewportPolicy.initialLiveCameraOffsetY(
                 scaledCellHeightPx = 10f,
                 viewportHeightPx = 200,

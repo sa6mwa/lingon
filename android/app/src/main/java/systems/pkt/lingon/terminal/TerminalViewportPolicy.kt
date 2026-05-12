@@ -79,24 +79,10 @@ internal object TerminalViewportPolicy {
         cursorY: Int,
     ): Float {
         if (totalRows <= 0 || scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return 0f
-        val bottom = bottomAlignedCameraOffsetY(
+        return bottomAlignedCameraOffsetY(
             totalRows = totalRows,
             scaledCellHeightPx = scaledCellHeightPx,
             viewportHeightPx = viewportHeightPx,
-        )
-        if (!cursorVisible) return bottom
-        val clampedCursorY = cursorY.coerceIn(0, totalRows - 1)
-        val cursorTopPx = clampedCursorY * scaledCellHeightPx
-        val cursorBottomPx = cursorTopPx + scaledCellHeightPx
-        if (cursorTopPx >= bottom && cursorBottomPx <= bottom + viewportHeightPx) {
-            return bottom
-        }
-        return autoFollowCursorCameraOffsetY(
-            cameraOffsetYPx = bottom,
-            scaledCellHeightPx = scaledCellHeightPx,
-            viewportHeightPx = viewportHeightPx,
-            totalRows = totalRows,
-            cursorY = clampedCursorY,
         )
     }
 

@@ -597,6 +597,52 @@ class EndToEndTest {
     }
 
     @Test
+    fun loading_terminal_content_initializes_at_live_bottom() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = true,
+                    localInputNonce = 7,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val expected = maxOf(0f, (80 * cellHeight) - view.getViewportHeightForTesting().toFloat())
+            assertEquals(
+                "initial loading content must bottom-align immediately instead of rendering from an arbitrary camera",
+                expected,
+                view.getCameraOffsetYForTesting(),
+                maxOf(1f, cellHeight * 0.1f),
+            )
+            assertEquals(
+                "loading terminal should expose the bottom row on the first content frame",
+                80,
+                view.getVisibleEndRowExclusive(),
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
     fun terminal_view_reanchors_when_soft_keyboard_overlays_physical_view() {
         lateinit var terminalView: TerminalGridView
         lateinit var input: EditText
@@ -686,13 +732,9 @@ class EndToEndTest {
                 isLoading = false,
             )
             terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
-            assertEquals(
-                "hidden IME should restore full physical terminal viewport",
-                terminalView.getPhysicalHeightForTesting(),
-                terminalView.getViewportHeightForTesting(),
-            )
             assertOverlayCameraBottomAnchored("overlay keyboard hidden", terminalView)
         }
+        assertOverlayCameraUsesVisibleSystemViewport("overlay keyboard hidden", terminalView)
         assertOverlayTerminalViewportDoesNotFlicker("overlay keyboard hidden", terminalView)
 
         showKeyboard(input)
@@ -2303,6 +2345,7 @@ class EndToEndTest {
 
             InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
             waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+            assertTerminalCameraUsesVisibleSystemViewport("tall session $sessionId keyboard hidden")
             waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
                 info.activeSessionId == sessionId &&
                     info.isLiveBottomAnchored()
@@ -2311,6 +2354,7 @@ class EndToEndTest {
             focusTerminalInput()
             waitUntilNoError(10_000L) { hasTextNode("CTRL") }
             assertTerminalViewportAboveQuickKeys("tall session $sessionId keyboard visible restored")
+            assertTerminalCameraUsesVisibleSystemViewport("tall session $sessionId keyboard visible restored")
             waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
                 info.activeSessionId == sessionId &&
                     info.isLiveBottomAnchored()
@@ -2321,6 +2365,7 @@ class EndToEndTest {
         waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
         selectSessionTab(first, timeoutMs = 10_000L)
         waitUntilNoError(10_000L) { activeSessionId() == first && !stateForTest().sessionSyncing }
+        assertTerminalCameraUsesVisibleSystemViewport("first tall session hidden after cross-switch")
         waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
             info.activeSessionId == first && info.isLiveBottomAnchored()
         } ?: throw AssertionError("hidden keyboard misaligned live bottom for cached first tall session")
@@ -2337,9 +2382,54 @@ class EndToEndTest {
         selectSessionTab(first, timeoutMs = 10_000L)
         waitUntilNoError(10_000L) { activeSessionId() == first && !stateForTest().sessionSyncing }
         assertTerminalViewportAboveQuickKeys("first tall session visible after cross-switch")
+        assertTerminalCameraUsesVisibleSystemViewport("first tall session visible after cross-switch")
         waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
             info.activeSessionId == first && info.isLiveBottomAnchored()
         } ?: throw AssertionError("visible keyboard misaligned live bottom after restoring cached first tall session")
+    }
+
+    @Test
+    fun loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        enableSoftKeyboardWithHardwareKeyboard()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val sessionId = startHostsViaHarness(count = 1, rows = 240, initialLines = 260).single()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        selectSessionTab(sessionId, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == sessionId && !stateForTest().sessionSyncing }
+        setZoomFactor(3.2f)
+
+        waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.activeSessionId == sessionId &&
+                info.rows > info.viewRows &&
+                info.isLiveBottomAnchored()
+        } ?: throw AssertionError("loaded tall session did not start live-bottom anchored")
+        assertTerminalCameraUsesVisibleSystemViewport("loaded tall session with keyboard hidden")
+        assertTerminalViewportStable("loaded tall session with keyboard hidden")
+
+        focusTerminalInput()
+        waitUntilNoError(15_000L) { hasTextNode("CTRL") && readImeBottomInsetPx() > readNavigationBottomInsetPx() }
+        assertTerminalViewportAboveQuickKeys("loaded tall session keyboard visible")
+        assertTerminalCameraUsesVisibleSystemViewport("loaded tall session keyboard visible")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == sessionId &&
+                info.rows > info.viewRows &&
+                info.isLiveBottomAnchored()
+        } ?: throw AssertionError("loaded tall session did not remain live-bottom anchored after keyboard show")
+        assertTerminalViewportStable("loaded tall session keyboard visible")
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        assertTerminalCameraUsesVisibleSystemViewport("loaded tall session keyboard hidden again")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == sessionId &&
+                info.rows > info.viewRows &&
+                info.isLiveBottomAnchored()
+        } ?: throw AssertionError("loaded tall session did not remain live-bottom anchored after keyboard hide")
+        assertTerminalViewportStable("loaded tall session keyboard hidden again")
     }
 
     @Test
@@ -3842,6 +3932,10 @@ class EndToEndTest {
         return composeRule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
     }
 
+    private fun nodeBoundsOrNull(tag: String): Rect? {
+        return composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().firstOrNull()?.boundsInRoot
+    }
+
     private fun clickNodeCenter(tag: String) {
         val node = composeRule.onNodeWithTag(tag).fetchSemanticsNode()
         val bounds = node.boundsInRoot
@@ -3905,8 +3999,7 @@ class EndToEndTest {
         composeRule.waitForIdle()
         val imeBottom = readImeBottomInsetPx()
         assertTrue("$label expected real IME inset to be visible", imeBottom > 0)
-        val rootHeight = readRootViewHeightPx()
-        val imeTop = rootHeight - imeBottom
+        val imeTop = readSystemVisibleBottomPx()
         val terminal = nodeBounds(TestTags.TerminalList)
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info for $label")
@@ -3918,16 +4011,31 @@ class EndToEndTest {
         )
     }
 
+    private fun assertTerminalCameraUsesVisibleSystemViewport(label: String) {
+        composeRule.waitForIdle()
+        val visibleBottom = readSystemVisibleBottomPx()
+        val terminal = nodeBounds(TestTags.TerminalList)
+        val info = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info for $label")
+        val expectedVisibleHeight = (visibleBottom - terminal.top).coerceAtLeast(0f)
+        assertTrue(
+            "$label terminal camera viewport must be bounded by the visible system area: " +
+                "viewport=${info.viewportHeightPx} expectedVisibleHeight=$expectedVisibleHeight terminal=$terminal " +
+                "visibleBottom=$visibleBottom imeBottom=${readImeBottomInsetPx()} navBottom=${readNavigationBottomInsetPx()}",
+            info.viewportHeightPx <= kotlin.math.ceil(expectedVisibleHeight).toInt() + 1,
+        )
+    }
+
     private fun assertTerminalViewportStable(label: String) {
         val initialTerminal = nodeBounds(TestTags.TerminalList)
-        val initialQuickKeys = nodeBounds(TestTags.TerminalQuickKeys)
+        val initialQuickKeys = nodeBoundsOrNull(TestTags.TerminalQuickKeys)
         val initialInfo = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info before stability check for $label")
         val deadline = System.currentTimeMillis() + 1_200L
         while (System.currentTimeMillis() < deadline) {
             safeWaitForIdle()
             val terminal = nodeBounds(TestTags.TerminalList)
-            val quickKeys = nodeBounds(TestTags.TerminalQuickKeys)
+            val quickKeys = nodeBoundsOrNull(TestTags.TerminalQuickKeys)
             val info = readTerminalDebugInfo()
                 ?: throw AssertionError("missing terminal debug info during stability check for $label")
             assertEquals("$label terminal bounds flickered", initialTerminal, terminal)
@@ -3991,6 +4099,23 @@ class EndToEndTest {
             maxOf(1f, cellHeight * 0.1f),
         )
         assertEquals("$label should render through the terminal bottom", 240, view.getVisibleEndRowExclusive())
+    }
+
+    private fun assertOverlayCameraUsesVisibleSystemViewport(label: String, view: TerminalGridView) {
+        val visibleBottom = readSystemVisibleBottomPx()
+        val rootLocation = IntArray(2)
+        val viewLocation = IntArray(2)
+        composeRule.activity.window.decorView.rootView.getLocationInWindow(rootLocation)
+        view.getLocationInWindow(viewLocation)
+        val viewTopInRoot = viewLocation[1] - rootLocation[1]
+        val expectedVisibleHeight = (visibleBottom - viewTopInRoot).coerceAtLeast(0)
+        assertTrue(
+            "$label overlay camera viewport must be bounded by the visible system area: " +
+                "viewport=${view.getViewportHeightForTesting()} expectedVisibleHeight=$expectedVisibleHeight " +
+                "viewHeight=${view.getPhysicalHeightForTesting()} visibleBottom=$visibleBottom " +
+                "imeBottom=${readImeBottomInsetPx()} navBottom=${readNavigationBottomInsetPx()}",
+            view.getViewportHeightForTesting() <= expectedVisibleHeight + 1,
+        )
     }
 
     private fun assertOverlayTerminalViewportDoesNotFlicker(label: String, view: TerminalGridView) {
@@ -4381,6 +4506,10 @@ class EndToEndTest {
         val resources = composeRule.activity.resources
         val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
         return if (resId > 0) resources.getDimensionPixelSize(resId) else 0
+    }
+
+    private fun readSystemVisibleBottomPx(): Int {
+        return readRootViewHeightPx() - maxOf(readImeBottomInsetPx(), readNavigationBottomInsetPx())
     }
 
     private fun enableSoftKeyboardWithHardwareKeyboard() {
