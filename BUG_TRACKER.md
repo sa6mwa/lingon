@@ -29,6 +29,25 @@ Required status values:
 
 ## Active Items
 
+### B-071 Host local PTY input is unavailable before relay/auth connection
+
+- Status: `resolved`
+- Area: `host`, `local-pty`, `startup`, `input`, `relay`
+- Summary: A Lingon host local PTY can appear hung before relay connection/auth refresh completes; typed input is not accepted even though local PTYs must remain usable before connecting.
+- Report:
+  The engineer reports that `lingon host` local PTY hangs before it is connected and input cannot be entered. Expected behavior is that local typing is always accepted; if relay publishing is not connected yet, input should still reach the local PTY and relay state can catch up later.
+- Repro:
+  1. Start a host local PTY with relay publishing enabled while auth refresh/relay connection is delayed.
+  2. Type into the host before the relay reports connected.
+  3. Observe that the local shell does not accept the input until connection/auth unblocks.
+- Regression coverage:
+  - Added `TestHostLocalPTYAcceptsInputWhileAuthRefreshIsBlocked`, which runs a host runner inside a test-owned PTY, blocks `/auth/refresh`, waits for the local shell to render while refresh is still blocked, sends input through the outer PTY, and asserts the local PTY processes it before relay/auth completes.
+- Verification:
+  - Reproduced before the fix: the regression only saw outer terminal echo or a ready prompt while auth/remote refresh blocked; the local shell did not emit `PRECONNECT_OK`.
+  - `go test -count=1 ./internal/session -run TestHostLocalPTYAcceptsInputWhileAuthRefreshIsBlocked -v`
+  - `go test -count=1 ./internal/session`
+  - `go test -count=1 ./internal/session ./internal/publisher ./internal/relayclient`
+
 ### B-070 Android menu popup overlaps top bar close button
 
 - Status: `needs_verification`

@@ -336,11 +336,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		tokenRefresher = relayclient.TokenRefresher(r.opts.Endpoint, r.opts.AuthFile, r.opts.TLSDir, r.opts.Insecure, func(token string) {
 			r.opts.Token = token
 		})
-		if token, err := tokenRefresher(ctx); err == nil && token != "" {
-			r.opts.Token = token
-		} else if err != nil && r.logger != nil {
-			r.logger.Debug("session.auth.refresh.failed", "err", err)
-		}
 	}
 	if r.opts.Publish && r.opts.Token == "" && tokenRefresher == nil {
 		return fmt.Errorf("access token is required when publishing")

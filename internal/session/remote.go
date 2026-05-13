@@ -259,15 +259,14 @@ func (m *remoteManager) Start(ctx context.Context) {
 		m.closeHTTPClient()
 	}()
 
-	if err := m.refreshSessions(ctx); err != nil {
-		m.logger.Debug("session.remote.refresh.failed", "err", err)
-	}
-
 	refreshTicker := m.clock.NewTicker(m.refreshInterval)
 	idleTicker := m.clock.NewTicker(time.Second)
 
 	go func() {
 		defer refreshTicker.Stop()
+		if err := m.refreshSessions(ctx); err != nil {
+			m.logger.Debug("session.remote.refresh.failed", "err", err)
+		}
 		for {
 			select {
 			case <-ctx.Done():
