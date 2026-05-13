@@ -273,6 +273,14 @@ class TerminalGridView @JvmOverloads constructor(
             invalidate = true
         }
         if (this.followOnReadEnabled != followOnReadEnabled) {
+            if (this.followOnReadEnabled && !followOnReadEnabled) {
+                val returnMode = cursorFollowReturnMode.takeUnless { it == TerminalViewportMode.CursorFollow }
+                    ?: TerminalViewportMode.LiveBottom
+                if (cameraMode == TerminalViewportMode.CursorFollow) {
+                    cameraMode = returnMode
+                }
+                cursorFollowReturnMode = returnMode
+            }
             this.followOnReadEnabled = followOnReadEnabled
             invalidate = true
         }
@@ -560,8 +568,10 @@ class TerminalGridView @JvmOverloads constructor(
                     cameraMode = TerminalViewportMode.CursorFollow
                     inputFollowApplied = true
                 } else if (followOnReadEnabled && cursorMoved) {
+                    if (cameraMode != TerminalViewportMode.CursorFollow) {
+                        cursorFollowReturnMode = cameraMode
+                    }
                     cameraMode = TerminalViewportMode.CursorFollow
-                    cursorFollowReturnMode = TerminalViewportMode.CursorFollow
                 }
             }
             suppressCursorFollowForScrollbackReentry = false

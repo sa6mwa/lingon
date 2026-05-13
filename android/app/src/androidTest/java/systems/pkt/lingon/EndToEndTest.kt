@@ -1113,6 +1113,100 @@ class EndToEndTest {
     }
 
     @Test
+    fun disabling_follow_on_read_stops_passive_cursor_follow() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 10),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    followOnReadEnabled = true,
+                )
+                draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = true,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val followedCameraY = view.getCameraOffsetYForTesting()
+            assertTrue("fixture should enter read-driven cursor-follow", followedCameraY > 0f)
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val disabledCameraY = view.getCameraOffsetYForTesting()
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 10),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "passive reads must not keep cursor-following after follow-on-read is disabled",
+                disabledCameraY,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+    }
+
+    @Test
     fun lifecycle_viewport_restore_preserves_saved_camera_without_new_frame() {
         lateinit var view: TerminalGridView
         composeRule.runOnUiThread {

@@ -29,6 +29,29 @@ Required status values:
 
 ## Active Items
 
+### B-074 Android disabling Follow on read can leave cursor-follow active
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `follow-on-read`
+- Summary: Disabling the Follow on read toggle could leave `TerminalGridView` in cursor-follow mode, allowing later passive output to keep panning the camera even though the setting was off.
+- Report:
+  Review flagged that `cameraMode` and `cursorFollowReturnMode` could both remain `CursorFollow` after read-driven follow, and toggling Follow on read off only changed the boolean. The engineer confirmed this matched suspected behavior.
+- Repro:
+  1. Enable Follow on read.
+  2. Receive passive output that moves the cursor and causes read-driven cursor-follow.
+  3. Disable Follow on read.
+  4. Receive more passive output with cursor movement.
+  5. Observe the viewport can continue following the cursor even though the toggle is disabled.
+- Fix:
+  - Read-driven cursor-follow now preserves the previous return mode instead of replacing it with `CursorFollow`.
+  - Disabling Follow on read exits active cursor-follow and normalizes an invalid `CursorFollow` return mode back to `LiveBottom`.
+- Regression coverage:
+  - Added `disabling_follow_on_read_stops_passive_cursor_follow`, which enters read-driven cursor-follow, disables the setting, then verifies a later passive cursor move does not pan the camera.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=disabling_follow_on_read_stops_passive_cursor_follow make integration-test` passed.
+
 ### B-073 Android full integration final batch has wall/headless/keyboard failures
 
 - Status: `open`
