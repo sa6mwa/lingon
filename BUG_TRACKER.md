@@ -75,30 +75,32 @@ Required status values:
   - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
   - `cd android && LINGON_IT_ONLY=disabling_follow_on_read_stops_passive_cursor_follow make integration-test` passed.
 
-### B-073 Android full integration final batch has wall/headless/keyboard failures
+### B-073 Android targeted final-batch integration failures
 
 - Status: `open`
-- Area: `android`, `integration`, `notifications`, `viewport`, `headless`
-- Summary: After the top-bar menu failure and viewport regressions were fixed, the final `make test-android` batch still reports unrelated wall-notification, keyboard viewport, and headless resize failures.
+- Area: `android`, `integration`, `notifications`, `viewport`
+- Summary: A retest of the previously failing final Android integration batch shows that most entries were stale, but three current failures still reproduce.
 - Report:
-  While verifying the reported `menu_overlay_does_not_cover_close_button` failure through `make test-android`, the first 5-test batch and 44-test viewport batch were made green, but the later 29-test batch still failed.
+  While verifying the reported `menu_overlay_does_not_cover_close_button` failure through `make test-android`, the first 5-test batch and 44-test viewport batch were made green, but the later 29-test batch failed. A later targeted rerun of the originally listed failures showed only three still reproducing.
 - Repro:
-  1. Run `make test-android`.
-  2. Observe the final Android integration batch failures listed below.
-- Current failing tests observed:
-  - `foreground_manual_wall_delivery_does_not_post_system_notification`
+  1. Run the targeted batch:
+     `cd android && LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification,focused_background_resume_preserves_live_camera_when_cursor_still_fits,keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous,keyboard_tab_switch_preserves_bottom_anchor_visual,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,background_wall_delivery_posts_system_notification,background_distinct_wall_messages_post_distinct_system_notifications,headless_resize_button_resizes_remote_headless_session make integration-test`
+  2. Observe the current failures listed below.
+- Current failures:
   - `focused_background_resume_preserves_live_camera_when_cursor_still_fits`
   - `keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous`
+  - `background_wall_delivery_posts_system_notification`
+- Stale entries that passed in the targeted rerun:
+  - `foreground_manual_wall_delivery_does_not_post_system_notification`
   - `keyboard_tab_switch_preserves_bottom_anchor_visual`
   - `loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle`
-  - `background_wall_delivery_posts_system_notification`
   - `background_distinct_wall_messages_post_distinct_system_notifications`
   - `headless_resize_button_resizes_remote_headless_session`
 - Verification:
   - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
   - The first 5-test batch inside `make test-android` passed.
   - The 44-test viewport batch inside `make test-android` passed.
-  - The final 29-test batch inside `make test-android` failed with the tests above.
+  - `cd android && LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification,focused_background_resume_preserves_live_camera_when_cursor_still_fits,keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous,keyboard_tab_switch_preserves_bottom_anchor_visual,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,background_wall_delivery_posts_system_notification,background_distinct_wall_messages_post_distinct_system_notifications,headless_resize_button_resizes_remote_headless_session make integration-test` failed with three current failures and five stale entries passing.
 
 ### B-072 Android terminal insets use API 30 runtime APIs despite minSdk 26
 
