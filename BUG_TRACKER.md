@@ -29,6 +29,29 @@ Required status values:
 
 ## Active Items
 
+### B-075 Distinct wall notification regression cleared its own expected notification
+
+- Status: `resolved`
+- Area: `android`, `integration`, `notifications`, `test-harness`
+- Summary: The distinct wall notification regression waited for the second message with a helper that clears non-matching wall notifications, so it could delete the first notification before asserting both remained active.
+- Report:
+  Review flagged that `waitForWallNotificationBody(secondMessage, ...)` reused destructive stale-notification cleanup. That default is useful for single-message tests, but unsafe when the test needs multiple notifications to remain visible.
+- Repro:
+  1. Post the first distinct wall message and wait until its notification is visible.
+  2. Post the second distinct wall message.
+  3. While waiting for the second message, observe only the first notification.
+  4. The old helper clears the first notification as unexpected, invalidating the later two-notification assertion.
+- Fix:
+  - Added an explicit `clearUnexpectedWallNotifications` option to `waitForWallNotificationBody`.
+  - Kept destructive cleanup as the default for existing single-message tests.
+  - Disabled destructive cleanup only while the distinct-notifications test waits for the second message.
+- Regression coverage:
+  - `background_distinct_wall_messages_post_distinct_system_notifications` now preserves the first expected notification while waiting for the second.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=background_distinct_wall_messages_post_distinct_system_notifications make integration-test` passed.
+
 ### B-074 Android disabling Follow on read can leave cursor-follow active
 
 - Status: `resolved`

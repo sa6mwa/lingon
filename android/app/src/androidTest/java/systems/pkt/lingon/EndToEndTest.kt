@@ -3367,7 +3367,11 @@ class EndToEndTest {
         sendWallViaHarness(firstMessage)
         waitForWallNotificationBody(firstMessage, "first distinct background wall notification")
         sendWallViaHarness(secondMessage)
-        waitForWallNotificationBody(secondMessage, "second distinct background wall notification")
+        waitForWallNotificationBody(
+            secondMessage,
+            "second distinct background wall notification",
+            clearUnexpectedWallNotifications = false,
+        )
 
         val notifications = wallNotifications()
             .filter {
@@ -3910,7 +3914,11 @@ class EndToEndTest {
         throw AssertionError("Timed out waiting for $description after ${timeoutMs}ms (notifications=[$active])")
     }
 
-    private fun waitForWallNotificationBody(message: String, description: String) {
+    private fun waitForWallNotificationBody(
+        message: String,
+        description: String,
+        clearUnexpectedWallNotifications: Boolean = true,
+    ) {
         waitUntilDeviceCondition(
             BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS,
             "$description '$message'",
@@ -3919,7 +3927,7 @@ class EndToEndTest {
             if (notifications.any { wallNotificationFullText(it) == message }) {
                 return@waitUntilDeviceCondition true
             }
-            if (notifications.isNotEmpty()) {
+            if (clearUnexpectedWallNotifications && notifications.isNotEmpty()) {
                 clearWallNotifications()
             }
             false
