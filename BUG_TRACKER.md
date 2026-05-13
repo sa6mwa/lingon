@@ -29,6 +29,28 @@ Required status values:
 
 ## Active Items
 
+### B-072 Android terminal insets use API 30 runtime APIs despite minSdk 26
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `compatibility`, `insets`
+- Summary: `TerminalGridView` used API 30 `WindowInsets.Type` and `WindowInsets.getInsets(...)` calls even though the app declares `minSdk = 26`.
+- Report:
+  Review flagged that the terminal layout/draw path could crash on supported Android 8-10 devices. The engineer noted that Android 15-16 support is more important, but asked whether the P1 is real and why latest SDK would imply Android 8-10.
+- Repro:
+  1. Install the APK on a device or emulator running API 26-29.
+  2. Open a terminal view so `effectiveViewportHeightPx()` runs from layout/draw.
+  3. Observe that unguarded API 30 insets methods are reachable on a supported pre-30 runtime.
+- Fix:
+  - Replaced unguarded platform `WindowInsets.Type.*` reads with `WindowInsetsCompat` in the terminal view.
+  - Updated Android instrumentation insets helpers to use the same compat API.
+- Regression coverage:
+  - Removed all `WindowInsets.Type` references from app and test source so pre-30 runtime-only APIs cannot re-enter these code paths without a visible source diff.
+- Verification:
+  - `rg "WindowInsets.Type" android/app/src/main/java android/app/src/test android/app/src/androidTest` returns no matches.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed.
+
 ### B-071 Host local PTY input is unavailable before relay/auth connection
 
 - Status: `resolved`

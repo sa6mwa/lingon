@@ -10,6 +10,7 @@ import android.os.ParcelFileDescriptor
 import android.view.KeyEvent
 import androidx.activity.compose.setContent
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.rule.GrantPermissionRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
@@ -4845,7 +4846,10 @@ class EndToEndTest {
         var bottom = 0
         composeRule.runOnIdle {
             val insets = composeRule.activity.window.decorView.rootWindowInsets
-            bottom = insets?.getInsets(android.view.WindowInsets.Type.ime())?.bottom ?: 0
+            bottom = insets
+                ?.let { WindowInsetsCompat.toWindowInsetsCompat(it, composeRule.activity.window.decorView) }
+                ?.getInsets(WindowInsetsCompat.Type.ime())
+                ?.bottom ?: 0
         }
         return bottom
     }
@@ -4854,7 +4858,10 @@ class EndToEndTest {
         var bottom = 0
         composeRule.runOnIdle {
             val insets = composeRule.activity.window.decorView.rootWindowInsets
-            bottom = insets?.getInsets(android.view.WindowInsets.Type.navigationBars())?.bottom ?: 0
+            bottom = insets
+                ?.let { WindowInsetsCompat.toWindowInsetsCompat(it, composeRule.activity.window.decorView) }
+                ?.getInsets(WindowInsetsCompat.Type.navigationBars())
+                ?.bottom ?: 0
         }
         return bottom
     }

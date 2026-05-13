@@ -11,6 +11,7 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.WindowInsets
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.content.res.ResourcesCompat
 import androidx.compose.ui.graphics.toArgb
 import systems.pkt.lingon.R
@@ -984,8 +985,9 @@ class TerminalGridView @JvmOverloads constructor(
         val viewHeight = height
         if (viewHeight <= 0) return 0
         val insets = rootWindowInsets ?: return viewHeight
-        val imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom
-        val navigationBottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+        val compatInsets = WindowInsetsCompat.toWindowInsetsCompat(insets, this)
+        val imeBottom = compatInsets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+        val navigationBottom = compatInsets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
         val bottomInset = max(imeBottom, navigationBottom)
         if (bottomInset <= 0) return viewHeight
         val root = rootView ?: return viewHeight
