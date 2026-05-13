@@ -104,6 +104,7 @@ type localSession struct {
 
 	resizeRedrawMu      sync.Mutex
 	ignoreNextPTYOutput bool
+	pendingPTYInput     bool
 }
 
 var errPTYNotReady = errors.New("pty not initialized")
@@ -181,12 +182,21 @@ func (s *localSession) waitForOutputWall(timeout time.Duration) bool {
 
 func (s *localSession) armIgnoreNextPTYOutput() {
 	s.resizeRedrawMu.Lock()
-	s.ignoreNextPTYOutput = true
+	if !s.pendingPTYInput {
+		s.ignoreNextPTYOutput = true
+	}
 	s.resizeRedrawMu.Unlock()
 }
 
 func (s *localSession) clearIgnoredPTYOutput() {
 	s.resizeRedrawMu.Lock()
+	s.ignoreNextPTYOutput = false
+	s.resizeRedrawMu.Unlock()
+}
+
+func (s *localSession) markPTYInputPending() {
+	s.resizeRedrawMu.Lock()
+	s.pendingPTYInput = true
 	s.ignoreNextPTYOutput = false
 	s.resizeRedrawMu.Unlock()
 }
@@ -197,6 +207,13 @@ func (s *localSession) shouldIgnoreNextPTYOutput(data []byte) bool {
 	}
 	s.resizeRedrawMu.Lock()
 	defer s.resizeRedrawMu.Unlock()
+	if s.pendingPTYInput {
+		if bytes.ContainsAny(data, "\r\n") {
+			s.pendingPTYInput = false
+		}
+		s.ignoreNextPTYOutput = false
+		return false
+	}
 	if !s.ignoreNextPTYOutput {
 		return false
 	}
@@ -886,7 +903,11 @@ func (s *localSession) writePTYWithMode(data []byte, disableEcho bool) (int, err
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if len(data) > 0 {
-		s.clearIgnoredPTYOutput()
+		if disableEcho {
+			s.clearIgnoredPTYOutput()
+		} else {
+			s.markPTYInputPending()
+		}
 	}
 	s.ptyMu.RLock()
 	ptyFile := s.pty
