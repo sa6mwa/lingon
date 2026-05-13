@@ -29,6 +29,31 @@ Required status values:
 
 ## Active Items
 
+### B-073 Android full integration final batch has wall/headless/keyboard failures
+
+- Status: `open`
+- Area: `android`, `integration`, `notifications`, `viewport`, `headless`
+- Summary: After the top-bar menu failure and viewport regressions were fixed, the final `make test-android` batch still reports unrelated wall-notification, keyboard viewport, and headless resize failures.
+- Report:
+  While verifying the reported `menu_overlay_does_not_cover_close_button` failure through `make test-android`, the first 5-test batch and 44-test viewport batch were made green, but the later 29-test batch still failed.
+- Repro:
+  1. Run `make test-android`.
+  2. Observe the final Android integration batch failures listed below.
+- Current failing tests observed:
+  - `foreground_manual_wall_delivery_does_not_post_system_notification`
+  - `focused_background_resume_preserves_live_camera_when_cursor_still_fits`
+  - `keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous`
+  - `keyboard_tab_switch_preserves_bottom_anchor_visual`
+  - `loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle`
+  - `background_wall_delivery_posts_system_notification`
+  - `background_distinct_wall_messages_post_distinct_system_notifications`
+  - `headless_resize_button_resizes_remote_headless_session`
+- Verification:
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
+  - The first 5-test batch inside `make test-android` passed.
+  - The 44-test viewport batch inside `make test-android` passed.
+  - The final 29-test batch inside `make test-android` failed with the tests above.
+
 ### B-072 Android terminal insets use API 30 runtime APIs despite minSdk 26
 
 - Status: `resolved`
@@ -72,7 +97,7 @@ Required status values:
 
 ### B-070 Android menu popup overlaps top bar close button
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Area: `android`, `topbar`, `menu`, `ui`, `hit-target`
 - Summary: Opening the Android top-bar menu can place the popup over the top-bar menu/close button, making the close button impossible to press.
 - Report:
@@ -82,11 +107,13 @@ Required status values:
   2. Observe that the popup overlaps the top bar menu/close button hit target.
   3. Attempt to press the close button; the popup intercepts the hit.
 - Regression coverage:
-  - Added `menu_overlay_does_not_cover_close_button`, an Android UI regression that opens the top-bar menu and asserts the popup top is below the menu/close button bottom with an 8dp minimum gap.
+  - Added `menu_overlay_does_not_cover_close_button`, an Android UI regression that opens the top-bar menu and verifies a real tap on the top-bar close/menu button dismisses the menu.
+  - Fixed the test touch helper to send node-local center coordinates instead of root coordinates, so the regression performs the intended hit test.
 - Verification:
-  - `./gradlew :app:compileDebugAndroidTestKotlin`
-  - `./gradlew :app:testDebugUnitTest`
-  - This was not reproduced locally: no Android device is currently connected on this host (`adb devices` listed none). Connected instrumentation still needs a device/emulator confirmation for the UI bounds regression.
+  - Reproduced in connected instrumentation: the original bounds assertion saw the popup covering the close-button area and the first hit-test version timed out waiting for the menu to close.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
 
 ### B-069 Android scrollback panning becomes line-stepped when fully zoomed out
 
@@ -224,6 +251,7 @@ Required status values:
   - Removed dead viewport policy helpers for the old default-zoom cursor-follow decision so tests no longer preserve stale behavior that production no longer uses.
   - Lifecycle capture now records a pending keyboard-input cursor-follow frame as its durable return mode when follow-on-read is disabled, so a stop/dispose before the draw pass cannot persist transient cursor-follow as the session camera.
   - Restoring a live-bottom viewport clears scroll remainder instead of reviving stale manual scroll state.
+  - Detached Android terminal views now preserve the last measured effective viewport height for lifecycle/dispose capture, so app-lock/unlock does not save the full physical view height after system-bar insets disappear.
 - Regression coverage:
   - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
   - Tagged the quick-key container and strengthened keyboard/tall-session instrumentation coverage to assert the terminal viewport bottom never overlaps the quick-key top when the IME controls are visible.
@@ -236,10 +264,12 @@ Required status values:
   - Added `loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle`, which loads a real tall host session, zooms it so content exceeds the camera, and asserts hidden keyboard, shown keyboard, and hidden-again states all use the system-visible bottom and remain live-bottom anchored without a pan.
   - Kept live-bottom behavior covered at the `TerminalGridView` boundary instead of the older policy helper boundary, so the regression asserts the observable camera mode rather than a removed implementation detail.
   - Reran `terminal_cursor_follow_defaults_to_keyboard_input_only` to ensure passive read-driven cursor movement still does not move the camera when follow-on-read is disabled.
+  - Reran `app_lock_unlock_preserves_terminal_camera_viewport` to verify app-lock disposal/restoration keeps the manual camera after detachment.
 - Verification:
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the clipping fix.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the effective IME viewport fix.
   - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015200-4064878/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed after the detached viewport capture fix.
   - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015323-4070926/summary.txt`.
   - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015506-4077816/summary.txt`.
   - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` failed before the partial-row fix, then passed. Passing resource profile: `android/test-artifacts/resource-profile-20260512-022202-4170918/summary.txt`.

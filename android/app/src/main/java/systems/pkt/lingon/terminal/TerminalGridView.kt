@@ -76,6 +76,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var cameraMode: TerminalViewportMode = TerminalViewportMode.LiveBottom
     private var cursorFollowReturnMode: TerminalViewportMode = TerminalViewportMode.LiveBottom
     private var sizeChangeInvalidateCountForTesting: Int = 0
+    private var hasBeenAttachedToWindow: Boolean = false
 
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
@@ -180,6 +181,11 @@ class TerminalGridView @JvmOverloads constructor(
         isFocusable = false
         isFocusableInTouchMode = false
         isClickable = true
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        hasBeenAttachedToWindow = true
     }
 
     fun update(
@@ -984,7 +990,11 @@ class TerminalGridView @JvmOverloads constructor(
     private fun effectiveViewportHeightPx(): Int {
         val viewHeight = height
         if (viewHeight <= 0) return 0
-        val insets = rootWindowInsets ?: return viewHeight
+        val insets = rootWindowInsets ?: return if (!isAttachedToWindow && hasBeenAttachedToWindow) {
+            lastViewportHeightPx.takeIf { it > 0 } ?: viewHeight
+        } else {
+            viewHeight
+        }
         val compatInsets = WindowInsetsCompat.toWindowInsetsCompat(insets, this)
         val imeBottom = compatInsets.getInsets(WindowInsetsCompat.Type.ime()).bottom
         val navigationBottom = compatInsets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom

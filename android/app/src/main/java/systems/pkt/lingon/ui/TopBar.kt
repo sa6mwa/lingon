@@ -4,12 +4,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -19,23 +22,26 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 
 @Composable
@@ -77,12 +83,15 @@ fun TopBar(
     } else {
         MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
     }
-    val menuMaxHeight = (LocalConfiguration.current.screenHeightDp * 0.7f).dp
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val density = LocalDensity.current
+    val statusBarHeight = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
 
     @Composable
     fun MenuActionButton(compactVertical: Boolean) {
         val buttonSize = if (compactVertical) 28.dp else 40.dp
-        val menuOffsetY = buttonSize * 2 + 8.dp
+        val menuTop = statusBarHeight + verticalPadding + buttonSize + 8.dp
+        val menuMaxHeight = (screenHeight - menuTop - 16.dp).coerceAtLeast(buttonSize * 2)
         Box(
             modifier = Modifier.wrapContentSize(Alignment.TopEnd),
             contentAlignment = Alignment.TopEnd,
@@ -107,118 +116,131 @@ fun TopBar(
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
-            DropdownMenu(
-                expanded = menuExpanded,
-                onDismissRequest = onDismissMenu,
-                offset = DpOffset(x = 0.dp, y = menuOffsetY),
-                modifier = Modifier
-                    .testTag(TestTags.TopBarMenu),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = menuMaxHeight)
-                        .verticalScroll(rememberScrollState()),
+            if (menuExpanded) {
+                Popup(
+                    alignment = Alignment.TopEnd,
+                    offset = IntOffset(
+                        x = with(density) { -horizontalPadding.roundToPx() },
+                        y = with(density) { menuTop.roundToPx() },
+                    ),
+                    onDismissRequest = onDismissMenu,
+                    properties = PopupProperties(focusable = false),
                 ) {
-                    if (!username.isNullOrBlank()) {
-                        DropdownMenuItem(
-                            text = { Text("Signed in as $username") },
-                            onClick = {},
-                            enabled = false,
-                        )
-                    }
-                    DropdownMenuItem(
-                        text = { Text("Endpoint") },
-                        onClick = {
-                            onShowSettings()
-                            onDismissMenu()
-                        },
-                        modifier = Modifier.testTag(TestTags.EndpointButton),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Attach via token") },
-                        onClick = {
-                            onShowShareToken()
-                            onDismissMenu()
-                        },
-                        modifier = Modifier.testTag(TestTags.ShareTokenButton),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Manage certificates") },
-                        onClick = {
-                            onShowCertificates()
-                            onDismissMenu()
-                        },
-                        modifier = Modifier.testTag(TestTags.CertificatesButton),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Background wall notifications") },
-                        onClick = {
-                            onToggleBackgroundWall(!backgroundWallEnabled)
-                            onDismissMenu()
-                        },
-                        trailingIcon = {
-                            Switch(
-                                checked = backgroundWallEnabled,
-                                onCheckedChange = { checked ->
-                                    onToggleBackgroundWall(checked)
+                    Surface(
+                        shape = MaterialTheme.shapes.extraSmall,
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 8.dp,
+                        shadowElevation = 8.dp,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .testTag(TestTags.TopBarMenu)
+                                .widthIn(min = 200.dp, max = 320.dp)
+                                .heightIn(max = menuMaxHeight)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            if (!username.isNullOrBlank()) {
+                                DropdownMenuItem(
+                                    text = { Text("Signed in as $username") },
+                                    onClick = {},
+                                    enabled = false,
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("Endpoint") },
+                                onClick = {
+                                    onShowSettings()
                                     onDismissMenu()
                                 },
-                                modifier = Modifier.testTag(TestTags.BackgroundWallToggle),
+                                modifier = Modifier.testTag(TestTags.EndpointButton),
                             )
-                        },
-                        modifier = Modifier.testTag(TestTags.BackgroundWallMenuItem),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Follow on read") },
-                        onClick = {
-                            onToggleFollowOnRead(!followOnReadEnabled)
-                            onDismissMenu()
-                        },
-                        trailingIcon = {
-                            Switch(
-                                checked = followOnReadEnabled,
-                                onCheckedChange = { checked ->
-                                    onToggleFollowOnRead(checked)
+                            DropdownMenuItem(
+                                text = { Text("Attach via token") },
+                                onClick = {
+                                    onShowShareToken()
                                     onDismissMenu()
                                 },
-                                modifier = Modifier.testTag(TestTags.FollowOnReadToggle),
+                                modifier = Modifier.testTag(TestTags.ShareTokenButton),
                             )
-                        },
-                        modifier = Modifier.testTag(TestTags.FollowOnReadMenuItem),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Select theme") },
-                        onClick = {
-                            onShowTheme()
-                            onDismissMenu()
-                        },
-                        modifier = Modifier.testTag(TestTags.ThemeButton),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("App lock timeout") },
-                        onClick = {
-                            onShowAppLock()
-                            onDismissMenu()
-                        },
-                        modifier = Modifier.testTag(TestTags.AppLockTimeoutButton),
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Reset zoom/pan") },
-                        onClick = {
-                            onResetZoomPan()
-                            onDismissMenu()
-                        },
-                        modifier = Modifier.testTag(TestTags.ZoomResetButton),
-                    )
-                    if (loggedIn) {
-                        DropdownMenuItem(
-                            text = { Text("Logout") },
-                            onClick = {
-                                onLogout()
-                                onDismissMenu()
-                            },
-                            modifier = Modifier.testTag(TestTags.LogoutButton),
-                        )
+                            DropdownMenuItem(
+                                text = { Text("Manage certificates") },
+                                onClick = {
+                                    onShowCertificates()
+                                    onDismissMenu()
+                                },
+                                modifier = Modifier.testTag(TestTags.CertificatesButton),
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Background wall notifications") },
+                                onClick = {
+                                    onToggleBackgroundWall(!backgroundWallEnabled)
+                                    onDismissMenu()
+                                },
+                                trailingIcon = {
+                                    Switch(
+                                        checked = backgroundWallEnabled,
+                                        onCheckedChange = { checked ->
+                                            onToggleBackgroundWall(checked)
+                                            onDismissMenu()
+                                        },
+                                        modifier = Modifier.testTag(TestTags.BackgroundWallToggle),
+                                    )
+                                },
+                                modifier = Modifier.testTag(TestTags.BackgroundWallMenuItem),
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Follow on read") },
+                                onClick = {
+                                    onToggleFollowOnRead(!followOnReadEnabled)
+                                    onDismissMenu()
+                                },
+                                trailingIcon = {
+                                    Switch(
+                                        checked = followOnReadEnabled,
+                                        onCheckedChange = { checked ->
+                                            onToggleFollowOnRead(checked)
+                                            onDismissMenu()
+                                        },
+                                        modifier = Modifier.testTag(TestTags.FollowOnReadToggle),
+                                    )
+                                },
+                                modifier = Modifier.testTag(TestTags.FollowOnReadMenuItem),
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Select theme") },
+                                onClick = {
+                                    onShowTheme()
+                                    onDismissMenu()
+                                },
+                                modifier = Modifier.testTag(TestTags.ThemeButton),
+                            )
+                            DropdownMenuItem(
+                                text = { Text("App lock timeout") },
+                                onClick = {
+                                    onShowAppLock()
+                                    onDismissMenu()
+                                },
+                                modifier = Modifier.testTag(TestTags.AppLockTimeoutButton),
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Reset zoom/pan") },
+                                onClick = {
+                                    onResetZoomPan()
+                                    onDismissMenu()
+                                },
+                                modifier = Modifier.testTag(TestTags.ZoomResetButton),
+                            )
+                            if (loggedIn) {
+                                DropdownMenuItem(
+                                    text = { Text("Logout") },
+                                    onClick = {
+                                        onLogout()
+                                        onDismissMenu()
+                                    },
+                                    modifier = Modifier.testTag(TestTags.LogoutButton),
+                                )
+                            }
+                        }
                     }
                 }
             }

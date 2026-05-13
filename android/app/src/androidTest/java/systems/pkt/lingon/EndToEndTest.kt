@@ -157,14 +157,7 @@ class EndToEndTest {
         composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
         waitForTag(TestTags.TopBarMenu)
 
-        val button = nodeBounds(TestTags.TopBarMenuButton)
-        val menu = nodeBounds(TestTags.TopBarMenu)
-        val minGapPx = composeRule.activity.resources.displayMetrics.density * 8f
-        if (menu.top < button.bottom + minGapPx) {
-            throw AssertionError("top-bar menu popup is too close to close button: button=$button menu=$menu minGapPx=$minGapPx")
-        }
-
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
+        clickNodeCenter(TestTags.TopBarMenuButton)
         waitForTagToDisappear(TestTags.TopBarMenu)
     }
 
@@ -1225,7 +1218,7 @@ class EndToEndTest {
                     preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = savedCamera,
                     scrollRemainderY = 0f,
-                    viewportHeightPx = view.height,
+                    viewportHeightPx = view.getViewportHeightForTesting(),
                     scaledCellHeightPx = cellHeight,
                     totalRows = snapshot.rows,
                 ),
@@ -1321,7 +1314,7 @@ class EndToEndTest {
                     preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = cellHeight * 10f,
                     scrollRemainderY = 0f,
-                    viewportHeightPx = view.height,
+                    viewportHeightPx = view.getViewportHeightForTesting(),
                     scaledCellHeightPx = cellHeight,
                     totalRows = firstSnapshot.rows,
                 ),
@@ -1534,6 +1527,7 @@ class EndToEndTest {
                 scrollbackOffsetRows = 0,
                 imeVisible = false,
                 isLoading = false,
+                localInputNonce = 1,
             )
             view.draw(Canvas(Bitmap.createBitmap(200, 240, Bitmap.Config.ARGB_8888)))
 
@@ -1601,6 +1595,7 @@ class EndToEndTest {
                 scrollbackOffsetRows = 0,
                 imeVisible = false,
                 isLoading = false,
+                localInputNonce = 1,
             )
             view.draw(Canvas(Bitmap.createBitmap(200, 240, Bitmap.Config.ARGB_8888)))
 
@@ -2151,7 +2146,7 @@ class EndToEndTest {
                     info.cols == 110 &&
                     info.rows == 50 &&
                     info.viewRows > 0 &&
-                    info.visibleStartRow == 0 &&
+                    info.isLiveBottomAnchored() &&
                     info.visibleEndRowExclusive > info.visibleStartRow &&
                     info.renderScaleX > 0f
             } ?: throw AssertionError("missing baseline terminal debug info")
@@ -2160,7 +2155,7 @@ class EndToEndTest {
                 setZoomFactor(zoomed.zoomFactor + 0.35f)
                 zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
                     info.renderScaleX > zoomed.renderScaleX + 0.03f &&
-                        info.visibleStartRow == 0 &&
+                        info.isLiveBottomAnchored() &&
                         info.viewRows > 0
                 } ?: throw AssertionError("missing zoomed terminal debug info")
                 val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
@@ -2268,7 +2263,7 @@ class EndToEndTest {
                         info.rows == case.rows &&
                         info.viewCols > 0 &&
                         info.viewRows > 0 &&
-                        info.visibleStartRow == 0 &&
+                        info.isLiveBottomAnchored() &&
                         info.visibleEndRowExclusive > info.visibleStartRow &&
                         info.visibleEndRowExclusive <= info.rows &&
                         info.renderScaleX > 0f
@@ -2281,7 +2276,7 @@ class EndToEndTest {
                         info.cols == case.cols &&
                         info.rows == case.rows &&
                         info.renderScaleX > base.renderScaleX + 0.03f &&
-                        info.visibleStartRow == 0 &&
+                        info.isLiveBottomAnchored() &&
                         info.visibleEndRowExclusive > info.visibleStartRow &&
                         info.visibleEndRowExclusive <= info.rows
                 } ?: throw AssertionError("missing zoomed ${case.label} terminal geometry")
@@ -4242,7 +4237,7 @@ class EndToEndTest {
         val node = composeRule.onNodeWithTag(tag).fetchSemanticsNode()
         val bounds = node.boundsInRoot
         composeRule.onNodeWithTag(tag).performTouchInput {
-            down(0, Offset(bounds.center.x, bounds.center.y))
+            down(0, Offset(bounds.width / 2f, bounds.height / 2f))
             up(0)
         }
     }
