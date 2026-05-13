@@ -64,7 +64,7 @@ Required status values:
 - Verification:
   - `./gradlew :app:compileDebugAndroidTestKotlin`
   - `./gradlew :app:testDebugUnitTest`
-  - This was not reproduced locally: no Android device is currently connected on this host (`/home/mike/Android/Sdk/platform-tools/adb devices` listed none). Connected instrumentation still needs a device/emulator confirmation for the UI bounds regression.
+  - This was not reproduced locally: no Android device is currently connected on this host (`adb devices` listed none). Connected instrumentation still needs a device/emulator confirmation for the UI bounds regression.
 
 ### B-069 Android scrollback panning becomes line-stepped when fully zoomed out
 
@@ -217,25 +217,25 @@ Required status values:
 - Verification:
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the clipping fix.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the effective IME viewport fix.
-  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-015200-4064878/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-015323-4070926/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-015506-4077816/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` failed before the partial-row fix, then passed. Passing resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-022202-4170918/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed after the partial-row fix. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-022343-4177623/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed after adding the no-flicker settle-window assertions. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-070023-531523/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015200-4064878/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015323-4070926/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015506-4077816/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` failed before the partial-row fix, then passed. Passing resource profile: `android/test-artifacts/resource-profile-20260512-022202-4170918/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed after the partial-row fix. Resource profile: `android/test-artifacts/resource-profile-20260512-022343-4177623/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed after adding the no-flicker settle-window assertions. Resource profile: `android/test-artifacts/resource-profile-20260512-070023-531523/summary.txt`.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the hidden-system-bottom and loading-camera fixes.
-  - `cd android && LINGON_IT_ONLY=loading_terminal_content_initializes_at_live_bottom make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-103522-1006654/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle make integration-test` first failed because the fixture fit all 240 rows and did not reproduce the zoomed tall-session condition, then passed after forcing zoom. Passing resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-103926-1021585/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed after replacing the hidden-IME full-height assertion. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-104407-1038833/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` failed after adding system-visible-bottom assertions, then passed after live-mode bottom anchoring and pending-restore reset fixes. Passing resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-110441-1106104/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle make integration-test` passed again after the broader live-mode fix. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-110642-1113905/summary.txt`.
-  - `cd android && LINGON_IT_ONLY=terminal_cursor_follow_defaults_to_keyboard_input_only make integration-test` failed when the first broader fix moved passive read camera state, then passed after limiting the live-bottom snap to initial live positioning. Passing resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-111118-1129933/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=loading_terminal_content_initializes_at_live_bottom make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-103522-1006654/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle make integration-test` first failed because the fixture fit all 240 rows and did not reproduce the zoomed tall-session condition, then passed after forcing zoom. Passing resource profile: `android/test-artifacts/resource-profile-20260512-103926-1021585/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed after replacing the hidden-IME full-height assertion. Resource profile: `android/test-artifacts/resource-profile-20260512-104407-1038833/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` failed after adding system-visible-bottom assertions, then passed after live-mode bottom anchoring and pending-restore reset fixes. Passing resource profile: `android/test-artifacts/resource-profile-20260512-110441-1106104/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle make integration-test` passed again after the broader live-mode fix. Resource profile: `android/test-artifacts/resource-profile-20260512-110642-1113905/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_cursor_follow_defaults_to_keyboard_input_only make integration-test` failed when the first broader fix moved passive read camera state, then passed after limiting the live-bottom snap to initial live positioning. Passing resource profile: `android/test-artifacts/resource-profile-20260512-111118-1129933/summary.txt`.
   - `cd android && ./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin` passed after the explicit viewport-mode refactor.
   - `cd android && ./gradlew :app:testDebugUnitTest` passed after the explicit viewport-mode refactor.
-  - `cd android && LINGON_IT_ONLY=loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom,terminal_cursor_follow_defaults_to_keyboard_input_only,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed in one instrumentation batch on one cgroup-contained emulator. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-161405-1851959/summary.txt`; peak CPU `2.09` cores, average CPU `1.33` cores, peak cgroup memory current `7226732544` bytes.
+  - `cd android && LINGON_IT_ONLY=loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom,terminal_cursor_follow_defaults_to_keyboard_input_only,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed in one instrumentation batch on one cgroup-contained emulator. Resource profile: `android/test-artifacts/resource-profile-20260512-161405-1851959/summary.txt`; peak CPU `2.09` cores, average CPU `1.33` cores, peak cgroup memory current `7226732544` bytes.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after removing unused legacy viewport-policy helpers.
   - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after hardening transient cursor-follow capture.
-  - `cd android && LINGON_IT_ONLY=lifecycle_capture_does_not_persist_transient_keyboard_cursor_follow,loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom,terminal_cursor_follow_defaults_to_keyboard_input_only,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed in one instrumentation batch on one cgroup-contained emulator. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260512-163727-1914329/summary.txt`; peak CPU `2.07` cores, average CPU `1.30` cores, peak cgroup memory current `6925447168` bytes.
+  - `cd android && LINGON_IT_ONLY=lifecycle_capture_does_not_persist_transient_keyboard_cursor_follow,loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom,terminal_cursor_follow_defaults_to_keyboard_input_only,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed in one instrumentation batch on one cgroup-contained emulator. Resource profile: `android/test-artifacts/resource-profile-20260512-163727-1914329/summary.txt`; peak CPU `2.07` cores, average CPU `1.30` cores, peak cgroup memory current `6925447168` bytes.
   - Physical-phone confirmation is still pending.
 
 ### B-063 Android viewport cache leaks across logout and identity changes
@@ -259,8 +259,8 @@ Required status values:
   - Added instrumentation coverage that moves the camera for one identity, logs out, asserts the cache is empty, then logs in as another identity with the same session ID and asserts the previous camera is not restored.
   - Reran the app-lock viewport regression to prove same-identity app-lock restore still preserves the cached camera.
 - Verification:
-  - `LINGON_IT_ONLY=logout_clears_viewport_cache_and_reused_session_id_does_not_restore_stale_camera make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260511-091517-1858597/summary.txt`.
-  - `LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260511-091645-1864750/summary.txt`.
+  - `LINGON_IT_ONLY=logout_clears_viewport_cache_and_reused_session_id_does_not_restore_stale_camera make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260511-091517-1858597/summary.txt`.
+  - `LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260511-091645-1864750/summary.txt`.
   - `./gradlew :app:compileDebugAndroidTestKotlin` passed.
   - `./gradlew :app:testDebugUnitTest` passed.
 
@@ -286,7 +286,7 @@ Required status values:
 - Regression coverage:
   - Added instrumentation coverage for the app-lock branch that disposes `TerminalScreen`, captures a top camera viewport, unlocks, and asserts the recreated terminal preserves the saved visible start row and camera offset instead of cursor-following to the bottom.
 - Verification:
-  - `LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed. Resource profile: `/home/mike/g/lingon/android/test-artifacts/resource-profile-20260511-050339-1354744/summary.txt`.
+  - `LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260511-050339-1354744/summary.txt`.
   - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
 
 ### B-061 Tagged wall notification cleanup must cancel by tag and ID
