@@ -35,6 +35,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -156,6 +159,16 @@ class EndToEndTest {
         waitForTag(TestTags.LoginUsername)
         composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
         waitForTag(TestTags.TopBarMenu)
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        val closeButtonBounds = device.wait(Until.findObject(By.desc("Close menu")), 5_000)?.visibleBounds
+            ?: throw AssertionError("top-bar close button was not visible to UIAutomator")
+        val firstMenuItemBounds = device.wait(Until.findObject(By.text("Endpoint")), 5_000)?.visibleBounds
+            ?: throw AssertionError("top-bar menu first item was not visible to UIAutomator")
+        val minGapPx = (composeRule.activity.resources.displayMetrics.density * 6f).toInt()
+        assertTrue(
+            "top-bar menu popup should open below the menu button: button=$closeButtonBounds firstItem=$firstMenuItemBounds minGapPx=$minGapPx",
+            firstMenuItemBounds.top >= closeButtonBounds.bottom + minGapPx,
+        )
 
         clickNodeCenter(TestTags.TopBarMenuButton)
         waitForTagToDisappear(TestTags.TopBarMenu)

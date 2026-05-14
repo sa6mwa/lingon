@@ -29,6 +29,28 @@ Required status values:
 
 ## Active Items
 
+### B-076 Android top-bar menu is not anchored to its button
+
+- Status: `resolved`
+- Area: `android`, `topbar`, `menu`, `ui`
+- Summary: The Android top-bar menu can appear in inconsistent places because the popup is positioned with a fixed window offset instead of the measured menu-button anchor.
+- Report:
+  The engineer reports that the menu is still "all over the place" after the earlier close-button overlap fix.
+- Repro:
+  1. Open the Android top-bar menu in different layouts/orientations.
+  2. Observe that the popup position is derived from the window top/end rather than the actual menu button bounds, so it can drift away from the button or overlap top-bar controls.
+- Fix:
+  - Replaced the fixed `Popup(alignment = TopEnd, offset = ...)` placement with an explicit `PopupPositionProvider` that computes the menu origin from `anchorBounds`.
+  - The menu now opens below the measured button with a fixed gap, clamps only to keep it inside the visible window, and works for both portrait top bars and compact sidebar top bars.
+- Regression coverage:
+  - Added `TopBarMenuPositionProviderTest`, covering portrait, compact/sidebar, and constrained-window placement invariants.
+  - Strengthened `menu_overlay_does_not_cover_close_button` to use UIAutomator screen bounds, proving the rendered first menu item is below the rendered close/menu button instead of relying on popup-local Compose semantics.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_shift_login make integration-test` passed.
+
 ### B-075 Distinct wall notification regression cleared its own expected notification
 
 - Status: `resolved`

@@ -38,9 +38,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 
@@ -90,8 +94,13 @@ fun TopBar(
     @Composable
     fun MenuActionButton(compactVertical: Boolean) {
         val buttonSize = if (compactVertical) 28.dp else 40.dp
-        val menuTop = statusBarHeight + verticalPadding + buttonSize + 8.dp
-        val menuMaxHeight = (screenHeight - menuTop - 16.dp).coerceAtLeast(buttonSize * 2)
+        val menuGap = 8.dp
+        val menuMaxHeight = (screenHeight - statusBarHeight - verticalPadding - buttonSize - menuGap - 16.dp)
+            .coerceAtLeast(buttonSize * 2)
+        val menuPositionProvider = TopBarMenuPositionProvider(
+            verticalGapPx = with(density) { menuGap.roundToPx() },
+            screenMarginPx = with(density) { horizontalPadding.roundToPx() },
+        )
         Box(
             modifier = Modifier.wrapContentSize(Alignment.TopEnd),
             contentAlignment = Alignment.TopEnd,
@@ -118,11 +127,7 @@ fun TopBar(
             }
             if (menuExpanded) {
                 Popup(
-                    alignment = Alignment.TopEnd,
-                    offset = IntOffset(
-                        x = with(density) { -horizontalPadding.roundToPx() },
-                        y = with(density) { menuTop.roundToPx() },
-                    ),
+                    popupPositionProvider = menuPositionProvider,
                     onDismissRequest = onDismissMenu,
                     properties = PopupProperties(focusable = false),
                 ) {
@@ -367,5 +372,31 @@ fun TopBar(
             )
             TopBarActions(false)
         }
+    }
+}
+
+internal class TopBarMenuPositionProvider(
+    private val verticalGapPx: Int,
+    private val screenMarginPx: Int,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val rawX = when (layoutDirection) {
+            LayoutDirection.Ltr -> anchorBounds.right - popupContentSize.width
+            LayoutDirection.Rtl -> anchorBounds.left
+        }
+        val maxX = (windowSize.width - popupContentSize.width - screenMarginPx)
+            .coerceAtLeast(screenMarginPx)
+        val x = rawX.coerceIn(screenMarginPx, maxX)
+
+        val belowAnchorY = anchorBounds.bottom + verticalGapPx
+        val maxY = (windowSize.height - popupContentSize.height - screenMarginPx)
+            .coerceAtLeast(screenMarginPx)
+        val y = belowAnchorY.coerceIn(screenMarginPx, maxY)
+        return IntOffset(x, y)
     }
 }
