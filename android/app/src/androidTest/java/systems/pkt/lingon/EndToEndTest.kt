@@ -37,6 +37,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -157,21 +158,30 @@ class EndToEndTest {
         ensureLoggedOut()
 
         waitForTag(TestTags.LoginUsername)
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTag(TestTags.TopBarMenu)
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-        val closeButtonBounds = device.wait(Until.findObject(By.desc("Close menu")), 5_000)?.visibleBounds
+        val menuButton = device.wait(Until.findObject(By.desc("Menu")), 5_000)
+            ?: throw AssertionError("top-bar menu button was not visible to UIAutomator")
+        val menuButtonBounds = menuButton.visibleBounds
+        menuButton.click()
+        waitForTag(TestTags.TopBarMenu)
+        val closeButton = device.wait(Until.findObject(By.desc("Close menu")), 5_000)
             ?: throw AssertionError("top-bar close button was not visible to UIAutomator")
-        val firstMenuItemBounds = device.wait(Until.findObject(By.text("Endpoint")), 5_000)?.visibleBounds
+        val closeButtonBounds = closeButton.visibleBounds
+        val firstMenuItem = device.wait(Until.findObject(By.text("Endpoint")), 5_000)
             ?: throw AssertionError("top-bar menu first item was not visible to UIAutomator")
+        val firstMenuItemBounds = firstMenuItem.visibleBounds
         val minGapPx = (composeRule.activity.resources.displayMetrics.density * 6f).toInt()
         assertTrue(
-            "top-bar menu popup should open below the menu button: button=$closeButtonBounds firstItem=$firstMenuItemBounds minGapPx=$minGapPx",
-            firstMenuItemBounds.top >= closeButtonBounds.bottom + minGapPx,
+            "top-bar menu popup should open below the menu button: button=$menuButtonBounds firstItem=$firstMenuItemBounds minGapPx=$minGapPx",
+            firstMenuItemBounds.top >= menuButtonBounds.bottom + minGapPx,
         )
 
-        clickNodeCenter(TestTags.TopBarMenuButton)
+        clickRenderedObjectOrClickableAncestor(closeButton)
         waitForTagToDisappear(TestTags.TopBarMenu)
+        device.wait(Until.findObject(By.desc("Menu")), 5_000)
+            ?: throw AssertionError(
+                "top-bar menu button did not return after tapping the rendered close button center: menuButton=$menuButtonBounds closeButton=$closeButtonBounds firstItem=$firstMenuItemBounds",
+            )
     }
 
     @Test
@@ -4355,6 +4365,14 @@ class EndToEndTest {
             down(0, Offset(bounds.width / 2f, bounds.height / 2f))
             up(0)
         }
+    }
+
+    private fun clickRenderedObjectOrClickableAncestor(node: UiObject2) {
+        var current: UiObject2? = node
+        while (current != null && !current.isClickable) {
+            current = current.parent
+        }
+        (current ?: node).click()
     }
 
     private fun TerminalDebugInfo.containsToken(token: String): Boolean {

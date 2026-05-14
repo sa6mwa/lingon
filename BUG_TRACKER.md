@@ -29,6 +29,28 @@ Required status values:
 
 ## Active Items
 
+### B-077 Android top-bar menu close button flickers instead of closing
+
+- Status: `resolved`
+- Area: `android`, `topbar`, `menu`, `ui`, `event-dispatch`
+- Summary: The Android top-bar menu can flicker and remain open when pressing the rendered X close button.
+- Report:
+  The engineer reports that the menu is still broken and that pressing X does not close it, it only flickers.
+- Repro:
+  1. Open the Android top-bar menu.
+  2. Press the rendered X close button.
+  3. Observe that the menu flickers and remains open instead of closing.
+- Fix:
+  - Removed the separate popup window from the top-bar menu path.
+  - The menu is now an anchored overlay child of the menu button layout, and open/close render as separate button nodes with explicit accessibility click actions.
+- Regression coverage:
+  - Strengthened `menu_overlay_does_not_cover_close_button` to open through the rendered menu button, click the rendered close button or its clickable ancestor, assert the menu disappears structurally, and assert the rendered menu button returns.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_shift_login make integration-test` passed.
+
 ### B-076 Android top-bar menu is not anchored to its button
 
 - Status: `resolved`
@@ -40,11 +62,10 @@ Required status values:
   1. Open the Android top-bar menu in different layouts/orientations.
   2. Observe that the popup position is derived from the window top/end rather than the actual menu button bounds, so it can drift away from the button or overlap top-bar controls.
 - Fix:
-  - Replaced the fixed `Popup(alignment = TopEnd, offset = ...)` placement with an explicit `PopupPositionProvider` that computes the menu origin from `anchorBounds`.
-  - The menu now opens below the measured button with a fixed gap, clamps only to keep it inside the visible window, and works for both portrait top bars and compact sidebar top bars.
+  - Removed window-level popup placement from the top-bar menu path.
+  - The menu now opens as an overlay child anchored to the measured menu button, so it is positioned from the same layout tree as the top bar instead of a separate window offset.
 - Regression coverage:
-  - Added `TopBarMenuPositionProviderTest`, covering portrait, compact/sidebar, and constrained-window placement invariants.
-  - Strengthened `menu_overlay_does_not_cover_close_button` to use UIAutomator screen bounds, proving the rendered first menu item is below the rendered close/menu button instead of relying on popup-local Compose semantics.
+  - Strengthened `menu_overlay_does_not_cover_close_button` to use UIAutomator screen bounds, proving the rendered first menu item is below the rendered menu button instead of relying on popup-local Compose semantics.
 - Verification:
   - `cd android && ./gradlew :app:testDebugUnitTest` passed.
   - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
