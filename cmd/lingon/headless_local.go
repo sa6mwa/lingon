@@ -64,10 +64,7 @@ func firstLocalHeadlessSession(sessions []localHeadlessSession) (localHeadlessSe
 		return localHeadlessSession{}, fmt.Errorf("no local headless sessions available")
 	}
 	sort.Slice(sessions, func(i, j int) bool {
-		if sessions[i].LastSeenAt.Equal(sessions[j].LastSeenAt) {
-			return sessions[i].ID < sessions[j].ID
-		}
-		return sessions[i].LastSeenAt.After(sessions[j].LastSeenAt)
+		return sessions[i].ID < sessions[j].ID
 	})
 	return sessions[0], nil
 }

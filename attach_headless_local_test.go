@@ -48,6 +48,9 @@ func TestHeadlessSessionSource(t *testing.T) {
 		names[session.ID] = session.Name
 		offline[session.ID] = session.Offline
 	}
+	if sessions[0].ID != "a" || sessions[1].ID != "b" {
+		t.Fatalf("expected headless sessions sorted by id, got %q, %q", sessions[0].ID, sessions[1].ID)
+	}
 	if names["a"] != "a" {
 		t.Fatalf("expected session a name to match id, got %q", names["a"])
 	}

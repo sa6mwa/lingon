@@ -1726,39 +1726,11 @@ func (r *Runner) orderSessions(sessions []remoteSessionInfo) []remoteSessionInfo
 		r.setSessionOrder(sessions)
 		return sessions
 	}
-	r.sessionOrderMu.RLock()
-	prior := append([]string(nil), r.sessionOrder...)
-	r.sessionOrderMu.RUnlock()
-	if len(prior) == 0 {
-		r.setSessionOrder(sessions)
-		return sessions
-	}
-
-	byID := make(map[string]remoteSessionInfo, len(sessions))
-	for _, session := range sessions {
-		byID[session.ID] = session
-	}
-	ordered := make([]remoteSessionInfo, 0, len(sessions))
-	for _, id := range prior {
-		session, ok := byID[id]
-		if !ok {
-			continue
-		}
-		ordered = append(ordered, session)
-		delete(byID, id)
-	}
-	if len(byID) > 0 {
-		newSessions := make([]remoteSessionInfo, 0, len(byID))
-		for _, session := range byID {
-			newSessions = append(newSessions, session)
-		}
-		sort.Slice(newSessions, func(i, j int) bool {
-			return newSessions[i].ID < newSessions[j].ID
-		})
-		ordered = append(ordered, newSessions...)
-	}
-	r.setSessionOrder(ordered)
-	return ordered
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].ID < sessions[j].ID
+	})
+	r.setSessionOrder(sessions)
+	return sessions
 }
 
 func (r *Runner) setSessionOrder(sessions []remoteSessionInfo) {

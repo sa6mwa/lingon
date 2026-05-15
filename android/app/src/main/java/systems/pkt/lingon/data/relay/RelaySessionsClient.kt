@@ -93,6 +93,7 @@ class RelaySessionsClient(
             return emptyList()
         }
         return LingonJson.decodeFromString(ListSerializer(RelaySession.serializer()), trimmed)
+            .sortedBy { it.id }
     }
 
     private fun decodeWallEvents(body: String): RelayWallEventsPage {

@@ -141,12 +141,6 @@ func (s *Store) ListSessions(username string) []Session {
 		}
 	}
 	sort.Slice(sessions, func(i, j int) bool {
-		if !sessions[i].LastActiveAt.Equal(sessions[j].LastActiveAt) {
-			return sessions[i].LastActiveAt.After(sessions[j].LastActiveAt)
-		}
-		if !sessions[i].CreatedAt.Equal(sessions[j].CreatedAt) {
-			return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
-		}
 		return sessions[i].ID < sessions[j].ID
 	})
 	return sessions

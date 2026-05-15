@@ -92,22 +92,22 @@ func TestSessionTabSourcesFrom(t *testing.T) {
 	}
 }
 
-func TestSortSessionsByLastActive(t *testing.T) {
+func TestSortSessionsByID(t *testing.T) {
 	now := time.Now().UTC()
 	rows := []tabRow{
 		{id: "b", name: "b", lastSeen: now.Add(-time.Minute)},
 		{id: "a", name: "a", lastSeen: now},
 		{id: "c", name: "c", lastSeen: now},
 	}
-	SortSessionsByLastActive(rows)
+	SortSessionsByID(rows)
 	if rows[0].id != "a" {
 		t.Fatalf("row[0].id=%q, want %q", rows[0].id, "a")
 	}
-	if rows[1].id != "c" {
-		t.Fatalf("row[1].id=%q, want %q", rows[1].id, "c")
+	if rows[1].id != "b" {
+		t.Fatalf("row[1].id=%q, want %q", rows[1].id, "b")
 	}
-	if rows[2].id != "b" {
-		t.Fatalf("row[2].id=%q, want %q", rows[2].id, "b")
+	if rows[2].id != "c" {
+		t.Fatalf("row[2].id=%q, want %q", rows[2].id, "c")
 	}
 }
 

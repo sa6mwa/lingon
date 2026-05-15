@@ -29,6 +29,42 @@ Required status values:
 
 ## Active Items
 
+### B-079 Session lists should be sorted alphanumerically everywhere
+
+- Status: `resolved`
+- Area: `sessions`, `relay`, `attach`, `host`, `headless`, `android`, `api`
+- Summary: All user-visible and API session lists must be sorted by stable session id instead of recency, discovery, or prior tab order.
+- Report:
+  The engineer requested alphanumeric session ordering in local PTY, local headless, attach, relay, the sessions API, and the Android app.
+- Repro:
+  1. Create or receive sessions in non-alphabetic order such as `session-c`, `session-a`, `session-b`.
+  2. List sessions through `/sessions`, SDK/CLI, host/attach tab models, local headless, or Android state.
+  3. Observe the list must be `session-a`, `session-b`, `session-c` regardless of activity timestamps or update order.
+- Regression coverage:
+  - Go:
+    - `TestSortSessionsByID`
+    - `TestStoreListSessionsSortsByID`
+    - `TestListSessionsAPISortsByID`
+    - `TestListSessionsSortsByID`
+    - `TestHeadlessSessionSource`
+    - `TestFirstLocalHeadlessSessionUsesIDOrder`
+    - `TestMergeSessionsSortsLocalSessionsByID`
+    - `TestMergeSessionsIgnoresPreviousOrderAndSortsByID`
+    - `TestOrderSessionsSortsKnownSessionsByID`
+    - `TestOrderSessionsSortsUnseenSessionsByID`
+    - `TestOrderSessionsSortsFirstPayloadByID`
+  - Android:
+    - `AppViewModelTest.sessionsAreSortedByIdAcrossBootstrapRefreshAndWebsocketUpdates`
+- Verification:
+  - `go test -count=1 ./internal/mvu ./internal/relay ./internal/session ./internal/attach ./cmd/lingon . -run 'Test(SortSessionsByID|StoreListSessionsSortsByID|ListSessionsAPISortsByID|ListSessionsSortsByID|FirstLocalHeadlessSessionUsesIDOrder|HeadlessSessionSource|MergeSessions|OrderSessions|NextSessionID)'` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.sessionsAreSortedByIdAcrossBootstrapRefreshAndWebsocketUpdates` passed after preserving missing-session grace in the expected sorted result.
+  - `go test -count=1 ./...` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
 ### B-078 Android settings should be a page, not a popup menu
 
 - Status: `resolved`

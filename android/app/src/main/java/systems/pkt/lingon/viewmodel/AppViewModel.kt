@@ -1047,10 +1047,11 @@ class AppViewModel(
                 sessionListCache.remove(currentActive)
             }
         }
-        _state.update { it.copy(sessions = merged.values.toList()) }
-        prefetchSessionViewStates(_state.value.endpoint, merged.values)
+        val orderedSessions = merged.values.sortedBy { it.id }
+        _state.update { it.copy(sessions = orderedSessions) }
+        prefetchSessionViewStates(_state.value.endpoint, orderedSessions)
         syncWallPollingSchedule()
-        val connectionHandled = ensureActiveSession(merged.values.toList())
+        val connectionHandled = ensureActiveSession(orderedSessions)
         if (merged.isNotEmpty()) {
             stopSessionPoll()
         }

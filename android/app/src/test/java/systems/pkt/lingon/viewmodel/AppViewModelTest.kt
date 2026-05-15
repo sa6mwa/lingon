@@ -516,6 +516,60 @@ class AppViewModelTest {
     }
 
     @Test
+    fun sessionsAreSortedByIdAcrossBootstrapRefreshAndWebsocketUpdates() = runTest {
+        var currentSessions = listOf(
+            RelaySession(id = "session-c", name = "Charlie", status = "active"),
+            RelaySession(id = "session-a", name = "Alpha", status = "active"),
+            RelaySession(id = "session-b", name = "Bravo", status = "active"),
+        )
+        val repository = FakeRepository(
+            failListSessions = false,
+            sessionProvider = { currentSessions },
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = emptyList(),
+                activeSessionId = null,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+        assertEquals(listOf("session-a", "session-b", "session-c"), viewModel.state.value.sessions.map { it.id })
+        assertEquals("session-a", viewModel.state.value.activeSessionId)
+
+        currentSessions = listOf(
+            RelaySession(id = "session-d", name = "Delta", status = "active"),
+            RelaySession(id = "session-b", name = "Bravo", status = "active"),
+        )
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+        assertEquals(listOf("session-a", "session-b", "session-d"), viewModel.state.value.sessions.map { it.id })
+
+        wsClient.fireFrame(
+            Frame.newBuilder()
+                .setSeq(77L)
+                .setSessions(
+                    Sessions.newBuilder()
+                        .addSessions(SessionInfo.newBuilder().setId("session-z").setName("Zulu").setStatus("active"))
+                        .addSessions(SessionInfo.newBuilder().setId("session-a").setName("Alpha").setStatus("active"))
+                        .addSessions(SessionInfo.newBuilder().setId("session-m").setName("Mike").setStatus("active")),
+                )
+                .build(),
+        )
+        advanceUntilIdle()
+        assertEquals(listOf("session-a", "session-m", "session-z"), viewModel.state.value.sessions.map { it.id })
+    }
+
+    @Test
     fun bootstrapRestoresLastActiveSessionForEndpoint() = runTest {
         val repository = FakeRepository(
             sessions = listOf(

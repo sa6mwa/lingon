@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/authstore"
@@ -158,6 +159,9 @@ func ListSessionsWithTLSDirInsecure(ctx context.Context, endpoint, accessToken, 
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 

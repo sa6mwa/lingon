@@ -78,6 +78,21 @@ func TestResolveHeadlessSizeFlagOverrides(t *testing.T) {
 	}
 }
 
+func TestFirstLocalHeadlessSessionUsesIDOrder(t *testing.T) {
+	now := time.Now().UTC()
+	selected, err := firstLocalHeadlessSession([]localHeadlessSession{
+		{ID: "session-c", LastSeenAt: now},
+		{ID: "session-a", LastSeenAt: now.Add(-time.Hour)},
+		{ID: "session-b", LastSeenAt: now.Add(time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("firstLocalHeadlessSession: %v", err)
+	}
+	if selected.ID != "session-a" {
+		t.Fatalf("selected session=%q, want session-a", selected.ID)
+	}
+}
+
 func TestResolveHeadlessWallInactiveAfterLevelsUsesConfigDefault(t *testing.T) {
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().String("wall-inactive-after", lingon.DefaultWallInactiveAfterCSV, "")
