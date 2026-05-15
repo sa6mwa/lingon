@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"pkt.systems/lingon/internal/sessionorder"
 )
 
 const storeFilename = "state.json"
@@ -141,7 +143,7 @@ func (s *Store) ListSessions(username string) []Session {
 		}
 	}
 	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].ID < sessions[j].ID
+		return sessionorder.Less(sessions[i].Name, sessions[i].ID, sessions[j].Name, sessions[j].ID)
 	})
 	return sessions
 }

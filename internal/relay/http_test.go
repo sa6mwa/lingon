@@ -395,7 +395,7 @@ func TestListSessionsScopesToUser(t *testing.T) {
 	}
 }
 
-func TestListSessionsAPISortsByID(t *testing.T) {
+func TestListSessionsAPISortsByName(t *testing.T) {
 	store := NewStore()
 	users := NewUserStore()
 	user, err := SeedTestUser(users)
@@ -406,9 +406,9 @@ func TestListSessionsAPISortsByID(t *testing.T) {
 	server := NewHTTPServer(store, users, auth, nil, nil)
 	now := time.Now().UTC()
 	for _, session := range []Session{
-		{ID: "session-c", Username: user.Username, CreatedAt: now.Add(3 * time.Minute), LastActiveAt: now.Add(3 * time.Minute), Status: "active"},
-		{ID: "session-a", Username: user.Username, CreatedAt: now, LastActiveAt: now, Status: "active"},
-		{ID: "session-b", Username: user.Username, CreatedAt: now.Add(time.Minute), LastActiveAt: now.Add(time.Minute), Status: "active"},
+		{ID: "session-c", Username: user.Username, Name: "Alpha", CreatedAt: now.Add(3 * time.Minute), LastActiveAt: now.Add(3 * time.Minute), Status: "active"},
+		{ID: "session-a", Username: user.Username, Name: "Charlie", CreatedAt: now, LastActiveAt: now, Status: "active"},
+		{ID: "session-b", Username: user.Username, Name: "Bravo", CreatedAt: now.Add(time.Minute), LastActiveAt: now.Add(time.Minute), Status: "active"},
 	} {
 		store.CreateSession(session)
 		if err := server.Hub.RegisterHost(&fakeConn{id: "host-" + session.ID, role: RoleHost, sessionID: session.ID, scope: ShareScopeControl}, session.ID, 80, 24); err != nil {
@@ -435,7 +435,7 @@ func TestListSessionsAPISortsByID(t *testing.T) {
 	for _, session := range sessions {
 		got = append(got, session.ID)
 	}
-	want := []string{"session-a", "session-b", "session-c"}
+	want := []string{"session-c", "session-b", "session-a"}
 	if len(got) != len(want) {
 		t.Fatalf("session ids=%v, want %v", got, want)
 	}

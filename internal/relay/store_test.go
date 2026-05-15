@@ -38,20 +38,20 @@ func TestStoreSaveLoad(t *testing.T) {
 	}
 }
 
-func TestStoreListSessionsSortsByID(t *testing.T) {
+func TestStoreListSessionsSortsByName(t *testing.T) {
 	store := NewStore()
 	now := time.Now().UTC()
-	store.CreateSession(Session{ID: "session-c", Username: "alice", CreatedAt: now.Add(2 * time.Hour), LastActiveAt: now.Add(2 * time.Hour), Status: "active"})
-	store.CreateSession(Session{ID: "session-a", Username: "alice", CreatedAt: now, LastActiveAt: now, Status: "active"})
-	store.CreateSession(Session{ID: "session-b", Username: "alice", CreatedAt: now.Add(time.Hour), LastActiveAt: now.Add(time.Hour), Status: "active"})
-	store.CreateSession(Session{ID: "session-aa", Username: "bob", CreatedAt: now, LastActiveAt: now, Status: "active"})
+	store.CreateSession(Session{ID: "session-c", Username: "alice", Name: "Alpha", CreatedAt: now.Add(2 * time.Hour), LastActiveAt: now.Add(2 * time.Hour), Status: "active"})
+	store.CreateSession(Session{ID: "session-a", Username: "alice", Name: "Charlie", CreatedAt: now, LastActiveAt: now, Status: "active"})
+	store.CreateSession(Session{ID: "session-b", Username: "alice", Name: "Bravo", CreatedAt: now.Add(time.Hour), LastActiveAt: now.Add(time.Hour), Status: "active"})
+	store.CreateSession(Session{ID: "session-aa", Username: "bob", Name: "Aaron", CreatedAt: now, LastActiveAt: now, Status: "active"})
 
 	got := store.ListSessions("alice")
 	gotIDs := make([]string, 0, len(got))
 	for _, session := range got {
 		gotIDs = append(gotIDs, session.ID)
 	}
-	want := []string{"session-a", "session-b", "session-c"}
+	want := []string{"session-c", "session-b", "session-a"}
 	if len(gotIDs) != len(want) {
 		t.Fatalf("session ids=%v, want %v", gotIDs, want)
 	}

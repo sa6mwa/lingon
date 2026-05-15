@@ -3,6 +3,8 @@ package mvu
 import (
 	"sort"
 	"strings"
+
+	"pkt.systems/lingon/internal/sessionorder"
 )
 
 // SessionTabSource is an input row for tab model construction.
@@ -48,10 +50,15 @@ func SessionTabSourcesFrom[T SessionTabSourceProvider](sessions []T) []SessionTa
 	return SessionTabSources(sessions, func(session T) string { return session.SessionTabID() }, func(session T) string { return session.SessionTabName() })
 }
 
-// SortSessionsByID sorts session rows alphanumerically by stable session id.
-func SortSessionsByID[T SessionTabSourceProvider](sessions []T) {
+// SortSessionsByName sorts session rows alphanumerically by display name, then id.
+func SortSessionsByName[T SessionTabSourceProvider](sessions []T) {
 	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].SessionTabID() < sessions[j].SessionTabID()
+		return sessionorder.Less(
+			sessions[i].SessionTabName(),
+			sessions[i].SessionTabID(),
+			sessions[j].SessionTabName(),
+			sessions[j].SessionTabID(),
+		)
 	})
 }
 

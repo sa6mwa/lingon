@@ -1221,7 +1221,7 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 		}
 	}
 	sessions = ensureLocalSession(sessions, m.localID, m.localName, m.clock.Now().UTC())
-	mvu.SortSessionsByID(sessions)
+	mvu.SortSessionsByName(sessions)
 
 	m.mu.Lock()
 	now := m.clock.Now()
@@ -1294,7 +1294,7 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 	}
 	m.sessions = append(sessions, retainedSessions...)
 	if len(m.sessions) > 0 {
-		mvu.SortSessionsByID(m.sessions)
+		mvu.SortSessionsByName(m.sessions)
 	}
 	callback := m.onSessions
 	nextSessions := copySessions(m.sessions)
@@ -1538,7 +1538,7 @@ func toRemoteSessions(sessions []attach.SessionInfo) []remoteSessionInfo {
 			LastActiveAt: session.LastActiveAt,
 		})
 	}
-	mvu.SortSessionsByID(out)
+	mvu.SortSessionsByName(out)
 	return out
 }
 
@@ -1559,7 +1559,7 @@ func toRemoteSessionsFromProto(infos []*protocolpb.SessionInfo) []remoteSessionI
 			LastActiveAt: time.Unix(info.LastActiveUnix, 0).UTC(),
 		})
 	}
-	mvu.SortSessionsByID(out)
+	mvu.SortSessionsByName(out)
 	return out
 }
 

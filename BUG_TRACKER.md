@@ -33,31 +33,32 @@ Required status values:
 
 - Status: `resolved`
 - Area: `sessions`, `relay`, `attach`, `host`, `headless`, `android`, `api`
-- Summary: All user-visible and API session lists must be sorted by stable session id instead of recency, discovery, or prior tab order.
+- Summary: All user-visible and API session lists must be sorted by session name instead of recency, discovery, id, or prior tab order.
 - Report:
   The engineer requested alphanumeric session ordering in local PTY, local headless, attach, relay, the sessions API, and the Android app.
 - Repro:
-  1. Create or receive sessions in non-alphabetic order such as `session-c`, `session-a`, `session-b`.
+  1. Create or receive sessions in non-alphabetic display-name order such as `Charlie`, `Alpha`, `Bravo`.
   2. List sessions through `/sessions`, SDK/CLI, host/attach tab models, local headless, or Android state.
-  3. Observe the list must be `session-a`, `session-b`, `session-c` regardless of activity timestamps or update order.
+  3. Observe the list must be `Alpha`, `Bravo`, `Charlie` regardless of activity timestamps, ids, or update order.
 - Regression coverage:
   - Go:
-    - `TestSortSessionsByID`
-    - `TestStoreListSessionsSortsByID`
-    - `TestListSessionsAPISortsByID`
-    - `TestListSessionsSortsByID`
+    - `TestLessUsesNameThenID`
+    - `TestSortSessionsByName`
+    - `TestStoreListSessionsSortsByName`
+    - `TestListSessionsAPISortsByName`
+    - `TestListSessionsSortsByName`
     - `TestHeadlessSessionSource`
     - `TestFirstLocalHeadlessSessionUsesIDOrder`
-    - `TestMergeSessionsSortsLocalSessionsByID`
-    - `TestMergeSessionsIgnoresPreviousOrderAndSortsByID`
-    - `TestOrderSessionsSortsKnownSessionsByID`
-    - `TestOrderSessionsSortsUnseenSessionsByID`
-    - `TestOrderSessionsSortsFirstPayloadByID`
+    - `TestMergeSessionsSortsLocalSessionsByName`
+    - `TestMergeSessionsIgnoresPreviousOrderAndSortsByName`
+    - `TestOrderSessionsSortsKnownSessionsByName`
+    - `TestOrderSessionsSortsUnseenSessionsByName`
+    - `TestOrderSessionsSortsFirstPayloadByName`
   - Android:
-    - `AppViewModelTest.sessionsAreSortedByIdAcrossBootstrapRefreshAndWebsocketUpdates`
+    - `AppViewModelTest.sessionsAreSortedByNameAcrossBootstrapRefreshAndWebsocketUpdates`
 - Verification:
-  - `go test -count=1 ./internal/mvu ./internal/relay ./internal/session ./internal/attach ./cmd/lingon . -run 'Test(SortSessionsByID|StoreListSessionsSortsByID|ListSessionsAPISortsByID|ListSessionsSortsByID|FirstLocalHeadlessSessionUsesIDOrder|HeadlessSessionSource|MergeSessions|OrderSessions|NextSessionID)'` passed.
-  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.sessionsAreSortedByIdAcrossBootstrapRefreshAndWebsocketUpdates` passed after preserving missing-session grace in the expected sorted result.
+  - `go test -count=1 ./internal/sessionorder ./internal/mvu ./internal/relay ./internal/session ./internal/attach ./cmd/lingon . -run 'Test(LessUsesNameThenID|SortSessionsByName|StoreListSessionsSortsByName|ListSessionsAPISortsByName|ListSessionsSortsByName|FirstLocalHeadlessSessionUsesIDOrder|HeadlessSessionSource|MergeSessions|OrderSessions|NextSessionID)'` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.sessionsAreSortedByNameAcrossBootstrapRefreshAndWebsocketUpdates` passed after preserving missing-session grace in the expected sorted result.
   - `go test -count=1 ./...` passed.
   - `cd android && ./gradlew :app:testDebugUnitTest` passed.
   - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.

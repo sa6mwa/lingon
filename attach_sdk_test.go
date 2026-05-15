@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-func TestListSessionsSortsByID(t *testing.T) {
+func TestListSessionsSortsByName(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/sessions" {
 			t.Fatalf("path=%q, want /sessions", r.URL.Path)
 		}
 		if err := json.NewEncoder(w).Encode([]Session{
-			{ID: "session-c", Name: "Charlie"},
-			{ID: "session-a", Name: "Alpha"},
+			{ID: "session-c", Name: "Alpha"},
+			{ID: "session-a", Name: "Charlie"},
 			{ID: "session-b", Name: "Bravo"},
 		}); err != nil {
 			t.Fatalf("encode sessions: %v", err)
@@ -31,7 +31,7 @@ func TestListSessionsSortsByID(t *testing.T) {
 	for _, session := range sessions {
 		got = append(got, session.ID)
 	}
-	want := []string{"session-a", "session-b", "session-c"}
+	want := []string{"session-c", "session-b", "session-a"}
 	if len(got) != len(want) {
 		t.Fatalf("session ids=%v, want %v", got, want)
 	}

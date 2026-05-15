@@ -516,10 +516,10 @@ class AppViewModelTest {
     }
 
     @Test
-    fun sessionsAreSortedByIdAcrossBootstrapRefreshAndWebsocketUpdates() = runTest {
+    fun sessionsAreSortedByNameAcrossBootstrapRefreshAndWebsocketUpdates() = runTest {
         var currentSessions = listOf(
-            RelaySession(id = "session-c", name = "Charlie", status = "active"),
-            RelaySession(id = "session-a", name = "Alpha", status = "active"),
+            RelaySession(id = "session-c", name = "Alpha", status = "active"),
+            RelaySession(id = "session-a", name = "Charlie", status = "active"),
             RelaySession(id = "session-b", name = "Bravo", status = "active"),
         )
         val repository = FakeRepository(
@@ -543,8 +543,8 @@ class AppViewModelTest {
 
         viewModel.manualRefresh()
         advanceUntilIdle()
-        assertEquals(listOf("session-a", "session-b", "session-c"), viewModel.state.value.sessions.map { it.id })
-        assertEquals("session-a", viewModel.state.value.activeSessionId)
+        assertEquals(listOf("session-c", "session-b", "session-a"), viewModel.state.value.sessions.map { it.id })
+        assertEquals("session-c", viewModel.state.value.activeSessionId)
 
         currentSessions = listOf(
             RelaySession(id = "session-d", name = "Delta", status = "active"),
@@ -552,7 +552,7 @@ class AppViewModelTest {
         )
         viewModel.manualRefresh()
         advanceUntilIdle()
-        assertEquals(listOf("session-a", "session-b", "session-d"), viewModel.state.value.sessions.map { it.id })
+        assertEquals(listOf("session-c", "session-b", "session-d"), viewModel.state.value.sessions.map { it.id })
 
         wsClient.fireFrame(
             Frame.newBuilder()
@@ -566,7 +566,7 @@ class AppViewModelTest {
                 .build(),
         )
         advanceUntilIdle()
-        assertEquals(listOf("session-a", "session-m", "session-z"), viewModel.state.value.sessions.map { it.id })
+        assertEquals(listOf("session-a", "session-c", "session-m", "session-z"), viewModel.state.value.sessions.map { it.id })
     }
 
     @Test

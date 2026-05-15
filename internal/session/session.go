@@ -30,6 +30,7 @@ import (
 	"pkt.systems/lingon/internal/publisher"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/render"
+	"pkt.systems/lingon/internal/sessionorder"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/trace"
@@ -1727,7 +1728,7 @@ func (r *Runner) orderSessions(sessions []remoteSessionInfo) []remoteSessionInfo
 		return sessions
 	}
 	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].ID < sessions[j].ID
+		return sessionorder.Less(sessions[i].Name, sessions[i].ID, sessions[j].Name, sessions[j].ID)
 	})
 	r.setSessionOrder(sessions)
 	return sessions

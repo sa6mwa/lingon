@@ -9,6 +9,7 @@ import (
 
 	"pkt.systems/lingon"
 	"pkt.systems/lingon/internal/headless"
+	"pkt.systems/lingon/internal/sessionorder"
 )
 
 type localHeadlessSession struct {
@@ -64,7 +65,7 @@ func firstLocalHeadlessSession(sessions []localHeadlessSession) (localHeadlessSe
 		return localHeadlessSession{}, fmt.Errorf("no local headless sessions available")
 	}
 	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].ID < sessions[j].ID
+		return sessionorder.Less(sessions[i].ID, sessions[i].ID, sessions[j].ID, sessions[j].ID)
 	})
 	return sessions[0], nil
 }

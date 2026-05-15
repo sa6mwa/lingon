@@ -12,6 +12,7 @@ import (
 	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/relay"
+	"pkt.systems/lingon/internal/sessionorder"
 	"pkt.systems/lingon/internal/trace"
 	"pkt.systems/pslog"
 )
@@ -160,7 +161,7 @@ func ListSessionsWithTLSDirInsecure(ctx context.Context, endpoint, accessToken, 
 		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].ID < out[j].ID
+		return sessionorder.Less(out[i].Name, out[i].ID, out[j].Name, out[j].ID)
 	})
 	return out, nil
 }

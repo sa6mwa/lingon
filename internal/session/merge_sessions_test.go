@@ -8,7 +8,7 @@ import (
 	"pkt.systems/lingon/internal/mvu"
 )
 
-func TestMergeSessionsSortsLocalSessionsByID(t *testing.T) {
+func TestMergeSessionsSortsLocalSessionsByName(t *testing.T) {
 	now := time.Now().UTC()
 	runner := &Runner{
 		localSessions: map[string]*localSession{
@@ -41,7 +41,7 @@ func TestMergeSessionsSortsLocalSessionsByID(t *testing.T) {
 	}
 }
 
-func TestMergeSessionsIgnoresPreviousOrderAndSortsByID(t *testing.T) {
+func TestMergeSessionsIgnoresPreviousOrderAndSortsByName(t *testing.T) {
 	now := time.Now().UTC()
 	runner := &Runner{
 		sessionOrder: []string{"beta", "alpha"},
@@ -71,7 +71,7 @@ func TestMergeSessionsIgnoresPreviousOrderAndSortsByID(t *testing.T) {
 	}
 }
 
-func TestOrderSessionsSortsKnownSessionsByID(t *testing.T) {
+func TestOrderSessionsSortsKnownSessionsByName(t *testing.T) {
 	runner := &Runner{
 		sessionOrder: []string{"remote-2", "remote-1", "remote-3"},
 	}
@@ -82,7 +82,7 @@ func TestOrderSessionsSortsKnownSessionsByID(t *testing.T) {
 	}
 	got := runner.orderSessions(incoming)
 
-	want := []string{"remote-1", "remote-2", "remote-3"}
+	want := []string{"remote-2", "remote-1", "remote-3"}
 	gotIDs := make([]string, 0, len(got))
 	for _, session := range got {
 		gotIDs = append(gotIDs, session.ID)
@@ -92,7 +92,7 @@ func TestOrderSessionsSortsKnownSessionsByID(t *testing.T) {
 	}
 }
 
-func TestOrderSessionsSortsUnseenSessionsByID(t *testing.T) {
+func TestOrderSessionsSortsUnseenSessionsByName(t *testing.T) {
 	runner := &Runner{
 		sessionOrder: []string{"remote-2", "remote-1"},
 	}
@@ -104,7 +104,7 @@ func TestOrderSessionsSortsUnseenSessionsByID(t *testing.T) {
 	}
 	got := runner.orderSessions(incoming)
 
-	want := []string{"remote-1", "remote-2", "remote-2b", "remote-new"}
+	want := []string{"remote-new", "remote-1", "remote-2b", "remote-2"}
 	gotIDs := make([]string, 0, len(got))
 	for _, session := range got {
 		gotIDs = append(gotIDs, session.ID)
@@ -114,15 +114,15 @@ func TestOrderSessionsSortsUnseenSessionsByID(t *testing.T) {
 	}
 }
 
-func TestOrderSessionsSortsFirstPayloadByID(t *testing.T) {
+func TestOrderSessionsSortsFirstPayloadByName(t *testing.T) {
 	runner := &Runner{}
 	incoming := []remoteSessionInfo{
-		{ID: "zeta", Name: "zeta", Status: "active"},
-		{ID: "alpha", Name: "alpha", Status: "active"},
+		{ID: "session-1", Name: "zeta", Status: "active"},
+		{ID: "session-2", Name: "alpha", Status: "active"},
 	}
 	got := runner.orderSessions(incoming)
 
-	want := []string{"alpha", "zeta"}
+	want := []string{"session-2", "session-1"}
 	gotIDs := make([]string, 0, len(got))
 	for _, session := range got {
 		gotIDs = append(gotIDs, session.ID)

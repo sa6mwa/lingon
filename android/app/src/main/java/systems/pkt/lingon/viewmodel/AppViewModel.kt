@@ -804,6 +804,10 @@ class AppViewModel(
         }
     }
 
+    private fun sessionSortKey(session: RelaySession): String {
+        return session.name?.trim()?.takeIf { it.isNotEmpty() } ?: session.id.trim()
+    }
+
     private fun persistSessionZoomDebounced(key: SessionViewStateKey, value: Float) {
         cancelZoomPersistence(key)
         zoomPersistJobs[key] = viewModelScope.launch {
@@ -1047,7 +1051,9 @@ class AppViewModel(
                 sessionListCache.remove(currentActive)
             }
         }
-        val orderedSessions = merged.values.sortedBy { it.id }
+        val orderedSessions = merged.values.sortedWith(
+            compareBy<RelaySession> { sessionSortKey(it) }.thenBy { it.id.trim() },
+        )
         _state.update { it.copy(sessions = orderedSessions) }
         prefetchSessionViewStates(_state.value.endpoint, orderedSessions)
         syncWallPollingSchedule()
