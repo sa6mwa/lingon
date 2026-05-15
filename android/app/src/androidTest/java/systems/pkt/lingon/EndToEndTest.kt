@@ -129,74 +129,55 @@ class EndToEndTest {
     }
 
     @Test
-    fun top_bar_menu_is_accessible() {
+    fun top_bar_settings_is_accessible() {
         assertTopBarSafe()
     }
 
     @Test
-    fun menu_overlay_does_not_shift_login() {
+    fun settings_page_opens_and_returns_to_login() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
 
         waitForTag(TestTags.LoginUsername)
-        val before = nodeBounds(TestTags.LoginUsername)
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTag(TestTags.TopBarMenu)
-        val after = nodeBounds(TestTags.LoginUsername)
-        val topDelta = kotlin.math.abs(before.top - after.top)
-        val leftDelta = kotlin.math.abs(before.left - after.left)
-        if (topDelta > 1f || leftDelta > 1f) {
-            throw AssertionError("login layout shifted when menu opened: topΔ=${topDelta}, leftΔ=${leftDelta}")
-        }
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTagToDisappear(TestTags.TopBarMenu)
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.SettingsScreen)
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
+        waitForTag(TestTags.LoginUsername)
     }
 
     @Test
-    fun menu_overlay_does_not_cover_close_button() {
+    fun settings_page_uses_rendered_back_button() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
 
         waitForTag(TestTags.LoginUsername)
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-        val menuButton = device.wait(Until.findObject(By.desc("Menu")), 5_000)
-            ?: throw AssertionError("top-bar menu button was not visible to UIAutomator")
-        val menuButtonBounds = menuButton.visibleBounds
-        menuButton.click()
-        waitForTag(TestTags.TopBarMenu)
-        val closeButton = device.wait(Until.findObject(By.desc("Close menu")), 5_000)
-            ?: throw AssertionError("top-bar close button was not visible to UIAutomator")
-        val closeButtonBounds = closeButton.visibleBounds
-        val firstMenuItem = device.wait(Until.findObject(By.text("Endpoint")), 5_000)
-            ?: throw AssertionError("top-bar menu first item was not visible to UIAutomator")
-        val firstMenuItemBounds = firstMenuItem.visibleBounds
-        val minGapPx = (composeRule.activity.resources.displayMetrics.density * 6f).toInt()
-        assertTrue(
-            "top-bar menu popup should open below the menu button: button=$menuButtonBounds firstItem=$firstMenuItemBounds minGapPx=$minGapPx",
-            firstMenuItemBounds.top >= menuButtonBounds.bottom + minGapPx,
-        )
-
-        clickRenderedObjectOrClickableAncestor(closeButton)
-        waitForTagToDisappear(TestTags.TopBarMenu)
-        device.wait(Until.findObject(By.desc("Menu")), 5_000)
-            ?: throw AssertionError(
-                "top-bar menu button did not return after tapping the rendered close button center: menuButton=$menuButtonBounds closeButton=$closeButtonBounds firstItem=$firstMenuItemBounds",
-            )
+        val settingsButton = device.wait(Until.findObject(By.desc("Settings")), 5_000)
+            ?: throw AssertionError("top-bar settings button was not visible to UIAutomator")
+        settingsButton.click()
+        waitForTag(TestTags.SettingsScreen)
+        val backButton = device.wait(Until.findObject(By.desc("Back")), 5_000)
+            ?: throw AssertionError("settings back button was not visible to UIAutomator")
+        clickRenderedObjectOrClickableAncestor(backButton)
+        waitForTagToDisappear(TestTags.SettingsScreen)
+        device.wait(Until.findObject(By.desc("Settings")), 5_000)
+            ?: throw AssertionError("top-bar settings button did not return after closing settings")
     }
 
     @Test
-    fun menu_toggle_closes_and_reload_triggers() {
+    fun settings_page_closes_and_reload_triggers() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
 
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
 
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTag(TestTags.TopBarMenu)
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTagToDisappear(TestTags.TopBarMenu)
-        composeRule.onNodeWithContentDescription("Menu")
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.SettingsScreen)
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
+        composeRule.onNodeWithContentDescription("Settings")
 
         val refreshBefore = appViewModel().state.value.lastManualRefreshAtMs
         composeRule.onNodeWithTag(TestTags.ReloadButton, useUnmergedTree = true).performClick()
@@ -205,7 +186,7 @@ class EndToEndTest {
     }
 
     @Test
-    fun follow_on_read_menu_toggle_defaults_off_and_toggles() {
+    fun follow_on_read_settings_toggle_defaults_off_and_toggles() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         composeRule.runOnUiThread {
@@ -213,17 +194,16 @@ class EndToEndTest {
         }
         waitUntilNoError(SHORT_UI_TIMEOUT_MS) { !appViewModel().state.value.followOnReadEnabled }
 
-        openMenu()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.FollowOnReadToggle, useUnmergedTree = true).assertIsOff()
         composeRule.onNodeWithTag(TestTags.FollowOnReadMenuItem, useUnmergedTree = true).performClick()
-        waitForTagToDisappear(TestTags.TopBarMenu)
         waitUntilNoError(SHORT_UI_TIMEOUT_MS) { appViewModel().state.value.followOnReadEnabled }
 
-        openMenu()
         composeRule.onNodeWithTag(TestTags.FollowOnReadToggle, useUnmergedTree = true).assertIsOn()
         composeRule.onNodeWithTag(TestTags.FollowOnReadMenuItem, useUnmergedTree = true).performClick()
-        waitForTagToDisappear(TestTags.TopBarMenu)
         waitUntilNoError(SHORT_UI_TIMEOUT_MS) { !appViewModel().state.value.followOnReadEnabled }
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
     }
 
     @Test
@@ -2436,14 +2416,14 @@ class EndToEndTest {
     }
 
     @Test
-    fun resize_menu_absent_and_input_remains_blocked_without_control() {
+    fun headless_resize_action_disabled_and_input_remains_blocked_without_control() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         setResizeHostEnabled(false)
 
         loginWithConfiguredUser()
-        openMenu()
-        composeRule.onAllNodesWithTag(TestTags.ResizeHostMenuItem, useUnmergedTree = true).assertCountEquals(0)
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
         composeRule.runOnIdle {
             appViewModel().setHasControlForTesting(false)
         }
@@ -2487,8 +2467,8 @@ class EndToEndTest {
             val info = readTerminalDebugInfo()
             info != null && !info.hasControl
         }
-        openMenu()
-        composeRule.onAllNodesWithTag(TestTags.ResizeHostMenuItem, useUnmergedTree = true).assertCountEquals(0)
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
         assertTrue("view cols=${info.viewCols}", info.viewCols > 0)
@@ -3614,7 +3594,7 @@ class EndToEndTest {
 
     @Test
     fun share_token_dialog_rejects_invalid_token() {
-        openMenu()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.ShareTokenButton).performClick()
         waitForTag(TestTags.ShareTokenInput)
         composeRule.onNodeWithTag(TestTags.ShareTokenInput).performTextReplacement("not-a-token")
@@ -3759,9 +3739,10 @@ class EndToEndTest {
         waitUntilNoError(timeoutMs) { snapshotContainsToken("TICK_$sessionId") }
     }
 
-    private fun openMenu() {
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTag(TestTags.TopBarMenu)
+    private fun openSettings() {
+        if (hasTag(TestTags.SettingsScreen)) return
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.SettingsScreen)
     }
 
     private fun recreateActivity() {
@@ -3798,7 +3779,7 @@ class EndToEndTest {
     }
 
     private fun attachViaShareToken(token: String) {
-        openMenu()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.ShareTokenButton).performClick()
         waitForTag(TestTags.ShareTokenInput)
         composeRule.onNodeWithTag(TestTags.ShareTokenInput).performTextReplacement(token)
@@ -4255,7 +4236,7 @@ class EndToEndTest {
     }
 
     private fun setEndpointViaUi(endpoint: String) {
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.EndpointButton).performClick()
         waitForTag(TestTags.EndpointInput)
         composeRule.onNodeWithTag(TestTags.EndpointInput).performTextReplacement(endpoint)
@@ -4925,7 +4906,7 @@ class EndToEndTest {
         if (statusBarPx > 0 && top < statusBarPx) {
             throw AssertionError("Top bar overlaps status bar (top=$top, statusBar=$statusBarPx).")
         }
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.EndpointButton).performClick()
         waitForTag(TestTags.EndpointInput)
         composeRule.onNodeWithText("Cancel").performClick()
@@ -5119,7 +5100,7 @@ class EndToEndTest {
     }
 
     private fun resetZoomPan() {
-        openMenu()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.ZoomResetButton).performClick()
     }
 

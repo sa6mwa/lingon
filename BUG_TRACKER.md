@@ -29,6 +29,33 @@ Required status values:
 
 ## Active Items
 
+### B-078 Android settings should be a page, not a popup menu
+
+- Status: `resolved`
+- Area: `android`, `topbar`, `settings`, `ui`
+- Summary: Replace the fragile Android top-bar popup menu with a themed settings page opened by a settings cog.
+- Report:
+  The engineer proposed replacing the broken top-bar menu with a separate settings page so controls are scrollable, future settings have room, and menu overlay/close behavior cannot regress.
+- Repro:
+  1. Open the Android top-bar settings affordance.
+  2. The app should navigate to a full settings screen instead of showing a popup over terminal content.
+  3. Press the rendered back button and observe the prior screen returns without menu overlap or close flicker.
+- Regression coverage:
+  - Android instrumentation:
+    - `top_bar_settings_is_accessible`
+    - `settings_page_opens_and_returns_to_login`
+    - `settings_page_uses_rendered_back_button`
+    - `settings_page_closes_and_reload_triggers`
+    - `follow_on_read_settings_toggle_defaults_off_and_toggles`
+- Verification:
+  - `cd android && ./gradlew :app:compileDebugKotlin` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Android targeted e2e passed:
+    - `LINGON_IT_ONLY=top_bar_settings_is_accessible,settings_page_opens_and_returns_to_login,settings_page_uses_rendered_back_button,settings_page_closes_and_reload_triggers,follow_on_read_settings_toggle_defaults_off_and_toggles make integration-test`
+  - Resource profile:
+    - `android/test-artifacts/resource-profile-20260515-122804-51366/summary.txt`
+
 ### B-077 Android top-bar menu close button flickers instead of closing
 
 - Status: `resolved`

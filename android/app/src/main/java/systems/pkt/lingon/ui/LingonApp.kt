@@ -58,7 +58,7 @@ internal fun LingonAppContent(
     } else {
         "Lingon"
     }
-    var menuExpanded by remember { mutableStateOf(false) }
+    var settingsOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(viewportCacheIdentity, state.terminalConnectionEpoch) {
         viewportCache.clear()
@@ -67,18 +67,10 @@ internal fun LingonAppContent(
     LingonTheme(themeName = state.theme) {
         Surface(color = MaterialTheme.colorScheme.background) {
             Column(modifier = Modifier.fillMaxSize()) {
-                if (!state.canAttach || state.showCertificates) {
+                if ((!state.canAttach || state.showCertificates) && !settingsOpen) {
                     TopBar(
                         title = title,
-                        username = state.username,
-                        loggedIn = state.loggedIn,
-                        menuExpanded = menuExpanded,
-                        onToggleMenu = { menuExpanded = true },
-                        onDismissMenu = { menuExpanded = false },
-                        onShowSettings = { viewModel.showSettings(true) },
-                        onShowTheme = { viewModel.showThemePicker(true) },
-                        onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
-                        onResetZoomPan = { viewModel.resetZoomAndPan() },
+                        onOpenSettings = { settingsOpen = true },
                         wallInactivityEnabled = state.wallInactivityEnabled,
                         wallInactivityLabel = state.wallInactivityLabel,
                         wallInactivityAvailable = false,
@@ -87,13 +79,6 @@ internal fun LingonAppContent(
                         headlessResizeEnabled = false,
                         onResizeHeadlessNow = {},
                         onReload = { viewModel.manualRefresh() },
-                        onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
-                        onShowCertificates = { viewModel.showCertificates(true) },
-                        backgroundWallEnabled = state.backgroundWallEnabled,
-                        onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
-                        followOnReadEnabled = state.followOnReadEnabled,
-                        onToggleFollowOnRead = { enabled -> viewModel.setFollowOnReadEnabled(enabled) },
-                        onLogout = { viewModel.logout() },
                         compact = false,
                         vertical = false,
                     )
@@ -102,14 +87,57 @@ internal fun LingonAppContent(
                     LockedScreen(onUnlock = { viewModel.requestAppUnlockPrompt() })
                 } else if (state.showCertificates) {
                     ManageCertificatesScreen(state = state, viewModel = viewModel)
+                } else if (settingsOpen) {
+                    SettingsScreen(
+                        username = state.username,
+                        loggedIn = state.loggedIn,
+                        wallInactivityEnabled = state.wallInactivityEnabled,
+                        wallInactivityLabel = state.wallInactivityLabel,
+                        wallInactivityAvailable = !state.activeSessionId.isNullOrBlank(),
+                        onToggleWallInactivity = { viewModel.toggleWallInactivity() },
+                        headlessResizeAvailable = !state.activeSessionId.isNullOrBlank(),
+                        headlessResizeEnabled = state.activeSessionHeadless,
+                        onResizeHeadlessNow = { viewModel.sendHeadlessResizeNow() },
+                        backgroundWallEnabled = state.backgroundWallEnabled,
+                        onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
+                        followOnReadEnabled = state.followOnReadEnabled,
+                        onToggleFollowOnRead = { enabled -> viewModel.setFollowOnReadEnabled(enabled) },
+                        onShowEndpoint = {
+                            settingsOpen = false
+                            viewModel.showSettings(true)
+                        },
+                        onShowShareToken = {
+                            settingsOpen = false
+                            viewModel.showShareToken(true, state.shareToken)
+                        },
+                        onShowCertificates = {
+                            settingsOpen = false
+                            viewModel.showCertificates(true)
+                        },
+                        onShowTheme = {
+                            settingsOpen = false
+                            viewModel.showThemePicker(true)
+                        },
+                        onShowAppLock = {
+                            settingsOpen = false
+                            viewModel.showAppLockTimeoutDialog(true)
+                        },
+                        onResetZoomPan = {
+                            settingsOpen = false
+                            viewModel.resetZoomAndPan()
+                        },
+                        onLogout = {
+                            settingsOpen = false
+                            viewModel.logout()
+                        },
+                        onBack = { settingsOpen = false },
+                    )
                 } else if (state.canAttach) {
                     TerminalScreen(
                         title = title,
                         state = state,
                         viewModel = viewModel,
-                        menuExpanded = menuExpanded,
-                        onToggleMenu = { menuExpanded = true },
-                        onDismissMenu = { menuExpanded = false },
+                        onOpenSettings = { settingsOpen = true },
                         viewportCache = viewportCache,
                         viewportCacheIdentity = viewportCacheIdentity,
                     )
