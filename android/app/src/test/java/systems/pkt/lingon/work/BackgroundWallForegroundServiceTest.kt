@@ -3,6 +3,7 @@ package systems.pkt.lingon.work
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import systems.pkt.lingon.notifications.shouldResetWallCursor
 
 class BackgroundWallForegroundServiceTest {
     @Test

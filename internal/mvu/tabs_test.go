@@ -92,22 +92,22 @@ func TestSessionTabSourcesFrom(t *testing.T) {
 	}
 }
 
-func TestSortSessionsByLastActive(t *testing.T) {
+func TestSortSessionsByName(t *testing.T) {
 	now := time.Now().UTC()
 	rows := []tabRow{
-		{id: "b", name: "b", lastSeen: now.Add(-time.Minute)},
-		{id: "a", name: "a", lastSeen: now},
-		{id: "c", name: "c", lastSeen: now},
+		{id: "session-3", name: "bravo", lastSeen: now.Add(-time.Minute)},
+		{id: "session-1", name: "charlie", lastSeen: now},
+		{id: "session-2", name: "alpha", lastSeen: now},
 	}
-	SortSessionsByLastActive(rows)
-	if rows[0].id != "a" {
-		t.Fatalf("row[0].id=%q, want %q", rows[0].id, "a")
+	SortSessionsByName(rows)
+	if rows[0].id != "session-2" {
+		t.Fatalf("row[0].id=%q, want %q", rows[0].id, "session-2")
 	}
-	if rows[1].id != "c" {
-		t.Fatalf("row[1].id=%q, want %q", rows[1].id, "c")
+	if rows[1].id != "session-3" {
+		t.Fatalf("row[1].id=%q, want %q", rows[1].id, "session-3")
 	}
-	if rows[2].id != "b" {
-		t.Fatalf("row[2].id=%q, want %q", rows[2].id, "b")
+	if rows[2].id != "session-1" {
+		t.Fatalf("row[2].id=%q, want %q", rows[2].id, "session-1")
 	}
 }
 

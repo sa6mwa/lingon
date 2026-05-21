@@ -10,8 +10,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -20,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import systems.pkt.lingon.share.ShareTokens
+import systems.pkt.lingon.terminal.TerminalViewportState
 import systems.pkt.lingon.ui.dialogs.AppLockTimeoutDialog
 import systems.pkt.lingon.ui.dialogs.EndpointDialog
 import systems.pkt.lingon.ui.dialogs.ShareTokenDialog
@@ -27,32 +30,47 @@ import systems.pkt.lingon.ui.dialogs.ThemeDialog
 import systems.pkt.lingon.ui.theme.LingonTheme
 import systems.pkt.lingon.viewmodel.AppViewModel
 import systems.pkt.lingon.viewmodel.StatusLevel
+import systems.pkt.lingon.viewmodel.UiState
 
 @Composable
 fun LingonApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
+    val viewportCacheIdentity = terminalViewportCacheIdentity(state)
+
+    LingonAppContent(
+        state = state,
+        viewModel = viewModel,
+        viewportCache = viewportCache,
+        viewportCacheIdentity = viewportCacheIdentity,
+    )
+}
+
+@Composable
+internal fun LingonAppContent(
+    state: UiState,
+    viewModel: AppViewModel,
+    viewportCache: MutableMap<String, TerminalViewportState>,
+    viewportCacheIdentity: String? = terminalViewportCacheIdentity(state),
+) {
     val title = if (state.canAttach && !state.showCertificates) {
         endpointHost(state.endpoint) ?: "Lingon"
     } else {
         "Lingon"
     }
-    var menuExpanded by remember { mutableStateOf(false) }
+    var settingsOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(viewportCacheIdentity, state.terminalConnectionEpoch) {
+        viewportCache.clear()
+    }
 
     LingonTheme(themeName = state.theme) {
         Surface(color = MaterialTheme.colorScheme.background) {
             Column(modifier = Modifier.fillMaxSize()) {
-                if (!state.canAttach || state.showCertificates) {
+                if ((!state.canAttach || state.showCertificates) && !settingsOpen) {
                     TopBar(
                         title = title,
-                        username = state.username,
-                        loggedIn = state.loggedIn,
-                        menuExpanded = menuExpanded,
-                        onToggleMenu = { menuExpanded = true },
-                        onDismissMenu = { menuExpanded = false },
-                        onShowSettings = { viewModel.showSettings(true) },
-                        onShowTheme = { viewModel.showThemePicker(true) },
-                        onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
-                        onResetZoomPan = { viewModel.resetZoomAndPan() },
+                        onOpenSettings = { settingsOpen = true },
                         wallInactivityEnabled = state.wallInactivityEnabled,
                         wallInactivityLabel = state.wallInactivityLabel,
                         wallInactivityAvailable = false,
@@ -61,17 +79,53 @@ fun LingonApp(viewModel: AppViewModel) {
                         headlessResizeEnabled = false,
                         onResizeHeadlessNow = {},
                         onReload = { viewModel.manualRefresh() },
-                        onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
-                        onShowCertificates = { viewModel.showCertificates(true) },
-                        backgroundWallEnabled = state.backgroundWallEnabled,
-                        onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
-                        onLogout = { viewModel.logout() },
                         compact = false,
                         vertical = false,
                     )
                 }
                 if (state.requiresAppUnlock) {
                     LockedScreen(onUnlock = { viewModel.requestAppUnlockPrompt() })
+                } else if (settingsOpen && state.showCertificates) {
+                    ManageCertificatesScreen(state = state, viewModel = viewModel)
+                } else if (settingsOpen) {
+                    SettingsScreen(
+                        username = state.username,
+                        loggedIn = state.loggedIn,
+                        wallInactivityEnabled = state.wallInactivityEnabled,
+                        wallInactivityLabel = state.wallInactivityLabel,
+                        wallInactivityAvailable = !state.activeSessionId.isNullOrBlank(),
+                        onToggleWallInactivity = { viewModel.toggleWallInactivity() },
+                        headlessResizeAvailable = !state.activeSessionId.isNullOrBlank(),
+                        headlessResizeEnabled = state.activeSessionHeadless,
+                        onResizeHeadlessNow = { viewModel.sendHeadlessResizeNow() },
+                        backgroundWallEnabled = state.backgroundWallEnabled,
+                        onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
+                        followOnReadEnabled = state.followOnReadEnabled,
+                        onToggleFollowOnRead = { enabled -> viewModel.setFollowOnReadEnabled(enabled) },
+                        onShowEndpoint = {
+                            viewModel.showSettings(true)
+                        },
+                        onShowShareToken = {
+                            viewModel.showShareToken(true, state.shareToken)
+                        },
+                        onShowCertificates = {
+                            viewModel.showCertificates(true)
+                        },
+                        onShowTheme = {
+                            viewModel.showThemePicker(true)
+                        },
+                        onShowAppLock = {
+                            viewModel.showAppLockTimeoutDialog(true)
+                        },
+                        onResetZoomPan = {
+                            viewModel.resetZoomAndPan()
+                        },
+                        onLogout = {
+                            settingsOpen = false
+                            viewModel.logout()
+                        },
+                        onBack = { settingsOpen = false },
+                    )
                 } else if (state.showCertificates) {
                     ManageCertificatesScreen(state = state, viewModel = viewModel)
                 } else if (state.canAttach) {
@@ -79,9 +133,9 @@ fun LingonApp(viewModel: AppViewModel) {
                         title = title,
                         state = state,
                         viewModel = viewModel,
-                        menuExpanded = menuExpanded,
-                        onToggleMenu = { menuExpanded = true },
-                        onDismissMenu = { menuExpanded = false },
+                        onOpenSettings = { settingsOpen = true },
+                        viewportCache = viewportCache,
+                        viewportCacheIdentity = viewportCacheIdentity,
                     )
                 } else {
                     LoginScreen(state = state, viewModel = viewModel)
@@ -182,4 +236,19 @@ private fun endpointHost(endpoint: String): String? {
     if (trimmed.isBlank()) return null
     val withScheme = if (trimmed.contains("://")) trimmed else "https://$trimmed"
     return withScheme.toHttpUrlOrNull()?.host
+}
+
+internal fun terminalViewportCacheIdentity(state: UiState): String? {
+    if (!state.canAttach) return null
+    val endpoint = state.endpoint.trim()
+    val principal = state.shareToken
+        ?.takeIf { it.isNotBlank() }
+        ?.let { "share:$it" }
+        ?: "user:${state.username.orEmpty()}"
+    return listOf(endpoint, principal).joinToString(separator = "\u001f")
+}
+
+internal fun terminalViewportCacheKey(identity: String?, sessionId: String?): String? {
+    if (identity.isNullOrBlank() || sessionId.isNullOrBlank()) return null
+    return "$identity\u001f$sessionId"
 }

@@ -39,24 +39,6 @@ class WallWorkStateStore(
         return nextCursor
     }
 
-    suspend fun shouldDeliverAndAdvance(endpoint: String, eventId: Long): Boolean {
-        val cleaned = endpoint.trim()
-        if (cleaned.isBlank() || eventId <= 0L) {
-            return true
-        }
-        var shouldDeliver = false
-        dataStore.edit { prefs ->
-            val cursorMap = parseCursorMap(prefs[cursorsKey])
-            val current = cursorMap[cleaned] ?: 0L
-            if (eventId > current) {
-                cursorMap[cleaned] = eventId
-                prefs[cursorsKey] = encodeCursorMap(cursorMap)
-                shouldDeliver = true
-            }
-        }
-        return shouldDeliver
-    }
-
     suspend fun shouldDeliver(endpoint: String, eventId: Long): Boolean {
         val cleaned = endpoint.trim()
         if (cleaned.isBlank() || eventId <= 0L) {
@@ -65,18 +47,6 @@ class WallWorkStateStore(
         val prefs = dataStore.data.first()
         val current = parseCursorMap(prefs[cursorsKey])[cleaned] ?: 0L
         return eventId > current
-    }
-
-    suspend fun recordDelivered(endpoint: String, eventId: Long) {
-        val cleaned = endpoint.trim()
-        if (cleaned.isBlank() || eventId <= 0L) {
-            return
-        }
-        dataStore.edit { prefs ->
-            val cursorMap = parseCursorMap(prefs[cursorsKey])
-            cursorMap[cleaned] = maxOf(cursorMap[cleaned] ?: 0L, eventId)
-            prefs[cursorsKey] = encodeCursorMap(cursorMap)
-        }
     }
 
     suspend fun clearCursor(endpoint: String) {

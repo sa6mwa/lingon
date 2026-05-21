@@ -44,20 +44,40 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `auto follow start row fills viewport before scrolling`() {
-        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 0, totalRows = 100, visibleRows = 20))
-        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 9, totalRows = 100, visibleRows = 20))
-        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = 19, totalRows = 100, visibleRows = 20))
-        assertEquals(1, TerminalViewportPolicy.autoFollowStartRow(cursorY = 20, totalRows = 100, visibleRows = 20))
-        assertEquals(31, TerminalViewportPolicy.autoFollowStartRow(cursorY = 50, totalRows = 100, visibleRows = 20))
-        assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 99, totalRows = 100, visibleRows = 20))
-        assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 200, totalRows = 100, visibleRows = 20))
-        assertEquals(0, TerminalViewportPolicy.autoFollowStartRow(cursorY = -5, totalRows = 100, visibleRows = 20))
-    }
-
-    @Test
-    fun `auto follow bottom anchor matches full bottom when cursor at prompt row`() {
-        assertEquals(80, TerminalViewportPolicy.autoFollowStartRow(cursorY = 99, totalRows = 100, visibleRows = 20))
+    fun `vertical cursor follow preserves camera when cursor already fits`() {
+        assertEquals(
+            0f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                cameraOffsetYPx = 0f,
+                scaledCellHeightPx = 10f,
+                viewportHeightPx = 200,
+                totalRows = 30,
+                cursorY = 18,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            100f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                cameraOffsetYPx = 0f,
+                scaledCellHeightPx = 10f,
+                viewportHeightPx = 200,
+                totalRows = 30,
+                cursorY = 29,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            80f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetY(
+                cameraOffsetYPx = 100f,
+                scaledCellHeightPx = 10f,
+                viewportHeightPx = 200,
+                totalRows = 30,
+                cursorY = 8,
+            ),
+            0.001f,
+        )
     }
 
     @Test
@@ -68,6 +88,7 @@ class TerminalViewportPolicyTest {
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
@@ -81,6 +102,7 @@ class TerminalViewportPolicyTest {
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
@@ -89,15 +111,106 @@ class TerminalViewportPolicyTest {
             0.001f,
         )
         assertEquals(
-            50f,
+            0f,
             TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
                 panActive = false,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 100f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
                 cursorX = 6,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow restores left edge when cursor fits from origin`() {
+        assertEquals(
+            0f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 180f,
+                preferredCameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 6,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow restores user panned edge when cursor fits there`() {
+        assertEquals(
+            10f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 180f,
+                preferredCameraOffsetXPx = 10f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 6,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow keeps temporary camera when cursor fits neither preference nor current edge`() {
+        assertEquals(
+            100f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 100f,
+                preferredCameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 40,
+                cursorX = 12,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow pans right from saved preference only when cursor does not fit`() {
+        assertEquals(
+            130f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 40,
+                cursorX = 21,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `horizontal cursor follow clamps stale preferred edge to terminal bounds`() {
+        assertEquals(
+            200f,
+            TerminalViewportPolicy.autoFollowCursorCameraOffsetX(
+                panActive = false,
+                scrollbackOffsetRows = 0,
+                cameraOffsetXPx = 200f,
+                preferredCameraOffsetXPx = 500f,
+                scaledCellWidthPx = 10f,
+                viewportWidthPx = 100,
+                totalCols = 30,
+                cursorX = 25,
             ),
             0.001f,
         )
@@ -111,6 +224,7 @@ class TerminalViewportPolicyTest {
                 panActive = true,
                 scrollbackOffsetRows = 0,
                 cameraOffsetXPx = 42f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
@@ -124,6 +238,7 @@ class TerminalViewportPolicyTest {
                 panActive = false,
                 scrollbackOffsetRows = 3,
                 cameraOffsetXPx = 42f,
+                preferredCameraOffsetXPx = 0f,
                 scaledCellWidthPx = 10f,
                 viewportWidthPx = 100,
                 totalCols = 30,
@@ -134,54 +249,25 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `auto follow disabled when not eligible`() {
+    fun `keyboard cursor follow waits for terminal cursor movement before consuming input`() {
         assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom + 0.1f,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
+            "a redraw after Enter but before terminal echo must not consume the pending keyboard follow",
+            TerminalViewportPolicy.shouldApplyKeyboardCursorFollow(
+                inputFollowArmed = true,
+                cursorMoved = false,
             ),
         )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 1,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
-            ),
-        )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 1,
-                totalRows = 100,
-                visibleRows = 20,
-            ),
-        )
-        assertFalse(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 20,
-                visibleRows = 20,
-            ),
-        )
-    }
-
-    @Test
-    fun `auto follow enabled in live camera mode at default zoom`() {
         assertTrue(
-            TerminalViewportPolicy.shouldAutoFollowCursor(
-                zoomFactor = DefaultTerminalZoom,
-                panOffsetCols = 0,
-                panOffsetRows = 0,
-                totalRows = 100,
-                visibleRows = 20,
+            "the same pending keyboard follow must apply once the terminal cursor moves",
+            TerminalViewportPolicy.shouldApplyKeyboardCursorFollow(
+                inputFollowArmed = true,
+                cursorMoved = true,
+            ),
+        )
+        assertFalse(
+            TerminalViewportPolicy.shouldApplyKeyboardCursorFollow(
+                inputFollowArmed = false,
+                cursorMoved = true,
             ),
         )
     }
@@ -223,37 +309,118 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
-    fun `height change preserves viewport bottom anchor`() {
+    fun `viewport change preserves bottom anchor across cell scale changes`() {
+        assertEquals(
+            1700f,
+            TerminalViewportPolicy.preserveBottomAnchorOnViewportChange(
+                cameraOffsetYPx = 400f,
+                previousViewportHeightPx = 600,
+                previousScaledCellHeightPx = 10f,
+                nextViewportHeightPx = 300,
+                nextScaledCellHeightPx = 20f,
+                totalRows = 100,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `restore preserves live bottom when row count advanced after capture`() {
+        assertEquals(
+            410f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 400f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 200,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 61,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `restore preserves manual camera when row count advanced after capture`() {
+        assertEquals(
+            350f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 200,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 61,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `restore preserves manual bottom anchor when viewport shrinks`() {
+        assertEquals(
+            400f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 150,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 60,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
+    fun `restore preserves manual bottom anchor when viewport grows`() {
         assertEquals(
             300f,
-            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
-                cameraOffsetYPx = 0f,
-                previousViewportHeightPx = 1000,
-                nextViewportHeightPx = 700,
-                totalRows = 100,
-                scaledCellHeightPx = 20f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 250,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 60,
             ),
             0.001f,
         )
+    }
+
+    @Test
+    fun `restore clamps manual bottom anchor to current terminal bounds`() {
         assertEquals(
-            0f,
-            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
-                cameraOffsetYPx = 50f,
-                previousViewportHeightPx = 700,
-                nextViewportHeightPx = 1000,
-                totalRows = 100,
-                scaledCellHeightPx = 20f,
+            200f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 300,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 50,
             ),
             0.001f,
         )
+    }
+
+    @Test
+    fun `restore preserves manual bottom content when cell height changes`() {
         assertEquals(
-            900f,
-            TerminalViewportPolicy.preserveBottomAnchorOnHeightChange(
-                cameraOffsetYPx = 1200f,
-                previousViewportHeightPx = 700,
-                nextViewportHeightPx = 1000,
-                totalRows = 100,
-                scaledCellHeightPx = 20f,
+            850f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 350f,
+                savedViewportHeightPx = 200,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 250,
+                nextScaledCellHeightPx = 20f,
+                nextTotalRows = 60,
             ),
             0.001f,
         )

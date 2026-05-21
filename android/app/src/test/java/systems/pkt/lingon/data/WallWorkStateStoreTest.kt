@@ -42,25 +42,15 @@ class WallWorkStateStoreTest {
     }
 
     @Test
-    fun shouldDeliverAndAdvanceSuppressesReplayForSameEndpoint() = runTest {
-        val store = newStore()
-
-        assertEquals(true, store.shouldDeliverAndAdvance("https://a.example/v1", 42L))
-        assertEquals(false, store.shouldDeliverAndAdvance("https://a.example/v1", 42L))
-        assertEquals(false, store.shouldDeliverAndAdvance("https://a.example/v1", 41L))
-        assertEquals(true, store.shouldDeliverAndAdvance("https://a.example/v1", 43L))
-    }
-
-    @Test
-    fun deliveryChecksAndRecordsAreMonotonic() = runTest {
+    fun deliveryChecksAndAdvancesAreMonotonic() = runTest {
         val store = newStore()
 
         assertEquals(true, store.shouldDeliver("https://a.example/v1", 42L))
-        store.recordDelivered("https://a.example/v1", 42L)
+        store.advanceCursor("https://a.example/v1", 42L)
         assertEquals(false, store.shouldDeliver("https://a.example/v1", 42L))
         assertEquals(false, store.shouldDeliver("https://a.example/v1", 41L))
 
-        store.recordDelivered("https://a.example/v1", 40L)
+        store.advanceCursor("https://a.example/v1", 40L)
         assertEquals(42L, store.loadCursor("https://a.example/v1"))
         assertEquals(true, store.shouldDeliver("https://a.example/v1", 43L))
     }

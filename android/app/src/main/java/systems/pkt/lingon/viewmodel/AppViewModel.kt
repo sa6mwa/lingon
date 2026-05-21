@@ -125,6 +125,11 @@ class AppViewModel(
             }
         }
         viewModelScope.launch {
+            repository.followOnReadEnabledFlow.collectLatest { enabled ->
+                _state.update { it.copy(followOnReadEnabled = enabled) }
+            }
+        }
+        viewModelScope.launch {
             repository.appLockTimeoutMinutesFlow.collectLatest { minutes ->
                 _state.update { state ->
                     if (minutes == 0 && state.requiresAppUnlock) {
@@ -202,6 +207,11 @@ class AppViewModel(
         repository.setBackgroundWallEnabled(enabled)
         _state.update { it.copy(backgroundWallEnabled = enabled) }
         syncWallPollingSchedule()
+    }
+
+    fun setFollowOnReadEnabled(enabled: Boolean) {
+        repository.setFollowOnReadEnabled(enabled)
+        _state.update { it.copy(followOnReadEnabled = enabled) }
     }
 
     fun showCertificates(show: Boolean) {
@@ -408,6 +418,10 @@ class AppViewModel(
         persistSessionZoomDebounced(key, normalized)
     }
 
+    fun recordTerminalImeVisibilityForLifecycle(visible: Boolean) {
+        _state.update { it.copy(restoreTerminalImeOnLifecycleStart = visible) }
+    }
+
     fun resetZoomAndPan() {
         val key = activeSessionViewStateKey()
         if (key == null) {
@@ -581,6 +595,15 @@ class AppViewModel(
     }
 
     fun selectSession(sessionId: String) {
+        selectSession(sessionId, persistSelection = true)
+    }
+
+    @VisibleForTesting
+    fun selectSessionForTesting(sessionId: String) {
+        selectSession(sessionId, persistSelection = false)
+    }
+
+    private fun selectSession(sessionId: String, persistSelection: Boolean) {
         val current = _state.value
         val wallState = currentWallInactivityState(sessionId)
         if (sessionId == current.activeSessionId) {
@@ -610,7 +633,7 @@ class AppViewModel(
             )
         }
         activateSessionViewState()
-        if (current.shareToken.isNullOrBlank()) {
+        if (persistSelection && current.shareToken.isNullOrBlank()) {
             persistActiveSession(current.endpoint, sessionId)
         }
         connectActiveSession()
@@ -779,6 +802,10 @@ class AppViewModel(
                 }
             }
         }
+    }
+
+    private fun sessionSortKey(session: RelaySession): String {
+        return session.name?.trim()?.takeIf { it.isNotEmpty() } ?: session.id.trim()
     }
 
     private fun persistSessionZoomDebounced(key: SessionViewStateKey, value: Float) {
@@ -958,6 +985,7 @@ class AppViewModel(
             return
         }
         wsClient.sendInput(webSocket, payload)
+        _state.update { it.copy(localInputNonce = it.localInputNonce + 1) }
     }
 
     private suspend fun bootstrapSessions() {
@@ -1023,10 +1051,13 @@ class AppViewModel(
                 sessionListCache.remove(currentActive)
             }
         }
-        _state.update { it.copy(sessions = merged.values.toList()) }
-        prefetchSessionViewStates(_state.value.endpoint, merged.values)
+        val orderedSessions = merged.values.sortedWith(
+            compareBy<RelaySession> { sessionSortKey(it) }.thenBy { it.id.trim() },
+        )
+        _state.update { it.copy(sessions = orderedSessions) }
+        prefetchSessionViewStates(_state.value.endpoint, orderedSessions)
         syncWallPollingSchedule()
-        val connectionHandled = ensureActiveSession(merged.values.toList())
+        val connectionHandled = ensureActiveSession(orderedSessions)
         if (merged.isNotEmpty()) {
             stopSessionPoll()
         }
@@ -1544,8 +1575,7 @@ class AppViewModel(
                             return
                         }
                         if (msg.contains("authorization", ignoreCase = true)) {
-                            setStatus("session expired", StatusLevel.Error)
-                            handleAuthFailureWithoutLogout()
+                            handleRecoverableAuthFailure()
                             syncCurrentSessionCache()
                             return
                         }
@@ -1563,8 +1593,7 @@ class AppViewModel(
                 ws = null
                 socketOpen = false
                 if (response?.code == 401) {
-                    setStatus("session expired", StatusLevel.Error)
-                    handleAuthFailureWithoutLogout()
+                    handleRecoverableAuthFailure()
                     return
                 }
                 _state.update {
@@ -1671,6 +1700,7 @@ class AppViewModel(
                 connectionState = reconnectState,
                 hasControl = false,
                 sessionSyncing = true,
+                terminalConnectionEpoch = it.terminalConnectionEpoch + 1,
             )
         }
         syncWallPollingSchedule()
@@ -1830,6 +1860,26 @@ class AppViewModel(
         }
         setStatus("session expired", StatusLevel.Error)
         handleAuthFailureWithoutLogout()
+    }
+
+    private fun handleRecoverableAuthFailure() {
+        if (!_state.value.loggedIn) {
+            handleAuthFailureWithoutLogout()
+            return
+        }
+        if (refreshJob?.isActive == true) {
+            return
+        }
+        setStatus("refreshing session", StatusLevel.Warn)
+        refreshJob = viewModelScope.launch {
+            val refreshed = runCatching { repository.refreshAuth() }.getOrDefault(false)
+            if (refreshed && _state.value.loggedIn) {
+                forceRecoverActiveConnection(refreshSessionsFirst = true)
+                return@launch
+            }
+            setStatus("session expired", StatusLevel.Error)
+            handleAuthFailureWithoutLogout()
+        }
     }
 
     private fun handleAuthFailureWithoutLogout() {
@@ -2026,7 +2076,7 @@ class AppViewModel(
         private const val sharedSessionId = "shared"
         private const val MissingSessionGraceMs = 5_000L
         private const val foregroundRecoveryMinIntervalMs = 30_000L
-        private const val transientStatusDurationMs = 3000L
+        private const val transientStatusDurationMs = 5000L
 
         @VisibleForTesting
         internal fun shouldRequireAppUnlock(

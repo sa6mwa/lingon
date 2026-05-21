@@ -8,14 +8,19 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.ParcelFileDescriptor
 import android.view.KeyEvent
+import androidx.activity.compose.setContent
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.rule.GrantPermissionRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -25,14 +30,24 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiObject2
+import androidx.test.uiautomator.Until
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
+import android.widget.FrameLayout
 import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -59,9 +74,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.rules.RuleChain
 import systems.pkt.lingon.test.FailureCaptureRule
+import systems.pkt.lingon.ui.LingonAppContent
 import systems.pkt.lingon.ui.TestTags
 import systems.pkt.lingon.viewmodel.AppViewModel
 import systems.pkt.lingon.viewmodel.AppViewModelFactory
+import systems.pkt.lingon.viewmodel.UiState
 import systems.pkt.lingon.terminal.TerminalGridView
 import systems.pkt.lingon.terminal.TerminalPalette
 import systems.pkt.lingon.terminal.TerminalSnapshot
@@ -98,11 +115,13 @@ class EndToEndTest {
     @After
     fun restoreDeviceState() {
         runCatching { restoreNotificationDelivery() }
+        runCatching { restoreSoftInputAdjustResize() }
         runCatching { resumeActivity() }
         runCatching { detachStartedHeadlessSessions() }
         runCatching {
-            composeRule.activity.runOnUiThread {
+            composeRule.runOnUiThread {
                 appViewModel().setBackgroundWallEnabled(false)
+                appViewModel().setFollowOnReadEnabled(false)
             }
             composeRule.waitForIdle()
         }
@@ -111,47 +130,116 @@ class EndToEndTest {
     }
 
     @Test
-    fun top_bar_menu_is_accessible() {
+    fun top_bar_settings_is_accessible() {
         assertTopBarSafe()
     }
 
     @Test
-    fun menu_overlay_does_not_shift_login() {
+    fun settings_page_opens_and_returns_to_login() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
 
         waitForTag(TestTags.LoginUsername)
-        val before = nodeBounds(TestTags.LoginUsername)
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTag(TestTags.TopBarMenu)
-        val after = nodeBounds(TestTags.LoginUsername)
-        val topDelta = kotlin.math.abs(before.top - after.top)
-        val leftDelta = kotlin.math.abs(before.left - after.left)
-        if (topDelta > 1f || leftDelta > 1f) {
-            throw AssertionError("login layout shifted when menu opened: topΔ=${topDelta}, leftΔ=${leftDelta}")
-        }
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTagToDisappear(TestTags.TopBarMenu)
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.SettingsScreen)
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
+        waitForTag(TestTags.LoginUsername)
     }
 
     @Test
-    fun menu_toggle_closes_and_reload_triggers() {
+    fun settings_page_uses_rendered_back_button() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        waitForTag(TestTags.LoginUsername)
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        val settingsButton = device.wait(Until.findObject(By.desc("Settings")), 5_000)
+            ?: throw AssertionError("top-bar settings button was not visible to UIAutomator")
+        settingsButton.click()
+        waitForTag(TestTags.SettingsScreen)
+        val backButton = device.wait(Until.findObject(By.desc("Back")), 5_000)
+            ?: throw AssertionError("settings back button was not visible to UIAutomator")
+        clickRenderedObjectOrClickableAncestor(backButton)
+        waitForTagToDisappear(TestTags.SettingsScreen)
+        device.wait(Until.findObject(By.desc("Settings")), 5_000)
+            ?: throw AssertionError("top-bar settings button did not return after closing settings")
+    }
+
+    @Test
+    fun settings_page_closes_and_reload_triggers() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
 
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
 
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTag(TestTags.TopBarMenu)
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTagToDisappear(TestTags.TopBarMenu)
-        composeRule.onNodeWithContentDescription("Menu")
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.SettingsScreen)
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
+        composeRule.onNodeWithContentDescription("Settings")
 
         val refreshBefore = appViewModel().state.value.lastManualRefreshAtMs
         composeRule.onNodeWithTag(TestTags.ReloadButton, useUnmergedTree = true).performClick()
         waitUntilNoError(5_000) { appViewModel().state.value.lastManualRefreshAtMs > refreshBefore }
         waitUntilNoError(10_000) { !appViewModel().state.value.isRefreshing }
+    }
+
+    @Test
+    fun follow_on_read_settings_toggle_defaults_off_and_toggles() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        composeRule.runOnUiThread {
+            appViewModel().setFollowOnReadEnabled(false)
+        }
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { !appViewModel().state.value.followOnReadEnabled }
+
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.FollowOnReadToggle, useUnmergedTree = true).assertIsOff()
+        composeRule.onNodeWithTag(TestTags.FollowOnReadMenuItem, useUnmergedTree = true).performClick()
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { appViewModel().state.value.followOnReadEnabled }
+
+        composeRule.onNodeWithTag(TestTags.FollowOnReadToggle, useUnmergedTree = true).assertIsOn()
+        composeRule.onNodeWithTag(TestTags.FollowOnReadMenuItem, useUnmergedTree = true).performClick()
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { !appViewModel().state.value.followOnReadEnabled }
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
+    }
+
+    @Test
+    fun endpoint_setting_dialog_stays_in_settings_flow() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.EndpointButton).performClick()
+        waitForTag(TestTags.EndpointInput)
+        composeRule.onNodeWithTag(TestTags.SettingsScreen).assertExists()
+        composeRule.onNodeWithTag(TestTags.LoginUsername).assertDoesNotExist()
+
+        composeRule.onNodeWithTag(TestTags.EndpointInput).performTextReplacement(testConfig.endpoint)
+        composeRule.onNodeWithTag(TestTags.EndpointSave).performClick()
+        waitForTagToDisappear(TestTags.EndpointInput)
+        composeRule.onNodeWithTag(TestTags.SettingsScreen).assertExists()
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
+    }
+
+    @Test
+    fun certificates_setting_returns_to_settings_flow() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.CertificatesButton).performClick()
+        waitForTag(TestTags.SettingsCertificatesScreen)
+        composeRule.onNodeWithTag(TestTags.SettingsScreen).assertExists()
+        composeRule.onNodeWithText("Done").performClick()
+        waitForTagToDisappear(TestTags.SettingsCertificatesScreen)
+        composeRule.onNodeWithTag(TestTags.SettingsScreen).assertExists()
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
     }
 
     @Test
@@ -292,59 +380,68 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
-        resetZoomPan()
-        val baseline = waitForTerminalDebugInfo { info ->
-            info.viewCols > 0 && info.viewRows > 0 && info.renderScaleX > 0f
-        } ?: throw AssertionError("missing baseline terminal debug info")
-
-        var zoomed = baseline
-        repeat(2) {
-            setZoomFactor(zoomed.zoomFactor + 0.35f)
-            zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
-                info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+        val original = readTerminalDebugInfo()
+            ?: throw AssertionError("missing original terminal debug info")
+        val originalSessionId = original.activeSessionId
+        val tallSessionId = startHostsViaHarness(count = 1, cols = 110, rows = 50).single()
+        try {
+            selectSessionForFixture(tallSessionId, expectedCols = 110, expectedRows = 50)
+            resetZoomPan()
+            val baseline = waitForTerminalDebugInfo { info ->
+                info.activeSessionId == tallSessionId &&
+                    info.cols == 110 &&
+                    info.rows == 50 &&
                     info.viewCols > 0 &&
-                    info.viewRows > 0
-            } ?: throw AssertionError("missing zoomed terminal debug info")
+                    info.viewRows > 0 &&
+                    info.renderScaleX > 0f
+            } ?: throw AssertionError("missing baseline terminal debug info")
+
+            var zoomed = baseline
+            repeat(2) {
+                setZoomFactor(zoomed.zoomFactor + 0.35f)
+                zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                    info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+                        info.viewCols > 0 &&
+                        info.viewRows > 0
+                } ?: throw AssertionError("missing zoomed terminal debug info")
+            }
+
+            sendTerminalInput("echo ZOOM-STABILITY")
+            sendTerminalEnter()
+            val afterFrame = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+                info.lastFrameSeq > zoomed.lastFrameSeq &&
+                    kotlin.math.abs(info.renderScaleX - zoomed.renderScaleX) <= 0.03f &&
+                    kotlin.math.abs(info.viewCols - zoomed.viewCols) <= 2
+            } ?: throw AssertionError("zoomed viewport changed after a new terminal frame")
+
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+            val beforeBackground = waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == afterFrame.activeSessionId &&
+                    kotlin.math.abs(info.zoomFactor - afterFrame.zoomFactor) <= 0.03f &&
+                    info.viewCols > 0 &&
+                    info.viewRows > 0 &&
+                    info.renderScaleX > 0f
+            } ?: throw AssertionError("missing keyboard-hidden zoomed terminal debug info")
+
+            backgroundAndResumeActivity()
+            waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+            waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == beforeBackground.activeSessionId &&
+                    kotlin.math.abs(info.zoomFactor - beforeBackground.zoomFactor) <= 0.03f &&
+                    kotlin.math.abs(info.renderScaleX - beforeBackground.renderScaleX) <= 0.03f &&
+                    kotlin.math.abs(info.viewCols - beforeBackground.viewCols) <= 2
+            } ?: throw AssertionError("zoomed viewport reset after background/foreground cycle")
+        } finally {
+            cleanupFixtureSessions(originalSessionId, original.cols, original.rows, listOf(tallSessionId))
         }
-
-        sendTerminalInput("echo ZOOM-STABILITY")
-        sendTerminalEnter()
-        val afterFrame = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
-            info.lastFrameSeq > zoomed.lastFrameSeq &&
-                info.hash != zoomed.hash &&
-                kotlin.math.abs(info.renderScaleX - zoomed.renderScaleX) <= 0.03f &&
-                kotlin.math.abs(info.viewCols - zoomed.viewCols) <= 2 &&
-                kotlin.math.abs(info.viewRows - zoomed.viewRows) <= 2
-        } ?: throw AssertionError("zoomed viewport changed after a new terminal frame")
-
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
-        val beforeBackground = waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
-            info.activeSessionId == afterFrame.activeSessionId &&
-                kotlin.math.abs(info.zoomFactor - afterFrame.zoomFactor) <= 0.03f &&
-                info.viewCols > 0 &&
-                info.viewRows > 0 &&
-                info.renderScaleX > 0f
-        } ?: throw AssertionError("missing keyboard-hidden zoomed terminal debug info")
-
-        backgroundAndResumeActivity()
-        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
-        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
-            info.activeSessionId == beforeBackground.activeSessionId &&
-                kotlin.math.abs(info.zoomFactor - beforeBackground.zoomFactor) <= 0.03f &&
-                kotlin.math.abs(info.renderScaleX - beforeBackground.renderScaleX) <= 0.03f &&
-                kotlin.math.abs(info.viewCols - beforeBackground.viewCols) <= 2 &&
-                kotlin.math.abs(info.viewRows - beforeBackground.viewRows) <= 2 &&
-                info.visibleStartRow == beforeBackground.visibleStartRow &&
-                info.visibleEndRowExclusive == beforeBackground.visibleEndRowExclusive
-        } ?: throw AssertionError("zoomed viewport reset after background/foreground cycle")
     }
 
     @Test
     fun zoomed_scrollback_live_reentry_waits_for_matching_snapshot() {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 setOnScrollback { scrollbackDelta += it }
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
@@ -368,20 +465,24 @@ class EndToEndTest {
                     scrollbackOffsetRows = 4,
                     imeVisible = false,
                     isLoading = false,
+                    localInputNonce = 7,
                 )
             }
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             view.restoreViewportState(
                 TerminalViewportState(
                     cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = cellHeight * 3.5f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 30,
                 ),
             )
             val beforeReentry = view.getCameraOffsetYForTesting()
@@ -426,10 +527,1524 @@ class EndToEndTest {
     }
 
     @Test
-    fun zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
+    fun keyboard_height_change_bottom_aligns_live_view_when_cursor_still_fits() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(1600))
+                layout(0, 0, 480, 1600)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 30, cols = 20, cursorY = 18),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 30,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    localInputNonce = 7,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 30,
+                ),
+            )
+            assertEquals(0f, view.getCameraOffsetYForTesting(), 0.01f)
+
+            val keyboardHeight = (cellHeight * 20f).toInt().coerceAtLeast(1)
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(keyboardHeight))
+            view.layout(0, 0, 480, keyboardHeight)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 30, cols = 20, cursorY = 18),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 30,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, keyboardHeight, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "keyboard shrink in live mode should align to the terminal bottom even when the cursor still fits",
+                (30 * cellHeight) - keyboardHeight.toFloat(),
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+            assertEquals(10, view.getVisibleStartRow())
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun terminal_resize_invalidates_after_live_bottom_reanchor() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(1600))
+                layout(0, 0, 480, 1600)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 59),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 60,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    localInputNonce = 7,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val sizeChangeInvalidations = view.getSizeChangeInvalidateCountForTesting()
+
+            val keyboardHeight = (cellHeight * 24f).toInt().coerceAtLeast(1)
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(keyboardHeight))
+            view.layout(0, 0, 480, keyboardHeight)
+
+            assertEquals(
+                "terminal resize should bottom-align live content immediately",
+                60,
+                view.getVisibleEndRowExclusive(),
+            )
+            assertTrue(
+                "terminal resize must invalidate so the first frame after IME/session layout cannot show stale pixels",
+                view.getSizeChangeInvalidateCountForTesting() > sizeChangeInvalidations,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 12),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 2.2f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = true,
+                    localInputNonce = 7,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val expected = maxOf(0f, (80 * cellHeight) - view.getViewportHeightForTesting().toFloat())
+            assertEquals(
+                "initial loading content must bottom-align immediately instead of rendering from an arbitrary camera",
+                expected,
+                view.getCameraOffsetYForTesting(),
+                maxOf(1f, cellHeight * 0.1f),
+            )
+            assertEquals(
+                "loading terminal should expose the bottom row on the first content frame",
+                80,
+                view.getVisibleEndRowExclusive(),
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun terminal_view_reanchors_when_soft_keyboard_overlays_physical_view() {
+        lateinit var terminalView: TerminalGridView
+        lateinit var input: EditText
+        composeRule.runOnUiThread {
+            composeRule.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+            terminalView = TerminalGridView(composeRule.activity)
+            input = EditText(composeRule.activity).apply {
+                isFocusable = true
+                isFocusableInTouchMode = true
+                alpha = 0f
+            }
+            val root = FrameLayout(composeRule.activity).apply {
+                addView(
+                    terminalView,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                    ),
+                )
+                addView(input, FrameLayout.LayoutParams(1, 1))
+            }
+            composeRule.activity.setContentView(root)
+        }
+        waitForViewLayout(terminalView)
+
+        composeRule.runOnUiThread {
+            terminalView.update(
+                snapshot = terminalSnapshotForViewTest(rows = 240, cols = 80, cursorY = 239),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 80,
+                hostRows = 240,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
+        }
+
+        showKeyboard(input)
+        waitForImeOverlay(terminalView)
+        composeRule.runOnUiThread {
+            terminalView.requestApplyInsets()
+            terminalView.update(
+                snapshot = terminalSnapshotForViewTest(rows = 240, cols = 80, cursorY = 239),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 80,
+                hostRows = 240,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
+            assertOverlayCameraBottomAnchored("overlay keyboard visible", terminalView)
+        }
+        assertOverlayTerminalViewportDoesNotFlicker("overlay keyboard visible", terminalView)
+        val visibleViewportHeight = terminalView.getViewportHeightForTesting()
+
+        hideKeyboard(input)
+        waitForImeHidden()
+        composeRule.runOnUiThread {
+            terminalView.requestApplyInsets()
+            terminalView.update(
+                snapshot = terminalSnapshotForViewTest(rows = 240, cols = 80, cursorY = 239),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 80,
+                hostRows = 240,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
+            assertOverlayCameraBottomAnchored("overlay keyboard hidden", terminalView)
+        }
+        assertOverlayCameraUsesVisibleSystemViewport("overlay keyboard hidden", terminalView)
+        assertOverlayTerminalViewportDoesNotFlicker("overlay keyboard hidden", terminalView)
+
+        showKeyboard(input)
+        waitForImeOverlay(terminalView)
+        composeRule.runOnUiThread {
+            terminalView.requestApplyInsets()
+            terminalView.update(
+                snapshot = terminalSnapshotForViewTest(rows = 240, cols = 80, cursorY = 239),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 4,
+                hostCols = 80,
+                hostRows = 240,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            terminalView.draw(Canvas(Bitmap.createBitmap(terminalView.width, terminalView.height, Bitmap.Config.ARGB_8888)))
+            assertTrue(
+                "showing IME again should shrink the effective viewport without requiring a pan",
+                terminalView.getViewportHeightForTesting() <= visibleViewportHeight + 1,
+            )
+            assertOverlayCameraBottomAnchored("overlay keyboard visible again", terminalView)
+        }
+        assertOverlayTerminalViewportDoesNotFlicker("overlay keyboard visible again", terminalView)
+    }
+
+    @Test
+    fun terminal_cursor_follow_defaults_to_keyboard_input_only() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 10),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    localInputNonce = 7,
+                )
+                restoreViewportState(
+                    TerminalViewportState(
+                        cameraOffsetXPx = 0f,
+                        preferredCameraOffsetXPx = 0f,
+                        cameraOffsetYPx = 0f,
+                        scrollRemainderY = 0f,
+                        viewportHeightPx = height,
+                        scaledCellHeightPx = getScaledCellHeightForTesting(),
+                        totalRows = 80,
+                    ),
+                )
+                draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 70),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 7,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            assertEquals(
+                "read-driven cursor movement must not move the camera when follow-on-read is disabled",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 8,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            assertTrue(
+                "keyboard-associated cursor movement should move the camera when follow-on-read is disabled",
+                view.getCameraOffsetYForTesting() > 0f,
+            )
+        }
+    }
+
+    @Test
+    fun terminal_keyboard_enter_follow_waits_for_cursor_movement_before_consuming_input() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(320), exactlyMeasureSpec(360))
+                layout(0, 0, 320, 360)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 38, cursorX = 68),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 120,
+                    hostRows = 40,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 1.6f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    followOnReadEnabled = false,
+                    localInputNonce = 1,
+                )
+                draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 38, cursorX = 69),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 120,
+                hostRows = 40,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 1.6f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 2,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+            assertTrue(
+                "typing a long command should pan right before Enter",
+                view.getCameraOffsetXForTesting() > view.getPreferredCameraOffsetXForTesting(),
+            )
+            val pannedRight = view.getCameraOffsetXForTesting()
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 38, cursorX = 69),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 120,
+                hostRows = 40,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 1.6f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 3,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+            assertEquals(
+                "a redraw before terminal echo must not consume Enter follow or move the existing camera",
+                pannedRight,
+                view.getCameraOffsetXForTesting(),
+                0.01f,
+            )
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 39, cursorX = 0),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 4,
+                hostCols = 120,
+                hostRows = 40,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 1.6f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 3,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "Enter-associated cursor movement should restore the preferred horizontal camera when the cursor fits there",
+                view.getPreferredCameraOffsetXForTesting(),
+                view.getCameraOffsetXForTesting(),
+                0.01f,
+            )
+        }
+    }
+
+    @Test
+    fun terminal_default_zoom_drag_pans_wide_live_content() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(320), exactlyMeasureSpec(360))
+                layout(0, 0, 320, 360)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 40, cols = 120, cursorY = 39, cursorX = 0),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 120,
+                    hostRows = 40,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+                draw(Canvas(Bitmap.createBitmap(320, 360, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            assertEquals(0f, view.getCameraOffsetXForTesting(), 0.01f)
+            dispatchSinglePointerDrag(view, startX = 220f, startY = 180f, endX = 80f, endY = 180f)
+            assertTrue(
+                "default/full-zoom terminal should allow horizontal panning when live content is wider than the viewport",
+                view.getCameraOffsetXForTesting() > 0f,
+            )
+        }
+    }
+
+    @Test
+    fun terminal_default_zoom_drag_can_enter_scrollback_from_live_edge() {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                setOnScrollback { scrollbackDelta += it }
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(720))
+                layout(0, 0, 480, 720)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 8, cols = 20, cursorY = 7, cursorX = 0),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 8,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+                draw(Canvas(Bitmap.createBitmap(480, 720, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            dispatchSinglePointerDrag(view, startX = 240f, startY = 180f, endX = 240f, endY = 420f)
+            assertTrue(
+                "default/full-zoom terminal should request scrollback when dragging down from the live top edge",
+                scrollbackDelta > 0,
+            )
+        }
+    }
+
+    @Test
+    fun terminal_follow_on_read_toggle_preserves_existing_cursor_follow() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 10),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    followOnReadEnabled = true,
+                )
+                restoreViewportState(
+                    TerminalViewportState(
+                        cameraOffsetXPx = 0f,
+                        preferredCameraOffsetXPx = 0f,
+                        cameraOffsetYPx = 0f,
+                        scrollRemainderY = 0f,
+                        viewportHeightPx = height,
+                        scaledCellHeightPx = getScaledCellHeightForTesting(),
+                        totalRows = 80,
+                    ),
+                )
+                draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = true,
+                localInputNonce = 0,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            assertTrue(
+                "follow-on-read enabled should keep existing read-driven cursor-follow behavior",
+                view.getCameraOffsetYForTesting() > 0f,
+            )
+        }
+    }
+
+    @Test
+    fun disabling_follow_on_read_stops_passive_cursor_follow() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 10),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                    followOnReadEnabled = true,
+                )
+                draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            }
+        }
+
+        composeRule.runOnUiThread {
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = true,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val followedCameraY = view.getCameraOffsetYForTesting()
+            assertTrue("fixture should enter read-driven cursor-follow", followedCameraY > 0f)
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val disabledCameraY = view.getCameraOffsetYForTesting()
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 10),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "passive reads must not keep cursor-following after follow-on-read is disabled",
+                disabledCameraY,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+    }
+
+    @Test
+    fun lifecycle_viewport_restore_preserves_saved_camera_without_new_frame() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 40, cols = 20, cursorY = 35),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 40,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 40,
+                ),
+            )
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "lifecycle restore should preserve the saved camera when no new frame arrived",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+            assertEquals(0, view.getVisibleStartRow())
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun app_lock_unlock_preserves_terminal_camera_viewport() {
+        val sessionId = "lock-viewport"
+        val snapshot = terminalSnapshotForViewTest(rows = 120, cols = 40, cursorY = 110)
+        val locked = mutableStateOf(false)
+        val viewportCache = mutableStateMapOf<String, TerminalViewportState>()
+        val baseState = UiState(
+            endpoint = "https://relay.example/v1",
+            username = "alice",
+            loggedIn = true,
+            activeSessionId = sessionId,
+            activeSnapshot = snapshot,
+            connectionState = ConnectionState.Connected,
+            hasControl = true,
+            terminalCols = 40,
+            terminalRows = 120,
+            lastFrameSeq = 42L,
+            lastFrameType = "snapshot",
+            appLockTimeoutMinutes = 3,
+            zoomFactor = DefaultTerminalZoom + 0.5f,
+            restoreTerminalImeOnLifecycleStart = false,
+        )
+        val viewModel = appViewModel()
+        composeRule.runOnUiThread {
+            composeRule.activity.setContent {
+                LingonAppContent(
+                    state = baseState.copy(requiresAppUnlock = locked.value),
+                    viewModel = viewModel,
+                    viewportCache = viewportCache,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val view = findTerminalView() as? TerminalGridView
+            view != null &&
+                view.width > 0 &&
+                view.height > 0 &&
+                view.getScaledCellHeightForTesting() > 0f &&
+                view.getVisibleEndRowExclusive() > 0
+        }
+
+        composeRule.runOnIdle {
+            val view = findTerminalView() as? TerminalGridView
+                ?: throw AssertionError("missing terminal view before app lock")
+            val cellHeight = view.getScaledCellHeightForTesting()
+            val savedCamera = cellHeight * 10f
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
+                    cameraOffsetYPx = savedCamera,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.getViewportHeightForTesting(),
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = snapshot.rows,
+                ),
+            )
+            view.draw(Canvas(Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)))
+            assertEquals(
+                "fixture should place a manual camera before app lock",
+                10,
+                view.getVisibleStartRow(),
+            )
+        }
+        val before = terminalViewCameraSnapshot("before app lock")
+
+        composeRule.runOnIdle { locked.value = true }
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { hasTextNode("App locked") }
+        composeRule.runOnIdle {
+            assertTrue(
+                "app lock disposal should capture the terminal viewport",
+                viewportCache.isNotEmpty(),
+            )
+            assertEquals("app lock should cache one scoped viewport", 1, viewportCache.size)
+            assertEquals(
+                "app lock disposal should capture the pre-lock camera offset",
+                before.cameraOffsetYPx,
+                viewportCache.values.single().cameraOffsetYPx,
+                maxOf(1f, before.scaledCellHeightPx * 0.1f),
+            )
+        }
+
+        composeRule.runOnIdle { locked.value = false }
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val view = findTerminalView() as? TerminalGridView
+            view != null && view.width > 0 && view.height > 0 && view.getScaledCellHeightForTesting() > 0f
+        }
+        val restored = terminalViewCameraSnapshot("after app unlock")
+
+        assertEquals(
+            "unlock should preserve the saved visible start row instead of cursor-following to the bottom",
+            before.visibleStartRow,
+            restored.visibleStartRow,
+        )
+        assertEquals(
+            "unlock should preserve the saved camera offset instead of cursor-following to the bottom",
+            before.cameraOffsetYPx,
+            restored.cameraOffsetYPx,
+            maxOf(1f, before.scaledCellHeightPx * 0.1f),
+        )
+    }
+
+    @Test
+    fun logout_clears_viewport_cache_and_reused_session_id_does_not_restore_stale_camera() {
+        val sessionId = "host-1"
+        val firstSnapshot = terminalSnapshotForViewTest(rows = 120, cols = 40, cursorY = 110)
+        val secondSnapshot = terminalSnapshotForViewTest(rows = 120, cols = 40, cursorY = 110)
+        val state = mutableStateOf(
+            UiState(
+                endpoint = "https://relay-a.example/v1",
+                username = "alice",
+                loggedIn = true,
+                activeSessionId = sessionId,
+                activeSnapshot = firstSnapshot,
+                connectionState = ConnectionState.Connected,
+                hasControl = true,
+                terminalCols = 40,
+                terminalRows = 120,
+                lastFrameSeq = 100L,
+                lastFrameType = "snapshot",
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                restoreTerminalImeOnLifecycleStart = false,
+            ),
+        )
+        val viewportCache = mutableStateMapOf<String, TerminalViewportState>()
+        val viewModel = appViewModel()
+        composeRule.runOnUiThread {
+            composeRule.activity.setContent {
+                LingonAppContent(
+                    state = state.value,
+                    viewModel = viewModel,
+                    viewportCache = viewportCache,
+                )
+            }
+        }
+        waitForTerminalViewReady()
+
+        composeRule.runOnIdle {
+            val view = findTerminalView() as? TerminalGridView
+                ?: throw AssertionError("missing first identity terminal view")
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
+                    cameraOffsetYPx = cellHeight * 10f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.getViewportHeightForTesting(),
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = firstSnapshot.rows,
+                ),
+            )
+            view.draw(Canvas(Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)))
+            assertEquals("fixture should place first identity camera at row 10", 10, view.getVisibleStartRow())
+        }
+        val staleCamera = terminalViewCameraSnapshot("before logout")
+
+        composeRule.runOnIdle {
+            state.value = UiState(
+                endpoint = "https://relay-a.example/v1",
+                username = null,
+                loggedIn = false,
+                restoreTerminalImeOnLifecycleStart = false,
+            )
+        }
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            findTerminalView() == null && viewportCache.isEmpty()
+        }
+
+        composeRule.runOnIdle {
+            state.value = UiState(
+                endpoint = "https://relay-b.example/v1",
+                username = "bob",
+                loggedIn = true,
+                activeSessionId = sessionId,
+                activeSnapshot = secondSnapshot,
+                connectionState = ConnectionState.Connected,
+                hasControl = true,
+                terminalCols = 40,
+                terminalRows = 120,
+                lastFrameSeq = 200L,
+                lastFrameType = "snapshot",
+                zoomFactor = DefaultTerminalZoom + 0.5f,
+                restoreTerminalImeOnLifecycleStart = false,
+            )
+        }
+        waitForTerminalViewReady()
+        val afterRelogin = terminalViewCameraSnapshot("after relogin with reused session id")
+
+        assertFalse(
+            "a reused session id after logout must not restore the previous identity's camera row",
+            afterRelogin.visibleStartRow == staleCamera.visibleStartRow,
+        )
+        assertFalse(
+            "a reused session id after logout must not restore the previous identity's camera offset",
+            kotlin.math.abs(afterRelogin.cameraOffsetYPx - staleCamera.cameraOffsetYPx) <=
+                maxOf(1f, staleCamera.scaledCellHeightPx * 0.1f),
+        )
+    }
+
+    @Test
+    fun lifecycle_viewport_restore_survives_ime_height_bounce_without_new_frame() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(640))
+                layout(0, 0, 480, 640)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 18),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = true,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val saved = TerminalViewportState(
+                cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
+                cameraOffsetYPx = 0f,
+                scrollRemainderY = 0f,
+                viewportHeightPx = view.height,
+                scaledCellHeightPx = cellHeight,
+                totalRows = 80,
+            )
+            view.restoreViewportState(saved)
+            assertEquals(0f, view.getCameraOffsetYForTesting(), 0.01f)
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(1200))
+            view.layout(0, 0, 480, 1200)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 18),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            assertEquals(
+                "transient hidden IME height must not move a restored lifecycle camera without a new frame",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(640))
+            view.layout(0, 0, 480, 640)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 18),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            assertEquals(
+                "restored lifecycle camera should survive the IME height returning without a new frame",
+                0f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(200), exactlyMeasureSpec(240))
+                layout(0, 0, 200, 240)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 20, cols = 80, cursorX = 4),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 80,
+                    hostRows = 20,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 80f,
+                    preferredCameraOffsetXPx = 0f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 20,
+                ),
+            )
+
+            assertEquals(
+                "restore should apply the saved camera for the current frame",
+                80f,
+                view.getCameraOffsetXForTesting(),
+                0.01f,
+            )
+            assertEquals(
+                "restore must not promote a temporary cursor-follow camera to the preferred horizontal offset",
+                0f,
+                view.getPreferredCameraOffsetXForTesting(),
+                0.01f,
+            )
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 20, cols = 80, cursorX = 5),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 80,
+                hostRows = 20,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                localInputNonce = 1,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(200, 240, Bitmap.Config.ARGB_8888)))
+
+            assertEquals(
+                "later cursor-follow should return to the saved horizontal preference when the cursor still fits",
+                0f,
+                view.getCameraOffsetXForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun lifecycle_viewport_capture_keeps_horizontal_preference_separate_from_temporary_camera() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(200), exactlyMeasureSpec(240))
+                layout(0, 0, 200, 240)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 20, cols = 80, cursorX = 4),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 80,
+                    hostRows = 20,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.restoreViewportState(
+                TerminalViewportState(
+                    cameraOffsetXPx = 40f,
+                    preferredCameraOffsetXPx = 40f,
+                    cameraOffsetYPx = 0f,
+                    scrollRemainderY = 0f,
+                    viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 20,
+                ),
+            )
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 20, cols = 80, cursorX = 30),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 80,
+                hostRows = 20,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                localInputNonce = 1,
+            )
+            view.draw(Canvas(Bitmap.createBitmap(200, 240, Bitmap.Config.ARGB_8888)))
+
+            val saved = view.captureViewportState()
+            assertTrue(
+                "fixture should create a temporary cursor-follow camera to the right of the saved preference",
+                saved.cameraOffsetXPx > saved.preferredCameraOffsetXPx,
+            )
+            assertEquals(
+                "capture must preserve the user's horizontal preference separately from cursor-follow camera",
+                40f,
+                saved.preferredCameraOffsetXPx,
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun lifecycle_viewport_restore_preserves_live_bottom_across_height_change() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 59),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 60,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val saved = view.captureViewportState()
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            assertEquals(
+                "fixture should save a live-bottom viewport",
+                (60 * cellHeight) - 480f,
+                saved.cameraOffsetYPx,
+                0.01f,
+            )
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
+            view.layout(0, 0, 480, 240)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 59),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 20,
+                hostRows = 60,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            view.restoreViewportState(saved)
+
+            assertEquals(
+                "restoring a saved live-bottom viewport after IME shrink should preserve the live bottom",
+                (60 * cellHeight) - 240f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun lifecycle_viewport_restore_preserves_manual_bottom_anchor_across_height_change() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 20),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 60,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            val savedCamera = cellHeight * 10f
+            val saved = TerminalViewportState(
+                cameraOffsetXPx = 0f,
+                preferredCameraOffsetXPx = 0f,
+                cameraOffsetYPx = savedCamera,
+                scrollRemainderY = 0f,
+                viewportHeightPx = view.height,
+                scaledCellHeightPx = cellHeight,
+                totalRows = 60,
+            )
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
+            view.layout(0, 0, 480, 240)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 20),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 1,
+                hostCols = 20,
+                hostRows = 60,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 0.8f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = false,
+            )
+            view.restoreViewportState(saved)
+
+            assertEquals(
+                "restoring a saved manual viewport after IME shrink should preserve the visible content bottom edge",
+                savedCamera + 240f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun lifecycle_viewport_restore_preserves_live_bottom_when_rows_advance() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 60, cols = 20, cursorY = 59),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 60,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            view.draw(Canvas(Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)))
+            val saved = view.captureViewportState()
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            assertEquals(
+                "fixture should save the 60-row live bottom",
+                (60 * cellHeight) - 480f,
+                saved.cameraOffsetYPx,
+                0.01f,
+            )
+
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 61, cols = 20, cursorY = 60),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 61,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+            )
+            view.restoreViewportState(saved)
+
+            assertEquals(
+                "restoring a saved live-bottom viewport after output advances should follow the new live bottom",
+                (61 * cellHeight) - 480f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun lifecycle_capture_does_not_persist_transient_keyboard_cursor_follow() {
+        lateinit var view: TerminalGridView
+        composeRule.runOnUiThread {
+            view = TerminalGridView(composeRule.activity).apply {
+                measure(exactlyMeasureSpec(480), exactlyMeasureSpec(480))
+                layout(0, 0, 480, 480)
+                update(
+                    snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 70),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 20,
+                    hostRows = 80,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom + 2.2f,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = true,
+                    followOnReadEnabled = false,
+                    localInputNonce = 1,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 79),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 2,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 2.2f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = false,
+                isLoading = false,
+                followOnReadEnabled = false,
+                localInputNonce = 2,
+            )
+            val capturedBeforeDraw = view.captureViewportState()
+
+            view.measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
+            view.layout(0, 0, 480, 240)
+            view.update(
+                snapshot = terminalSnapshotForViewTest(rows = 80, cols = 20, cursorY = 12),
+                fontSizeSp = 14,
+                minFontSizeSp = 8,
+                palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                frameSeq = 3,
+                hostCols = 20,
+                hostRows = 80,
+                fitToViewWidth = false,
+                zoomFactor = DefaultTerminalZoom + 2.2f,
+                panResetNonce = 0,
+                scrollbackOffsetRows = 0,
+                imeVisible = true,
+                isLoading = true,
+                followOnReadEnabled = false,
+                localInputNonce = 2,
+            )
+            view.restoreViewportState(capturedBeforeDraw)
+
+            assertEquals(
+                "capturing during a pending keyboard-follow frame must restore as live-bottom, not durable cursor-follow",
+                (80 * cellHeight) - 240f,
+                view.getCameraOffsetYForTesting(),
+                0.01f,
+            )
+            assertEquals(80, view.getVisibleEndRowExclusive())
+        }
+        composeRule.waitForIdle()
+    }
+
+    @Test
+    fun zoomed_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
+        assertScrollbackEntryPreservesPixelPanBeforeRowBoundary(DefaultTerminalZoom + 0.8f)
+    }
+
+    @Test
+    fun default_zoom_scrollback_entry_preserves_pixel_pan_before_row_boundary() {
+        assertScrollbackEntryPreservesPixelPanBeforeRowBoundary(DefaultTerminalZoom)
+    }
+
+    private fun assertScrollbackEntryPreservesPixelPanBeforeRowBoundary(zoomFactor: Float) {
+        lateinit var view: TerminalGridView
+        var scrollbackDelta = 0
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 setOnScrollback { scrollbackDelta += it }
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
@@ -443,7 +2058,7 @@ class EndToEndTest {
                     hostCols = 20,
                     hostRows = 30,
                     fitToViewWidth = false,
-                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    zoomFactor = zoomFactor,
                     panResetNonce = 0,
                     scrollbackOffsetRows = 0,
                     imeVisible = false,
@@ -453,16 +2068,19 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             val live = terminalSnapshotForViewTest(rows = 30, cols = 20)
             view.restoreViewportState(
                 TerminalViewportState(
                     cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 30,
                 ),
             )
             val partialPanPx = cellHeight * 0.35f
@@ -493,7 +2111,7 @@ class EndToEndTest {
                 hostCols = 20,
                 hostRows = 30,
                 fitToViewWidth = false,
-                zoomFactor = DefaultTerminalZoom + 0.8f,
+                zoomFactor = zoomFactor,
                 panResetNonce = 0,
                 scrollbackOffsetRows = 1,
                 imeVisible = false,
@@ -529,16 +2147,27 @@ class EndToEndTest {
         assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
             imeVisible = true,
             fitToViewWidth = false,
+            zoomFactor = DefaultTerminalZoom + 0.8f,
+        )
+    }
+
+    @Test
+    fun default_zoom_scrollback_entry_reverse_before_snapshot_preserves_live_position() {
+        assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
+            imeVisible = false,
+            fitToViewWidth = false,
+            zoomFactor = DefaultTerminalZoom,
         )
     }
 
     private fun assertScrollbackEntryReverseBeforeSnapshotPreservesLivePosition(
         imeVisible: Boolean,
         fitToViewWidth: Boolean,
+        zoomFactor: Float = DefaultTerminalZoom + 0.8f,
     ) {
         lateinit var view: TerminalGridView
         var scrollbackDelta = 0
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             view = TerminalGridView(composeRule.activity).apply {
                 setOnScrollback { scrollbackDelta += it }
                 measure(exactlyMeasureSpec(480), exactlyMeasureSpec(240))
@@ -552,7 +2181,7 @@ class EndToEndTest {
                     hostCols = 20,
                     hostRows = 30,
                     fitToViewWidth = fitToViewWidth,
-                    zoomFactor = DefaultTerminalZoom + 0.8f,
+                    zoomFactor = zoomFactor,
                     panResetNonce = 0,
                     scrollbackOffsetRows = 0,
                     imeVisible = imeVisible,
@@ -562,16 +2191,19 @@ class EndToEndTest {
         }
         composeRule.waitForIdle()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             val cellHeight = view.getScaledCellHeightForTesting()
             assertTrue("terminal cell height was not measured", cellHeight > 0f)
             val live = terminalSnapshotForViewTest(rows = 30, cols = 20)
             view.restoreViewportState(
                 TerminalViewportState(
                     cameraOffsetXPx = 0f,
+                    preferredCameraOffsetXPx = 0f,
                     cameraOffsetYPx = 0f,
                     scrollRemainderY = 0f,
                     viewportHeightPx = view.height,
+                    scaledCellHeightPx = cellHeight,
+                    totalRows = 30,
                 ),
             )
             val partialPanPx = cellHeight * 0.35f
@@ -611,7 +2243,7 @@ class EndToEndTest {
                 hostCols = 20,
                 hostRows = 30,
                 fitToViewWidth = fitToViewWidth,
-                zoomFactor = DefaultTerminalZoom + 0.8f,
+                zoomFactor = zoomFactor,
                 panResetNonce = 0,
                 scrollbackOffsetRows = 1,
                 imeVisible = imeVisible,
@@ -635,47 +2267,58 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
-        resetZoomPan()
-        val baseline = waitForTerminalDebugInfo(TERMINAL_READY_TIMEOUT_MS) { info ->
-            info.viewRows > 0 &&
-                info.visibleStartRow == 0 &&
-                info.visibleEndRowExclusive > info.visibleStartRow &&
-                info.renderScaleX > 0f
-        } ?: throw AssertionError("missing baseline terminal debug info")
-        var zoomed = baseline
-        for (attempt in 0 until 3) {
-            setZoomFactor(zoomed.zoomFactor + 0.35f)
-            zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
-                info.renderScaleX > zoomed.renderScaleX + 0.03f &&
-                    info.visibleStartRow == 0 &&
-                    info.viewRows > 0
-            } ?: throw AssertionError("missing zoomed terminal debug info")
-            val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
-            if (visibleRows < zoomed.rows) {
-                break
+        val original = readTerminalDebugInfo()
+            ?: throw AssertionError("missing original terminal debug info")
+        val originalSessionId = original.activeSessionId
+        val tallSessionId = startHostsViaHarness(count = 1, cols = 110, rows = 50).single()
+        try {
+            selectSessionForFixture(tallSessionId, expectedCols = 110, expectedRows = 50)
+            resetZoomPan()
+            val baseline = waitForTerminalDebugInfo(TERMINAL_READY_TIMEOUT_MS) { info ->
+                info.activeSessionId == tallSessionId &&
+                    info.cols == 110 &&
+                    info.rows == 50 &&
+                    info.viewRows > 0 &&
+                    info.isLiveBottomAnchored() &&
+                    info.visibleEndRowExclusive > info.visibleStartRow &&
+                    info.renderScaleX > 0f
+            } ?: throw AssertionError("missing baseline terminal debug info")
+            var zoomed = baseline
+            for (attempt in 0 until 3) {
+                setZoomFactor(zoomed.zoomFactor + 0.35f)
+                zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                    info.renderScaleX > zoomed.renderScaleX + 0.03f &&
+                        info.isLiveBottomAnchored() &&
+                        info.viewRows > 0
+                } ?: throw AssertionError("missing zoomed terminal debug info")
+                val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
+                if (visibleRows < zoomed.rows) {
+                    break
+                }
             }
-        }
-        val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
-        if (visibleRows >= zoomed.rows) {
-            throw AssertionError(
-                "zoomed viewport still fits the whole host screen " +
-                    "(visibleRows=$visibleRows, rows=${zoomed.rows})",
+            val visibleRows = zoomed.visibleEndRowExclusive - zoomed.visibleStartRow
+            if (visibleRows >= zoomed.rows) {
+                throw AssertionError(
+                    "zoomed viewport still fits the whole host screen " +
+                        "(visibleRows=$visibleRows, rows=${zoomed.rows})",
+                )
+            }
+
+            val partialCount = max(3, visibleRows - 4)
+            val partialEnd = 100 + partialCount
+            sendTerminalInput("seq 101 $partialEnd")
+            sendTerminalEnter()
+            val partial = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+                info.lastFrameSeq > zoomed.lastFrameSeq &&
+                    info.hash != zoomed.hash
+            } ?: throw AssertionError("partial terminal output did not render")
+            assertTrue(
+                "invalid visible range ${partial.visibleStartRow}..${partial.visibleEndRowExclusive}",
+                partial.visibleEndRowExclusive > partial.visibleStartRow,
             )
+        } finally {
+            cleanupFixtureSessions(originalSessionId, original.cols, original.rows, listOf(tallSessionId))
         }
-
-        val partialCount = max(3, visibleRows - 4)
-        val partialEnd = 100 + partialCount
-        sendTerminalInput("seq 101 $partialEnd")
-        sendTerminalEnter()
-        val partial = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
-            info.lastFrameSeq > zoomed.lastFrameSeq &&
-                info.hash != zoomed.hash
-        } ?: throw AssertionError("partial terminal output did not render")
-        assertTrue(
-            "invalid visible range ${partial.visibleStartRow}..${partial.visibleEndRowExclusive}",
-            partial.visibleEndRowExclusive > partial.visibleStartRow,
-        )
-
     }
 
     @Test
@@ -720,6 +2363,70 @@ class EndToEndTest {
     }
 
     @Test
+    fun terminal_geometry_invariants_cover_small_production_and_large_sizes() {
+        data class GeometryCase(val label: String, val cols: Int, val rows: Int)
+
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val original = readTerminalDebugInfo()
+            ?: throw AssertionError("missing original terminal debug info")
+
+        val cases = listOf(
+            GeometryCase("small", cols = 80, rows = 24),
+            GeometryCase("production-minimum", cols = 110, rows = 50),
+            GeometryCase("large", cols = 132, rows = 70),
+        )
+        val originalSessionId = original.activeSessionId
+        val fixtureSessionIds = mutableListOf<String>()
+        try {
+            for (case in cases) {
+                val sessionId = startHostsViaHarness(count = 1, cols = case.cols, rows = case.rows).single()
+                fixtureSessionIds += sessionId
+                selectSessionForFixture(sessionId, expectedCols = case.cols, expectedRows = case.rows)
+                composeRule.runOnIdle {
+                    appViewModel().resetZoomAndPan()
+                }
+
+                val base = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                    info.activeSessionId == sessionId &&
+                        info.cols == case.cols &&
+                        info.rows == case.rows &&
+                        info.viewCols > 0 &&
+                        info.viewRows > 0 &&
+                        info.isLiveBottomAnchored() &&
+                        info.visibleEndRowExclusive > info.visibleStartRow &&
+                        info.visibleEndRowExclusive <= info.rows &&
+                        info.renderScaleX > 0f
+                } ?: throw AssertionError("missing measured ${case.label} terminal geometry")
+                assertEquals("${case.label} terminal should fit width at default zoom", case.cols, base.viewCols)
+
+                setZoomFactor(DefaultTerminalZoom + 0.55f)
+                val zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                    info.activeSessionId == sessionId &&
+                        info.cols == case.cols &&
+                        info.rows == case.rows &&
+                        info.renderScaleX > base.renderScaleX + 0.03f &&
+                        info.isLiveBottomAnchored() &&
+                        info.visibleEndRowExclusive > info.visibleStartRow &&
+                        info.visibleEndRowExclusive <= info.rows
+                } ?: throw AssertionError("missing zoomed ${case.label} terminal geometry")
+                if (case.rows >= 50) {
+                    assertTrue(
+                        "${case.label} zoomed production-sized terminal should not still fit every row " +
+                            "(visible=${zoomed.visibleStartRow}-${zoomed.visibleEndRowExclusive}, rows=${zoomed.rows})",
+                        zoomed.visibleEndRowExclusive - zoomed.visibleStartRow < zoomed.rows,
+                    )
+                }
+            }
+        } finally {
+            cleanupFixtureSessions(originalSessionId, original.cols, original.rows, fixtureSessionIds)
+        }
+    }
+
+    @Test
     fun share_token_width_is_authoritative() {
         val token = testConfig.viewToken ?: return
         setEndpoint(testConfig.endpoint)
@@ -745,14 +2452,14 @@ class EndToEndTest {
     }
 
     @Test
-    fun resize_menu_absent_and_input_remains_blocked_without_control() {
+    fun headless_resize_action_disabled_and_input_remains_blocked_without_control() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         setResizeHostEnabled(false)
 
         loginWithConfiguredUser()
-        openMenu()
-        composeRule.onAllNodesWithTag(TestTags.ResizeHostMenuItem, useUnmergedTree = true).assertCountEquals(0)
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
         composeRule.runOnIdle {
             appViewModel().setHasControlForTesting(false)
         }
@@ -796,8 +2503,8 @@ class EndToEndTest {
             val info = readTerminalDebugInfo()
             info != null && !info.hasControl
         }
-        openMenu()
-        composeRule.onAllNodesWithTag(TestTags.ResizeHostMenuItem, useUnmergedTree = true).assertCountEquals(0)
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info")
         assertTrue("view cols=${info.viewCols}", info.viewCols > 0)
@@ -849,7 +2556,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
 
         val baselineWalls = wallEventCount()
-        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        clickSettingsWallInactivity()
         waitUntilNoError(5_000L) {
             appViewModel().state.value.wallInactivityEnabled &&
                 appViewModel().state.value.wallInactivityLabel == "250ms"
@@ -875,7 +2582,7 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureAllWallInactivityOff()
 
-        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        clickSettingsWallInactivity()
         waitUntilNoError(5_000L) {
             readStatusBanner()?.message == "wall 250ms"
         }
@@ -961,6 +2668,7 @@ class EndToEndTest {
             }
             composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
             waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            assertLiveBottomAnchored("first tab hop $hopNumber")
             captureScreenshot("tab-first-hop-${hopNumber}-settled")
             if (hop == 0) {
                 firstRestored = readTerminalDebugInfo()
@@ -980,6 +2688,7 @@ class EndToEndTest {
             }
             composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
             waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            assertLiveBottomAnchored("second tab hop $hopNumber")
             captureScreenshot("tab-second-hop-${hopNumber}-settled")
         }
 
@@ -1016,19 +2725,263 @@ class EndToEndTest {
                 info.lastFrameSeq > beforeLoad.lastFrameSeq &&
                 info.hash != beforeLoad.hash
         }
+        assertLiveBottomAnchored("keyboard precheck")
         captureScreenshot("keyboard-precheck")
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        assertTerminalViewportAboveQuickKeys("keyboard visible initial")
+        assertLiveBottomAnchored("keyboard visible initial")
         captureScreenshot("keyboard-visible-initial")
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        assertLiveBottomAnchored("keyboard hidden")
         captureScreenshot("keyboard-hidden")
 
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        assertTerminalViewportAboveQuickKeys("keyboard visible restored")
+        assertLiveBottomAnchored("keyboard visible restored")
         captureScreenshot("keyboard-visible-restored")
+    }
+
+    @Test
+    fun keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val tallHosts = startHostsViaHarness(count = 2, rows = 240, initialLines = 260)
+        val first = tallHosts[0]
+        val second = tallHosts[1]
+        val sessions = listOf(first, second)
+        sessions.forEach { sessionId ->
+            waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+            selectSessionTab(sessionId, timeoutMs = 10_000L)
+            waitUntilNoError(10_000L) { activeSessionId() == sessionId && !stateForTest().sessionSyncing }
+            composeRule.runOnIdle {
+                appViewModel().resetZoomAndPan()
+            }
+            focusTerminalInput()
+            waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            assertTerminalViewportAboveQuickKeys("tall session $sessionId keyboard visible")
+            waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+                info.activeSessionId == sessionId &&
+                    info.rows > info.viewRows &&
+                    info.isLiveBottomAnchored()
+            } ?: throw AssertionError("tall session $sessionId did not settle at live bottom")
+
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+            waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+            assertTerminalCameraUsesVisibleSystemViewport("tall session $sessionId keyboard hidden")
+            waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == sessionId &&
+                    info.isLiveBottomAnchored()
+            } ?: throw AssertionError("hidden keyboard misaligned live bottom for $sessionId")
+
+            focusTerminalInput()
+            waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+            assertTerminalViewportAboveQuickKeys("tall session $sessionId keyboard visible restored")
+            assertTerminalCameraUsesVisibleSystemViewport("tall session $sessionId keyboard visible restored")
+            waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == sessionId &&
+                    info.isLiveBottomAnchored()
+            } ?: throw AssertionError("visible keyboard misaligned live bottom for $sessionId")
+        }
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first && !stateForTest().sessionSyncing }
+        assertTerminalCameraUsesVisibleSystemViewport("first tall session hidden after cross-switch")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == first && info.isLiveBottomAnchored()
+        } ?: throw AssertionError("hidden keyboard misaligned live bottom for cached first tall session")
+
+        selectSessionTab(second, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == second && !stateForTest().sessionSyncing }
+        focusTerminalInput()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        assertTerminalViewportAboveQuickKeys("second tall session visible before cross-switch")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == second && info.isLiveBottomAnchored()
+        } ?: throw AssertionError("visible keyboard misaligned live bottom for second tall session before cross-switch")
+
+        selectSessionTab(first, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == first && !stateForTest().sessionSyncing }
+        assertTerminalViewportAboveQuickKeys("first tall session visible after cross-switch")
+        assertTerminalCameraUsesVisibleSystemViewport("first tall session visible after cross-switch")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == first && info.isLiveBottomAnchored()
+        } ?: throw AssertionError("visible keyboard misaligned live bottom after restoring cached first tall session")
+    }
+
+    @Test
+    fun loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        enableSoftKeyboardWithHardwareKeyboard()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val sessionId = startHostsViaHarness(count = 1, rows = 240, initialLines = 260).single()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        selectSessionTab(sessionId, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == sessionId && !stateForTest().sessionSyncing }
+        setZoomFactor(3.2f)
+
+        waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.activeSessionId == sessionId &&
+                info.rows > info.viewRows &&
+                info.isLiveBottomAnchored()
+        } ?: throw AssertionError("loaded tall session did not start live-bottom anchored")
+        assertTerminalCameraUsesVisibleSystemViewport("loaded tall session with keyboard hidden")
+        assertTerminalViewportStable("loaded tall session with keyboard hidden")
+
+        focusTerminalInput()
+        waitUntilNoError(15_000L) { hasTextNode("CTRL") && readImeBottomInsetPx() > readNavigationBottomInsetPx() }
+        assertTerminalViewportAboveQuickKeys("loaded tall session keyboard visible")
+        assertTerminalCameraUsesVisibleSystemViewport("loaded tall session keyboard visible")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == sessionId &&
+                info.rows > info.viewRows &&
+                info.isLiveBottomAnchored()
+        } ?: throw AssertionError("loaded tall session did not remain live-bottom anchored after keyboard show")
+        assertTerminalViewportStable("loaded tall session keyboard visible")
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        assertTerminalCameraUsesVisibleSystemViewport("loaded tall session keyboard hidden again")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == sessionId &&
+                info.rows > info.viewRows &&
+                info.isLiveBottomAnchored()
+        } ?: throw AssertionError("loaded tall session did not remain live-bottom anchored after keyboard hide")
+        assertTerminalViewportStable("loaded tall session keyboard hidden again")
+    }
+
+    @Test
+    fun soft_keyboard_inset_keeps_terminal_viewport_above_keyboard() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        enableSoftKeyboardWithHardwareKeyboard()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val sessionId = startHostsViaHarness(count = 1, rows = 240, initialLines = 260).single()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        selectSessionTab(sessionId, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { activeSessionId() == sessionId && !stateForTest().sessionSyncing }
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+
+        focusTerminalInput()
+        waitUntilNoError(15_000L) { hasTextNode("CTRL") && readImeBottomInsetPx() > readNavigationBottomInsetPx() }
+        assertTerminalViewportAboveIme("focused tall terminal with real soft keyboard")
+        waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == sessionId &&
+                info.rows > info.viewRows &&
+                info.isLiveBottomAnchored()
+        } ?: throw AssertionError("real soft keyboard did not leave tall terminal bottom-anchored in camera mode")
+        assertTerminalCameraUsesVisibleImeViewport("focused tall terminal with real soft keyboard")
+        assertTerminalViewportStable("focused tall terminal with real soft keyboard")
+    }
+
+    @Test
+    fun keyboard_hidden_before_background_stays_hidden_after_resume() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        focusTerminalInput()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") }
+        waitUntilNoError(10_000L) { stateForTest().restoreTerminalImeOnLifecycleStart == false }
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        Thread.sleep(1_000L)
+        assertFalse("IME lifecycle preference changed after hidden background resume", stateForTest().restoreTerminalImeOnLifecycleStart == true)
+        assertFalse("IME controls were restored even though keyboard was hidden before background", hasTextNode("CTRL"))
+    }
+
+    @Test
+    fun keyboard_visible_before_background_is_restored_after_resume() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        focusTerminalInput()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+        Thread.sleep(1_500L)
+        assertTrue("IME controls disappeared after the delayed post-resume hide window", hasTextNode("CTRL"))
+    }
+
+    @Test
+    fun focused_background_resume_preserves_live_camera_when_cursor_still_fits() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val headlessId = startHeadlessViaHarness(rows = 240)
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
+        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
+        composeRule.runOnIdle {
+            appViewModel().resetZoomAndPan()
+        }
+        focusTerminalInput()
+        waitUntilNoError(10_000L) { hasTextNode("CTRL") }
+
+        val beforeLoad = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before lifecycle fixture")
+        assertTrue(
+            "fixture requires a terminal taller than the focused viewport: rows=${beforeLoad.rows}, viewRows=${beforeLoad.viewRows}",
+            beforeLoad.rows > beforeLoad.viewRows,
+        )
+        val visibleRows = (beforeLoad.visibleEndRowExclusive - beforeLoad.visibleStartRow).coerceAtLeast(4)
+        val outputRows = (visibleRows - 3).coerceAtLeast(1)
+        sendTerminalInput("clear; seq 1 $outputRows")
+        sendTerminalEnter()
+        val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > beforeLoad.lastFrameSeq &&
+                info.hash != beforeLoad.hash &&
+                info.visibleStartRow == 0 &&
+                info.cursorY in info.visibleStartRow until info.visibleEndRowExclusive
+        } ?: throw AssertionError("terminal fixture did not settle with cursor visible before lifecycle refocus")
+        assertEquals(
+            "fixture must start with the saved camera at the top",
+            0f,
+            loaded.cameraOffsetYPx,
+            0.01f,
+        )
+
+        backgroundAndResumeActivity()
+        waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
+        val resumed = waitForTerminalDebugInfo(timeoutMs = SHORT_UI_TIMEOUT_MS) { info ->
+            info.activeSessionId == headlessId &&
+                info.viewRows > 0 &&
+                !stateForTest().sessionSyncing
+        } ?: throw AssertionError("focused lifecycle refocus moved the live camera without new terminal output")
+        assertEquals("focused lifecycle refocus changed visible start row", loaded.visibleStartRow, resumed.visibleStartRow)
+        assertEquals(
+            "focused lifecycle refocus moved camera without new terminal output",
+            loaded.cameraOffsetYPx,
+            resumed.cameraOffsetYPx,
+            0.01f,
+        )
     }
 
     @Test
@@ -1231,13 +3184,13 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
         waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
 
-        composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+        clickSettingsWallInactivity()
         waitUntilNoError(5_000L) {
             appViewModel().state.value.wallInactivityEnabled &&
                 appViewModel().state.value.wallInactivityLabel == "250ms"
@@ -1280,14 +3233,18 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
+        openSettings()
         composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
+        closeSettingsIfOpen()
 
         val headlessId = startHeadlessViaHarness()
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
         composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
 
+        openSettings()
         composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsEnabled()
+        closeSettingsIfOpen()
     }
 
     @Test
@@ -1313,7 +3270,9 @@ class EndToEndTest {
 
         val expectedCols = stateForTest().terminalCols
         val expectedRows = stateForTest().terminalRows
+        openSettings()
         composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).performClick()
+        closeSettingsIfOpen()
         waitUntilNoError(10_000L) {
             val after = readHeadlessSizeViaHarness(headlessId)
             after.cols == expectedCols && after.rows == expectedRows
@@ -1354,7 +3313,7 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(false)
         }
         composeRule.waitForIdle()
@@ -1390,7 +3349,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -1406,9 +3365,14 @@ class EndToEndTest {
 
         waitForWallNotificationBody(message, "background manual wall notification")
         assertNoWallNotificationAutogroupSummary()
+        assertSingleWallNotificationBody(message)
         val wallNotification = wallNotifications()
             .firstOrNull { wallNotificationFullText(it) == message }
             ?: throw AssertionError("missing lingon_wall notification for message=$message")
+        assertTrue(
+            "wall notification replacements must not alert again: flags=${wallNotification.notification.flags}",
+            wallNotification.notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0,
+        )
         assertTrue(
             "wall notification should not be grouped: group=${wallNotification.notification.group.orEmpty()}",
             wallNotification.notification.group.isNullOrBlank(),
@@ -1418,6 +3382,69 @@ class EndToEndTest {
         assertTrue("notification title missing username: $title", title.startsWith("${testConfig.username}@"))
         assertFalse("manual wall title should not include blank session suffix: $title", title.endsWith("#"))
         assertEquals(message, text)
+    }
+
+    @Test
+    fun background_distinct_wall_messages_post_distinct_system_notifications() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        clearAppNotifications()
+
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+        syncWallCursorToLatest()
+
+        composeRule.runOnUiThread {
+            appViewModel().setBackgroundWallEnabled(true)
+        }
+        composeRule.waitForIdle()
+        waitUntilNoError(5_000L) { appViewModel().state.value.backgroundWallEnabled }
+
+        backgroundActivity()
+        waitUntilDeviceCondition(10_000L, "background wall service notification") {
+            activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
+        }
+
+        val suffix = System.currentTimeMillis()
+        val firstMessage = "background distinct wall first $suffix"
+        val secondMessage = "background distinct wall second $suffix"
+        sendWallViaHarness(firstMessage)
+        waitForWallNotificationBody(firstMessage, "first distinct background wall notification")
+        sendWallViaHarness(secondMessage)
+        waitForWallNotificationBody(
+            secondMessage,
+            "second distinct background wall notification",
+            clearUnexpectedWallNotifications = false,
+        )
+
+        val notifications = wallNotifications()
+            .filter {
+                val text = wallNotificationFullText(it)
+                text == firstMessage || text == secondMessage
+            }
+        val visibleMessages = notifications.map { wallNotificationFullText(it) }
+        assertEquals(
+            "distinct wall messages must remain separate notifications so Android can alert each event",
+            listOf(firstMessage, secondMessage).sorted(),
+            visibleMessages.sorted(),
+        )
+        assertEquals(
+            "distinct wall messages must use distinct notification ids",
+            notifications.size,
+            notifications.map { it.id }.distinct().size,
+        )
+        assertEquals(
+            "distinct wall messages must use distinct notification tags",
+            notifications.size,
+            notifications.map { it.tag }.distinct().size,
+        )
+        notifications.forEach { wallNotification ->
+            assertTrue(
+                "wall notification retries must still be update-only for id=${wallNotification.id}",
+                wallNotification.notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0,
+            )
+        }
     }
 
     @Test
@@ -1431,7 +3458,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -1472,7 +3499,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -1505,6 +3532,7 @@ class EndToEndTest {
             "second wall notification was not visible: $visibleMessages",
             visibleMessages.contains(secondMessage),
         )
+        assertSingleWallNotificationBody(secondMessage)
     }
 
     @Test
@@ -1517,7 +3545,7 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureAllWallInactivityOff()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -1554,7 +3582,7 @@ class EndToEndTest {
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
 
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
         }
         composeRule.waitForIdle()
@@ -1608,7 +3636,7 @@ class EndToEndTest {
 
     @Test
     fun share_token_dialog_rejects_invalid_token() {
-        openMenu()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.ShareTokenButton).performClick()
         waitForTag(TestTags.ShareTokenInput)
         composeRule.onNodeWithTag(TestTags.ShareTokenInput).performTextReplacement("not-a-token")
@@ -1690,14 +3718,79 @@ class EndToEndTest {
         throw AssertionError("Timed out waiting for session tab $sessionId")
     }
 
+    private fun selectSessionForFixture(
+        sessionId: String,
+        timeoutMs: Long = 10_000L,
+        expectedCols: Int? = null,
+        expectedRows: Int? = null,
+    ) {
+        waitUntilNoError(timeoutMs) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        composeRule.runOnIdle {
+            appViewModel().selectSessionForTesting(sessionId)
+        }
+        waitUntilNoError(timeoutMs) {
+            val info = readTerminalDebugInfo()
+            info != null &&
+                info.activeSessionId == sessionId &&
+                !stateForTest().sessionSyncing &&
+                (expectedCols == null || info.cols == expectedCols) &&
+                (expectedRows == null || info.rows == expectedRows)
+        }
+    }
+
+    private fun cleanupFixtureSessions(
+        originalSessionId: String,
+        originalCols: Int,
+        originalRows: Int,
+        fixtureSessionIds: List<String>,
+    ) {
+        var restoreError: Throwable? = null
+        runCatching {
+            selectSessionForFixture(originalSessionId, expectedCols = originalCols, expectedRows = originalRows)
+        }.onFailure { restoreError = it }
+
+        val stopError = runCatching {
+            stopHostsViaHarness(fixtureSessionIds)
+            if (fixtureSessionIds.isNotEmpty()) {
+                waitUntilNoError(10_000L) { stateForTest().sessions.none { it.id in fixtureSessionIds } }
+            }
+        }.exceptionOrNull()
+
+        if (restoreError != null) {
+            val retryError = runCatching {
+                selectSessionForFixture(originalSessionId, expectedCols = originalCols, expectedRows = originalRows)
+            }.exceptionOrNull()
+            if (retryError == null) {
+                restoreError = null
+            } else {
+                restoreError.addSuppressed(retryError)
+            }
+        }
+        if (stopError != null) {
+            if (restoreError != null) {
+                restoreError.addSuppressed(stopError)
+            } else {
+                throw stopError
+            }
+        }
+        restoreError?.let { throw it }
+    }
+
     private fun waitForSessionTick(sessionId: String, timeoutMs: Long = 10_000L) {
         waitForTerminalReady(timeoutMs)
         waitUntilNoError(timeoutMs) { snapshotContainsToken("TICK_$sessionId") }
     }
 
-    private fun openMenu() {
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
-        waitForTag(TestTags.TopBarMenu)
+    private fun openSettings() {
+        if (hasTag(TestTags.SettingsScreen)) return
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.SettingsScreen)
+    }
+
+    private fun closeSettingsIfOpen() {
+        if (!hasTag(TestTags.SettingsScreen)) return
+        composeRule.onNodeWithTag(TestTags.SettingsBackButton).performClick()
+        waitForTagToDisappear(TestTags.SettingsScreen)
     }
 
     private fun recreateActivity() {
@@ -1734,7 +3827,7 @@ class EndToEndTest {
     }
 
     private fun attachViaShareToken(token: String) {
-        openMenu()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.ShareTokenButton).performClick()
         waitForTag(TestTags.ShareTokenInput)
         composeRule.onNodeWithTag(TestTags.ShareTokenInput).performTextReplacement(token)
@@ -1789,7 +3882,7 @@ class EndToEndTest {
                 it.notification.channelId == "lingon_wall" ||
                     it.notification.channelId == "lingon_background_wall"
             }
-            .forEach { manager.cancel(it.id) }
+            .forEach { manager.cancelNotification(it) }
     }
 
     private fun syncWallCursorToLatest() {
@@ -1812,7 +3905,7 @@ class EndToEndTest {
             since
         }
         runBlocking {
-            app.wallDeliveryCoordinator.advanceCursor(endpoint, latest)
+            app.wallWorkStateStore.advanceCursor(endpoint, latest)
         }
     }
 
@@ -1836,7 +3929,7 @@ class EndToEndTest {
             since
         }
         runBlocking {
-            app.wallDeliveryCoordinator.advanceCursor(endpoint, latest + 100)
+            app.wallWorkStateStore.advanceCursor(endpoint, latest + 100)
         }
         return latest
     }
@@ -1873,7 +3966,11 @@ class EndToEndTest {
         throw AssertionError("Timed out waiting for $description after ${timeoutMs}ms (notifications=[$active])")
     }
 
-    private fun waitForWallNotificationBody(message: String, description: String) {
+    private fun waitForWallNotificationBody(
+        message: String,
+        description: String,
+        clearUnexpectedWallNotifications: Boolean = true,
+    ) {
         waitUntilDeviceCondition(
             BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS,
             "$description '$message'",
@@ -1882,11 +3979,21 @@ class EndToEndTest {
             if (notifications.any { wallNotificationFullText(it) == message }) {
                 return@waitUntilDeviceCondition true
             }
-            if (notifications.isNotEmpty()) {
+            if (clearUnexpectedWallNotifications && notifications.isNotEmpty()) {
                 clearWallNotifications()
             }
             false
         }
+    }
+
+    private fun assertSingleWallNotificationBody(message: String) {
+        val matching = wallNotifications()
+            .filter { wallNotificationFullText(it) == message }
+        assertEquals(
+            "expected one active wall notification for message=$message, got=${matching.size}",
+            1,
+            matching.size,
+        )
     }
 
     private fun setNotificationDeliveryEnabled(enabled: Boolean): Boolean {
@@ -1934,7 +4041,7 @@ class EndToEndTest {
                 return
             }
             val previousLabel = state.wallInactivityLabel
-            composeRule.onNodeWithTag(TestTags.WallInactivityButton).performClick()
+            clickSettingsWallInactivity()
             waitUntilNoError(5_000L) {
                 val updated = appViewModel().state.value
                 !updated.wallInactivityEnabled || updated.wallInactivityLabel != previousLabel
@@ -1944,6 +4051,14 @@ class EndToEndTest {
         throw AssertionError(
             "failed to reset wall inactivity to off: enabled=${state.wallInactivityEnabled} label=${state.wallInactivityLabel}",
         )
+    }
+
+    private fun clickSettingsWallInactivity() {
+        openSettings()
+        composeRule.onAllNodesWithTag(TestTags.WallInactivityButton, useUnmergedTree = true)
+            .onFirst()
+            .performClick()
+        closeSettingsIfOpen()
     }
 
     private fun ensureAllWallInactivityOff() {
@@ -1958,6 +4073,15 @@ class EndToEndTest {
     private fun notificationManager(): NotificationManager? {
         return InstrumentationRegistry.getInstrumentation().targetContext
             .getSystemService(NotificationManager::class.java)
+    }
+
+    private fun NotificationManager.cancelNotification(notification: StatusBarNotification) {
+        val tag = notification.tag
+        if (tag != null) {
+            cancel(tag, notification.id)
+            return
+        }
+        cancel(notification.id)
     }
 
     private fun wallNotifications(): List<StatusBarNotification> {
@@ -2080,7 +4204,7 @@ class EndToEndTest {
     }
 
     private fun setResizeHostEnabled(enabled: Boolean) {
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().setResizeHostEnabledForTesting(enabled)
         }
         composeRule.waitForIdle()
@@ -2163,12 +4287,12 @@ class EndToEndTest {
     }
 
     private fun focusTerminalInput() {
-        composeRule.onNodeWithTag(TestTags.TerminalInput, useUnmergedTree = true).performClick()
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         composeRule.waitForIdle()
     }
 
     private fun setEndpointViaUi(endpoint: String) {
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.EndpointButton).performClick()
         waitForTag(TestTags.EndpointInput)
         composeRule.onNodeWithTag(TestTags.EndpointInput).performTextReplacement(endpoint)
@@ -2182,7 +4306,7 @@ class EndToEndTest {
 
     private fun ensureLoggedOut() {
         if (hasTag(TestTags.LoginUsername)) return
-        composeRule.activity.runOnUiThread {
+        composeRule.runOnUiThread {
             appViewModel().logout()
         }
         waitForTag(TestTags.LoginUsername, timeoutMs = 10_000L)
@@ -2267,13 +4391,25 @@ class EndToEndTest {
         return composeRule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
     }
 
+    private fun nodeBoundsOrNull(tag: String): Rect? {
+        return composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().firstOrNull()?.boundsInRoot
+    }
+
     private fun clickNodeCenter(tag: String) {
         val node = composeRule.onNodeWithTag(tag).fetchSemanticsNode()
         val bounds = node.boundsInRoot
         composeRule.onNodeWithTag(tag).performTouchInput {
-            down(0, Offset(bounds.center.x, bounds.center.y))
+            down(0, Offset(bounds.width / 2f, bounds.height / 2f))
             up(0)
         }
+    }
+
+    private fun clickRenderedObjectOrClickableAncestor(node: UiObject2) {
+        var current: UiObject2? = node
+        while (current != null && !current.isClickable) {
+            current = current.parent
+        }
+        (current ?: node).click()
     }
 
     private fun TerminalDebugInfo.containsToken(token: String): Boolean {
@@ -2286,6 +4422,214 @@ class EndToEndTest {
     private fun readTerminalHash(): Long {
         val info = readTerminalDebugInfo()
         return info?.hash ?: 0L
+    }
+
+    private fun assertLiveBottomAnchored(label: String) {
+        val info = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info for $label")
+        assertTrue(
+            "$label should align live bottom: visible=${info.visibleStartRow}-${info.visibleEndRowExclusive} rows=${info.rows} " +
+                "camera=${info.cameraOffsetYPx} viewport=${info.viewportHeightPx} cell=${info.scaledCellHeightPx}",
+            info.isLiveBottomAnchored(),
+        )
+    }
+
+    private fun assertTerminalViewportAboveQuickKeys(label: String) {
+        composeRule.waitForIdle()
+        val terminal = nodeBounds(TestTags.TerminalList)
+        val quickKeys = nodeBounds(TestTags.TerminalQuickKeys)
+        assertTrue(
+            "$label terminal viewport overlaps quick keys: terminal=$terminal quickKeys=$quickKeys",
+            terminal.bottom <= quickKeys.top + 0.5f,
+        )
+    }
+
+    private fun assertTerminalViewportAboveIme(label: String) {
+        composeRule.waitForIdle()
+        val imeBottom = readImeBottomInsetPx()
+        assertTrue("$label expected real IME inset to be visible", imeBottom > 0)
+        val rootHeight = readRootViewHeightPx()
+        val imeTop = rootHeight - imeBottom
+        val terminal = nodeBounds(TestTags.TerminalList)
+        val quickKeys = nodeBounds(TestTags.TerminalQuickKeys)
+        assertTrue(
+            "$label terminal viewport overlaps real IME: terminal=$terminal imeTop=$imeTop imeBottom=$imeBottom rootHeight=$rootHeight",
+            terminal.bottom <= imeTop + 0.5f,
+        )
+        assertTrue(
+            "$label quick keys overlap real IME: quickKeys=$quickKeys imeTop=$imeTop imeBottom=$imeBottom rootHeight=$rootHeight",
+            quickKeys.bottom <= imeTop + 0.5f,
+        )
+    }
+
+    private fun assertTerminalCameraUsesVisibleImeViewport(label: String) {
+        composeRule.waitForIdle()
+        val imeBottom = readImeBottomInsetPx()
+        assertTrue("$label expected real IME inset to be visible", imeBottom > 0)
+        val imeTop = readSystemVisibleBottomPx()
+        val terminal = nodeBounds(TestTags.TerminalList)
+        val info = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info for $label")
+        val expectedVisibleHeight = (imeTop - terminal.top).coerceAtLeast(0f)
+        assertTrue(
+            "$label terminal camera viewport must be the visible area above IME: " +
+                "viewport=${info.viewportHeightPx} expectedVisibleHeight=$expectedVisibleHeight terminal=$terminal imeTop=$imeTop",
+            info.viewportHeightPx <= kotlin.math.ceil(expectedVisibleHeight).toInt() + 1,
+        )
+    }
+
+    private fun assertTerminalCameraUsesVisibleSystemViewport(label: String) {
+        composeRule.waitForIdle()
+        val visibleBottom = readSystemVisibleBottomPx()
+        val terminal = nodeBounds(TestTags.TerminalList)
+        val info = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info for $label")
+        val expectedVisibleHeight = (visibleBottom - terminal.top).coerceAtLeast(0f)
+        assertTrue(
+            "$label terminal camera viewport must be bounded by the visible system area: " +
+                "viewport=${info.viewportHeightPx} expectedVisibleHeight=$expectedVisibleHeight terminal=$terminal " +
+                "visibleBottom=$visibleBottom imeBottom=${readImeBottomInsetPx()} navBottom=${readNavigationBottomInsetPx()}",
+            info.viewportHeightPx <= kotlin.math.ceil(expectedVisibleHeight).toInt() + 1,
+        )
+    }
+
+    private fun assertTerminalViewportStable(label: String) {
+        val initialTerminal = nodeBounds(TestTags.TerminalList)
+        val initialQuickKeys = nodeBoundsOrNull(TestTags.TerminalQuickKeys)
+        val initialInfo = readTerminalDebugInfo()
+            ?: throw AssertionError("missing terminal debug info before stability check for $label")
+        val deadline = System.currentTimeMillis() + 1_200L
+        while (System.currentTimeMillis() < deadline) {
+            safeWaitForIdle()
+            val terminal = nodeBounds(TestTags.TerminalList)
+            val quickKeys = nodeBoundsOrNull(TestTags.TerminalQuickKeys)
+            val info = readTerminalDebugInfo()
+                ?: throw AssertionError("missing terminal debug info during stability check for $label")
+            assertEquals("$label terminal bounds flickered", initialTerminal, terminal)
+            assertEquals("$label quick-key bounds flickered", initialQuickKeys, quickKeys)
+            assertTrue(
+                "$label camera moved during stable IME viewport check: before=${initialInfo.cameraOffsetYPx} after=${info.cameraOffsetYPx}",
+                kotlin.math.abs(initialInfo.cameraOffsetYPx - info.cameraOffsetYPx) <= maxOf(1f, info.scaledCellHeightPx * 0.1f),
+            )
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+    }
+
+    private fun waitForViewLayout(view: View) {
+        waitUntilWithoutCompose(timeoutMs = 10_000L) {
+            view.width > 0 && view.height > 0 && view.isAttachedToWindow
+        }
+    }
+
+    private fun showKeyboard(input: EditText) {
+        composeRule.runOnUiThread {
+            input.requestFocus()
+            composeRule.activity.getSystemService(InputMethodManager::class.java)
+                .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun hideKeyboard(input: EditText) {
+        composeRule.runOnUiThread {
+            composeRule.activity.getSystemService(InputMethodManager::class.java)
+                .hideSoftInputFromWindow(input.windowToken, 0)
+            input.clearFocus()
+        }
+    }
+
+    private fun waitForImeOverlay(view: TerminalGridView) {
+        waitUntilWithoutCompose(timeoutMs = 15_000L) {
+            val imeBottom = readImeBottomInsetPx()
+            val rootHeight = readRootViewHeightPx()
+            imeBottom > readNavigationBottomInsetPx() &&
+                view.height > 0 &&
+                view.getViewportHeightForTesting() < view.getPhysicalHeightForTesting() &&
+                viewBottomInRoot(view) > rootHeight - imeBottom
+        }
+    }
+
+    private fun waitForImeHidden() {
+        waitUntilWithoutCompose(timeoutMs = 10_000L) {
+            readImeBottomInsetPx() <= readNavigationBottomInsetPx()
+        }
+    }
+
+    private fun assertOverlayCameraBottomAnchored(label: String, view: TerminalGridView) {
+        val cellHeight = view.getScaledCellHeightForTesting()
+        val viewportHeight = view.getViewportHeightForTesting()
+        val expected = maxOf(0f, (240 * cellHeight) - viewportHeight.toFloat())
+        assertTrue("$label cell height was not measured", cellHeight > 0f)
+        assertEquals(
+            "$label should use effective viewport height for live-bottom camera anchoring",
+            expected,
+            view.getCameraOffsetYForTesting(),
+            maxOf(1f, cellHeight * 0.1f),
+        )
+        assertEquals("$label should render through the terminal bottom", 240, view.getVisibleEndRowExclusive())
+    }
+
+    private fun assertOverlayCameraUsesVisibleSystemViewport(label: String, view: TerminalGridView) {
+        val visibleBottom = readSystemVisibleBottomPx()
+        val rootLocation = IntArray(2)
+        val viewLocation = IntArray(2)
+        composeRule.activity.window.decorView.rootView.getLocationInWindow(rootLocation)
+        view.getLocationInWindow(viewLocation)
+        val viewTopInRoot = viewLocation[1] - rootLocation[1]
+        val expectedVisibleHeight = (visibleBottom - viewTopInRoot).coerceAtLeast(0)
+        assertTrue(
+            "$label overlay camera viewport must be bounded by the visible system area: " +
+                "viewport=${view.getViewportHeightForTesting()} expectedVisibleHeight=$expectedVisibleHeight " +
+                "viewHeight=${view.getPhysicalHeightForTesting()} visibleBottom=$visibleBottom " +
+                "imeBottom=${readImeBottomInsetPx()} navBottom=${readNavigationBottomInsetPx()}",
+            view.getViewportHeightForTesting() <= expectedVisibleHeight + 1,
+        )
+    }
+
+    private fun assertOverlayTerminalViewportDoesNotFlicker(label: String, view: TerminalGridView) {
+        val initial = overlayViewportSample(view)
+        assertTrue("$label initial sample is not bottom anchored: $initial", initial.isBottomAnchored())
+        val deadline = System.currentTimeMillis() + 1_200L
+        while (System.currentTimeMillis() < deadline) {
+            composeRule.runOnUiThread {
+                view.draw(Canvas(Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)))
+            }
+            val sample = overlayViewportSample(view)
+            assertEquals("$label physical height flickered", initial.physicalHeightPx, sample.physicalHeightPx)
+            assertEquals("$label effective viewport height flickered", initial.viewportHeightPx, sample.viewportHeightPx)
+            assertEquals("$label visible start row flickered", initial.visibleStartRow, sample.visibleStartRow)
+            assertEquals("$label visible end row flickered", initial.visibleEndRowExclusive, sample.visibleEndRowExclusive)
+            assertEquals(
+                "$label camera Y flickered",
+                initial.cameraOffsetYPx,
+                sample.cameraOffsetYPx,
+                maxOf(1f, initial.scaledCellHeightPx * 0.1f),
+            )
+            assertTrue("$label lost bottom anchoring during settle window: $sample", sample.isBottomAnchored())
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+    }
+
+    private fun overlayViewportSample(view: TerminalGridView): OverlayViewportSample {
+        var sample: OverlayViewportSample? = null
+        composeRule.runOnUiThread {
+            sample = OverlayViewportSample(
+                physicalHeightPx = view.getPhysicalHeightForTesting(),
+                viewportHeightPx = view.getViewportHeightForTesting(),
+                scaledCellHeightPx = view.getScaledCellHeightForTesting(),
+                cameraOffsetYPx = view.getCameraOffsetYForTesting(),
+                visibleStartRow = view.getVisibleStartRow(),
+                visibleEndRowExclusive = view.getVisibleEndRowExclusive(),
+            )
+        }
+        return sample ?: throw AssertionError("missing overlay viewport sample")
+    }
+
+    private fun viewBottomInRoot(view: View): Int {
+        val rootLocation = IntArray(2)
+        val viewLocation = IntArray(2)
+        composeRule.activity.window.decorView.rootView.getLocationInWindow(rootLocation)
+        view.getLocationInWindow(viewLocation)
+        return viewLocation[1] - rootLocation[1] + view.height
     }
 
     private fun readTerminalDebugInfo(): TerminalDebugInfo? {
@@ -2339,6 +4683,7 @@ class EndToEndTest {
                 prevLine = prevLine,
                 tail = tail,
                 cursorLine = cursorLine,
+                cursorY = snap?.cursorY ?: 0,
                 hasControl = state.hasControl,
                 resizeEnabled = state.resizeHostEnabled,
                 viewCols = terminalView?.getViewCols() ?: state.terminalCols,
@@ -2346,6 +4691,8 @@ class EndToEndTest {
                 renderScaleX = terminalView?.getRenderScaleX() ?: 0f,
                 renderScaleY = terminalView?.getRenderScaleY() ?: 0f,
                 cameraOffsetYPx = terminalView?.getCameraOffsetYForTesting() ?: 0f,
+                viewportHeightPx = terminalView?.getViewportHeightForTesting() ?: 0,
+                physicalHeightPx = terminalView?.getPhysicalHeightForTesting() ?: 0,
                 scaledCellHeightPx = terminalView?.getScaledCellHeightForTesting() ?: 0f,
                 visibleStartRow = terminalView?.getVisibleStartRow() ?: 0,
                 visibleEndRowExclusive = terminalView?.getVisibleEndRowExclusive() ?: 0,
@@ -2353,6 +4700,31 @@ class EndToEndTest {
             )
         }
         return info
+    }
+
+    private fun terminalViewCameraSnapshot(label: String): TerminalCameraSnapshot {
+        var snapshot: TerminalCameraSnapshot? = null
+        composeRule.runOnIdle {
+            val terminalView = findTerminalView() as? TerminalGridView
+                ?: throw AssertionError("missing terminal view for $label")
+            snapshot = TerminalCameraSnapshot(
+                cameraOffsetYPx = terminalView.getCameraOffsetYForTesting(),
+                scaledCellHeightPx = terminalView.getScaledCellHeightForTesting(),
+                visibleStartRow = terminalView.getVisibleStartRow(),
+            )
+        }
+        return snapshot ?: throw AssertionError("missing terminal camera snapshot for $label")
+    }
+
+    private fun waitForTerminalViewReady() {
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+            val view = findTerminalView() as? TerminalGridView
+            view != null &&
+                view.width > 0 &&
+                view.height > 0 &&
+                view.getScaledCellHeightForTesting() > 0f &&
+                view.getVisibleEndRowExclusive() > 0
+        }
     }
 
     private fun waitForTerminalDebugInfo(
@@ -2590,7 +4962,7 @@ class EndToEndTest {
         if (statusBarPx > 0 && top < statusBarPx) {
             throw AssertionError("Top bar overlaps status bar (top=$top, statusBar=$statusBarPx).")
         }
-        composeRule.onNodeWithTag(TestTags.TopBarMenuButton).performClick()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.EndpointButton).performClick()
         waitForTag(TestTags.EndpointInput)
         composeRule.onNodeWithText("Cancel").performClick()
@@ -2603,11 +4975,76 @@ class EndToEndTest {
         return if (resId > 0) resources.getDimensionPixelSize(resId) else 0
     }
 
+    private fun readSystemVisibleBottomPx(): Int {
+        return readRootViewHeightPx() - maxOf(readImeBottomInsetPx(), readNavigationBottomInsetPx())
+    }
+
+    private fun enableSoftKeyboardWithHardwareKeyboard() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
+            "settings put secure show_ime_with_hard_keyboard 1",
+        ).close()
+    }
+
+    private fun forceSoftInputOverlay() {
+        composeRule.runOnUiThread {
+            composeRule.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+        }
+        composeRule.waitForIdle()
+    }
+
+    private fun restoreSoftInputAdjustResize() {
+        composeRule.runOnUiThread {
+            composeRule.activity.window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        composeRule.waitForIdle()
+    }
+
+    private fun readRootViewHeightPx(): Int {
+        var height = 0
+        composeRule.runOnIdle {
+            height = composeRule.activity.window.decorView.rootView.height
+        }
+        return height
+    }
+
+    private fun readImeBottomInsetPx(): Int {
+        var bottom = 0
+        composeRule.runOnIdle {
+            val insets = composeRule.activity.window.decorView.rootWindowInsets
+            bottom = insets
+                ?.let { WindowInsetsCompat.toWindowInsetsCompat(it, composeRule.activity.window.decorView) }
+                ?.getInsets(WindowInsetsCompat.Type.ime())
+                ?.bottom ?: 0
+        }
+        return bottom
+    }
+
+    private fun readNavigationBottomInsetPx(): Int {
+        var bottom = 0
+        composeRule.runOnIdle {
+            val insets = composeRule.activity.window.decorView.rootWindowInsets
+            bottom = insets
+                ?.let { WindowInsetsCompat.toWindowInsetsCompat(it, composeRule.activity.window.decorView) }
+                ?.getInsets(WindowInsetsCompat.Type.navigationBars())
+                ?.bottom ?: 0
+        }
+        return bottom
+    }
+
     private fun waitUntil(timeoutMs: Long = DEFAULT_TIMEOUT_MS, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return
             safeWaitForIdle()
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        throw AssertionError("Timed out waiting for UI condition after ${timeoutMs}ms")
+    }
+
+    private fun waitUntilWithoutCompose(timeoutMs: Long = DEFAULT_TIMEOUT_MS, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
             Thread.sleep(POLL_INTERVAL_MS)
         }
         throw AssertionError("Timed out waiting for UI condition after ${timeoutMs}ms")
@@ -2719,12 +5156,12 @@ class EndToEndTest {
     }
 
     private fun resetZoomPan() {
-        openMenu()
+        openSettings()
         composeRule.onNodeWithTag(TestTags.ZoomResetButton).performClick()
     }
 
     private fun setZoomFactor(value: Float) {
-        composeRule.activity.runOnUiThread { appViewModel().updateZoomFactor(value) }
+        composeRule.runOnUiThread { appViewModel().updateZoomFactor(value) }
         composeRule.waitForIdle()
     }
 
@@ -2732,7 +5169,12 @@ class EndToEndTest {
         return View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY)
     }
 
-    private fun terminalSnapshotForViewTest(rows: Int, cols: Int): TerminalSnapshot {
+    private fun terminalSnapshotForViewTest(
+        rows: Int,
+        cols: Int,
+        cursorY: Int = rows - 1,
+        cursorX: Int = 0,
+    ): TerminalSnapshot {
         val size = rows * cols
         return TerminalSnapshot(
             cols = cols,
@@ -2742,8 +5184,8 @@ class EndToEndTest {
             fg = IntArray(size),
             bg = IntArray(size),
             graphemes = null,
-            cursorX = 0,
-            cursorY = rows - 1,
+            cursorX = cursorX.coerceIn(0, cols - 1),
+            cursorY = cursorY.coerceIn(0, rows - 1),
             cursorVisible = true,
             mode = 0,
             title = "",
@@ -3040,8 +5482,71 @@ class EndToEndTest {
         }
     }
 
-    private fun startHeadlessViaHarness(): String {
-        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless")
+    private fun startHostsViaHarness(
+        count: Int,
+        cols: Int = 120,
+        rows: Int = testConfig.hostRows,
+        shell: String? = null,
+        initialLines: Int = 0,
+    ): List<String> {
+        val shellQuery = shell?.takeIf { it.isNotBlank() }?.let { "&shell=${java.net.URLEncoder.encode(it, "UTF-8")}" }.orEmpty()
+        val initialLinesQuery = if (initialLines > 0) "&initial_lines=$initialLines" else ""
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-host?count=$count&cols=$cols&rows=$rows$shellQuery$initialLinesQuery")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            val sslContext = trustContextFor(testConfig.caPem)
+            connection.sslSocketFactory = sslContext.socketFactory
+        }
+        try {
+            val code = connection.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                throw AssertionError("harness start-host failed with HTTP $code")
+            }
+            val body = InputStreamReader(connection.inputStream).use { it.readText() }
+            val ids = org.json.JSONObject(body).getJSONArray("ids")
+            return List(ids.length()) { index -> ids.getString(index) }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun stopHostsViaHarness(sessionIds: List<String>) {
+        sessionIds.map { it.trim() }.filter { it.isNotBlank() }.forEach { sessionId ->
+            val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/stop-host")
+            val body = org.json.JSONObject()
+                .put("session_id", sessionId)
+                .toString()
+                .toByteArray(Charsets.UTF_8)
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 5_000
+                readTimeout = 5_000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+                val sslContext = trustContextFor(testConfig.caPem)
+                connection.sslSocketFactory = sslContext.socketFactory
+            }
+            try {
+                connection.outputStream.use { it.write(body) }
+                val code = connection.responseCode
+                if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_NOT_FOUND) {
+                    throw AssertionError("harness stop-host failed with HTTP $code for $sessionId")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
+    private fun startHeadlessViaHarness(cols: Int = 120, rows: Int = 50): String {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless?cols=$cols&rows=$rows")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 5_000
@@ -3330,8 +5835,8 @@ class EndToEndTest {
                     ?.filter { it.isNotBlank() }
                     .orEmpty()
                 val viewToken2 = args.getString("view_token2")?.trim()?.takeIf { it.isNotBlank() }
-                val hostCols = args.getString("host_cols")?.toIntOrNull() ?: 80
-                val hostRows = args.getString("host_rows")?.toIntOrNull() ?: 24
+                val hostCols = args.getString("host_cols")?.toIntOrNull() ?: 120
+                val hostRows = args.getString("host_rows")?.toIntOrNull() ?: 50
                 return TestConfig(
                     endpoint = endpoint,
                     username = username,
@@ -3382,6 +5887,7 @@ class EndToEndTest {
         val prevLine: String,
         val tail: String,
         val cursorLine: String,
+        val cursorY: Int,
         val hasControl: Boolean,
         val resizeEnabled: Boolean,
         val viewCols: Int,
@@ -3389,6 +5895,8 @@ class EndToEndTest {
         val renderScaleX: Float,
         val renderScaleY: Float,
         val cameraOffsetYPx: Float,
+        val viewportHeightPx: Int,
+        val physicalHeightPx: Int,
         val scaledCellHeightPx: Float,
         val visibleStartRow: Int,
         val visibleEndRowExclusive: Int,
@@ -3397,6 +5905,34 @@ class EndToEndTest {
         fun liveTopRows(): Float {
             if (scaledCellHeightPx <= 0f) return 0f
             return (cameraOffsetYPx / scaledCellHeightPx) - scrollbackOffsetRows.toFloat()
+        }
+
+        fun isLiveBottomAnchored(): Boolean {
+            if (rows <= 0 || scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return true
+            val expected = maxOf(0f, (rows * scaledCellHeightPx) - viewportHeightPx.toFloat())
+            return kotlin.math.abs(cameraOffsetYPx - expected) <= maxOf(1f, scaledCellHeightPx * 0.1f)
+        }
+    }
+
+    data class TerminalCameraSnapshot(
+        val cameraOffsetYPx: Float,
+        val scaledCellHeightPx: Float,
+        val visibleStartRow: Int,
+    )
+
+    data class OverlayViewportSample(
+        val physicalHeightPx: Int,
+        val viewportHeightPx: Int,
+        val scaledCellHeightPx: Float,
+        val cameraOffsetYPx: Float,
+        val visibleStartRow: Int,
+        val visibleEndRowExclusive: Int,
+    ) {
+        fun isBottomAnchored(): Boolean {
+            if (scaledCellHeightPx <= 0f || viewportHeightPx <= 0) return false
+            val expected = maxOf(0f, (240 * scaledCellHeightPx) - viewportHeightPx.toFloat())
+            return kotlin.math.abs(cameraOffsetYPx - expected) <= maxOf(1f, scaledCellHeightPx * 0.1f) &&
+                visibleEndRowExclusive == 240
         }
     }
 
@@ -3421,4 +5957,5 @@ class EndToEndTest {
         val inkRight: Int,
         val inkBottom: Int,
     )
+
 }

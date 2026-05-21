@@ -2,8 +2,10 @@ package systems.pkt.lingon.ui
 
 object TestTags {
     const val TopBarTitle = "topbar_title"
-    const val TopBarMenuButton = "topbar_menu"
-    const val TopBarMenu = "topbar_menu_popup"
+    const val TopBarSettingsButton = "topbar_settings"
+    const val SettingsScreen = "settings_screen"
+    const val SettingsBackButton = "settings_back"
+    const val SettingsCertificatesScreen = "settings_certificates_screen"
     const val HeadlessResizeButton = "headless_resize_button"
     const val WallInactivityButton = "wall_inactivity_button"
     const val ReloadButton = "reload_button"
@@ -21,10 +23,10 @@ object TestTags {
     const val ShareTokenError = "share_token_error"
     const val ShareTokenButton = "share_token_button"
     const val CertificatesButton = "certificates_button"
-    const val ResizeHostMenuItem = "resize_host_menu_item"
-    const val ResizeHostToggle = "resize_host_toggle"
     const val BackgroundWallMenuItem = "background_wall_menu_item"
     const val BackgroundWallToggle = "background_wall_toggle"
+    const val FollowOnReadMenuItem = "follow_on_read_menu_item"
+    const val FollowOnReadToggle = "follow_on_read_toggle"
 
     const val LoginUsername = "login_username"
     const val LoginPassword = "login_password"
@@ -37,6 +39,7 @@ object TestTags {
     const val TerminalList = "terminal_list"
     const val TerminalDebug = "terminal_debug"
     const val TerminalFocus = "terminal_focus"
+    const val TerminalQuickKeys = "terminal_quick_keys"
     const val TabList = "tab_list"
     const val StatusBanner = "status_banner"
     const val StatusDismiss = "status_dismiss"

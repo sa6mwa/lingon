@@ -20,12 +20,14 @@ class LingonRepository(
     private val zoomStore: ZoomStore,
     private val terminalResizeStore: TerminalResizeStore,
     private val backgroundWallStore: BackgroundWallStore,
+    private val followOnReadStore: FollowOnReadStore,
     private val appLockStore: AppLockStore,
 ) : LingonClient {
     override val endpointFlow: Flow<String> = endpointStore.endpointFlow
     override val fontSizeFlow: Flow<Int> = fontSizeStore.fontSizeFlow
     override val resizeHostFlow: Flow<Boolean> = terminalResizeStore.resizeFlow
     override val backgroundWallEnabledFlow: Flow<Boolean> = backgroundWallStore.enabledFlow
+    override val followOnReadEnabledFlow: Flow<Boolean> = followOnReadStore.enabledFlow
     override val appLockTimeoutMinutesFlow: Flow<Int> = appLockStore.timeoutMinutesFlow
     override val savedEndpointsFlow: Flow<List<String>> = endpointStore.savedEndpointsFlow
     override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = certificateStore.certificatesFlow
@@ -49,6 +51,10 @@ class LingonRepository(
 
     override fun setBackgroundWallEnabled(value: Boolean) {
         backgroundWallStore.setEnabled(value)
+    }
+
+    override fun setFollowOnReadEnabled(value: Boolean) {
+        followOnReadStore.setEnabled(value)
     }
 
     override fun setAppLockTimeoutMinutes(value: Int) {

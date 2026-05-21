@@ -954,7 +954,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				}
 			}
 			if len(updated) > 0 {
-				mvu.SortSessionsByLastActive(updated)
+				mvu.SortSessionsByName(updated)
 			}
 			applySessions(updated)
 		}
@@ -1520,7 +1520,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		sessions = append(updated, retainedSessions...)
 		if len(sessions) > 0 {
-			mvu.SortSessionsByLastActive(sessions)
+			mvu.SortSessionsByName(sessions)
 		}
 		for id, view := range views {
 			if view == nil || view.client == nil {
@@ -2263,7 +2263,7 @@ func (m *MultiClient) fetchSessions(ctx context.Context, httpURL string) ([]Sess
 		if sessions == nil {
 			sessions = []SessionInfo{}
 		}
-		mvu.SortSessionsByLastActive(sessions)
+		mvu.SortSessionsByName(sessions)
 		return sessions, nil
 	}
 	if m.Gate != nil {
@@ -2327,7 +2327,7 @@ func (m *MultiClient) fetchSessions(ctx context.Context, httpURL string) ([]Sess
 	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
 		return nil, err
 	}
-	mvu.SortSessionsByLastActive(sessions)
+	mvu.SortSessionsByName(sessions)
 	return sessions, nil
 }
 

@@ -110,8 +110,8 @@ func main() {
 		basePath     = flag.String("base-path", "/v1", "API base path")
 		user         = flag.String("user", "test", "login username")
 		pass         = flag.String("pass", "pass", "login password")
-		cols         = flag.Int("cols", 80, "terminal columns")
-		rows         = flag.Int("rows", 24, "terminal rows")
+		cols         = flag.Int("cols", 120, "terminal columns")
+		rows         = flag.Int("rows", 50, "terminal rows")
 		configPath   = flag.String("config", "", "write JSON config to this path")
 		hostEcho     = flag.Bool("host-echo", false, "run the host echo loop instead of the harness")
 		hostID       = flag.String("host-id", "", "host echo session id")
@@ -281,6 +281,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	}
 
 	controlPath := ensureBasePath(opts.basePath) + "/__harness/start-host"
+	stopHostPath := ensureBasePath(opts.basePath) + "/__harness/stop-host"
 	wallPath := ensureBasePath(opts.basePath) + "/__harness/send-wall"
 	wallInactivityPath := ensureBasePath(opts.basePath) + "/__harness/wall-inactivity"
 	startHeadlessPath := ensureBasePath(opts.basePath) + "/__harness/start-headless"
@@ -307,9 +308,28 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 					count = value
 				}
 			}
+			cols := h.cols
+			rows := h.rows
+			if raw := r.URL.Query().Get("cols"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					cols = value
+				}
+			}
+			if raw := r.URL.Query().Get("rows"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					rows = value
+				}
+			}
+			initialLines := 0
+			if raw := r.URL.Query().Get("initial_lines"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					initialLines = value
+				}
+			}
+			shellPath := strings.TrimSpace(r.URL.Query().Get("shell"))
 			ids := make([]string, 0, count)
 			for i := 0; i < count; i++ {
-				id, err := h.startHost(h.access)
+				id, err := h.startHost(h.access, cols, rows, shellPath, initialLines)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
@@ -318,6 +338,24 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"ids": ids})
+			return
+		case stopHostPath:
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req harnessHeadlessRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := h.stopHost(strings.TrimSpace(req.SessionID)); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "stopped"})
 			return
 		case wallPath:
 			if r.Method != http.MethodPost {
@@ -361,7 +399,19 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			id, err := h.startHeadless()
+			cols := 120
+			rows := 50
+			if raw := r.URL.Query().Get("cols"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					cols = value
+				}
+			}
+			if raw := r.URL.Query().Get("rows"); raw != "" {
+				if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+					rows = value
+				}
+			}
+			id, err := h.startHeadless(cols, rows)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -433,7 +483,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 
 	if opts.sessionCount > 0 {
 		for i := 1; i <= opts.sessionCount; i++ {
-			id, err := h.startHost(access.Token)
+			id, err := h.startHost(access.Token, h.cols, h.rows, "", 0)
 			if err != nil {
 				h.stop()
 				return nil, err
@@ -442,7 +492,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 		}
 
 		secondID := fmt.Sprintf("host-%d", opts.sessionCount+1)
-		scriptPath, err := writeHostScript(root, secondID, selfPath)
+		scriptPath, err := writeHostScript(root, secondID, selfPath, "", 0)
 		if err != nil {
 			h.stop()
 			return nil, err
@@ -575,17 +625,17 @@ func (h *harness) stop() {
 	}
 }
 
-func (h *harness) startHost(token string) (string, error) {
+func (h *harness) startHost(token string, cols int, rows int, shellPath string, initialLines int) (string, error) {
 	if h.ctx.Err() != nil {
 		return "", h.ctx.Err()
 	}
 	h.hostIndex++
 	id := fmt.Sprintf("host-%d", h.hostIndex)
-	scriptPath, err := writeHostScript(h.baseDir, id, h.selfPath)
+	scriptPath, err := writeHostScript(h.baseDir, id, h.selfPath, shellPath, initialLines)
 	if err != nil {
 		return "", err
 	}
-	cancel, err := startHostSession(h.ctx, h.endpoint, token, id, scriptPath, h.cols, h.rows, filepath.Join(h.configDir, "tls"))
+	cancel, err := startHostSession(h.ctx, h.endpoint, token, id, scriptPath, cols, rows, filepath.Join(h.configDir, "tls"))
 	if err != nil {
 		return "", err
 	}
@@ -595,7 +645,26 @@ func (h *harness) startHost(token string) (string, error) {
 	return id, nil
 }
 
-func (h *harness) startHeadless() (string, error) {
+func (h *harness) stopHost(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	h.sessionsMu.Lock()
+	defer h.sessionsMu.Unlock()
+	for i, sess := range h.sessions {
+		if sess.id != sessionID {
+			continue
+		}
+		if sess.stop != nil {
+			sess.stop()
+		}
+		h.sessions = append(h.sessions[:i], h.sessions[i+1:]...)
+		return nil
+	}
+	return fmt.Errorf("host session %s not found", sessionID)
+}
+
+func (h *harness) startHeadless(cols int, rows int) (string, error) {
 	if h.ctx.Err() != nil {
 		return "", h.ctx.Err()
 	}
@@ -614,8 +683,8 @@ func (h *harness) startHeadless() (string, error) {
 		Token:          h.access,
 		AuthFile:       h.authPath,
 		SessionID:      id,
-		Cols:           120,
-		Rows:           50,
+		Cols:           cols,
+		Rows:           rows,
 		Shell:          defaultHeadlessShell(),
 		Publish:        true,
 		PublishControl: true,
@@ -816,9 +885,13 @@ func buildHostSessionOptions(endpoint, token, id, scriptPath string, cols, rows 
 	}
 }
 
-func writeHostScript(baseDir, id, harnessPath string) (string, error) {
+func writeHostScript(baseDir, id, harnessPath string, shellOverride string, initialLines int) (string, error) {
 	scriptPath := filepath.Join(baseDir, fmt.Sprintf("lingon-host-%s.sh", id))
-	if shellPath := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_HOST_SHELL")); shellPath != "" {
+	shellPath := strings.TrimSpace(shellOverride)
+	if shellPath == "" {
+		shellPath = strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_HOST_SHELL"))
+	}
+	if shellPath != "" {
 		content := fmt.Sprintf(`#!/bin/sh
 export PS1='%s$ '
 exec "%s" -i
@@ -828,9 +901,13 @@ exec "%s" -i
 		}
 		return scriptPath, nil
 	}
+	initialLinesEnv := ""
+	if initialLines > 0 {
+		initialLinesEnv = fmt.Sprintf("export LINGON_HOST_ECHO_INITIAL_LINES=%d\n", initialLines)
+	}
 	content := fmt.Sprintf(`#!/bin/sh
-exec "%s" -host-echo -host-id "%s"
-`, harnessPath, id)
+%sexec "%s" -host-echo -host-id "%s"
+`, initialLinesEnv, harnessPath, id)
 	if err := os.WriteFile(scriptPath, []byte(content), 0o700); err != nil {
 		return "", err
 	}
@@ -869,6 +946,13 @@ func runHostEcho(id string) {
 	}
 
 	writer := bufio.NewWriterSize(os.Stdout, 4096)
+	if raw := strings.TrimSpace(os.Getenv("LINGON_HOST_ECHO_INITIAL_LINES")); raw != "" {
+		if initialLines, err := strconv.Atoi(raw); err == nil && initialLines > 0 {
+			for i := 0; i < initialLines; i++ {
+				_, _ = fmt.Fprintf(writer, "LINE_%s %03d\r\n", id, i)
+			}
+		}
+	}
 	_, _ = fmt.Fprintf(writer, "LINGON_READY %s\r\n", id)
 	_ = writer.Flush()
 

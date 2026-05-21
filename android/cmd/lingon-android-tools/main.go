@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -39,6 +42,8 @@ func main() {
 	switch os.Args[1] {
 	case "config-env":
 		os.Exit(runConfigEnv(os.Args[2:]))
+	case "test-times":
+		os.Exit(runTestTimes(os.Args[2:]))
 	case "test-names":
 		os.Exit(runTestNames(os.Args[2:]))
 	case "-h", "--help", "help":
@@ -54,6 +59,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "lingon-android-tools commands:")
 	fmt.Fprintln(os.Stderr, "  config-env --config <path>   emit shell assignments from harness JSON config")
+	fmt.Fprintln(os.Stderr, "  test-times --dir <path>      emit Android JUnit test times sorted by descending duration")
 	fmt.Fprintln(os.Stderr, "  test-names --file <path>     emit Kotlin @Test function names, one per line")
 }
 
@@ -142,6 +148,112 @@ func runTestNames(args []string) int {
 		fmt.Println(name)
 	}
 	return 0
+}
+
+type testTiming struct {
+	ClassName string
+	Name      string
+	Seconds   float64
+}
+
+func runTestTimes(args []string) int {
+	fs := flag.NewFlagSet("test-times", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dirPath := fs.String("dir", "", "Android JUnit XML result directory")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "test-times: %v\n", err)
+		return 2
+	}
+	if strings.TrimSpace(*dirPath) == "" {
+		fmt.Fprintln(os.Stderr, "test-times: --dir is required")
+		return 2
+	}
+	timings, err := readJUnitTestTimings(*dirPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "test-times: %v\n", err)
+		return 1
+	}
+	writeTestTimings(os.Stdout, timings)
+	return 0
+}
+
+func readJUnitTestTimings(dir string) ([]testTiming, error) {
+	var timings []testTiming
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasPrefix(filepath.Base(path), "TEST-") || filepath.Ext(path) != ".xml" {
+			return nil
+		}
+		fileTimings, err := readJUnitTestTimingFile(path)
+		if err != nil {
+			return err
+		}
+		timings = append(timings, fileTimings...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(timings, func(i, j int) bool {
+		if timings[i].Seconds == timings[j].Seconds {
+			if timings[i].ClassName == timings[j].ClassName {
+				return timings[i].Name < timings[j].Name
+			}
+			return timings[i].ClassName < timings[j].ClassName
+		}
+		return timings[i].Seconds > timings[j].Seconds
+	})
+	return timings, nil
+}
+
+func readJUnitTestTimingFile(path string) ([]testTiming, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer file.Close()
+
+	decoder := xml.NewDecoder(file)
+	var timings []testTiming
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "testcase" {
+			continue
+		}
+		var timing testTiming
+		for _, attr := range start.Attr {
+			switch attr.Name.Local {
+			case "classname":
+				timing.ClassName = attr.Value
+			case "name":
+				timing.Name = attr.Value
+			case "time":
+				if _, err := fmt.Sscanf(attr.Value, "%f", &timing.Seconds); err != nil {
+					return nil, fmt.Errorf("parse testcase time %q in %s: %w", attr.Value, path, err)
+				}
+			}
+		}
+		if timing.Name != "" {
+			timings = append(timings, timing)
+		}
+	}
+	return timings, nil
+}
+
+func writeTestTimings(w io.Writer, timings []testTiming) {
+	fmt.Fprintln(w, "seconds\tclass\ttest")
+	for _, timing := range timings {
+		fmt.Fprintf(w, "%.3f\t%s\t%s\n", timing.Seconds, timing.ClassName, timing.Name)
+	}
 }
 
 func extractTestNames(r io.Reader) ([]string, error) {

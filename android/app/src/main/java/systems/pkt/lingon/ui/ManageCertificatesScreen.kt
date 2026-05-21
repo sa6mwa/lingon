@@ -1,14 +1,18 @@
 package systems.pkt.lingon.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -41,6 +46,20 @@ import systems.pkt.lingon.viewmodel.UiState
 
 @Composable
 fun ManageCertificatesScreen(state: UiState, viewModel: AppViewModel) {
+    BackHandler { viewModel.showCertificates(false) }
+    val colorScheme = MaterialTheme.colorScheme
+    val systemTypography = settingsSystemTypography()
+
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = systemTypography,
+    ) {
+        ManageCertificatesScreenContent(state = state, viewModel = viewModel)
+    }
+}
+
+@Composable
+private fun ManageCertificatesScreenContent(state: UiState, viewModel: AppViewModel) {
     val endpoints = state.savedEndpoints
     val selectedEndpoint = state.selectedCertEndpoint
     val context = LocalContext.current
@@ -62,88 +81,95 @@ fun ManageCertificatesScreen(state: UiState, viewModel: AppViewModel) {
         viewModel.addTrustedCertificates(endpoint, content)
     }
 
-    Column(
+    Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .fillMaxSize()
+            .testTag(TestTags.SettingsScreen),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = SettingsHorizontalPaddingDp.dp, vertical = 12.dp)
+                .testTag(TestTags.SettingsCertificatesScreen),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = "Manage certificates",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-            )
-            TextButton(onClick = { viewModel.showCertificates(false) }) {
-                Text("Done")
-            }
-        }
-
-        EndpointPicker(
-            endpoints = endpoints,
-            selected = selectedEndpoint,
-            onSelected = viewModel::selectCertEndpoint,
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(
-                onClick = {
-                    viewModel.setCertificateError(null)
-                    launcher.launch(arrayOf(
-                        "application/x-pem-file",
-                        "application/pem-certificate-chain",
-                        "application/x-x509-ca-cert",
-                        "application/pkix-cert",
-                        "text/plain",
-                    ))
-                },
-                enabled = !selectedEndpoint.isNullOrBlank(),
-            ) {
-                Text("Add certificate")
-            }
-        }
-
-        if (!state.certificateError.isNullOrBlank()) {
-            Text(
-                text = state.certificateError.orEmpty(),
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        if (state.trustedCerts.isEmpty()) {
-            Text(
-                text = if (selectedEndpoint.isNullOrBlank()) {
-                    "Select an endpoint to manage certificates."
-                } else {
-                    "No trusted certificates for this endpoint."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        } else {
-            LazyColumn(
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                items(state.trustedCerts, key = { it.id }) { cert ->
-                    CertificateCard(
-                        cert = cert,
-                        onRemove = {
-                            val endpoint = selectedEndpoint ?: return@CertificateCard
-                            viewModel.removeTrustedCertificate(endpoint, cert.id)
-                        },
-                    )
+                Text(
+                    text = "Manage certificates",
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
+                )
+                TextButton(onClick = { viewModel.showCertificates(false) }) {
+                    Text("Done")
+                }
+            }
+
+            EndpointPicker(
+                endpoints = endpoints,
+                selected = selectedEndpoint,
+                onSelected = viewModel::selectCertEndpoint,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(
+                    onClick = {
+                        viewModel.setCertificateError(null)
+                        launcher.launch(arrayOf(
+                            "application/x-pem-file",
+                            "application/pem-certificate-chain",
+                            "application/x-x509-ca-cert",
+                            "application/pkix-cert",
+                            "text/plain",
+                        ))
+                    },
+                    enabled = !selectedEndpoint.isNullOrBlank(),
+                ) {
+                    Text("Add certificate")
+                }
+            }
+
+            if (!state.certificateError.isNullOrBlank()) {
+                Text(
+                    text = state.certificateError.orEmpty(),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
+            if (state.trustedCerts.isEmpty()) {
+                Text(
+                    text = if (selectedEndpoint.isNullOrBlank()) {
+                        "Select an endpoint to manage certificates."
+                    } else {
+                        "No trusted certificates for this endpoint."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(state.trustedCerts, key = { it.id }) { cert ->
+                        CertificateCard(
+                            cert = cert,
+                            onRemove = {
+                                val endpoint = selectedEndpoint ?: return@CertificateCard
+                                viewModel.removeTrustedCertificate(endpoint, cert.id)
+                            },
+                        )
+                    }
                 }
             }
         }
-
     }
 }
 

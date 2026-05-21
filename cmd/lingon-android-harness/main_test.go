@@ -55,7 +55,7 @@ func TestWriteHostScriptDoesNotTouchCallerTTY(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	scriptPath, err := writeHostScript(dir, "host-1", "/tmp/lingon-android-harness")
+	scriptPath, err := writeHostScript(dir, "host-1", "/tmp/lingon-android-harness", "", 0)
 	if err != nil {
 		t.Fatalf("writeHostScript: %v", err)
 	}
@@ -117,5 +117,31 @@ func TestHarnessStopRemovesTempRoot(t *testing.T) {
 	h.stop()
 	if _, err := os.Stat(baseDir); !os.IsNotExist(err) {
 		t.Fatalf("expected harness temp dir to be removed after stop, stat err=%v", err)
+	}
+}
+
+func TestStopHostStopsOnlyRequestedSession(t *testing.T) {
+	stopped := map[string]bool{}
+	h := &harness{
+		sessions: []sessionHandle{
+			{id: "host-1", stop: func() { stopped["host-1"] = true }},
+			{id: "host-2", stop: func() { stopped["host-2"] = true }},
+		},
+	}
+
+	if err := h.stopHost("host-1"); err != nil {
+		t.Fatalf("stopHost: %v", err)
+	}
+	if !stopped["host-1"] {
+		t.Fatal("expected host-1 stop callback to run")
+	}
+	if stopped["host-2"] {
+		t.Fatal("expected host-2 to keep running")
+	}
+	if len(h.sessions) != 1 || h.sessions[0].id != "host-2" {
+		t.Fatalf("remaining sessions = %+v, want only host-2", h.sessions)
+	}
+	if err := h.stopHost("host-1"); err == nil {
+		t.Fatal("expected stopping a missing host to fail")
 	}
 }

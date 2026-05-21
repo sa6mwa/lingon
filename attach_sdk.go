@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/authstore"
 	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/relay"
+	"pkt.systems/lingon/internal/sessionorder"
 	"pkt.systems/lingon/internal/trace"
 	"pkt.systems/pslog"
 )
@@ -158,6 +160,9 @@ func ListSessionsWithTLSDirInsecure(ctx context.Context, endpoint, accessToken, 
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return sessionorder.Less(out[i].Name, out[i].ID, out[j].Name, out[j].ID)
+	})
 	return out, nil
 }
 

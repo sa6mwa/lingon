@@ -93,6 +93,11 @@ class RelaySessionsClient(
             return emptyList()
         }
         return LingonJson.decodeFromString(ListSerializer(RelaySession.serializer()), trimmed)
+            .sortedWith(compareBy<RelaySession> { sessionSortKey(it) }.thenBy { it.id.trim() })
+    }
+
+    private fun sessionSortKey(session: RelaySession): String {
+        return session.name?.trim()?.takeIf { it.isNotEmpty() } ?: session.id.trim()
     }
 
     private fun decodeWallEvents(body: String): RelayWallEventsPage {

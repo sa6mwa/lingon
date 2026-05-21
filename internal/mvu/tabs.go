@@ -3,7 +3,8 @@ package mvu
 import (
 	"sort"
 	"strings"
-	"time"
+
+	"pkt.systems/lingon/internal/sessionorder"
 )
 
 // SessionTabSource is an input row for tab model construction.
@@ -23,12 +24,6 @@ type BuildSessionTabsOptions struct {
 type SessionTabSourceProvider interface {
 	SessionTabID() string
 	SessionTabName() string
-}
-
-// SessionTabOrderProvider exposes last-active ordering fields.
-type SessionTabOrderProvider interface {
-	SessionTabSourceProvider
-	SessionTabLastActiveAt() time.Time
 }
 
 // SessionTabSources maps arbitrary session rows into MVU tab sources.
@@ -55,15 +50,15 @@ func SessionTabSourcesFrom[T SessionTabSourceProvider](sessions []T) []SessionTa
 	return SessionTabSources(sessions, func(session T) string { return session.SessionTabID() }, func(session T) string { return session.SessionTabName() })
 }
 
-// SortSessionsByLastActive sorts session rows by descending last activity then id.
-func SortSessionsByLastActive[T SessionTabOrderProvider](sessions []T) {
+// SortSessionsByName sorts session rows alphanumerically by display name, then id.
+func SortSessionsByName[T SessionTabSourceProvider](sessions []T) {
 	sort.Slice(sessions, func(i, j int) bool {
-		left := sessions[i].SessionTabLastActiveAt()
-		right := sessions[j].SessionTabLastActiveAt()
-		if !left.Equal(right) {
-			return left.After(right)
-		}
-		return sessions[i].SessionTabID() < sessions[j].SessionTabID()
+		return sessionorder.Less(
+			sessions[i].SessionTabName(),
+			sessions[i].SessionTabID(),
+			sessions[j].SessionTabName(),
+			sessions[j].SessionTabID(),
+		)
 	})
 }
 

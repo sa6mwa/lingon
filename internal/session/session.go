@@ -30,6 +30,7 @@ import (
 	"pkt.systems/lingon/internal/publisher"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/render"
+	"pkt.systems/lingon/internal/sessionorder"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/trace"
@@ -336,11 +337,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		tokenRefresher = relayclient.TokenRefresher(r.opts.Endpoint, r.opts.AuthFile, r.opts.TLSDir, r.opts.Insecure, func(token string) {
 			r.opts.Token = token
 		})
-		if token, err := tokenRefresher(ctx); err == nil && token != "" {
-			r.opts.Token = token
-		} else if err != nil && r.logger != nil {
-			r.logger.Debug("session.auth.refresh.failed", "err", err)
-		}
 	}
 	if r.opts.Publish && r.opts.Token == "" && tokenRefresher == nil {
 		return fmt.Errorf("access token is required when publishing")
@@ -1731,39 +1727,11 @@ func (r *Runner) orderSessions(sessions []remoteSessionInfo) []remoteSessionInfo
 		r.setSessionOrder(sessions)
 		return sessions
 	}
-	r.sessionOrderMu.RLock()
-	prior := append([]string(nil), r.sessionOrder...)
-	r.sessionOrderMu.RUnlock()
-	if len(prior) == 0 {
-		r.setSessionOrder(sessions)
-		return sessions
-	}
-
-	byID := make(map[string]remoteSessionInfo, len(sessions))
-	for _, session := range sessions {
-		byID[session.ID] = session
-	}
-	ordered := make([]remoteSessionInfo, 0, len(sessions))
-	for _, id := range prior {
-		session, ok := byID[id]
-		if !ok {
-			continue
-		}
-		ordered = append(ordered, session)
-		delete(byID, id)
-	}
-	if len(byID) > 0 {
-		newSessions := make([]remoteSessionInfo, 0, len(byID))
-		for _, session := range byID {
-			newSessions = append(newSessions, session)
-		}
-		sort.Slice(newSessions, func(i, j int) bool {
-			return newSessions[i].ID < newSessions[j].ID
-		})
-		ordered = append(ordered, newSessions...)
-	}
-	r.setSessionOrder(ordered)
-	return ordered
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessionorder.Less(sessions[i].Name, sessions[i].ID, sessions[j].Name, sessions[j].ID)
+	})
+	r.setSessionOrder(sessions)
+	return sessions
 }
 
 func (r *Runner) setSessionOrder(sessions []remoteSessionInfo) {

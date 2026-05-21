@@ -2279,6 +2279,103 @@ func TestHostResizeBashClearWhileShrunkThenExpandMatchesControl(t *testing.T) {
 	})
 }
 
+func TestHostResizeReadlineLongLineCtrlACtrlEPreservesWrappedPrompt(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	shell := readlinePromptBash(t)
+	const (
+		wideCols    = 119
+		wideRows    = 30
+		resizedCols = 80
+		resizedRows = 24
+	)
+	const command = "#pushd ~/g/mkpod/ && make clean build && cp bin/mkpod ~/bin/mkpod && mkpod new"
+
+	h := newHarness(t)
+	host := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-readline-long-host",
+		SessionName: "viewport-resize-readline-long-host",
+		Shell:       shell,
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(host.Cancel)
+
+	peer := h.StartHost(ptytest.HostOptions{
+		SessionID:   "viewport-resize-readline-long-peer",
+		SessionName: "viewport-resize-readline-long-peer",
+		Shell:       "/bin/sh",
+		Cols:        wideCols,
+		Rows:        wideRows,
+	})
+	t.Cleanup(peer.Cancel)
+
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
+	waitForConnectedBannerClear(t, host, 4*time.Second)
+	eventuallyWithClock(t, h.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
+		if !host.Screen().Contains("PROMPT>") {
+			return fmt.Errorf("waiting for readline prompt\nscreen:\n%s", host.Screen().String())
+		}
+		return nil
+	})
+
+	host.Resize(resizedCols, resizedRows)
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+
+	host.Send("for i in $(seq 1 120); do printf 'ROW-%03d 0123456789012345678901234567890123456789\\n' \"$i\"; done\n")
+	eventuallyWithClock(t, h.Clock(), 4*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if !screen.Contains("ROW-120 0123456789012345678901234567890123456789") || !screen.Contains("PROMPT>") {
+			return fmt.Errorf("waiting for resized readline prompt after filled output\nscreen:\n%s", screen.String())
+		}
+		cur := host.Cursor()
+		if cur.Row != resizedRows {
+			return fmt.Errorf("expected resized prompt cursor on bottom row before long command, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		return nil
+	})
+
+	host.Send(command)
+	eventuallyWithClock(t, h.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if !screen.Contains("PROMPT> #pushd") || !screen.Contains("od new") {
+			return fmt.Errorf("waiting for wrapped readline command after resize\nscreen:\n%s", screen.String())
+		}
+		cur := host.Cursor()
+		if cur.Row != resizedRows {
+			return fmt.Errorf("expected long command cursor on bottom row after resize, got row=%d col=%d\nscreen:\n%s", cur.Row, cur.Col, screen.String())
+		}
+		return nil
+	})
+	baseline := host.Screen()
+	_ = host.DrainRaw()
+
+	host.SendBytes([]byte{0x01}) // Ctrl+A: readline beginning-of-line.
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+	assertScreenTextStableAfterReadlineCursorMove(t, host, baseline, "Ctrl+A")
+
+	host.SendBytes([]byte{0x05}) // Ctrl+E: readline end-of-line.
+	advanceTestClock(h.Clock(), 250*time.Millisecond)
+	assertScreenTextStableAfterReadlineCursorMove(t, host, baseline, "Ctrl+E")
+}
+
+func assertScreenTextStableAfterReadlineCursorMove(t *testing.T, host *ptytest.PTYSession, baseline ptytest.Screen, action string) {
+	t.Helper()
+	eventuallyWithClock(t, host.Clock(), 2*time.Second, 50*time.Millisecond, func() error {
+		screen := host.Screen()
+		if len(screen.Lines) != len(baseline.Lines) {
+			return fmt.Errorf("%s changed row count from %d to %d\nbefore:\n%s\nafter:\n%s", action, len(baseline.Lines), len(screen.Lines), baseline.String(), screen.String())
+		}
+		for row := range baseline.Lines {
+			if screen.Lines[row] != baseline.Lines[row] {
+				return fmt.Errorf("%s changed wrapped command text at row %d\nbefore: %q\nafter:  %q\nbefore screen:\n%s\nafter screen:\n%s", action, row+1, baseline.Lines[row], screen.Lines[row], baseline.String(), screen.String())
+			}
+		}
+		return nil
+	})
+}
+
 func compareScreensWithNormalizedTabTitles(got, want ptytest.Screen, gotTitle, wantTitle string) error {
 	gotLines := append([]string(nil), got.Lines...)
 	wantLines := append([]string(nil), want.Lines...)
@@ -2413,6 +2510,26 @@ set +o vi
 	wrapper := fmt.Sprintf("#!/usr/bin/env bash\nexec /bin/bash --noprofile --rcfile %q -i\n", rcPath)
 	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil {
 		t.Fatalf("write decorated bash wrapper: %v", err)
+	}
+	return wrapperPath
+}
+
+func readlinePromptBash(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	rcPath := filepath.Join(dir, "bashrc")
+	wrapperPath := filepath.Join(dir, "bash-wrapper.sh")
+	const rc = `
+PS1='PROMPT> '
+set -o emacs
+bind 'set enable-bracketed-paste off'
+`
+	if err := os.WriteFile(rcPath, []byte(rc), 0o644); err != nil {
+		t.Fatalf("write readline bashrc: %v", err)
+	}
+	wrapper := fmt.Sprintf("#!/usr/bin/env bash\nexec /bin/bash --noprofile --rcfile %q -i\n", rcPath)
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write readline bash wrapper: %v", err)
 	}
 	return wrapperPath
 }

@@ -16,6 +16,9 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.resetMain
 import okhttp3.CookieJar
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
 import okhttp3.WebSocket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -55,6 +58,7 @@ import systems.pkt.lingon.MaxTerminalZoom
 import systems.pkt.lingon.terminal.TerminalSnapshot
 import systems.pkt.lingon.ui.SNAPSHOT_MODE_APP_CURSOR
 import systems.pkt.lingon.work.BackgroundWallServiceController
+import systems.pkt.lingon.work.WallWorkScheduler
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppViewModelTest {
@@ -516,6 +520,60 @@ class AppViewModelTest {
     }
 
     @Test
+    fun sessionsAreSortedByNameAcrossBootstrapRefreshAndWebsocketUpdates() = runTest {
+        var currentSessions = listOf(
+            RelaySession(id = "session-c", name = "Alpha", status = "active"),
+            RelaySession(id = "session-a", name = "Charlie", status = "active"),
+            RelaySession(id = "session-b", name = "Bravo", status = "active"),
+        )
+        val repository = FakeRepository(
+            failListSessions = false,
+            sessionProvider = { currentSessions },
+        )
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = emptyList(),
+                activeSessionId = null,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+        assertEquals(listOf("session-c", "session-b", "session-a"), viewModel.state.value.sessions.map { it.id })
+        assertEquals("session-c", viewModel.state.value.activeSessionId)
+
+        currentSessions = listOf(
+            RelaySession(id = "session-d", name = "Delta", status = "active"),
+            RelaySession(id = "session-b", name = "Bravo", status = "active"),
+        )
+        viewModel.manualRefresh()
+        advanceUntilIdle()
+        assertEquals(listOf("session-c", "session-b", "session-d"), viewModel.state.value.sessions.map { it.id })
+
+        wsClient.fireFrame(
+            Frame.newBuilder()
+                .setSeq(77L)
+                .setSessions(
+                    Sessions.newBuilder()
+                        .addSessions(SessionInfo.newBuilder().setId("session-z").setName("Zulu").setStatus("active"))
+                        .addSessions(SessionInfo.newBuilder().setId("session-a").setName("Alpha").setStatus("active"))
+                        .addSessions(SessionInfo.newBuilder().setId("session-m").setName("Mike").setStatus("active")),
+                )
+                .build(),
+        )
+        advanceUntilIdle()
+        assertEquals(listOf("session-a", "session-c", "session-m", "session-z"), viewModel.state.value.sessions.map { it.id })
+    }
+
+    @Test
     fun bootstrapRestoresLastActiveSessionForEndpoint() = runTest {
         val repository = FakeRepository(
             sessions = listOf(
@@ -613,6 +671,145 @@ class AppViewModelTest {
         assertEquals(1, repository.refreshAuthCalls)
         assertEquals(1, wsClient.connectCount)
         assertEquals("host-1", viewModel.state.value.activeSessionId)
+    }
+
+    @Test
+    fun websocketUnauthorizedRefreshSuccessPreservesSessionsAndRecovers() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(
+                RelaySession(id = "host-1", name = "Host 1", status = "active"),
+                RelaySession(id = "host-2", name = "Host 2", status = "active"),
+            ),
+            failListSessions = false,
+            refreshAuthResult = true,
+            backgroundWallEnabled = true,
+        )
+        val wsClient = FakeWsClient()
+        val wallScheduler = RecordingWallWorkScheduler()
+        val viewModel = AppViewModel(
+            repository,
+            wsClient,
+            wallWorkScheduler = wallScheduler,
+        )
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(
+                    RelaySession(id = "host-1", name = "Host 1", status = "active"),
+                    RelaySession(id = "host-2", name = "Host 2", status = "active"),
+                ),
+                activeSessionId = "host-1",
+                shareToken = null,
+                connectionState = ConnectionState.Connected,
+                hasControl = true,
+            ),
+        )
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        val initialConnectCount = wsClient.connectCount
+        val initialRefreshCalls = repository.refreshAuthCalls
+
+        wsClient.fireFailure(401)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue(state.loggedIn)
+        assertEquals("host-1", state.activeSessionId)
+        assertEquals(listOf("host-1", "host-2"), state.sessions.map { it.id })
+        assertTrue(repository.refreshAuthCalls >= initialRefreshCalls + 1)
+        assertTrue(wsClient.connectCount > initialConnectCount)
+        assertFalse(wallScheduler.resetCursorCalled)
+    }
+
+    @Test
+    fun websocketUnauthorizedRefreshFailureExpiresSession() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+            refreshAuthResult = false,
+        )
+        val wsClient = FakeWsClient()
+        val wallScheduler = RecordingWallWorkScheduler()
+        val viewModel = AppViewModel(
+            repository,
+            wsClient,
+            wallWorkScheduler = wallScheduler,
+        )
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                shareToken = null,
+                connectionState = ConnectionState.Connected,
+                hasControl = true,
+            ),
+        )
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        val initialRefreshCalls = repository.refreshAuthCalls
+
+        wsClient.fireFailure(401)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue(state.loggedIn)
+        assertNull(state.activeSessionId)
+        assertTrue(state.sessions.isEmpty())
+        assertEquals("session expired", state.status?.message)
+        assertEquals(initialRefreshCalls + 1, repository.refreshAuthCalls)
+        assertTrue(wallScheduler.resetCursorCalled)
+    }
+
+    @Test
+    fun websocketAuthorizationFrameRefreshSuccessPreservesSessionsAndRecovers() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+            refreshAuthResult = true,
+        )
+        val wsClient = FakeWsClient()
+        val wallScheduler = RecordingWallWorkScheduler()
+        val viewModel = AppViewModel(
+            repository,
+            wsClient,
+            wallWorkScheduler = wallScheduler,
+        )
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                shareToken = null,
+                connectionState = ConnectionState.Connected,
+                hasControl = true,
+            ),
+        )
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        val initialRefreshCalls = repository.refreshAuthCalls
+
+        wsClient.fireFrame(errorFrame("authorization failed"))
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue(state.loggedIn)
+        assertEquals("host-1", state.activeSessionId)
+        assertEquals(listOf("host-1"), state.sessions.map { it.id })
+        assertTrue(repository.refreshAuthCalls >= initialRefreshCalls + 1)
+        assertFalse(wallScheduler.resetCursorCalled)
     }
 
     @Test
@@ -1428,7 +1625,7 @@ class AppViewModelTest {
 
         assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
 
-        advanceTimeBy(2999)
+        advanceTimeBy(4999)
         runCurrent()
         assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
 
@@ -1474,7 +1671,7 @@ class AppViewModelTest {
         runCurrent()
         assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
 
-        advanceTimeBy(2999)
+        advanceTimeBy(4999)
         runCurrent()
         assertEquals("wall 5m", viewModel.state.value.transientStatus?.message)
 
@@ -1870,15 +2067,18 @@ private class FakeRepository(
     private val refreshAuthError: Throwable? = null,
     backgroundWallEnabled: Boolean = false,
     backgroundWallEnabledFlowOverride: Flow<Boolean>? = null,
+    followOnReadEnabled: Boolean = false,
     initialSessionZooms: Map<String, Float> = emptyMap(),
     initialLastActiveSessionByEndpoint: Map<String, String> = emptyMap(),
 ) : LingonClient {
     private val backgroundWallEnabledState = MutableStateFlow(backgroundWallEnabled)
+    private val followOnReadEnabledState = MutableStateFlow(followOnReadEnabled)
     override val endpointFlow: Flow<String> = MutableStateFlow("https://localhost:12843/v1")
     override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
     override val resizeHostFlow: Flow<Boolean> = MutableStateFlow(false)
     override val backgroundWallEnabledFlow: Flow<Boolean> =
         backgroundWallEnabledFlowOverride ?: backgroundWallEnabledState
+    override val followOnReadEnabledFlow: Flow<Boolean> = followOnReadEnabledState
     override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
     override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(listOf("https://localhost:12843/v1"))
     override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
@@ -1909,6 +2109,10 @@ private class FakeRepository(
         onSetBackgroundWallEnabled?.invoke(value) ?: run {
             backgroundWallEnabledState.value = value
         }
+    }
+
+    override fun setFollowOnReadEnabled(value: Boolean) {
+        followOnReadEnabledState.value = value
     }
 
     override fun setAppLockTimeoutMinutes(value: Int) {
@@ -2020,6 +2224,16 @@ private class FakeWsClient(
         lastListener?.onFrame(fakeSocket, frame)
     }
 
+    fun fireFailure(responseCode: Int) {
+        val response = Response.Builder()
+            .request(Request.Builder().url("https://localhost/ws").build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(responseCode)
+            .message("status $responseCode")
+            .build()
+        lastListener?.onFailure(fakeSocket, RuntimeException("websocket failed"), response)
+    }
+
     override fun sendInput(webSocket: WebSocket, data: ByteArray) {
         lastSentBytes = data.copyOf()
     }
@@ -2034,6 +2248,19 @@ private class FakeWsClient(
 
     override fun sendCommand(webSocket: WebSocket, kind: CommandKind) {
         lastSentCommand = kind
+    }
+}
+
+private class RecordingWallWorkScheduler : WallWorkScheduler {
+    var resetCursorCalled = false
+    val enabledValues = mutableListOf<Boolean>()
+
+    override fun setEnabled(enabled: Boolean) {
+        enabledValues += enabled
+    }
+
+    override fun resetCursor() {
+        resetCursorCalled = true
     }
 }
 
@@ -2160,6 +2387,16 @@ private fun scrollbackFrame(seq: Long): Frame {
                         .addBg(0)
                         .build(),
                 )
+                .build(),
+        )
+        .build()
+}
+
+private fun errorFrame(message: String): Frame {
+    return Frame.newBuilder()
+        .setError(
+            systems.pkt.lingon.protocol.Error.newBuilder()
+                .setMessage(message)
                 .build(),
         )
         .build()

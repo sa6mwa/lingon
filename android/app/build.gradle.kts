@@ -37,7 +37,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "v0.2.0"
+        versionName = "v0.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         integrationRunnerArgProperties.forEach { (runnerArg, gradleProperty) ->
             providers.gradleProperty(gradleProperty).orNull?.let { value ->
@@ -146,6 +146,7 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test:rules:1.7.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2026.01.00"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 

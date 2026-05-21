@@ -33,12 +33,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -87,39 +88,133 @@ fun TerminalScreen(
     title: String,
     state: UiState,
     viewModel: AppViewModel,
-    menuExpanded: Boolean,
-    onToggleMenu: () -> Unit,
-    onDismissMenu: () -> Unit,
+    onOpenSettings: () -> Unit,
+    viewportCache: MutableMap<String, TerminalViewportState>,
+    viewportCacheIdentity: String?,
 ) {
     var ctrlActive by remember { mutableStateOf(false) }
     var altActive by remember { mutableStateOf(false) }
     var requestInputFocus by remember { mutableStateOf<(() -> Unit)?>(null) }
-    var terminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
-    val viewportCache = remember { mutableStateMapOf<String, TerminalViewportState>() }
+    var requestInputBlur by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var inputReadyNonce by remember { mutableStateOf(0) }
+    var imeRestoreInProgress by remember { mutableStateOf(false) }
+    var userImeDismissInProgress by remember { mutableStateOf(false) }
+    var captureImeInsetChanges by remember { mutableStateOf(true) }
+    var observedTerminalImeVisible by remember { mutableStateOf(false) }
     val config = LocalConfiguration.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val isCompact = config.screenWidthDp < 360 || config.screenHeightDp < 700
     val isLandscape = config.screenWidthDp > config.screenHeightDp
     val screenPadding = if (isCompact) 8.dp else 12.dp
     val spacing = if (isCompact) 6.dp else 8.dp
 
-    val imeVisible = isTerminalImeVisible(
+    val rawImeVisible = isTerminalImeVisible(
         imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current),
         navigationBarsBottomPx = WindowInsets.navigationBars.getBottom(LocalDensity.current),
     )
+    val waitingForRestoredImeInset =
+        state.restoreTerminalImeOnLifecycleStart == true &&
+            !rawImeVisible &&
+            !userImeDismissInProgress &&
+            (
+                !observedTerminalImeVisible ||
+                    state.sessionSyncing ||
+                    state.connectionState != ConnectionState.Connected
+                )
+    val imeVisible =
+        rawImeVisible ||
+            (
+                !waitingForRestoredImeInset &&
+                state.restoreTerminalImeOnLifecycleStart == true &&
+                    !userImeDismissInProgress &&
+                    observedTerminalImeVisible
+                )
     val palette = rememberTerminalPalette()
     val focusInput: () -> Unit = {
+        userImeDismissInProgress = false
+        viewModel.recordTerminalImeVisibilityForLifecycle(true)
         requestInputFocus?.invoke()
         Unit
     }
-    LaunchedEffect(state.activeSessionId) { focusInput() }
-
-    val handleSelectSession: (String) -> Unit = { nextSessionId ->
-        val currentSessionId = state.activeSessionId
-        if (!currentSessionId.isNullOrBlank() && currentSessionId != nextSessionId) {
-            terminalGridView?.let { view ->
-                viewportCache[currentSessionId] = view.captureViewportState()
+    fun maybeFocusInputForImeRestore(suppressHiddenCapture: Boolean) {
+        if (state.restoreTerminalImeOnLifecycleStart == false) {
+            imeRestoreInProgress = false
+            requestInputBlur?.invoke()
+        } else if (imeVisible) {
+            imeRestoreInProgress = false
+            userImeDismissInProgress = false
+            observedTerminalImeVisible = true
+            viewModel.recordTerminalImeVisibilityForLifecycle(true)
+        } else if (suppressHiddenCapture && state.restoreTerminalImeOnLifecycleStart == true) {
+            imeRestoreInProgress = true
+        } else {
+            imeRestoreInProgress = false
+            focusInput()
+        }
+    }
+    val focusInputIfImeRestoreAllowed: () -> Unit = {
+        maybeFocusInputForImeRestore(suppressHiddenCapture = false)
+    }
+    val handleUserDismissIme: () -> Unit = {
+        imeRestoreInProgress = false
+        userImeDismissInProgress = true
+        viewModel.recordTerminalImeVisibilityForLifecycle(false)
+    }
+    LaunchedEffect(state.activeSessionId, inputReadyNonce) { focusInputIfImeRestoreAllowed() }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> captureImeInsetChanges = false
+                Lifecycle.Event.ON_RESUME -> captureImeInsetChanges = true
+                else -> Unit
             }
         }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+    LaunchedEffect(
+        rawImeVisible,
+        state.activeSessionId,
+        captureImeInsetChanges,
+        state.restoreTerminalImeOnLifecycleStart,
+        imeRestoreInProgress,
+        observedTerminalImeVisible,
+        userImeDismissInProgress,
+    ) {
+        when (
+            decideTerminalImeLifecycleAction(
+                TerminalImeLifecycleInput(
+                    imeVisible = rawImeVisible,
+                    captureImeInsetChanges = captureImeInsetChanges,
+                    lifecycleResumed = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
+                    restoreTerminalImeOnLifecycleStart = state.restoreTerminalImeOnLifecycleStart,
+                    imeRestoreInProgress = imeRestoreInProgress,
+                    observedTerminalImeVisible = observedTerminalImeVisible,
+                    userDismissInProgress = userImeDismissInProgress,
+                ),
+            )
+        ) {
+            TerminalImeLifecycleAction.Ignore -> Unit
+            TerminalImeLifecycleAction.RecordVisible -> {
+                observedTerminalImeVisible = true
+                imeRestoreInProgress = false
+                viewModel.recordTerminalImeVisibilityForLifecycle(true)
+            }
+            TerminalImeLifecycleAction.BlurOnly -> requestInputBlur?.invoke()
+            TerminalImeLifecycleAction.CompleteUserDismissAndBlur -> {
+                userImeDismissInProgress = false
+                requestInputBlur?.invoke()
+            }
+            TerminalImeLifecycleAction.RecordHiddenAndBlur -> {
+                requestInputBlur?.invoke()
+                viewModel.recordTerminalImeVisibilityForLifecycle(false)
+            }
+        }
+    }
+
+    val handleSelectSession: (String) -> Unit = { nextSessionId ->
         viewModel.selectSession(nextSessionId)
     }
 
@@ -205,15 +300,7 @@ fun TerminalScreen(
                 ) {
                     TopBar(
                         title = title,
-                        username = state.username,
-                        loggedIn = state.loggedIn,
-                        menuExpanded = menuExpanded,
-                        onToggleMenu = onToggleMenu,
-                        onDismissMenu = onDismissMenu,
-                        onShowSettings = { viewModel.showSettings(true) },
-                        onShowTheme = { viewModel.showThemePicker(true) },
-                        onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
-                        onResetZoomPan = { viewModel.resetZoomAndPan() },
+                        onOpenSettings = onOpenSettings,
                         wallInactivityEnabled = state.wallInactivityEnabled,
                         wallInactivityLabel = state.wallInactivityLabel,
                         wallInactivityAvailable = !state.activeSessionId.isNullOrBlank(),
@@ -222,11 +309,6 @@ fun TerminalScreen(
                         headlessResizeEnabled = state.activeSessionHeadless,
                         onResizeHeadlessNow = { viewModel.sendHeadlessResizeNow() },
                         onReload = { viewModel.manualRefresh() },
-                        onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
-                        onShowCertificates = { viewModel.showCertificates(true) },
-                        backgroundWallEnabled = state.backgroundWallEnabled,
-                        onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
-                        onLogout = { viewModel.logout() },
                         compact = true,
                         vertical = true,
                         modifier = Modifier.fillMaxWidth(),
@@ -242,14 +324,14 @@ fun TerminalScreen(
                     state = state,
                     viewModel = viewModel,
                     viewportCache = viewportCache,
-                    terminalGridView = terminalGridView,
-                    onTerminalGridViewChanged = { terminalGridView = it },
+                    viewportCacheIdentity = viewportCacheIdentity,
                     palette = palette,
                     fitToViewWidth = true,
                     screenPadding = screenPadding,
                     isCompact = isCompact,
                     isLandscape = true,
                     imeVisible = imeVisible,
+                    waitForImeInsetBeforeTerminalLayout = waitingForRestoredImeInset,
                     onHardwareKey = ::handleHardwareKey,
                     ctrlActive = ctrlActive,
                     altActive = altActive,
@@ -257,7 +339,14 @@ fun TerminalScreen(
                     onToggleAlt = { altActive = !altActive },
                     onSendKey = ::sendTextFromSoftInput,
                     onSendBytes = ::sendBytesFromSoftInput,
-                    onInputReady = { requestInputFocus = it },
+                    onUserDismissIme = handleUserDismissIme,
+                    onInputReady = { requestFocus ->
+                        requestInputFocus = requestFocus
+                        inputReadyNonce += 1
+                    },
+                    onInputBlurReady = { requestBlur ->
+                        requestInputBlur = requestBlur
+                    },
                     focusInput = focusInput,
                     showStatusOverlay = true,
                     modifier = Modifier
@@ -274,15 +363,7 @@ fun TerminalScreen(
             ) {
                 TopBar(
                     title = title,
-                    username = state.username,
-                    loggedIn = state.loggedIn,
-                    menuExpanded = menuExpanded,
-                    onToggleMenu = onToggleMenu,
-                    onDismissMenu = onDismissMenu,
-                    onShowSettings = { viewModel.showSettings(true) },
-                    onShowTheme = { viewModel.showThemePicker(true) },
-                    onShowAppLock = { viewModel.showAppLockTimeoutDialog(true) },
-                    onResetZoomPan = { viewModel.resetZoomAndPan() },
+                    onOpenSettings = onOpenSettings,
                     wallInactivityEnabled = state.wallInactivityEnabled,
                     wallInactivityLabel = state.wallInactivityLabel,
                     wallInactivityAvailable = !state.activeSessionId.isNullOrBlank(),
@@ -291,11 +372,6 @@ fun TerminalScreen(
                     headlessResizeEnabled = state.activeSessionHeadless,
                     onResizeHeadlessNow = { viewModel.sendHeadlessResizeNow() },
                     onReload = { viewModel.manualRefresh() },
-                    onShowShareToken = { viewModel.showShareToken(true, state.shareToken) },
-                    onShowCertificates = { viewModel.showCertificates(true) },
-                    backgroundWallEnabled = state.backgroundWallEnabled,
-                    onToggleBackgroundWall = { enabled -> viewModel.setBackgroundWallEnabled(enabled) },
-                    onLogout = { viewModel.logout() },
                     compact = isCompact,
                     vertical = false,
                 )
@@ -318,14 +394,14 @@ fun TerminalScreen(
                     state = state,
                     viewModel = viewModel,
                     viewportCache = viewportCache,
-                    terminalGridView = terminalGridView,
-                    onTerminalGridViewChanged = { terminalGridView = it },
+                    viewportCacheIdentity = viewportCacheIdentity,
                     palette = palette,
                     fitToViewWidth = true,
                     screenPadding = screenPadding,
                     isCompact = isCompact,
                     isLandscape = false,
                     imeVisible = imeVisible,
+                    waitForImeInsetBeforeTerminalLayout = waitingForRestoredImeInset,
                     onHardwareKey = ::handleHardwareKey,
                     ctrlActive = ctrlActive,
                     altActive = altActive,
@@ -333,7 +409,14 @@ fun TerminalScreen(
                     onToggleAlt = { altActive = !altActive },
                     onSendKey = ::sendTextFromSoftInput,
                     onSendBytes = ::sendBytesFromSoftInput,
-                    onInputReady = { requestInputFocus = it },
+                    onUserDismissIme = handleUserDismissIme,
+                    onInputReady = { requestFocus ->
+                        requestInputFocus = requestFocus
+                        inputReadyNonce += 1
+                    },
+                    onInputBlurReady = { requestBlur ->
+                        requestInputBlur = requestBlur
+                    },
                     focusInput = focusInput,
                     showStatusOverlay = false,
                     modifier = Modifier
@@ -480,14 +563,14 @@ private fun TerminalPanel(
     state: UiState,
     viewModel: AppViewModel,
     viewportCache: MutableMap<String, TerminalViewportState>,
-    terminalGridView: TerminalGridView?,
-    onTerminalGridViewChanged: (TerminalGridView?) -> Unit,
+    viewportCacheIdentity: String?,
     palette: TerminalPalette,
     fitToViewWidth: Boolean,
     screenPadding: Dp,
     isCompact: Boolean,
     isLandscape: Boolean,
     imeVisible: Boolean,
+    waitForImeInsetBeforeTerminalLayout: Boolean,
     onHardwareKey: (AndroidKeyEvent) -> Boolean,
     ctrlActive: Boolean,
     altActive: Boolean,
@@ -495,111 +578,131 @@ private fun TerminalPanel(
     onToggleAlt: () -> Unit,
     onSendKey: (String) -> Unit,
     onSendBytes: (ByteArray) -> Unit,
+    onUserDismissIme: () -> Unit,
     onInputReady: ((() -> Unit) -> Unit),
+    onInputBlurReady: ((() -> Unit) -> Unit),
     focusInput: () -> Unit,
     showStatusOverlay: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier.testTag(TestTags.TerminalFocus)) {
+    Column(
+        modifier = modifier
+            .clipToBounds()
+            .testTag(TestTags.TerminalFocus),
+    ) {
         var restoredSessionId by remember { mutableStateOf<String?>(null) }
+        var restoredView by remember { mutableStateOf<TerminalGridView?>(null) }
         var lifecycleRestoreNonce by remember { mutableStateOf(0) }
         var restoredLifecycleNonce by remember { mutableStateOf(0) }
         val sessionId = state.activeSessionId
+        val viewportCacheKey = terminalViewportCacheKey(viewportCacheIdentity, sessionId)?.let { key ->
+            "$key:${state.terminalConnectionEpoch}"
+        }
         val defaultLiveZoom = abs(state.zoomFactor - DefaultTerminalZoom) < 0.001f
         val shouldDelayViewportRestore = state.sessionSyncing && defaultLiveZoom && state.scrollbackOffsetRows == 0
         val lifecycleOwner = LocalLifecycleOwner.current
-        DisposableEffect(lifecycleOwner, terminalGridView, sessionId) {
-            val observer = LifecycleEventObserver { _, event ->
-                val activeSessionId = sessionId ?: return@LifecycleEventObserver
-                val view = terminalGridView
-                when (event) {
-                    Lifecycle.Event.ON_STOP -> {
-                        if (view != null) {
-                            viewportCache[activeSessionId] = view.captureViewportState()
-                        }
-                    }
-                    Lifecycle.Event.ON_START -> {
-                        lifecycleRestoreNonce += 1
-                        focusInput()
-                    }
-                    else -> Unit
-                }
-            }
-            lifecycleOwner.lifecycle.addObserver(observer)
-            onDispose {
-                lifecycleOwner.lifecycle.removeObserver(observer)
-            }
-        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .weight(1f)
+                .clipToBounds(),
         ) {
             val hostCols = state.activeSnapshot?.cols ?: 0
             val hostRows = state.activeSnapshot?.let { snapshot ->
                 (snapshot.rows - state.scrollbackOffsetRows).coerceAtLeast(0)
             } ?: 0
-            AndroidView(
-                factory = { context ->
-                    TerminalGridView(context).apply {
-                        onTerminalGridViewChanged(this)
-                        tag = "terminal_view"
-                        setOnZoomChanged { value ->
-                            viewModel.updateZoomFactor(value)
-                        }
-                        setOnTap { focusInput() }
-                        setOnScrollback { deltaRows ->
-                            viewModel.adjustScrollback(deltaRows)
+            key(viewportCacheKey) {
+                var keyedTerminalGridView by remember { mutableStateOf<TerminalGridView?>(null) }
+                DisposableEffect(lifecycleOwner, keyedTerminalGridView, viewportCacheKey) {
+                    val disposableViewportKey = viewportCacheKey
+                    val disposableView = keyedTerminalGridView
+                    val observer = LifecycleEventObserver { _, event ->
+                        val activeViewportKey = viewportCacheKey ?: return@LifecycleEventObserver
+                        val view = keyedTerminalGridView
+                        when (event) {
+                            Lifecycle.Event.ON_STOP -> {
+                                if (view != null) {
+                                    viewportCache[activeViewportKey] = view.captureViewportState()
+                                }
+                            }
+                            Lifecycle.Event.ON_START -> {
+                                lifecycleRestoreNonce += 1
+                            }
+                            else -> Unit
                         }
                     }
-                },
-                update = { view ->
-                    onTerminalGridViewChanged(view)
-                    view.update(
-                        snapshot = state.activeSnapshot,
-                        fontSizeSp = state.fontSizeSp,
-                        minFontSizeSp = MinTerminalFontSizeSp,
-                        palette = palette,
-                        frameSeq = state.lastFrameSeq,
-                        hostCols = hostCols,
-                        hostRows = hostRows,
-                        fitToViewWidth = fitToViewWidth,
-                        zoomFactor = state.zoomFactor,
-                        panResetNonce = state.panResetNonce,
-                        scrollbackOffsetRows = state.scrollbackOffsetRows,
-                        imeVisible = imeVisible,
-                        isLoading = state.sessionSyncing || state.connectionState == ConnectionState.Connecting,
-                    )
-                    view.setOnViewSizeChanged { cols, rows ->
-                        if (cols <= 0 || rows <= 0) return@setOnViewSizeChanged
-                        viewModel.updateTerminalSize(cols, rows)
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose {
+                        if (!disposableViewportKey.isNullOrBlank() && disposableView != null) {
+                            viewportCache[disposableViewportKey] = disposableView.captureViewportState()
+                        }
+                        lifecycleOwner.lifecycle.removeObserver(observer)
                     }
-                },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .testTag(TestTags.TerminalList),
-            )
-            LaunchedEffect(sessionId) {
-                restoredSessionId = null
-            }
-            LaunchedEffect(
-                sessionId,
-                terminalGridView,
-                state.sessionSyncing,
-                state.lastFrameSeq,
-                state.scrollbackOffsetRows,
-                fitToViewWidth,
-                lifecycleRestoreNonce,
-            ) {
-                val view = terminalGridView ?: return@LaunchedEffect
-                val activeSessionId = sessionId ?: return@LaunchedEffect
-                if (restoredSessionId == activeSessionId && restoredLifecycleNonce == lifecycleRestoreNonce) {
-                    return@LaunchedEffect
                 }
-                if (shouldDelayViewportRestore) return@LaunchedEffect
-                view.scheduleViewportRestore(viewportCache[activeSessionId])
-                restoredSessionId = activeSessionId
-                restoredLifecycleNonce = lifecycleRestoreNonce
+                AndroidView(
+                    factory = { context ->
+                        TerminalGridView(context).apply {
+                            keyedTerminalGridView = this
+                            tag = "terminal_view"
+                            setOnZoomChanged { value ->
+                                viewModel.updateZoomFactor(value)
+                            }
+                            setOnTap { focusInput() }
+                            setOnScrollback { deltaRows ->
+                                viewModel.adjustScrollback(deltaRows)
+                            }
+                        }
+                    },
+                    update = { view ->
+                        keyedTerminalGridView = view
+                        viewportCacheKey?.let { activeViewportKey ->
+                            val alreadyRestored =
+                                restoredSessionId == activeViewportKey &&
+                                    restoredLifecycleNonce == lifecycleRestoreNonce &&
+                                    restoredView === view
+                            if (!alreadyRestored && !shouldDelayViewportRestore) {
+                                viewportCache[activeViewportKey]?.let { cachedViewport ->
+                                    view.scheduleViewportRestore(cachedViewport)
+                                    restoredSessionId = activeViewportKey
+                                    restoredView = view
+                                    restoredLifecycleNonce = lifecycleRestoreNonce
+                                }
+                            }
+                        }
+                        view.update(
+                            snapshot = state.activeSnapshot,
+                            fontSizeSp = state.fontSizeSp,
+                            minFontSizeSp = MinTerminalFontSizeSp,
+                            palette = palette,
+                            frameSeq = state.lastFrameSeq,
+                            hostCols = hostCols,
+                            hostRows = hostRows,
+                            fitToViewWidth = fitToViewWidth,
+                            zoomFactor = state.zoomFactor,
+                            panResetNonce = state.panResetNonce,
+                            scrollbackOffsetRows = state.scrollbackOffsetRows,
+                            imeVisible = imeVisible,
+                            isLoading = state.sessionSyncing ||
+                                state.connectionState == ConnectionState.Connecting ||
+                                waitForImeInsetBeforeTerminalLayout,
+                            followOnReadEnabled = state.followOnReadEnabled,
+                            localInputNonce = state.localInputNonce,
+                        )
+                        view.applyScheduledViewportRestoreIfReady()
+                        view.setOnViewSizeChanged { cols, rows ->
+                            if (cols <= 0 || rows <= 0) return@setOnViewSizeChanged
+                            viewModel.updateTerminalSize(cols, rows)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clipToBounds()
+                        .testTag(TestTags.TerminalList),
+                )
+            }
+            LaunchedEffect(viewportCacheKey) {
+                restoredSessionId = null
+                restoredView = null
             }
             if (showStatusOverlay) {
                 StatusBanner(
@@ -658,6 +761,15 @@ private fun TerminalPanel(
                             onSendBytes(byteArrayOf('\r'.code.toByte()))
                         }
                         setOnHardwareKey(onHardwareKey)
+                        setOnClickListener {
+                            focusInput()
+                        }
+                        onInputReady {
+                            requestTerminalFocus()
+                        }
+                        onInputBlurReady {
+                            clearTerminalFocus()
+                        }
                     }
                 },
                 update = { view ->
@@ -673,9 +785,7 @@ private fun TerminalPanel(
                         onSendBytes(byteArrayOf('\r'.code.toByte()))
                     }
                     view.setOnHardwareKey(onHardwareKey)
-                    onInputReady {
-                        view.requestTerminalFocus()
-                    }
+                    view.setOnUserDismissIme(onUserDismissIme)
                 },
                 modifier = Modifier
                     .size(1.dp)
@@ -688,6 +798,8 @@ private fun TerminalPanel(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clipToBounds()
+                    .testTag(TestTags.TerminalQuickKeys)
                     .navigationBarsPadding()
                     .padding(horizontal = screenPadding, vertical = verticalPadding),
             ) {
@@ -898,6 +1010,8 @@ private class TerminalInputView(
     private var onBackspaceCallback: (Int) -> Unit = {}
     private var onEnterCallback: () -> Unit = {}
     private var onHardwareKeyCallback: (AndroidKeyEvent) -> Boolean = { false }
+    private var onUserDismissImeCallback: () -> Unit = {}
+    private var focusRequestGeneration: Int = 0
 
     init {
         layoutParams = ViewGroup.LayoutParams(1, 1)
@@ -1009,6 +1123,18 @@ private class TerminalInputView(
         return super.onKeyDown(keyCode, event)
     }
 
+    override fun dispatchKeyEventPreIme(event: AndroidKeyEvent): Boolean {
+        if (event.keyCode == AndroidKeyEvent.KEYCODE_BACK) {
+            if (event.action == AndroidKeyEvent.ACTION_DOWN) {
+                focusRequestGeneration++
+            } else if (event.action == AndroidKeyEvent.ACTION_UP) {
+                onUserDismissImeCallback()
+                clearTerminalFocus()
+            }
+        }
+        return super.dispatchKeyEventPreIme(event)
+    }
+
     fun setOnCommitText(listener: (String) -> Unit) {
         onCommitTextCallback = listener
     }
@@ -1025,25 +1151,41 @@ private class TerminalInputView(
         onHardwareKeyCallback = listener
     }
 
+    fun setOnUserDismissIme(listener: () -> Unit) {
+        onUserDismissImeCallback = listener
+    }
+
     fun requestTerminalFocus() {
+        val generation = ++focusRequestGeneration
         if (!hasFocus()) {
             requestFocus()
         }
-        post {
+        fun showKeyboardIfCurrent() {
+            if (generation != focusRequestGeneration || !hasFocus()) {
+                return
+            }
             try {
                 val imm = context.getSystemService(InputMethodManager::class.java)
                 imm?.restartInput(this)
-                val shown = imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT) ?: false
-                if (!shown) {
-                    postDelayed(
-                        { imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT) },
-                        120L,
-                    )
-                }
+                imm?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
             } catch (_: RuntimeException) {
                 // Some OEM/emulator IMEs can throw while view focus is transitioning.
             }
         }
+        post { showKeyboardIfCurrent() }
+        postDelayed({ showKeyboardIfCurrent() }, 120L)
+        postDelayed({ showKeyboardIfCurrent() }, 360L)
+    }
+
+    fun clearTerminalFocus() {
+        focusRequestGeneration++
+        try {
+            val imm = context.getSystemService(InputMethodManager::class.java)
+            imm?.hideSoftInputFromWindow(windowToken, 0)
+        } catch (_: RuntimeException) {
+            // Some OEM/emulator IMEs can throw while view focus is transitioning.
+        }
+        clearFocus()
     }
 
     private fun emitCommittedText(text: CharSequence) {

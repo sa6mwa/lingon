@@ -14,15 +14,10 @@ import (
 )
 
 func TestAttachLargeResizeBurst(t *testing.T) {
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
-	}
-
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID: "host-resize",
-		Shell:     shell,
+		Shell:     "/bin/cat",
 		Cols:      120,
 		Rows:      30,
 	})
@@ -49,16 +44,35 @@ func TestAttachLargeResizeBurst(t *testing.T) {
 		},
 	})
 	_ = waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
+	sendLineUntilScreenContainsRealTime(t, attachSess, "RESIZE_BURST_READY", 3*time.Second)
 
 	sizes := [][2]int{{200, 60}, {120, 30}, {160, 50}, {80, 24}, {240, 80}}
 	for i, size := range sizes {
 		host.Resize(size[0], size[1])
+		time.Sleep(75 * time.Millisecond)
 		token := "RESIZE_BURST_" + string(rune('A'+i))
-		attachSess.Send("echo " + token + "\n")
-		if !screenContainsWithin(attachSess, token, 3*time.Second) {
-			t.Fatalf("expected output after resize %v", size)
+		attachSess.Send(token + "\n")
+		if !screenContainsWithinRealTime(attachSess, token, 3*time.Second) {
+			t.Fatalf("expected output after resize %v\nhost screen:\n%s\nattach screen:\n%s", size, host.Screen(), attachSess.Screen())
 		}
 	}
+}
+
+func sendLineUntilScreenContainsRealTime(t *testing.T, sess *ptytest.PTYSession, token string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	nextSend := time.Time{}
+	for time.Now().Before(deadline) {
+		if sess.Screen().Contains(token) {
+			return
+		}
+		if !time.Now().Before(nextSend) {
+			sess.Send(token + "\n")
+			nextSend = time.Now().Add(100 * time.Millisecond)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for primer token %q\nscreen:\n%s", token, sess.Screen())
 }
 
 func TestMultiHostSwitchWhileReconnect(t *testing.T) {

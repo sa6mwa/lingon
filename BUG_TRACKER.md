@@ -29,6 +29,1104 @@ Required status values:
 
 ## Active Items
 
+### B-084 Android certificates settings detail overlaps the system top area
+
+- Status: `needs_verification`
+- Area: `android`, `settings`, `certificates`, `layout`
+- Summary: The Manage certificates settings detail starts too high on Android 15/16 and can appear smashed into the system/top banner area.
+- Report:
+  The engineer reports that Manage certificates sits far too high, visually between/on top of the very top banner on Android 15/16.
+- Repro:
+  1. Open Android settings.
+  2. Tap Certificates.
+  3. Observe the certificates detail page starts too close to the top/system area instead of using the same safe top spacing as the settings page.
+- Regression coverage:
+  - `certificates_setting_returns_to_settings_flow` exercises opening the certificates detail through settings and returning to settings.
+- Verification:
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=certificates_setting_returns_to_settings_flow,endpoint_setting_dialog_stays_in_settings_flow make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - Remaining gap: needs phone confirmation on Android 15/16 that the certificates detail no longer overlaps or crowds the system/top area.
+
+### B-083 Android settings detail actions leave the settings flow
+
+- Status: `needs_verification`
+- Area: `android`, `settings`, `navigation`, `certificates`, `dialogs`
+- Summary: Selecting Endpoint, Certificates, Theme, App lock, or similar settings closes the settings page and shows the detail UI over the underlying app screen.
+- Report:
+  The engineer reports that choosing settings rows such as Endpoint closes the settings screen and shows the endpoint dialog on top of the original screen. Certificates also return to the main screen after configuration. This is confusing now that settings is a page.
+- Repro:
+  1. Open Android settings.
+  2. Tap Endpoint.
+  3. Observe the settings page disappears behind the endpoint dialog.
+  4. Tap Certificates.
+  5. Observe the app leaves settings and returns to the previous app screen after certificate management.
+- Regression coverage:
+  - `endpoint_setting_dialog_stays_in_settings_flow`
+  - `certificates_setting_returns_to_settings_flow`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.ui.SettingsScreenTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=endpoint_setting_dialog_stays_in_settings_flow,certificates_setting_returns_to_settings_flow,settings_page_opens_and_returns_to_login,settings_page_uses_rendered_back_button,follow_on_read_settings_toggle_defaults_off_and_toggles make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - Remaining gap: needs phone confirmation that all setting-detail flows now feel intuitive in the installed app.
+
+### B-082 Android settings screen should resemble Android system settings layout
+
+- Status: `needs_verification`
+- Area: `android`, `settings`, `ui`, `layout`
+- Summary: The Android settings screen uses the system font, but still does not visually read like Android 15/16 system Settings.
+- Report:
+  The engineer reports that the settings screen still does not look like Android system settings. Lingon theme colors should remain, but the layout should be closer to Android 15/16 Settings.
+- Repro:
+  1. Open Lingon settings.
+  2. Compare against Android 15/16 Settings visual language: page title, grouped settings sections, large touch rows, current-value summaries, switches/carets, and modern Material spacing.
+  3. Observe Lingon still uses a compact terminal-like list with text-only rows and per-row dividers.
+- Regression coverage:
+  - `SettingsScreenTest.settingsLayoutUsesSystemSettingsScale`
+  - Existing settings e2e coverage still opens, closes, navigates back, and toggles Follow on read through actual user-visible settings interactions.
+- Verification:
+  - Android settings research checked AOSP settings guidance and Android 15/16 Settings redesign references.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.ui.SettingsScreenTest` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=top_bar_settings_is_accessible,settings_page_opens_and_returns_to_login,settings_page_uses_rendered_back_button,settings_page_closes_and_reload_triggers,follow_on_read_settings_toggle_defaults_off_and_toggles make integration-test` passed.
+  - Remaining gap: needs device confirmation from the engineer that the visual result now matches the intended Android 15/16 system Settings feel closely enough.
+
+### B-081 Android transient session expiry clears sessions and bursts queued wall notifications
+
+- Status: `needs_verification`
+- Area: `android`, `auth`, `sessions`, `notifications`, `wall`
+- Summary: A transient Android auth/session expiry can throw the user out of every session even when refresh succeeds, then later drain queued wall notifications in a burst.
+- Report:
+  The engineer saw a "session expired" bug in the Android app. Relogin was not required, but all sessions were cleared and multiple queued wall notifications arrived afterward.
+- Repro:
+  1. Start Android logged in with attached sessions and background wall notifications enabled.
+  2. Trigger a websocket authorization failure or 401 while the refresh token remains valid.
+  3. Observe the app should refresh/recover instead of clearing sessions or resetting wall polling state.
+  4. Queue wall events during the transient failure and reconnect; wall delivery should use the normal monotonic cursor path without treating recoverable auth churn as logout.
+- Regression coverage:
+  - `AppViewModelTest.websocketUnauthorizedRefreshSuccessPreservesSessionsAndRecovers`
+  - `AppViewModelTest.websocketAuthorizationFrameRefreshSuccessPreservesSessionsAndRecovers`
+  - `AppViewModelTest.websocketUnauthorizedRefreshFailureExpiresSession`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.websocketUnauthorizedRefreshSuccessPreservesSessionsAndRecovers --tests systems.pkt.lingon.viewmodel.AppViewModelTest.websocketUnauthorizedRefreshFailureExpiresSession --tests systems.pkt.lingon.viewmodel.AppViewModelTest.websocketAuthorizationFrameRefreshSuccessPreservesSessionsAndRecovers` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Remaining gap: no targeted instrumentation repro yet for the exact phone notification burst; the fix is unit-proven at the auth/session boundary and needs device confirmation before marking resolved.
+
+### B-080 Android settings screen should use the system font
+
+- Status: `resolved`
+- Area: `android`, `settings`, `typography`, `ui`
+- Summary: The Android settings screen must use the platform/default Material font, while retaining Lingon theme colors.
+- Report:
+  The installed Android app still showed the new settings screen in the app-wide monospace font instead of looking like normal Android settings.
+- Repro:
+  1. Open the Android settings screen.
+  2. Observe settings rows and headings use the same monospace typography as the terminal UI.
+  3. Expected: settings keeps Lingon colors but uses the standard Android system font.
+- Regression coverage:
+  - `SettingsScreenTest.settingsTypographyUsesPlatformDefaultFontFamily`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.ui.SettingsScreenTest` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+
+### B-079 Session lists should be sorted alphanumerically everywhere
+
+- Status: `resolved`
+- Area: `sessions`, `relay`, `attach`, `host`, `headless`, `android`, `api`
+- Summary: All user-visible and API session lists must be sorted by session name instead of recency, discovery, id, or prior tab order.
+- Report:
+  The engineer requested alphanumeric session ordering in local PTY, local headless, attach, relay, the sessions API, and the Android app.
+- Repro:
+  1. Create or receive sessions in non-alphabetic display-name order such as `Charlie`, `Alpha`, `Bravo`.
+  2. List sessions through `/sessions`, SDK/CLI, host/attach tab models, local headless, or Android state.
+  3. Observe the list must be `Alpha`, `Bravo`, `Charlie` regardless of activity timestamps, ids, or update order.
+- Regression coverage:
+  - Go:
+    - `TestLessUsesNameThenID`
+    - `TestSortSessionsByName`
+    - `TestStoreListSessionsSortsByName`
+    - `TestListSessionsAPISortsByName`
+    - `TestListSessionsSortsByName`
+    - `TestHeadlessSessionSource`
+    - `TestFirstLocalHeadlessSessionUsesIDOrder`
+    - `TestMergeSessionsSortsLocalSessionsByName`
+    - `TestMergeSessionsIgnoresPreviousOrderAndSortsByName`
+    - `TestOrderSessionsSortsKnownSessionsByName`
+    - `TestOrderSessionsSortsUnseenSessionsByName`
+    - `TestOrderSessionsSortsFirstPayloadByName`
+  - Android:
+    - `AppViewModelTest.sessionsAreSortedByNameAcrossBootstrapRefreshAndWebsocketUpdates`
+- Verification:
+  - `go test -count=1 ./internal/sessionorder ./internal/mvu ./internal/relay ./internal/session ./internal/attach ./cmd/lingon . -run 'Test(LessUsesNameThenID|SortSessionsByName|StoreListSessionsSortsByName|ListSessionsAPISortsByName|ListSessionsSortsByName|FirstLocalHeadlessSessionUsesIDOrder|HeadlessSessionSource|MergeSessions|OrderSessions|NextSessionID)'` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.sessionsAreSortedByNameAcrossBootstrapRefreshAndWebsocketUpdates` passed after preserving missing-session grace in the expected sorted result.
+  - `go test -count=1 ./...` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
+### B-078 Android settings should be a page, not a popup menu
+
+- Status: `resolved`
+- Area: `android`, `topbar`, `settings`, `ui`
+- Summary: Replace the fragile Android top-bar popup menu with a themed settings page opened by a settings cog.
+- Report:
+  The engineer proposed replacing the broken top-bar menu with a separate settings page so controls are scrollable, future settings have room, and menu overlay/close behavior cannot regress.
+- Repro:
+  1. Open the Android top-bar settings affordance.
+  2. The app should navigate to a full settings screen instead of showing a popup over terminal content.
+  3. Press the rendered back button and observe the prior screen returns without menu overlap or close flicker.
+- Regression coverage:
+  - Android instrumentation:
+    - `top_bar_settings_is_accessible`
+    - `settings_page_opens_and_returns_to_login`
+    - `settings_page_uses_rendered_back_button`
+    - `settings_page_closes_and_reload_triggers`
+    - `follow_on_read_settings_toggle_defaults_off_and_toggles`
+- Verification:
+  - `cd android && ./gradlew :app:compileDebugKotlin` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Android targeted e2e passed:
+    - `LINGON_IT_ONLY=top_bar_settings_is_accessible,settings_page_opens_and_returns_to_login,settings_page_uses_rendered_back_button,settings_page_closes_and_reload_triggers,follow_on_read_settings_toggle_defaults_off_and_toggles make integration-test`
+  - Resource profile:
+    - `android/test-artifacts/resource-profile-20260515-122804-51366/summary.txt`
+
+### B-077 Android top-bar menu close button flickers instead of closing
+
+- Status: `resolved`
+- Area: `android`, `topbar`, `menu`, `ui`, `event-dispatch`
+- Summary: The Android top-bar menu can flicker and remain open when pressing the rendered X close button.
+- Report:
+  The engineer reports that the menu is still broken and that pressing X does not close it, it only flickers.
+- Repro:
+  1. Open the Android top-bar menu.
+  2. Press the rendered X close button.
+  3. Observe that the menu flickers and remains open instead of closing.
+- Fix:
+  - Removed the separate popup window from the top-bar menu path.
+  - The menu is now an anchored overlay child of the menu button layout, and open/close render as separate button nodes with explicit accessibility click actions.
+- Regression coverage:
+  - Strengthened `menu_overlay_does_not_cover_close_button` to open through the rendered menu button, click the rendered close button or its clickable ancestor, assert the menu disappears structurally, and assert the rendered menu button returns.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_shift_login make integration-test` passed.
+
+### B-076 Android top-bar menu is not anchored to its button
+
+- Status: `resolved`
+- Area: `android`, `topbar`, `menu`, `ui`
+- Summary: The Android top-bar menu can appear in inconsistent places because the popup is positioned with a fixed window offset instead of the measured menu-button anchor.
+- Report:
+  The engineer reports that the menu is still "all over the place" after the earlier close-button overlap fix.
+- Repro:
+  1. Open the Android top-bar menu in different layouts/orientations.
+  2. Observe that the popup position is derived from the window top/end rather than the actual menu button bounds, so it can drift away from the button or overlap top-bar controls.
+- Fix:
+  - Removed window-level popup placement from the top-bar menu path.
+  - The menu now opens as an overlay child anchored to the measured menu button, so it is positioned from the same layout tree as the top bar instead of a separate window offset.
+- Regression coverage:
+  - Strengthened `menu_overlay_does_not_cover_close_button` to use UIAutomator screen bounds, proving the rendered first menu item is below the rendered menu button instead of relying on popup-local Compose semantics.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_shift_login make integration-test` passed.
+
+### B-075 Distinct wall notification regression cleared its own expected notification
+
+- Status: `resolved`
+- Area: `android`, `integration`, `notifications`, `test-harness`
+- Summary: The distinct wall notification regression waited for the second message with a helper that clears non-matching wall notifications, so it could delete the first notification before asserting both remained active.
+- Report:
+  Review flagged that `waitForWallNotificationBody(secondMessage, ...)` reused destructive stale-notification cleanup. That default is useful for single-message tests, but unsafe when the test needs multiple notifications to remain visible.
+- Repro:
+  1. Post the first distinct wall message and wait until its notification is visible.
+  2. Post the second distinct wall message.
+  3. While waiting for the second message, observe only the first notification.
+  4. The old helper clears the first notification as unexpected, invalidating the later two-notification assertion.
+- Fix:
+  - Added an explicit `clearUnexpectedWallNotifications` option to `waitForWallNotificationBody`.
+  - Kept destructive cleanup as the default for existing single-message tests.
+  - Disabled destructive cleanup only while the distinct-notifications test waits for the second message.
+- Regression coverage:
+  - `background_distinct_wall_messages_post_distinct_system_notifications` now preserves the first expected notification while waiting for the second.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=background_distinct_wall_messages_post_distinct_system_notifications make integration-test` passed.
+
+### B-074 Android disabling Follow on read can leave cursor-follow active
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `follow-on-read`
+- Summary: Disabling the Follow on read toggle could leave `TerminalGridView` in cursor-follow mode, allowing later passive output to keep panning the camera even though the setting was off.
+- Report:
+  Review flagged that `cameraMode` and `cursorFollowReturnMode` could both remain `CursorFollow` after read-driven follow, and toggling Follow on read off only changed the boolean. The engineer confirmed this matched suspected behavior.
+- Repro:
+  1. Enable Follow on read.
+  2. Receive passive output that moves the cursor and causes read-driven cursor-follow.
+  3. Disable Follow on read.
+  4. Receive more passive output with cursor movement.
+  5. Observe the viewport can continue following the cursor even though the toggle is disabled.
+- Fix:
+  - Read-driven cursor-follow now preserves the previous return mode instead of replacing it with `CursorFollow`.
+  - Disabling Follow on read exits active cursor-follow and normalizes an invalid `CursorFollow` return mode back to `LiveBottom`.
+- Regression coverage:
+  - Added `disabling_follow_on_read_stops_passive_cursor_follow`, which enters read-driven cursor-follow, disables the setting, then verifies a later passive cursor move does not pan the camera.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=disabling_follow_on_read_stops_passive_cursor_follow make integration-test` passed.
+
+### B-073 Android targeted final-batch integration failures
+
+- Status: `open`
+- Area: `android`, `integration`, `notifications`, `viewport`
+- Summary: A retest of the previously failing final Android integration batch shows that most entries were stale, but three current failures still reproduce.
+- Report:
+  While verifying the reported `menu_overlay_does_not_cover_close_button` failure through `make test-android`, the first 5-test batch and 44-test viewport batch were made green, but the later 29-test batch failed. A later targeted rerun of the originally listed failures showed only three still reproducing.
+- Repro:
+  1. Run the targeted batch:
+     `cd android && LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification,focused_background_resume_preserves_live_camera_when_cursor_still_fits,keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous,keyboard_tab_switch_preserves_bottom_anchor_visual,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,background_wall_delivery_posts_system_notification,background_distinct_wall_messages_post_distinct_system_notifications,headless_resize_button_resizes_remote_headless_session make integration-test`
+  2. Observe the current failures listed below.
+- Current failures:
+  - `focused_background_resume_preserves_live_camera_when_cursor_still_fits`
+  - `keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous`
+  - `background_wall_delivery_posts_system_notification`
+- Stale entries that passed in the targeted rerun:
+  - `foreground_manual_wall_delivery_does_not_post_system_notification`
+  - `keyboard_tab_switch_preserves_bottom_anchor_visual`
+  - `loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle`
+  - `background_distinct_wall_messages_post_distinct_system_notifications`
+  - `headless_resize_button_resizes_remote_headless_session`
+- Verification:
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
+  - The first 5-test batch inside `make test-android` passed.
+  - The 44-test viewport batch inside `make test-android` passed.
+  - `cd android && LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification,focused_background_resume_preserves_live_camera_when_cursor_still_fits,keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous,keyboard_tab_switch_preserves_bottom_anchor_visual,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,background_wall_delivery_posts_system_notification,background_distinct_wall_messages_post_distinct_system_notifications,headless_resize_button_resizes_remote_headless_session make integration-test` failed with three current failures and five stale entries passing.
+
+### B-072 Android terminal insets use API 30 runtime APIs despite minSdk 26
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `compatibility`, `insets`
+- Summary: `TerminalGridView` used API 30 `WindowInsets.Type` and `WindowInsets.getInsets(...)` calls even though the app declares `minSdk = 26`.
+- Report:
+  Review flagged that the terminal layout/draw path could crash on supported Android 8-10 devices. The engineer noted that Android 15-16 support is more important, but asked whether the P1 is real and why latest SDK would imply Android 8-10.
+- Repro:
+  1. Install the APK on a device or emulator running API 26-29.
+  2. Open a terminal view so `effectiveViewportHeightPx()` runs from layout/draw.
+  3. Observe that unguarded API 30 insets methods are reachable on a supported pre-30 runtime.
+- Fix:
+  - Replaced unguarded platform `WindowInsets.Type.*` reads with `WindowInsetsCompat` in the terminal view.
+  - Updated Android instrumentation insets helpers to use the same compat API.
+- Regression coverage:
+  - Removed all `WindowInsets.Type` references from app and test source so pre-30 runtime-only APIs cannot re-enter these code paths without a visible source diff.
+- Verification:
+  - `rg "WindowInsets.Type" android/app/src/main/java android/app/src/test android/app/src/androidTest` returns no matches.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed.
+
+### B-071 Host local PTY input is unavailable before relay/auth connection
+
+- Status: `resolved`
+- Area: `host`, `local-pty`, `startup`, `input`, `relay`
+- Summary: A Lingon host local PTY can appear hung before relay connection/auth refresh completes; typed input is not accepted even though local PTYs must remain usable before connecting.
+- Report:
+  The engineer reports that `lingon host` local PTY hangs before it is connected and input cannot be entered. Expected behavior is that local typing is always accepted; if relay publishing is not connected yet, input should still reach the local PTY and relay state can catch up later.
+- Repro:
+  1. Start a host local PTY with relay publishing enabled while auth refresh/relay connection is delayed.
+  2. Type into the host before the relay reports connected.
+  3. Observe that the local shell does not accept the input until connection/auth unblocks.
+- Regression coverage:
+  - Added `TestHostLocalPTYAcceptsInputWhileAuthRefreshIsBlocked`, which runs a host runner inside a test-owned PTY, blocks `/auth/refresh`, waits for the local shell to render while refresh is still blocked, sends input through the outer PTY, and asserts the local PTY processes it before relay/auth completes.
+- Verification:
+  - Reproduced before the fix: the regression only saw outer terminal echo or a ready prompt while auth/remote refresh blocked; the local shell did not emit `PRECONNECT_OK`.
+  - `go test -count=1 ./internal/session -run TestHostLocalPTYAcceptsInputWhileAuthRefreshIsBlocked -v`
+  - `go test -count=1 ./internal/session`
+  - `go test -count=1 ./internal/session ./internal/publisher ./internal/relayclient`
+
+### B-070 Android menu popup overlaps top bar close button
+
+- Status: `resolved`
+- Area: `android`, `topbar`, `menu`, `ui`, `hit-target`
+- Summary: Opening the Android top-bar menu can place the popup over the top-bar menu/close button, making the close button impossible to press.
+- Report:
+  The engineer reports that the menu overlaps the top bar and covers the close button underneath. This is unacceptable and a regression from earlier behavior.
+- Repro:
+  1. Open the Android top-bar menu.
+  2. Observe that the popup overlaps the top bar menu/close button hit target.
+  3. Attempt to press the close button; the popup intercepts the hit.
+- Regression coverage:
+  - Added `menu_overlay_does_not_cover_close_button`, an Android UI regression that opens the top-bar menu and verifies a real tap on the top-bar close/menu button dismisses the menu.
+  - Fixed the test touch helper to send node-local center coordinates instead of root coordinates, so the regression performs the intended hit test.
+- Verification:
+  - Reproduced in connected instrumentation: the original bounds assertion saw the popup covering the close-button area and the first hit-test version timed out waiting for the menu to close.
+  - `cd android && LINGON_IT_ONLY=menu_overlay_does_not_cover_close_button make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+
+### B-069 Android scrollback panning becomes line-stepped when fully zoomed out
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `pan`, `scrollback`, `zoom`
+- Summary: When fully zoomed out, some sessions lose smooth pixel panning in scrollback and fall back to per-line movement.
+- Report:
+  The engineer reports that scrolling into the scrollbuffer on some sessions is no longer smooth per-pixel scrolling and is instead per-line. The invariant is that all panning, scrollback entry/reentry, and zoom-related camera movement must preserve pixel-level offsets everywhere.
+- Repro:
+  1. Use the Android terminal fully zoomed out.
+  2. In a session where the live terminal content fits the viewport, drag into scrollback.
+  3. Observe that movement only happens after whole-line thresholds instead of preserving partial-cell camera displacement.
+- Regression coverage:
+  - Extended the existing pixel-continuity regression to cover `DefaultTerminalZoom`, not only zoomed-in mode.
+  - Extended the existing reverse-before-snapshot regression to cover `DefaultTerminalZoom`, not only zoomed-in/keyboard-visible modes.
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `./gradlew :app:testDebugUnitTest`
+  - Connected instrumentation still needs a device/emulator confirmation for the expanded Android view regressions.
+
+### B-068 Android panning/scrollback does not work when fully zoomed out
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `pan`, `scrollback`, `zoom`
+- Summary: At full zoom-out/default zoom, the Android terminal does not allow normal panning, making scrollback and horizontal camera movement impossible or unreliable.
+- Report:
+  The engineer reports that the scrollbuffer does not work when fully zoomed out and that panning in general does not work at that zoom level.
+- Repro:
+  1. Use the Android terminal at fully zoomed-out/default zoom.
+  2. Try to pan a terminal whose content is wider or taller than the visible viewport, or try to pan upward into scrollback.
+  3. Observe that the camera does not pan as expected.
+- Regression coverage:
+  - Added `terminal_default_zoom_drag_pans_wide_live_content`, an Android view regression proving default/full-zoom drag can pan horizontally when terminal content is wider than the viewport.
+  - Added `terminal_default_zoom_drag_can_enter_scrollback_from_live_edge`, an Android view regression proving default/full-zoom drag can request scrollback when the live view is already at the edge.
+- Verification:
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - `./gradlew :app:testDebugUnitTest`
+  - Connected instrumentation still needs a device/emulator confirmation for the new Android view regressions.
+
+### B-067 Android input-follow consumes Enter before cursor returns left
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `input-follow`, `horizontal-camera`
+- Summary: With follow-on-read disabled, typing can pan horizontally to keep the cursor visible, but pressing Enter can leave the camera far to the right instead of restoring to the preferred horizontal offset when the cursor returns to the left.
+- Report:
+  The Android terminal follows the cursor while writing a long line. After pressing Enter, the cursor returns to the left/new prompt, but the camera can remain horizontally panned right with the cursor outside the camera view. Expected behavior is that keyboard-associated cursor movement on Enter restores the horizontal camera to the preferred column, typically `0`, when the cursor fits there.
+- Repro:
+  1. Use a zoomed terminal where the full terminal width is wider than the phone viewport.
+  2. Type far enough to pan the camera right.
+  3. Press Enter.
+  4. Observe the camera remains right-panned instead of returning to the preferred left column with the cursor visible.
+- Regression coverage:
+  - Added unit coverage for the input-follow invariant: a pending keyboard follow is not consumed until the terminal cursor actually moves.
+  - Added `terminal_keyboard_enter_follow_waits_for_cursor_movement_before_consuming_input`, an Android view regression that simulates typing a long zoomed line, an intermediate redraw before Enter echo, and the final newline cursor at column 0.
+- Verification:
+  - `./gradlew :app:testDebugUnitTest --tests 'systems.pkt.lingon.terminal.TerminalViewportPolicyTest'`
+  - `./gradlew :app:compileDebugAndroidTestKotlin`
+  - Targeted `:app:connectedDebugAndroidTest` for the new instrumentation regression was attempted but could not run because Gradle reported `No connected devices!`.
+
+### B-066 Host local PTY long readline line corrupts after resize and Ctrl+A/Ctrl+E
+
+- Status: `resolved`
+- Area: `host`, `local-pty`, `resize`, `readline`, `terminal-render`
+- Summary: After resizing a Lingon host local PTY, a long readline command initially renders correctly, but `Ctrl+A` cuts/corrupts the last visible line and `Ctrl+E` leaves the prompt/command rendering inconsistent.
+- Report:
+  The bug is visible in the host local PTY after a terminal window resize. A long command line renders correctly after typing; pressing `Ctrl+A` cuts the last line; pressing `Ctrl+E` does not restore the expected stable rendering.
+- Repro:
+  1. Start a host local PTY with a bash/readline prompt.
+  2. Resize the local PTY terminal viewport.
+  3. Type a long command that wraps onto the bottom prompt rows.
+  4. Press `Ctrl+A`, then `Ctrl+E`.
+  5. Observe the bottom line being cut/corrupted after cursor motion.
+- Regression coverage:
+  - Added `TestHostResizeReadlineLongLineCtrlACtrlEPreservesWrappedPrompt`, an isolated `ptytest` host/local-PTY regression that resizes a test-owned PTY, fills the viewport, types a wrapped readline command, and asserts `Ctrl+A`/`Ctrl+E` leave the wrapped command text stable.
+- Verification:
+  - Reproduced the corruption before the fix with the new regression: `Ctrl+A` shifted/truncated the visible wrapped command rows.
+  - `go test -tags=integration -count=1 ./integration/pty/session -run 'TestHostResize(ReadlineLongLineCtrlACtrlEPreservesWrappedPrompt|TypingWhileShrunkAfterPsAuxKeepsPromptOnBottomRow)' -v`
+  - `go test -tags=integration -count=1 ./integration/pty/session -run 'TestHostResize(ReadlineLongLineCtrlACtrlEPreservesWrappedPrompt|PreservesWideScreenWithoutInput|PreservesWideScreenWithBottomCursorWithoutInput|PreservesScrolledWideOutputWithoutInput|PreservesScrolledWideOutputWithTabBarVisible|TypingWhileShrunkKeepsPromptOnBottomRowWithTabBarVisible|TypingWhileShrunkAfterPsAuxKeepsPromptOnBottomRow|BashClearWhileShrunkThenExpandMatchesControl|LargeViewportClearWhileShrunkThenExpandMatchesControl|LargeViewportClearWhileShrunkThenExpandPsAuxMatchesControl|TypingWhileShrunkThenExpandPreservesCommandLine|TypingAfterExpandMatchesControl)' -v`
+  - `go test -count=1 ./internal/session`
+
+### B-065 Android integration runner starts expensive work when no tests are selected
+
+- Status: `resolved`
+- Area: `android`, `integration`, `test-harness`, `DX`
+- Summary: The Android integration wrapper could start expensive harness/emulator/Gradle work even when `LINGON_IT_ONLY` selected no tests.
+- Report:
+  The engineer reported JVM/Gradle activity when there were no tests to run. That is wasteful and misleading; an empty or invalid test selection should fail before emulator, harness, or Gradle work starts.
+- Repro:
+  1. Run the Android integration wrapper with a `LINGON_IT_ONLY` value that does not match an `EndToEndTest` method.
+  2. Observe setup work proceeding before the runner discovers there is nothing useful to run.
+- Fix:
+  - The runner now discovers and filters `EndToEndTest` methods before building the harness, starting the emulator, starting the harness, or invoking Gradle.
+  - Invalid `LINGON_IT_ONLY` entries now fail immediately with a specific error.
+  - `LINGON_IT_ONLY` now accepts a comma-separated list so related targeted instrumentation tests can run in one Gradle/emulator invocation instead of repeatedly starting and stopping the emulator.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh` passed.
+  - Gradle daemons were stopped with `./gradlew --stop`; `pgrep -af 'Gradle|gradle'` showed no remaining Gradle process except the `pgrep` command itself.
+  - Per engineer instruction, no tests or integration runs were executed for this fix.
+
+### B-064 Android terminal viewport can show stale oversized content after initial/IME resize
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `IME`, `render`
+- Summary: When the IME is already visible before terminal content finishes loading, long session content can initially render as if the terminal viewport still extends below the visible app viewport. Hiding/showing the IME does not visibly correct the camera until the user pans.
+- Report:
+  The engineer reports that sufficiently long sessions consistently start with terminal content cropped below the bottom of the visible viewport. With the IME already up before session load, the terminal appears to load underneath the keyboard; toggling the keyboard does not move the viewport until a pan/touch forces another redraw.
+  After the first IME overlay fix, screenshots `~/Desktop/crap1.png` and `~/Desktop/crap2.png` showed the remaining production bug: with the keyboard hidden, a zoomed tall session rendered below the phone's usable bottom/system navigation area; showing the keyboard made the content align to the keyboard top. The initial load camera also appeared nondeterministic instead of live-bottom oriented while the session was still loading.
+- Repro steps:
+  1. Start the Android app with enough terminal content to exceed the phone viewport.
+  2. Let the IME appear before the terminal session finishes loading/reconnecting.
+  3. Observe that bottom content is drawn/cropped below the visible viewport and keyboard.
+  4. Hide/show the IME; observe the viewport does not visibly reanchor until the terminal is panned.
+- Investigation:
+  - `TerminalGridView.onSizeChanged()` recalculated layout and camera state for IME/Compose height changes but did not invalidate the view.
+  - That matches the visible behavior: the state can be corrected internally while pixels remain from the old larger viewport until a later touch/pan triggers `invalidate()`.
+  - Physical-phone verification showed the invalidation-only fix was insufficient, and delaying IME focus only moved the keyboard timing without fixing the terminal/content boundary.
+  - The terminal panel, its weighted viewport box, and embedded `AndroidView` did not explicitly clip at the Compose viewport boundary, so any parent/AndroidView placement mismatch can let terminal content visibly bleed below the intended viewport until a pan/zoom forces a new interactive draw/layout path.
+  - The existing Android keyboard tests focused the hidden `TerminalInput` node directly. That bypassed the production terminal tap path and could miss bugs where the real terminal surface and Android IME insets disagreed.
+  - The emulator reproducer can force a real soft-keyboard inset with `show_ime_with_hard_keyboard=1`. On devices where the `AndroidView` remains physically behind the IME overlay, Compose bounds can look correct while the renderer still computes camera height from the full view height.
+  - A direct Android instrumentation harness reproduced that overlay condition by mounting `TerminalGridView` full-height behind a real soft IME. The first run failed because bottom-anchored partial-row accounting reported the last row outside the visible range (`expected 240, got 239`), which matches the user-visible bottom content being treated as below the camera.
+  - The hidden-keyboard screenshot showed the same boundary bug against the system/navigation bottom, not only against the IME. Existing coverage incorrectly asserted that a hidden IME should always restore the full physical terminal viewport; that is false when the physical view extends under system bars.
+  - The first-frame loading path also skipped initial live-bottom camera placement while `isLoading` was true. That let syncing/reconnect frames render from the default or stale camera until a later non-loading update.
+  - Strengthening the multi-session tall-session test exposed a related policy conflict: default live mode could still choose cursor-follow anchoring when the cursor was far above trailing content. That is wrong for initial/reconnect/session-load display because passive reads with follow-on-read disabled should show the live content bottom, not chase an old cursor row.
+- Fix:
+  - `TerminalGridView.onSizeChanged()` now invalidates immediately after recomputing layout and applying any pending restore.
+  - The terminal panel, terminal viewport box, embedded Android terminal view, and quick-key bar are now clipped to their Compose bounds.
+  - Keyboard integration helpers now focus `TerminalFocus`, matching the production tap path instead of clicking the hidden input node.
+  - `TerminalGridView` now derives its effective camera viewport height from the actual visible portion of the view above the current IME inset. If Compose has already resized the view above the IME, this is a no-op; if Android leaves the view behind an overlay keyboard, camera layout, live-bottom anchoring, panning, clipping, restore, and debug visibility use the reduced visible height.
+  - Partial terminal rows now count as visible for camera/visible-range calculations, so a bottom-anchored viewport does not drop the final row when the visible height is not an exact multiple of cell height.
+  - `TerminalGridView` now bounds the effective camera viewport by the lower of the IME and navigation/system-bar visible bottoms. Hidden-keyboard rendering no longer assumes the full physical view height when the physical view extends behind the bottom system inset.
+  - Initial live-bottom camera placement now runs as soon as a snapshot and dimensions exist, even while the session is marked loading/syncing. Loading still suppresses read-driven cursor follow, but it no longer leaves the first content frame at an arbitrary camera offset.
+  - Default live mode now bottom-anchors initial/passive display even when the cursor is above trailing content. Cursor-follow remains tied to keyboard input when follow-on-read is disabled, or to the explicit follow-on-read toggle when enabled.
+  - Resetting zoom/pan now also clears any pending cached viewport restore, so a stale restore cannot override the requested live-bottom reset.
+  - Refactored `TerminalGridView` camera behavior into explicit viewport modes: `LiveBottom` for initial/reconnect/passive content display, `Manual` for user pan/zoom/scrollback/restored manual camera, and `CursorFollow` for local input or the optional follow-on-read mode. Persisted zoom no longer implies manual camera and can fresh-load at the live bottom.
+  - Removed dead viewport policy helpers for the old default-zoom cursor-follow decision so tests no longer preserve stale behavior that production no longer uses.
+  - Lifecycle capture now records a pending keyboard-input cursor-follow frame as its durable return mode when follow-on-read is disabled, so a stop/dispose before the draw pass cannot persist transient cursor-follow as the session camera.
+  - Restoring a live-bottom viewport clears scroll remainder instead of reviving stale manual scroll state.
+  - Detached Android terminal views now preserve the last measured effective viewport height for lifecycle/dispose capture, so app-lock/unlock does not save the full physical view height after system-bar insets disappear.
+- Regression coverage:
+  - Added `terminal_resize_invalidates_after_live_bottom_reanchor`, which asserts a terminal resize both reanchors the live viewport to the terminal bottom and records a resize invalidation before any pan/touch path can redraw it.
+  - Tagged the quick-key container and strengthened keyboard/tall-session instrumentation coverage to assert the terminal viewport bottom never overlaps the quick-key top when the IME controls are visible.
+  - Added `soft_keyboard_inset_keeps_terminal_viewport_above_keyboard`, which forces a real soft IME on the emulator, loads a 240-row session, focuses the real terminal surface, and asserts the effective terminal camera viewport is bounded by the visible area above the IME, stays live-bottom anchored, and does not move during the settle window.
+  - Added `terminal_view_reanchors_when_soft_keyboard_overlays_physical_view`, which mounts the real `TerminalGridView` behind a real soft IME, reproduces the overlay condition, and asserts keyboard show/hide/show changes the effective camera viewport and remains bottom-anchored without any pan.
+  - The overlay regression now also samples for 1.2 seconds after each IME transition and fails on any flicker in physical height, effective viewport height, camera Y, visible start row, or visible end row.
+  - Strengthened `terminal_view_reanchors_when_soft_keyboard_overlays_physical_view` so hidden-IME overlay state asserts the effective camera viewport is bounded by the system-visible bottom instead of the full physical view.
+  - Added `loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom`, which creates a zoomed tall terminal snapshot with `isLoading=true`, a cursor near the top, and asserts the first content frame is already live-bottom anchored and renders through the final row.
+  - Added `lifecycle_capture_does_not_persist_transient_keyboard_cursor_follow`, which captures after local input arms cursor-follow but before draw consumes it, then restores across a height change with the cursor above the bottom and asserts live-bottom anchoring is preserved.
+  - Added `loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle`, which loads a real tall host session, zooms it so content exceeds the camera, and asserts hidden keyboard, shown keyboard, and hidden-again states all use the system-visible bottom and remain live-bottom anchored without a pan.
+  - Kept live-bottom behavior covered at the `TerminalGridView` boundary instead of the older policy helper boundary, so the regression asserts the observable camera mode rather than a removed implementation detail.
+  - Reran `terminal_cursor_follow_defaults_to_keyboard_input_only` to ensure passive read-driven cursor movement still does not move the camera when follow-on-read is disabled.
+  - Reran `app_lock_unlock_preserves_terminal_camera_viewport` to verify app-lock disposal/restoration keeps the manual camera after detachment.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the clipping fix.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the effective IME viewport fix.
+  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015200-4064878/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed after the detached viewport capture fix.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015323-4070926/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-015506-4077816/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` failed before the partial-row fix, then passed. Passing resource profile: `android/test-artifacts/resource-profile-20260512-022202-4170918/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=soft_keyboard_inset_keeps_terminal_viewport_above_keyboard make integration-test` passed after the partial-row fix. Resource profile: `android/test-artifacts/resource-profile-20260512-022343-4177623/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed after adding the no-flicker settle-window assertions. Resource profile: `android/test-artifacts/resource-profile-20260512-070023-531523/summary.txt`.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the hidden-system-bottom and loading-camera fixes.
+  - `cd android && LINGON_IT_ONLY=loading_terminal_content_initializes_at_live_bottom make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260512-103522-1006654/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle make integration-test` first failed because the fixture fit all 240 rows and did not reproduce the zoomed tall-session condition, then passed after forcing zoom. Passing resource profile: `android/test-artifacts/resource-profile-20260512-103926-1021585/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed after replacing the hidden-IME full-height assertion. Resource profile: `android/test-artifacts/resource-profile-20260512-104407-1038833/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` failed after adding system-visible-bottom assertions, then passed after live-mode bottom anchoring and pending-restore reset fixes. Passing resource profile: `android/test-artifacts/resource-profile-20260512-110441-1106104/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle make integration-test` passed again after the broader live-mode fix. Resource profile: `android/test-artifacts/resource-profile-20260512-110642-1113905/summary.txt`.
+  - `cd android && LINGON_IT_ONLY=terminal_cursor_follow_defaults_to_keyboard_input_only make integration-test` failed when the first broader fix moved passive read camera state, then passed after limiting the live-bottom snap to initial live positioning. Passing resource profile: `android/test-artifacts/resource-profile-20260512-111118-1129933/summary.txt`.
+  - `cd android && ./gradlew :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin` passed after the explicit viewport-mode refactor.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed after the explicit viewport-mode refactor.
+  - `cd android && LINGON_IT_ONLY=loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom,terminal_cursor_follow_defaults_to_keyboard_input_only,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed in one instrumentation batch on one cgroup-contained emulator. Resource profile: `android/test-artifacts/resource-profile-20260512-161405-1851959/summary.txt`; peak CPU `2.09` cores, average CPU `1.33` cores, peak cgroup memory current `7226732544` bytes.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after removing unused legacy viewport-policy helpers.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after hardening transient cursor-follow capture.
+  - `cd android && LINGON_IT_ONLY=lifecycle_capture_does_not_persist_transient_keyboard_cursor_follow,loading_terminal_content_initializes_at_live_bottom_even_when_cursor_is_above_bottom,terminal_cursor_follow_defaults_to_keyboard_input_only,loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle,terminal_view_reanchors_when_soft_keyboard_overlays_physical_view make integration-test` passed in one instrumentation batch on one cgroup-contained emulator. Resource profile: `android/test-artifacts/resource-profile-20260512-163727-1914329/summary.txt`; peak CPU `2.07` cores, average CPU `1.30` cores, peak cgroup memory current `6925447168` bytes.
+  - Physical-phone confirmation is still pending.
+
+### B-063 Android viewport cache leaks across logout and identity changes
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `logout`, `identity`
+- Summary: The top-level Android terminal viewport cache can survive logout or identity changes and restore a stale camera when another relay/user reuses the same session ID.
+- Report:
+  Review found that hoisting the viewport cache above `TerminalScreen` lets it outlive logout, endpoint changes, and login/cert screens while restore indexes only by `activeSessionId`.
+- Repro:
+  1. Attach as one endpoint/user with a session ID such as `host-1`.
+  2. Move the terminal camera away from the default cursor-follow position.
+  3. Logout so `TerminalScreen` is disposed.
+  4. Attach as another endpoint/user that reuses `host-1`.
+  5. Observe that the new terminal can restore the stale camera from the previous identity.
+- Investigation notes:
+  - The finding is real. The cache lives at top-level app composition and the key was only the session ID.
+  - Clearing alone is fragile because `TerminalScreen` disposal can capture the old viewport during the transition. Restore lookup must also be scoped to the attached identity.
+  - The fix scopes cache entries by endpoint/principal/session and clears the cache whenever the attached identity changes or disappears.
+- Regression coverage:
+  - Added instrumentation coverage that moves the camera for one identity, logs out, asserts the cache is empty, then logs in as another identity with the same session ID and asserts the previous camera is not restored.
+  - Reran the app-lock viewport regression to prove same-identity app-lock restore still preserves the cached camera.
+- Verification:
+  - `LINGON_IT_ONLY=logout_clears_viewport_cache_and_reused_session_id_does_not_restore_stale_camera make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260511-091517-1858597/summary.txt`.
+  - `LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260511-091645-1864750/summary.txt`.
+  - `./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `./gradlew :app:testDebugUnitTest` passed.
+
+### B-062 Android app lock unlock loses terminal camera viewport
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `app-lock`, `lifecycle`
+- Summary: Unlocking the Android app after app lock can recreate the terminal without the saved camera viewport, so the restored view pans to keep the cursor at the bottom-left instead of preserving the previous camera.
+- Report:
+  When restoring a session in the Android app after unlocking from the app-lock screen, the camera is not restored to the same position as before lock. It pans to keep the cursor bottom-left.
+- Repro:
+  1. Open a terminal session with enough content that the camera can be away from cursor-follow bottom.
+  2. Position the camera at a saved viewport.
+  3. Let app lock replace the terminal with the locked screen.
+  4. Unlock the app.
+  5. Observe the recreated terminal camera follows the cursor instead of restoring the previous camera.
+- Investigation notes:
+  - The app-lock branch removes `TerminalScreen` from composition while showing `LockedScreen`.
+  - The terminal viewport cache lived inside `TerminalScreen`, so app-lock disposal destroyed the cache that reconnect/refocus restore paths rely on.
+  - `TerminalPanel` also only captured viewport on lifecycle `ON_STOP`, not when it was disposed by an in-app lock state transition.
+  - The first regression run reproduced the unlock failure: after unlocking, the viewport restored to row 38 instead of the saved row 10.
+  - Hoisting the viewport cache kept the captured state alive across app-lock composition changes, but restore still needed ordering guards: a recreated `TerminalGridView` can be laid out before it has a snapshot/frame, and a no-cache restore attempt must not mark the view as restored.
+- Regression coverage:
+  - Added instrumentation coverage for the app-lock branch that disposes `TerminalScreen`, captures a top camera viewport, unlocks, and asserts the recreated terminal preserves the saved visible start row and camera offset instead of cursor-following to the bottom.
+- Verification:
+  - `LINGON_IT_ONLY=app_lock_unlock_preserves_terminal_camera_viewport make integration-test` passed. Resource profile: `android/test-artifacts/resource-profile-20260511-050339-1354744/summary.txt`.
+  - `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
+### B-061 Tagged wall notification cleanup must cancel by tag and ID
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `e2e`
+- Summary: Android wall notifications are posted with non-null tags, but the Android e2e cleanup path still cancelled by ID only, leaving stale wall notifications active across tests.
+- Report:
+  Review found that `clearWallNotifications()` calls `NotificationManager.cancel(id)` even for tagged `lingon_wall` notifications. Android requires `cancel(tag, id)` for tagged notifications, so stale wall notifications can survive cleanup and confuse later waits/assertions.
+- Repro:
+  1. Post a tagged wall notification.
+  2. Call `NotificationManager.cancel(id)`.
+  3. Observe the notification remains active.
+  4. Call `NotificationManager.cancel(tag, id)`.
+  5. Observe the notification is cleared.
+- Investigation notes:
+  - The review finding is real. The bug was introduced when wall posts moved from a single id-only notification to per-event tag/id notifications.
+  - Background-wall service notifications still use id-only posts, so cleanup must support both tagged and untagged notifications.
+- Regression coverage:
+  - Added targeted instrumentation coverage proving id-only cancellation does not clear a tagged wall notification and tagged cancellation does.
+  - Updated e2e wall-notification cleanup to cancel with `tag,id` when a tag exists and fall back to id-only cancellation otherwise.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Targeted managed-device instrumentation passed with 3 tests: `systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=7G -p MemorySwapMax=0 ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" :app:phoneApi35DebugAndroidTest --no-configuration-cache -Plingon.it.class=systems.pkt.lingon.AndroidWallNotifierInstrumentedTest`.
+  - `cd android && make help` shows the corrected cgroup defaults.
+  - `git diff --check` passed.
+
+### B-060 Disabled Android wall notification channel can consume wall cursor
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `cursor`
+- Summary: `AndroidWallNotifier` can return success when Android accepts a wall `notify()` call but suppresses the notification, allowing `WallDeliveryCoordinator` to advance the durable wall cursor for an event the user never saw.
+- Report:
+  Review found that if the existing `lingon_wall` notification channel is disabled by the user, `notify()` can return normally without surfacing an active notification. The current notifier returns `true` unconditionally after `notify()`, so suppressed wall posts are treated as delivered.
+- Repro:
+  1. Disable the app's `lingon_wall` notification channel while wall/background notifications are otherwise enabled.
+  2. Receive a wall event while the app delivery path is posting system notifications.
+  3. Android suppresses the notification but `notify()` returns normally.
+  4. The durable wall cursor advances, so the missed event is not retried after the channel is re-enabled.
+- Investigation notes:
+  - The review finding is real. `MonotonicWallDeliveryCoordinator` advances the durable cursor only when `WallNotifier.notifyWall()` returns true, and `AndroidWallNotifier` had dropped the previous active-notification visibility check when wall posts moved from one fixed notification ID to per-event tag/id delivery.
+  - Disabled notification channels are not fixed by `ensureChannel()` because an existing disabled channel is preserved. The notifier must reject non-postable channel state before posting and prove the expected tag/id/channel is active after posting.
+  - Targeted managed-device verification exposed two more boundary details: `activeNotifications` is not always populated in the same instant that `notify()` returns, and Android can preserve disabled-channel state for a channel ID during an app install. The visibility proof must poll for a bounded interval, and instrumentation must use isolated test channel IDs instead of mutating the production `lingon_wall` channel.
+  - The bounded visibility wait runs through the suspend coordinator on `Dispatchers.IO`, so websocket/background delivery does not block the main dispatcher while waiting for Android notification state.
+- Regression coverage:
+  - Added unit coverage for `IMPORTANCE_NONE` being non-postable and visible channel importances being postable.
+  - Added unit coverage that active notification matching requires the exact wall channel, tag, and ID, including Java `String.hashCode()` notification-ID collision fixtures.
+  - Added targeted instrumentation coverage that a `lingon_wall` channel created with `IMPORTANCE_NONE` makes `AndroidWallNotifier.notifyWall()` return false, and that an enabled channel reports success only after the expected wall notification is active.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Targeted managed-device instrumentation failed before the final fix because `activeNotifications` was not immediately visible after `notify()`, then passed with isolated test channel IDs and bounded visibility polling: `systemd-run --user --scope -p CPUQuota=200% -p MemoryMax=7G -p MemorySwapMax=0 ./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" :app:phoneApi35DebugAndroidTest --no-configuration-cache -Plingon.it.class=systems.pkt.lingon.AndroidWallNotifierInstrumentedTest`.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `git diff --check` passed.
+
+### B-059 Android IME visibility is not preserved across app refocus
+
+- Status: `resolved`
+- Area: `android`, `ime`, `keyboard`, `lifecycle`, `e2e`
+- Summary: If the soft keyboard is visible when the Android app is backgrounded, it reappears briefly on refocus and then auto-hides about one second later.
+- Report:
+  On the latest branch build, backgrounding and refocusing the Android app always returns with the keyboard hidden. The visible/hidden IME state from the moment of backgrounding is not honored.
+- Repro:
+  1. Open the Android app and focus the terminal input so the IME quick keys are visible.
+  2. Background the app.
+  3. Refocus the app.
+  4. Observe the keyboard/quick keys initially return, then disappear after roughly one second.
+- Regression coverage:
+  - Strengthened `keyboard_visible_before_background_is_restored_after_resume` to assert the quick-key row remains visible after the delayed post-resume hide window, not only immediately after resume.
+  - Strengthened `keyboard_hidden_before_background_stays_hidden_after_resume` to assert that hiding the IME records a false lifecycle preference before backgrounding, and that refocus does not flip it back to visible.
+- Investigation notes:
+  - The original regression test only proved immediate visible restore. It did not cover the delayed post-resume hide window that reproduced the phone behavior.
+  - Normal input readiness was sharing the same "restore in progress" suppression as lifecycle ON_START. That allowed a user-hidden IME transition to be ignored as if it were a transient lifecycle restore inset.
+  - The hidden input view could be focused directly by tests and platform focus without going through the terminal tap path that records IME intent.
+  - Refocus via `am start` can re-enter the activity path; `.MainActivity` now uses `singleTop` so foregrounding targets the existing activity instance instead of stacking a fresh one.
+  - Reopened: the real phone still auto-hides after refocus. The missing invariant is that a platform-driven post-resume IME hide must not be interpreted as a user hide when the saved lifecycle preference is visible.
+  - Follow-up fix: IME inset changes now go through `TerminalImeLifecyclePolicy`. A false inset while the saved lifecycle preference is visible re-requests focus instead of persisting hidden. User dismissal is explicit through pre-IME Back and ignores stale visible insets until Android reports the hidden inset.
+  - Follow-up report: the IME now remains visible, but refocus shifts the terminal camera down by about one or two rows. The restore invariant is broader than IME visibility: the same terminal frame must keep the same viewport while Android settles IME height.
+  - Follow-up fix: `TerminalGridView` now retains the restored viewport for the current terminal frame and re-applies it across same-frame height changes, so transient IME hidden/visible height bounces do not run the generic live-bottom snap path. New frames, user pan, zoom, or reset clear this restore guard.
+- Verification:
+  - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed before the final fix, then passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` failed before the delayed assertion fix, then passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `git diff --check` passed.
+  - Added `TerminalImeLifecyclePolicyTest.platformHiddenInsetAfterVisibleLifecycleRestoreDoesNotPersistHidden`, which failed before the follow-up fix and passed after the policy change.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the follow-up fix.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed as a targeted smoke test.
+  - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed after the first follow-up fix because stale visible insets could undo explicit Back dismissal, then passed after adding dismissal-in-progress handling.
+  - Added `lifecycle_viewport_restore_survives_ime_height_bounce_without_new_frame`, which failed before the viewport follow-up fix with the restored camera moving from `0` to `2680.8003px`, then passed after retaining the same-frame restored viewport.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed after the viewport follow-up fix.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed as the final smoke test after the viewport follow-up fix.
+  - Physical phone confirmation passed after the viewport follow-up fix; IME stays visible across refocus and the terminal camera no longer shifts down.
+
+### B-058 Full Android integration sweep remains unsafe on developer workstation
+
+- Status: `needs_verification`
+- Area: `android`, `integration-test`, `emulator`, `performance`, `safety`
+- Summary: The unqualified Android integration sweep can still freeze the workstation even after cgroup containment, so containment and the offending tests/phases must be investigated before another full run.
+- Report:
+  A contained full Android integration run froze the laptop hard enough to require a reboot. The engineer explicitly prohibited further full Android suite runs until the issue is resolved beyond doubt.
+- Repro:
+  1. Start the full Android integration sweep.
+  2. During the long 30-test connected instrumentation batch, the host can become unresponsive and require reboot.
+  3. Resource artifacts from the interrupted run show the emulator/Gradle/UTP path still held roughly 5.4-6.5 GiB in the test cgroup, with the host-GPU emulator as the dominant process.
+- Investigation notes:
+  - The interrupted run profile sampled qemu, GradleDaemon, UTP launcher, harness, and netsimd inside the integration cgroup, with peak cgroup CPU below the 600% quota and memory below the old 8G ceiling. That makes a simple managed-process CPU cgroup escape unlikely.
+  - The dominant offender was qemu: every full-run profile shows `qemu-system-x86_64` as the top CPU process.
+  - The integration path was launching a heavyweight emulator: `configure-avd.sh` forced 6 vCPUs and 4096 MB RAM, and the cgroup default on a 12-core machine allowed 600% CPU. That is too much sustained qemu CPU for the workstation.
+  - A software-GPU probe was not the fix: `-gpu swiftshader -no-window` passed a single targeted test but increased average cgroup CPU to 4.62 cores and CPU pressure to 55%.
+  - The Android Gradle daemon also used the project-wide `-Xmx4g` heap for instrumentation invocations, which unnecessarily inflated the integration cgroup memory envelope.
+- Regression coverage:
+  - Managed integration AVDs are reconfigured before launch to 2 vCPUs and 2048 MB RAM by default, with `LINGON_IT_AVD_CPU_CORES` and `LINGON_IT_AVD_RAM_MB` overrides.
+  - The integration cgroup default CPU quota is now capped at 200%, still lower on small machines when half the online cores is less than two full cores.
+  - The integration cgroup memory ceiling defaults to 7G with swap disabled, avoiding the observed 6G pressure while staying below the old 8G ceiling.
+  - The integration Gradle invocation overrides the single-use daemon heap to `-Xmx1536m` instead of the project-wide `-Xmx4g`.
+- Verification:
+  - Existing interrupted-run artifacts were inspected and identified qemu as the dominant CPU process while the managed emulator/Gradle/UTP/harness processes were sampled in the test cgroup.
+  - `LINGON_IT_ONLY=top_bar_menu_is_accessible EMULATOR_FLAGS='-gpu swiftshader -no-window -no-snapshot' make integration-test` passed, but proved software GPU made qemu CPU pressure worse.
+  - `LINGON_IT_ONLY=top_bar_menu_is_accessible LINGON_IT_CPU_QUOTA_PERCENT=200 make integration-test` passed and proved the cgroup can cap qemu to roughly two cores.
+  - `LINGON_IT_ONLY=top_bar_menu_is_accessible make integration-test` passed with the new defaults: CPUQuota=200%, 2-vCPU/2048 MB AVD, 1536m Gradle daemon, peak CPU 2.12 cores, peak memory about 6.01 GiB.
+  - `LINGON_IT_ONLY=terminal_updates_live make integration-test` passed with the new defaults: peak CPU 2.11 cores, average CPU 1.59 cores, peak memory about 6.53 GiB.
+  - Full Android integration verification is still deferred until after review because the original failure mode was host-level unresponsiveness; targeted runs now prove the qemu CPU envelope is bounded.
+
+### B-057 Android integration suite needs per-test cost attribution and performance fixes
+
+- Status: `in_progress`
+- Area: `android`, `integration-test`, `performance`, `e2e`
+- Summary: The Android integration suite is expensive enough that we need to identify the worst CPU/time offenders and improve the test flow instead of only containing it.
+- Report:
+  After adding cgroup containment, the next issue is to zero in on which Android e2e tests or phases are extremely CPU expensive, then optimize the expensive paths.
+- Repro:
+  1. Run the contained full Android integration suite.
+  2. Attribute high CPU/wall time to tests or phases, not just the aggregate run.
+  3. Reduce unnecessary overhead and keep the cost visible in run artifacts.
+- Regression coverage:
+  - Android integration resource profiles now copy connected-test JUnit XML into the run profile directory and write a sorted `test-times.txt` file so expensive instrumentation cases are attributable from artifacts.
+  - Added Android tool unit coverage for sorting JUnit timings by descending duration.
+  - Added Android instrumentation geometry coverage for small, production-sized, and large terminal dimensions without relying on the default harness size.
+  - Added harness unit coverage for stopping only the requested temporary host fixture.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh` passed.
+  - `go test ./cmd/lingon-android-harness` passed.
+  - `cd android && go test ./cmd/lingon-android-tools` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - Full Android integration verification is intentionally incomplete because B-058 makes full-suite execution unsafe until containment and offending tests/phases are investigated.
+
+### B-056 Android integration tests can saturate the workstation
+
+- Status: `resolved`
+- Area: `android`, `integration-test`, `harness`, `emulator`, `gradle`
+- Summary: The Android integration harness can consume enough CPU and memory to freeze the laptop, making the full e2e suite unsafe to run normally.
+- Report:
+  Running Android integration tests can make the workstation effectively unresponsive. The full stack must be contained by default, including emulator, harness, Gradle, and test collection, with a hard CPU cap around half the online cores and a memory ceiling around 8 GB.
+- Repro:
+  1. Run `make integration-test` from `android/`.
+  2. Observe emulator/harness/Gradle load can saturate the machine.
+  3. The integration runner should instead enter a systemd user scope before starting the stack, apply dynamic CPU quota and memory limits, and record resource samples for diagnosis.
+- Investigation notes:
+  - The existing integration script owned emulator, harness, Gradle, artifact collection, and logcat, so the containment point belongs at the start of `run-integration-tests.sh`, before any of those processes start.
+  - `systemd-run --user --scope` supports the needed hard limits in this environment. Default CPU quota is computed from online CPUs as `cores * 50%`, which is half the machine because systemd expresses `CPUQuota` as percent of one core.
+  - The script now defaults to a fresh managed emulator so the emulator is created inside the cgroup. Reusing an already-running device/emulator is explicit via `LINGON_IT_REUSE_DEVICE=1`.
+  - Gradle now runs with `--no-daemon` and in-process Kotlin compilation for integration tests, avoiding reuse of unconstrained Gradle/Kotlin daemons outside the cgroup.
+  - Cgroups cap real memory, not virtual address space. The runner enforces `MemoryMax=8G` and `MemorySwapMax=0`, and logs peak per-process VSZ separately for diagnosis.
+- Regression coverage:
+  - `run-integration-tests.sh` now self-wraps normal invocations in a systemd user scope unless `LINGON_IT_CGROUP=0` is set deliberately.
+  - Each run writes `samples.jsonl`, `summary.txt`, and `top-processes.txt` under `android/test-artifacts/resource-profile-*`.
+  - `android/Makefile` documents CPU/memory knobs and the explicit device-reuse escape hatch.
+- Verification:
+  - `bash -n android/scripts/run-integration-tests.sh` passed.
+  - `cd android && LINGON_IT_ONLY=top_bar_menu_is_accessible make integration-test` passed with the cgroup wrapper enabled.
+  - Final smoke profile: `CPUQuota=600%` on 12 online CPUs, `MemoryMax=8G`, `MemorySwapMax=0`, `peak_cpu_cores=5.75`, `peak_memory_peak_bytes=5574295552`, `peak_process_vsz_kb=12293840`.
+
+### B-054 Review follow-up: manual viewport restore drifts across height changes
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `lifecycle`
+- Summary: Restoring a non-live/manual cached viewport after an IME or orientation height change can preserve the old top camera offset instead of preserving the saved visible content bottom edge.
+- Report:
+  Review found that `TerminalViewportPolicy.restoreCameraOffsetY` returns the saved Y offset unchanged for non-bottom/manual restores. If a zoomed or scrollback viewport is captured at one height and restored at another, the visible rows shift by the height delta.
+- Repro:
+  1. Capture a manual viewport with camera Y 350 px, viewport height 200 px, 10 px cells, and 60 rows.
+  2. Restore it into the same terminal content with viewport height 150 px.
+  3. The restored camera should be 400 px so the same content bottom edge remains anchored; current behavior restores 350 px.
+- Investigation notes:
+  - The review finding was real. The policy-level repro and Android lifecycle restore repro both failed before the fix.
+  - Live-bottom restore and manual restore need different anchors: live-bottom restores to the current terminal bottom, while manual/zoomed/scrollback restore preserves the saved visible content bottom.
+  - `restoreCameraOffsetY` now maps manual saved content bottom through row-space, so it preserves the same content edge across viewport height and cell-height changes, then clamps to the current terminal bounds.
+- Regression coverage:
+  - Added `TerminalViewportPolicyTest.restore preserves manual bottom anchor when viewport shrinks`.
+  - Added `TerminalViewportPolicyTest.restore preserves manual bottom anchor when viewport grows`.
+  - Added `TerminalViewportPolicyTest.restore clamps manual bottom anchor to current terminal bounds`.
+  - Added `TerminalViewportPolicyTest.restore preserves manual bottom content when cell height changes`.
+  - Added `EndToEndTest.lifecycle_viewport_restore_preserves_manual_bottom_anchor_across_height_change`.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_manual_bottom_anchor_across_height_change make integration-test` failed before the fix, then passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `git diff --check` passed.
+
+### B-053 Refactor: wall polling must not expose in-flight delivery as durable cursor
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `worker`, `service`
+- Summary: The wall delivery surface was too primitive: workers/services could separately load and advance the same cursor that notification delivery used for in-flight claims, allowing failed notifications to be skipped by concurrent pollers.
+- Report:
+  Review found that persisting event 42 as a normal cursor before `notifyWall` succeeds lets another poller observe 42 as delivered, advance past it, and make rollback skip the unposted event.
+- Repro:
+  1. Start a poll for event 42 and block inside `notifyWall`.
+  2. While blocked, read the durable cursor.
+  3. The durable cursor must remain at the previous delivered value, not 42.
+  4. If event 42 fails and event 43 is blank/later in the page, the cursor must not advance past 42.
+- Investigation notes:
+  - The review finding was a design issue, not a narrow exception-handling bug. `WallWorkStateStore.claimDelivery` persisted in-flight notification claims into the same cursor read by poll workers/services.
+  - Refactor: removed persistent delivery claims and rollback state. `WallWorkStateStore` now only stores durable delivered cursors.
+  - Refactor: `MonotonicWallDeliveryCoordinator.pollOnce` owns loading the cursor, fetching one page, processing events, posting notifications, and advancing the durable cursor under one process-wide mutex.
+  - `WallPollWorker` and `BackgroundWallForegroundService` now call the shared `pollOnce` page processor instead of duplicating cursor/page loops.
+  - Direct websocket delivery paths still use the same coordinator mutex and only advance the durable cursor after notification delivery succeeds or in-app consumption is accepted.
+- Regression coverage:
+  - Added `WallDeliveryCoordinatorTest.pollDoesNotExposeInFlightNotificationAsDeliveredCursor`.
+  - Added `WallDeliveryCoordinatorTest.pollDoesNotSkipFailedNotificationWhenLaterBlankEventExists`.
+  - Added `WallDeliveryCoordinatorTest.concurrentPollsSerializeAndSecondPollSeesCommittedCursor`.
+  - Updated `WallWorkStateStoreTest` to remove claim/rollback behavior and assert only monotonic durable cursor semantics.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest --tests systems.pkt.lingon.data.WallWorkStateStoreTest --tests systems.pkt.lingon.work.BackgroundWallForegroundServiceTest` passed.
+  - `cd android && LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=background_distinct_wall_messages_post_distinct_system_notifications make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
+### B-052 Review follow-up: wall delivery exceptions and live height-change bottom alignment
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `terminal`, `viewport`, `keyboard`
+- Summary: Review identified two untested failure modes: a throwing wall notifier can leave a claimed cursor persisted without a posted notification, and live/default-zoom viewport height changes can preserve an old camera when the cursor still fits instead of snapping to the terminal bottom.
+- Report:
+  1. If `WallNotifier.notifyWall(...)` throws after `claimDelivery()` advances the cursor, rollback is skipped and subsequent delivery attempts treat the event as already consumed.
+  2. On IME/viewport height changes, live mode should align the terminal bottom to the new viewport edge. Cursor-follow can keep the old camera if the prompt row is visible above trailing blank rows, hiding the terminal bottom behind the keyboard.
+- Repro:
+  1. Claim wall event 42, make `notifyWall` throw, then retry event 42. The cursor must still be retryable and previous cursor state must be restored.
+  2. Render 30 terminal rows in a tall viewport with cursor row 18, then shrink the viewport to 20 cell rows in live/default-zoom mode. The camera must move to row 10 so rows 10-29 remain visible.
+- Investigation notes:
+  - Both review comments were real. The new wall unit tests failed before the fix because notifier exceptions escaped after the cursor claim was persisted.
+  - `MonotonicWallDeliveryCoordinator.deliver` now rolls back the claim when `notifyWall` returns false or throws. Coroutine cancellation is also rolled back and rethrown, so cancellation semantics are preserved.
+  - The new height-change instrumentation assertion failed before the fix with the camera still at `0.0` after shrinking the viewport. In live/default-zoom mode, height changes now use bottom alignment directly instead of cursor-follow.
+- Regression coverage:
+  - Added `WallDeliveryCoordinatorTest.thrownNotificationDoesNotAdvanceCursorAndAllowsRetry`.
+  - Added `WallDeliveryCoordinatorTest.thrownNotificationRestoresPreviousCursor`.
+  - Added `WallDeliveryCoordinatorTest.cancelledNotificationRollsBackClaimAndPropagates`.
+  - Updated `EndToEndTest.keyboard_height_change_bottom_aligns_live_view_when_cursor_still_fits` to assert live bottom alignment even when the cursor row remains visible above trailing blank rows.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_height_change_bottom_aligns_live_view_when_cursor_still_fits make integration-test` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
+### B-051 Review follow-up: wall alert dedupe silences distinct messages and viewport restore loses horizontal preference
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `terminal`, `viewport`, `lifecycle`
+- Summary: Review identified two regressions in the previous wall notification and viewport restore changes: notification alert dedupe was tied to one constant Android notification ID, and lifecycle restore could promote a temporary horizontal cursor-follow camera into the user's preferred horizontal camera.
+- Report:
+  1. Distinct wall events posted while an earlier wall notification remains visible should still be allowed to alert; only retries/updates for the same wall event should be update-only.
+  2. A viewport captured after horizontal cursor-follow panned right for wide output should restore the current camera for the restore frame, but must keep the user's saved horizontal preference separate so later prompts that still fit can return to that preference.
+- Repro:
+  1. Enable background wall notifications, background the app, send two distinct wall messages, and observe they need distinct Android notification records/IDs while each still carries update-only retry semantics.
+  2. Restore a `TerminalGridView` state with a temporary `cameraOffsetXPx` and a separate saved `preferredCameraOffsetXPx`; then update with a cursor that fits the saved preference and observe the camera should return to the preference instead of staying at the temporary offset.
+- Investigation notes:
+  - The notification review finding was real. `setOnlyAlertOnce(true)` is correct for retries of the same event, but using one constant `notificationId` made Android treat distinct wall events as updates of the same notification.
+  - Device verification also showed that relying on a numeric ID alone was insufficient for the Android-visible behavior. Wall notifications now use a stable Android notification tag plus ID derived from the wall identity. Real relay event IDs are authoritative for retry dedupe; content-derived identity is only used when the event ID is missing.
+  - Review found that using the hashed integer notification ID as the tag left fallback messages vulnerable to Java `String.hashCode()` collisions. The notification tag now uses a SHA-256 digest of the full stable key, so Android's `(package, tag, id)` replacement key remains distinct even if the integer ID collides.
+  - The viewport review finding was real. Capturing only `cameraOffsetXPx` made restore conflate the transient camera with the user-preferred horizontal origin.
+  - `TerminalViewportState` now captures `preferredCameraOffsetXPx` separately. Restore applies the saved current camera for the restore frame but keeps the saved preferred horizontal camera for later cursor-follow decisions.
+- Regression coverage:
+  - Added `AndroidWallNotifierTest` coverage for stable same-event notification tags/IDs, distinct event tags/IDs, endpoint scoping, missing-event fallback identity, trimmed fallback fields, same-event retry behavior when message text changes, fallback hash collisions such as `Aa`/`BB`, and long fallback messages.
+  - Added `TerminalViewportPolicyTest` coverage for restoring the saved horizontal preference, preserving temporary camera when the cursor still fits there, panning right only when needed, and clamping stale preferred offsets.
+  - Added `EndToEndTest.background_distinct_wall_messages_post_distinct_system_notifications`, including assertions for distinct Android notification IDs and tags.
+  - Added `EndToEndTest.lifecycle_viewport_capture_keeps_horizontal_preference_separate_from_temporary_camera`.
+  - Added `EndToEndTest.lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera`.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.AndroidWallNotifierTest` passed after adding the fallback collision coverage.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_capture_keeps_horizontal_preference_separate_from_temporary_camera make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_keeps_horizontal_preference_separate_from_temporary_camera make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=background_distinct_wall_messages_post_distinct_system_notifications make integration-test` failed with only the second notification visible before explicit notification tags, then passed after the fix.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
+### B-050 Android wall notifications can alert twice and wall banners dismiss too quickly
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `status`
+- Summary: Background wall notifications can play duplicate sounds even when Android visually replaces/deduplicates the notification, and wall status banners disappear too quickly.
+- Report:
+  On a recent branch build, all wall notifications appear to be visually deduped by the phone but the notification sound plays twice. Background notifications are enabled. The in-app status box also disappears too quickly and should stay visible for a couple more seconds.
+- Repro:
+  1. Enable background wall notifications.
+  2. Background the Android app.
+  3. Send a wall message.
+  4. Observe one visible wall notification but duplicate notification sound.
+  5. Trigger a wall status banner and observe it disappears after the previous short timeout.
+- Investigation notes:
+  - Android visually dedupes wall notifications by replacing the same notification ID. Replacement can still alert again unless the notification is marked `onlyAlertOnce`.
+  - `AndroidWallNotifier.notifyWall()` also posted the notification and then immediately checked `activeNotifications` to decide whether delivery succeeded. That check can lag the accepted post; a false negative rolls the wall cursor back and can retry the same event, causing another alert while the visible notification is replaced.
+  - Fix: wall notifications now set `onlyAlertOnce`, and `notifyWall()` treats a successful `NotificationManagerCompat.notify(...)` call as accepted. Permission-disabled and `SecurityException` paths still return false before/around the post.
+  - The transient status duration was 3 seconds. It is now 5 seconds.
+- Regression coverage:
+  - Strengthened `background_manual_wall_delivery_posts_system_notification` to assert posted wall notifications carry `Notification.FLAG_ONLY_ALERT_ONCE`.
+  - Updated `wallInactivityBannerAutoDismisses` and `wallInactivityBannerReplacementRearmsDismissTimer` to require the banner to remain visible for 4,999 ms and dismiss at 5,000 ms under the coroutine test clock.
+  - Kept the existing instrumentation test `wall_inactivity_banner_auto_dismisses_without_tab_switch` as an Android-visible smoke test without wall-clock timing assertions.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.wallInactivityBannerAutoDismisses --tests systems.pkt.lingon.viewmodel.AppViewModelTest.wallInactivityBannerReplacementRearmsDismissTimer` failed before the timeout change, then passed.
+  - `cd android && LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make integration-test` passed with the `FLAG_ONLY_ALERT_ONCE` assertion.
+  - `cd android && LINGON_IT_ONLY=wall_inactivity_banner_auto_dismisses_without_tab_switch make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+
+### B-049 Review follow-up: live-bottom viewport restore loses rows added while stopped
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `lifecycle`
+- Summary: Restoring a viewport captured at live bottom could fail to remain at live bottom if terminal output added rows between capture and restore.
+- Report:
+  A cached viewport captured at live bottom for N rows was compared against the bottom offset for the current row count during restore. If rows advanced while the app was stopped or syncing, the saved camera looked like a manual non-bottom offset and live auto-follow was suppressed for the restore frame.
+- Repro:
+  1. Render a `TerminalGridView` with 60 rows and capture viewport state at live bottom.
+  2. Update the snapshot to 61 rows before restoring the captured viewport state.
+  3. Observe the camera restores to the old 60-row bottom instead of the current 61-row bottom.
+- Investigation notes:
+  - The review finding was real. Both the policy-level test and the Android view-level instrumentation test failed before the fix.
+  - `TerminalViewportState` had viewport height and scaled cell height, but not the captured row count, so `TerminalViewportPolicy.restoreCameraOffsetY` could not distinguish saved live-bottom from manual offset after row-count changes.
+  - Fix: store captured `totalRows` in `TerminalViewportState`; use saved row count to detect whether the saved camera represented live bottom, and use current row count to compute the restored live-bottom camera.
+- Regression coverage:
+  - Added `TerminalViewportPolicyTest.restore preserves live bottom when row count advanced after capture`.
+  - Added `TerminalViewportPolicyTest.restore preserves manual camera when row count advanced after capture`.
+  - Added `EndToEndTest.lifecycle_viewport_restore_preserves_live_bottom_when_rows_advance`.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_live_bottom_when_rows_advance make integration-test` failed before the fix, then passed.
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_live_bottom_across_height_change make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed.
+
+### B-048 Review follow-up: viewport restore height drift and wall notification delivery race
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `notifications`, `wall`
+- Summary: Review identified two regressions: restoring a cached live-bottom viewport across IME-height changes could preserve the old camera exactly, and concurrent wall delivery coordinators could treat an in-flight failed notification as consumed.
+- Report:
+  1. A viewport captured at live bottom with one viewport height can be restored after the IME changes the viewport height. Restoring the old `cameraOffsetYPx` exactly leaves the terminal above the current live bottom.
+  2. Two wall delivery paths can race. One path claims the cursor and blocks/fails in `notifyWall`; another path observes the cursor as already advanced and returns success, allowing workers to advance/skip without a posted notification.
+- Repro:
+  1. Create a `TerminalGridView` with overflowing live content, draw it at live bottom, capture viewport state, shrink the view height, restore the captured state, and assert the camera is at the new live bottom.
+  2. Start delivery through one coordinator with a blocking failing notifier, start delivery through a second coordinator for the same event, and assert the second delivery does not complete as consumed while the first claim is in flight.
+- Investigation notes:
+  - Both review comments were relevant. The new tests failed before the fixes.
+  - `TerminalViewportState` captured `viewportHeightPx` but not scaled cell height, so restore could not reliably identify that a saved camera represented live bottom after IME-related scale/height changes.
+  - `MonotonicWallDeliveryCoordinator` used an instance mutex, so two coordinator instances could observe the same cursor claim concurrently through the shared store.
+- Regression coverage:
+  - Added `EndToEndTest.lifecycle_viewport_restore_preserves_live_bottom_across_height_change`.
+  - Added `WallDeliveryCoordinatorTest.inFlightFailedDeliveryThroughSeparateCoordinatorIsNotConsumed`.
+- Verification:
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_live_bottom_across_height_change make integration-test` failed before the fix, then passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest.inFlightFailedDeliveryThroughSeparateCoordinatorIsNotConsumed` failed before the fix, then passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed.
+
+### B-047 Android IME toggle breaks live bottom alignment
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `keyboard`, `viewport`
+- Summary: Toggling the Android IME between hidden and visible can leave the live terminal camera misaligned from the bottom of the screen or keyboard.
+- Report:
+  When going from hidden IME keyboard to visible IME keyboard, the terminal bottom is no longer aligned correctly. With IME hidden, live output should align to the screen bottom; with IME visible, live output should align to the keyboard top. Existing screenshot-only coverage did not assert this.
+- Repro:
+  1. Load enough terminal output that the live terminal overflows the Android viewport.
+  2. Hide the IME and assert the live viewport ends at the final terminal row.
+  3. Show the IME and assert the live viewport still ends at the final terminal row above the keyboard.
+  4. Observe stale viewport restore can override the height-change bottom anchor.
+- Investigation notes:
+  - Reproduced the missing coverage first: the existing visual hide/show and tab-switch tests only captured screenshots and did not assert the live camera offset against the bottom-aligned pixel offset.
+  - A first tall-session attempt using a shell fixture was invalid because the harness registered the session but never produced a usable first frame. A second attempt using the default slow echo fixture was also invalid because the cursor still fit near the top, so bottom-follow was not the correct expectation.
+  - Added a harness `initial_lines` fixture that creates real PTY output before the host echo loop, so the Android test can deterministically load a terminal where the live bottom is below the viewport.
+  - The production bug was the viewport restore effect treating ordinary IME visibility changes as restore events. That let cached viewport state override the terminal view's height-change bottom anchor when toggling keyboard visibility.
+  - While verifying adjacent lifecycle behavior, the IME focus path also needed cancellable delayed keyboard-show attempts so hiding the keyboard invalidates pending `showSoftInput` retries.
+- Regression coverage:
+  - Added pixel-level live-bottom assertions to `keyboard_hide_show_preserves_bottom_anchor_visual`.
+  - Added pixel-level live-bottom assertions to each hop in `keyboard_tab_switch_preserves_bottom_anchor_visual`.
+  - Added `keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions`, which creates two tall host PTY sessions with deterministic initial output, toggles the IME hidden/visible per session, and verifies cached cross-session restores remain bottom-aligned.
+  - Kept IME lifecycle coverage split into the existing hidden/visible background-resume tests, and tightened the camera refocus test so it asserts camera preservation independently from IME state.
+- Verification:
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hide_show_preserves_bottom_anchor_visual make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_tab_switch_preserves_bottom_anchor_visual make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test` passed.
+  - `cd android && LINGON_IT_ONLY=focused_background_resume_preserves_live_camera_when_cursor_still_fits make integration-test` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed.
+  - `go test ./cmd/lingon-android-harness` passed.
+
+### B-046 Android IME state is not preserved across app refocus
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `keyboard`, `lifecycle`
+- Summary: Refocusing the Android app can automatically show the terminal IME even when the user hid it before backgrounding.
+- Report:
+  If the keyboard is toggled off, then Lingon is unfocused or closed and later refocused, the keyboard is automatically toggled back on without tapping the terminal. The IME visibility state should persist across app unfocus/refocus: hidden stays hidden, visible stays visible.
+- Repro:
+  1. Focus the terminal so the IME controls are visible.
+  2. Hide the keyboard.
+  3. Background/unfocus the app.
+  4. Refocus the app.
+  5. Observe the keyboard returns even though it was hidden before unfocus.
+- Investigation notes:
+  - `TerminalScreen` unconditionally requested terminal input focus on lifecycle `ON_START` and active-session changes.
+  - That forced the IME visible after resume regardless of whether the user had hidden it before backgrounding.
+  - Fix: automatic focus restore is now gated by captured foreground IME visibility. Initial startup and "IME was visible" still request focus; "IME was hidden" does not.
+  - The first attempted fix still failed because the hidden input view kept focus and Android restored the IME on resume by itself. The final fix records foreground IME visibility into `AppViewModel` state and explicitly clears terminal input focus/hides IME when the saved state is hidden.
+- Regression coverage:
+  - `EndToEndTest.keyboard_hidden_before_background_stays_hidden_after_resume`
+  - `EndToEndTest.keyboard_visible_before_background_is_restored_after_resume`
+- Verification:
+  - `cd android && LINGON_IT_ONLY=keyboard_hidden_before_background_stays_hidden_after_resume make integration-test` failed before the final fix, then passed.
+  - `cd android && LINGON_IT_ONLY=keyboard_visible_before_background_is_restored_after_resume make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+
+### B-045 Android zoomed terminal keeps prompt cropped after wide output
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `horizontal-pan`
+- Summary: In a zoomed Android terminal, wide command output can pan the camera right and leave the next prompt cropped on the left even though the cursor would fit if the camera returned to the user's left-aligned position.
+- Report:
+  Running a wide command such as `ps aux` in a zoomed Android terminal can move the camera several characters to the right. When the shell returns to the prompt, the prompt text on the left remains cropped even though the cursor/prompt would fit with horizontal camera alignment restored.
+- Repro:
+  1. Open an Android terminal and zoom in so horizontal panning is possible.
+  2. Start with the horizontal camera aligned all the way left.
+  3. Produce wide output that moves the cursor/right edge far enough to pan the camera right.
+  4. Return to a prompt near the left edge.
+  5. Observe the prompt remains cropped because the horizontal follow policy keeps a nonzero left-margin offset instead of restoring camera X to zero.
+- Investigation notes:
+  - The horizontal cursor-follow policy returns `cursorLeft - margin` when the cursor is left of the current viewport.
+  - For prompt positions near the left edge, that can be a positive camera offset even though the cursor would fit with camera X restored to zero.
+  - Fix: TerminalGridView now tracks a preferred horizontal camera offset separately from temporary cursor-follow movement. Horizontal follow restores that preferred offset when the cursor fits there, so both left-aligned `x=0` and user-panned positions such as `x=10` are preserved.
+- Regression coverage:
+  - `TerminalViewportPolicyTest.horizontal cursor follow restores left edge when cursor fits from origin`
+  - `TerminalViewportPolicyTest.horizontal cursor follow restores user panned edge when cursor fits there`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest`
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - Pending phone-visible verification with zoomed `ps aux` / wide-output prompt return.
+
+### B-044 Android refocus/reconnect shifts terminal camera without new output
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `viewport`, `lifecycle`
+- Summary: Refocusing or reconnecting the Android app can move the terminal camera back to cursor-follow placement even when no new terminal content requires a follow adjustment.
+- Report:
+  After the keyboard typing case was fixed, starting/refocusing Lingon still rearranges the terminal camera to the same forced placement as before. Refocus/reconnect must preserve the saved camera view unless a real terminal delta/replay changes the cursor/content so the cursor no longer fits.
+- Repro:
+  1. Render a live terminal viewport and save its camera state.
+  2. Simulate lifecycle restore/refocus with the same terminal frame and cursor state.
+  3. Observe that the restore path can apply live cursor-follow behavior even though no new terminal output arrived.
+- Investigation notes:
+  - The lifecycle restore path reused the default live cursor-follow/bottom-align logic. That is correct for new terminal output, but not for restoring a previously captured camera after app refocus.
+  - Restore must treat the captured camera as authoritative, then only future cursor movement from later frames can request cursor follow.
+  - Fix: viewport restore now restores the saved camera directly, seeds the current cursor as already observed, and suppresses live auto-follow for the restored frame sequence only.
+  - Follow-up: this did not resolve the phone-visible refocus bug. The original regression only exercised the lower-level view restore path, not the full focused Android lifecycle path.
+  - Follow-up fix: TerminalScreen now re-applies the cached viewport once per lifecycle and IME visibility state. This covers the likely phone timing where restore ran before the focused/keyboard-visible layout settled and was not retried.
+- Regression coverage:
+  - `EndToEndTest.lifecycle_viewport_restore_preserves_saved_camera_without_new_frame`
+  - `EndToEndTest.focused_background_resume_preserves_live_camera_when_cursor_still_fits`
+- Verification:
+  - `cd android && LINGON_IT_ONLY=lifecycle_viewport_restore_preserves_saved_camera_without_new_frame make integration-test` failed before the fix with `expected:<0.0> but was:<1266.3601>`, then passed after the fix.
+  - `cd android && LINGON_IT_ONLY=keyboard_height_change_preserves_live_camera_when_cursor_still_fits make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest`
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin`
+  - `cd android && LINGON_IT_ONLY=focused_background_resume_preserves_live_camera_when_cursor_still_fits make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`
+  - Pending phone-visible verification because the earlier fix did not resolve the physical device report.
+
+### B-043 Android wall notifications can duplicate for one wall event
+
+- Status: `resolved`
+- Area: `android`, `notifications`, `wall`, `background`
+- Summary: Android can show duplicate Lingon wall notifications for the same wall message even when the relay only sent one event.
+- Report:
+  The Android notification history showed two identical Lingon notifications with the same title, body, and timestamp. No duplicate wall message was sent, so the app must prevent duplicate system notification posts for the same wall event.
+- Repro:
+  1. Enable background wall notifications.
+  2. Let separate Android background delivery paths observe the same wall event concurrently.
+  3. Both paths can pass the cursor check before either records delivery.
+  4. Observe duplicate system notification posts for the same message.
+- Investigation notes:
+  - Existing regression coverage only checked that one coordinator instance suppresses replay. Its per-instance mutex hid the production race.
+  - Production can construct separate coordinators sharing the same persisted wall cursor. The old delivery path read `shouldDeliver`, posted the notification, and only then recorded the cursor, leaving a race window across coordinator instances.
+  - Fix: delivery now claims the event atomically in the shared wall cursor store before posting the notification. If posting fails, the claim is rolled back unless a newer cursor has already advanced.
+- Regression coverage:
+  - `WallDeliveryCoordinatorTest.concurrentDeliveryThroughSeparateCoordinatorsPostsOnlyOnce`
+  - `WallWorkStateStoreTest.deliveryClaimAtomicallySuppressesReplay`
+  - `WallWorkStateStoreTest.deliveryClaimRollbackRestoresPreviousCursor`
+  - `WallWorkStateStoreTest.deliveryClaimRollbackDoesNotMoveNewerCursorBackward`
+  - `EndToEndTest.background_manual_wall_delivery_posts_system_notification` now asserts exactly one active notification for the wall message.
+  - `EndToEndTest.background_manual_wall_delivery_does_not_repost_previous_message` now asserts exactly one active notification for the second wall message.
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.notifications.WallDeliveryCoordinatorTest --tests systems.pkt.lingon.data.WallWorkStateStoreTest`
+  - `cd android && LINGON_IT_ONLY=background_manual_wall_delivery_posts_system_notification make integration-test`
+  - `cd android && ./gradlew :app:testDebugUnitTest`
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin`
+
+### B-042 Android keyboard input snaps live camera even when cursor still fits
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `viewport`, `keyboard`
+- Summary: When the Android keyboard appears and the live cursor is still visible in the current camera viewport, the terminal must preserve the camera instead of bottom-aligning and cropping content unnecessarily.
+- Report:
+  With the terminal scrolled to the live bottom, starting to type opens the keyboard. Even though the cursor and input row still fit in the visible terminal viewport, the app shifts the camera downward so the cursor sits just above the new camera bottom, cropping content that should remain visible.
+- Repro:
+  1. Open an Android terminal session with enough visible rows that the prompt/cursor fits before keyboard input.
+  2. Scroll/pan to the live bottom.
+  3. Start typing so the keyboard appears.
+  4. Observe the camera snaps downward even though the cursor row was already visible and did not need auto-follow.
+- Investigation notes:
+  - The Android terminal view bottom-aligns on viewport height changes whenever live auto-follow is eligible.
+  - That is too aggressive for keyboard entry: live follow should move vertically only when the cursor row no longer fits in the current camera viewport.
+  - Fix: vertical cursor follow now preserves the current camera when the cursor row is already fully visible, and scrolls only the minimum amount needed to reveal the cursor when it is above or below the viewport.
+- Regression coverage:
+  - `TerminalViewportPolicyTest.vertical cursor follow preserves camera when cursor already fits`
+  - `EndToEndTest.keyboard_height_change_preserves_live_camera_when_cursor_still_fits`
+- Verification:
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalViewportPolicyTest`
+  - `cd android && LINGON_IT_ONLY=keyboard_height_change_preserves_live_camera_when_cursor_still_fits make integration-test`
+
 ### B-041 Codex v0.129.0 hangs on repeated start in host local PTY
 
 - Status: `resolved`
