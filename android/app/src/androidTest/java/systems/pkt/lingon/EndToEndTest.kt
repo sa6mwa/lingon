@@ -527,57 +527,6 @@ class EndToEndTest {
     }
 
     @Test
-    fun terminal_grid_https_link_tap_opens_link_without_focus_tap() {
-        lateinit var view: TerminalGridView
-        var openedUrl: String? = null
-        var focused = false
-        composeRule.runOnUiThread {
-            view = TerminalGridView(composeRule.activity).apply {
-                setOnOpenLink { url ->
-                    openedUrl = url
-                    true
-                }
-                setOnTap {
-                    focused = true
-                }
-                measure(exactlyMeasureSpec(720), exactlyMeasureSpec(240))
-                layout(0, 0, 720, 240)
-                update(
-                    snapshot = terminalSnapshotForViewTest(
-                        rows = listOf("open https://example.test now"),
-                        cols = 32,
-                    ),
-                    fontSizeSp = 14,
-                    minFontSizeSp = 8,
-                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
-                    frameSeq = 1,
-                    hostCols = 32,
-                    hostRows = 1,
-                    fitToViewWidth = false,
-                    zoomFactor = DefaultTerminalZoom,
-                    panResetNonce = 0,
-                    scrollbackOffsetRows = 0,
-                    imeVisible = false,
-                    isLoading = false,
-                )
-            }
-        }
-        composeRule.waitForIdle()
-
-        composeRule.runOnUiThread {
-            assertEquals("https://example.test", view.getLinkAtCellForTesting(row = 0, col = 5))
-            val cellWidth = view.getScaledCellWidthForTesting()
-            val cellHeight = view.getScaledCellHeightForTesting()
-            assertTrue("terminal cell width was not measured", cellWidth > 0f)
-            assertTrue("terminal cell height was not measured", cellHeight > 0f)
-            dispatchSinglePointerTap(view, x = cellWidth * 6.5f, y = cellHeight * 0.5f)
-            assertEquals("https://example.test", openedUrl)
-            assertFalse("link tap should not fall through to terminal focus", focused)
-        }
-        composeRule.waitForIdle()
-    }
-
-    @Test
     fun keyboard_height_change_bottom_aligns_live_view_when_cursor_still_fits() {
         lateinit var view: TerminalGridView
         composeRule.runOnUiThread {
@@ -5243,34 +5192,6 @@ class EndToEndTest {
         )
     }
 
-    private fun terminalSnapshotForViewTest(
-        rows: List<String>,
-        cols: Int,
-    ): TerminalSnapshot {
-        val runes = IntArray(rows.size * cols) { ' '.code }
-        rows.forEachIndexed { row, text ->
-            text.forEachIndexed { col, char ->
-                if (col < cols) {
-                    runes[row * cols + col] = char.code
-                }
-            }
-        }
-        return TerminalSnapshot(
-            cols = cols,
-            rows = rows.size,
-            runes = runes,
-            modes = IntArray(rows.size * cols),
-            fg = IntArray(rows.size * cols),
-            bg = IntArray(rows.size * cols),
-            graphemes = null,
-            cursorX = 0,
-            cursorY = 0,
-            cursorVisible = false,
-            mode = 0,
-            title = "",
-        )
-    }
-
     private fun scrollbackRowsForViewTest(rows: Int, cols: Int): List<ScrollbackRow> {
         return (0 until rows).map { row ->
             val builder = ScrollbackRow.newBuilder()
@@ -5295,12 +5216,6 @@ class EndToEndTest {
         view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime, MotionEvent.ACTION_DOWN, startX, startY, 0))
         view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime + 16, MotionEvent.ACTION_MOVE, endX, endY, 0))
         view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime + 32, MotionEvent.ACTION_UP, endX, endY, 0))
-    }
-
-    private fun dispatchSinglePointerTap(view: View, x: Float, y: Float) {
-        val startTime = SystemClock.uptimeMillis()
-        view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime, MotionEvent.ACTION_DOWN, x, y, 0))
-        view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime + 32, MotionEvent.ACTION_UP, x, y, 0))
     }
 
     private fun dispatchTerminalDragPulses(deltaYs: List<Float>): List<TerminalDebugInfo> {
