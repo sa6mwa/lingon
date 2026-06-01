@@ -56,7 +56,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.text.Editable
 import android.text.InputType
 import android.util.Log
@@ -67,6 +71,7 @@ import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import android.widget.Toast
 import android.view.KeyEvent as AndroidKeyEvent
 import systems.pkt.lingon.BuildConfig
 import systems.pkt.lingon.DefaultTerminalZoom
@@ -82,6 +87,23 @@ import systems.pkt.lingon.viewmodel.UiState
 import kotlin.math.abs
 
 private const val TerminalInputLogTag = "TerminalInputView"
+
+private fun openTerminalLink(context: Context, url: String): Boolean {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        addCategory(Intent.CATEGORY_BROWSABLE)
+        if (context !is Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+    return try {
+        context.startActivity(intent)
+        true
+    } catch (err: ActivityNotFoundException) {
+        Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
+        Log.w(TerminalInputLogTag, "No activity found for terminal link", err)
+        false
+    }
+}
 
 @Composable
 fun TerminalScreen(
@@ -648,6 +670,9 @@ private fun TerminalPanel(
                                 viewModel.updateZoomFactor(value)
                             }
                             setOnTap { focusInput() }
+                            setOnOpenLink { url ->
+                                openTerminalLink(context, url)
+                            }
                             setOnScrollback { deltaRows ->
                                 viewModel.adjustScrollback(deltaRows)
                             }
