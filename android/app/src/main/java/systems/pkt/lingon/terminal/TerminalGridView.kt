@@ -31,6 +31,7 @@ class TerminalGridView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
     private var snapshot: TerminalSnapshot? = null
+    private var terminalLinks: List<TerminalLinkRange> = emptyList()
     private var palette: TerminalPalette? = null
     private var baseFontSizeSp: Int = 0
     private var minFontSizeSp: Int = MinTerminalFontSizeSp
@@ -64,6 +65,7 @@ class TerminalGridView @JvmOverloads constructor(
     private var onViewSizeChanged: ((Int, Int) -> Unit)? = null
     private var onZoomChanged: ((Float) -> Unit)? = null
     private var onTap: (() -> Unit)? = null
+    private var onOpenLink: ((String) -> Boolean)? = null
     private var onScrollback: ((Int) -> Unit)? = null
     private var scrollRemainderY: Float = 0f
     private var pendingLiveReentryRows: Int = 0
@@ -84,7 +86,9 @@ class TerminalGridView @JvmOverloads constructor(
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            performClick()
+            if (!tryOpenLinkAt(e.x, e.y)) {
+                performClick()
+            }
             return true
         }
 
@@ -212,6 +216,7 @@ class TerminalGridView @JvmOverloads constructor(
                 cameraMode = TerminalViewportMode.LiveBottom
                 cursorFollowReturnMode = TerminalViewportMode.LiveBottom
             }
+            terminalLinks = snapshot?.let { TerminalLinks.findHttpsLinks(it) } ?: emptyList()
             invalidate = true
         }
         if (this.palette !== palette) {
@@ -233,6 +238,7 @@ class TerminalGridView @JvmOverloads constructor(
             if (suppressLiveAutoFollowFrameSeq != frameSeq) {
                 suppressLiveAutoFollowFrameSeq = null
             }
+            terminalLinks = snapshot?.let { TerminalLinks.findHttpsLinks(it) } ?: emptyList()
             invalidate = true
         }
         if (this.hostCols != hostCols) {
@@ -312,6 +318,10 @@ class TerminalGridView @JvmOverloads constructor(
         onTap = listener
     }
 
+    fun setOnOpenLink(listener: ((String) -> Boolean)?) {
+        onOpenLink = listener
+    }
+
     fun setOnScrollback(listener: ((Int) -> Unit)?) {
         onScrollback = listener
     }
@@ -330,6 +340,8 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun getCameraOffsetYForTesting(): Float = cameraOffsetYPx
 
+    fun getScaledCellWidthForTesting(): Float = scaledCellWidth
+
     fun getScaledCellHeightForTesting(): Float = scaledCellHeight
 
     fun getViewportHeightForTesting(): Int = effectiveViewportHeightPx()
@@ -337,6 +349,10 @@ class TerminalGridView @JvmOverloads constructor(
     fun getPhysicalHeightForTesting(): Int = height
 
     fun getSizeChangeInvalidateCountForTesting(): Int = sizeChangeInvalidateCountForTesting
+
+    fun getLinkAtCellForTesting(row: Int, col: Int): String? {
+        return linkAt(row, col)?.url
+    }
 
     fun getVisibleStartRow(): Int {
         val snap = snapshot ?: return 0
@@ -519,6 +535,29 @@ class TerminalGridView @JvmOverloads constructor(
         if (snap.cols * scaledCellWidth > width.toFloat() + 0.5f) return true
         if (snap.rows * scaledCellHeight > viewportHeightPx.toFloat() + 0.5f) return true
         return scrollbackOffsetRows > 0 || onScrollback != null
+    }
+
+    private fun tryOpenLinkAt(xPx: Float, yPx: Float): Boolean {
+        val link = linkAtScreenPoint(xPx, yPx) ?: return false
+        return onOpenLink?.invoke(link.url) == true
+    }
+
+    private fun linkAtScreenPoint(xPx: Float, yPx: Float): TerminalLinkRange? {
+        val snap = snapshot ?: return null
+        if (xPx < 0f || xPx >= width.toFloat()) return null
+        val viewportHeightPx = effectiveViewportHeightPx()
+        if (yPx < 0f || yPx >= viewportHeightPx.toFloat()) return null
+        if (scaledCellWidth <= 0f || scaledCellHeight <= 0f) return null
+        val maxOffsetXPx = max(0f, (snap.cols * scaledCellWidth) - width.toFloat())
+        val maxOffsetYPx = max(0f, (snap.rows * scaledCellHeight) - viewportHeightPx.toFloat())
+        val col = floor((cameraOffsetXPx.coerceIn(0f, maxOffsetXPx) + xPx) / scaledCellWidth).toInt()
+        val row = floor((cameraOffsetYPx.coerceIn(0f, maxOffsetYPx) + yPx) / scaledCellHeight).toInt()
+        return linkAt(row, col)
+    }
+
+    private fun linkAt(row: Int, col: Int): TerminalLinkRange? {
+        if (row < 0 || col < 0) return null
+        return terminalLinks.firstOrNull { it.contains(row, col) }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -725,7 +764,7 @@ class TerminalGridView @JvmOverloads constructor(
                     canvas.drawText(text, left, top + baseline, paint)
                 }
 
-                if (attr.mode and MODE_UNDERLINE != 0) {
+                if (attr.mode and MODE_UNDERLINE != 0 || linkAt(y, x) != null) {
                     linePaint.color = fg.toArgb()
                     val yLine = top + underlineY
                     canvas.drawLine(left, yLine, left + cellW, yLine, linePaint)
