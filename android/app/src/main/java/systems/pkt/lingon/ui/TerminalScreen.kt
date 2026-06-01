@@ -88,20 +88,25 @@ import kotlin.math.abs
 
 private const val TerminalInputLogTag = "TerminalInputView"
 
-private fun openTerminalLink(context: Context, url: String): Boolean {
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-        addCategory(Intent.CATEGORY_BROWSABLE)
-        if (context !is Activity) {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+object TerminalLinkOpener {
+    fun createIntent(context: Context, url: String): Intent {
+        return Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+            if (context !is Activity) {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
         }
     }
-    return try {
-        context.startActivity(intent)
-        true
-    } catch (err: ActivityNotFoundException) {
-        Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
-        Log.w(TerminalInputLogTag, "No activity found for terminal link", err)
-        false
+
+    fun open(context: Context, url: String): Boolean {
+        return try {
+            context.startActivity(createIntent(context, url))
+            true
+        } catch (err: ActivityNotFoundException) {
+            Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
+            Log.w(TerminalInputLogTag, "No activity found for terminal link", err)
+            false
+        }
     }
 }
 
@@ -671,7 +676,7 @@ private fun TerminalPanel(
                             }
                             setOnTap { focusInput() }
                             setOnOpenLink { url ->
-                                openTerminalLink(context, url)
+                                TerminalLinkOpener.open(context, url)
                             }
                             setOnScrollback { deltaRows ->
                                 viewModel.adjustScrollback(deltaRows)
