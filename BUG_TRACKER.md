@@ -29,6 +29,34 @@ Required status values:
 
 ## Active Items
 
+### B-085 `lingon attach` disables xterm text selection
+
+- Status: `resolved`
+- Area: `attach`, `terminal`, `xterm`, `mouse`
+- Summary: Starting `lingon attach` in xterm suppresses the normal selection pointer and prevents ordinary drag text selection while Lingon is running.
+- Report:
+  The engineer reports that `lingon attach` in xterm has no selection pointer and ordinary terminal text selection is unavailable while Lingon is running, behavior they have not seen in other terminal apps.
+- Repro:
+  1. Start a Lingon host session.
+  2. Start `lingon attach` for that session in xterm.
+  3. Try to drag-select text in the terminal.
+  4. Observe normal xterm selection is suppressed.
+- Regression coverage:
+  - `TestAttachStartupDoesNotEnableMouseReporting`
+  - `TestMultiAttachStartupDoesNotEnableMouseReporting`
+  - `TestAttachScrollbackScopesMouseReporting`
+- Verification:
+  - Reproduced with `go test -tags integration ./integration/pty/attach -run TestAttachStartupDoesNotEnableMouseReporting -count=1`.
+  - Failure evidence: attach startup raw output contains `ESC[?1000h` and `ESC[?1006h`, which enable xterm mouse reporting and suppress normal drag selection.
+  - Fixed by removing unconditional attach startup mouse-reporting enablement and scoping mouse reporting to attach scrollback mode.
+  - `go test -tags integration ./integration/pty/attach -run 'Test(AttachStartupDoesNotEnableMouseReporting|MultiAttachStartupDoesNotEnableMouseReporting|AttachScrollbackScopesMouseReporting)$' -count=1` passed.
+  - `go test -tags integration ./integration/pty/attach -run TestAttachScrollbackWheelUpReachesOlderRows -count=1` passed.
+  - `go test ./internal/attach -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
 ### B-084 Android certificates settings detail overlaps the system top area
 
 - Status: `needs_verification`

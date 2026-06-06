@@ -254,9 +254,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	if enterAltScreen(m.Clock, stdout) {
 		defer exitAltScreen(m.Clock, stdout)
 	}
-	if enableMouseReporting(m.Clock, stdout) {
-		defer disableMouseReporting(m.Clock, stdout)
-	}
+	mouseMode := newTerminalMouseMode(m.Clock, stdout)
+	defer mouseMode.Set(false)
 
 	if closer, ok := stdin.(io.Closer); ok {
 		m.stdinCloser = closer
@@ -1309,6 +1308,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			view.visible = true
 			view.hiddenAt = time.Time{}
 			view.client.SetStdout(renderStdout)
+			mouseMode.Set(view.client.ScrollbackActive())
 			if reconnect && view.cancel != nil {
 				reconnectAt := view.reconnectAt
 				reconnectGen := view.reconnectGen
@@ -1389,6 +1389,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		views[nextID] = view
 		activeID = nextID
+		mouseMode.Set(view.client != nil && view.client.ScrollbackActive())
 		mu.Unlock()
 		setTabs()
 		if changedActive {
@@ -1997,6 +1998,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					case control.ActionScrollback:
 						if client != nil {
 							client.SetScrollbackActive(true)
+							mouseMode.Set(true)
 							client.RenderCurrent()
 						}
 					case control.ActionNewPTY:
@@ -2182,6 +2184,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					cmd := scrollState.feed(b)
 					if cmd == scrollExit {
 						client.SetScrollbackActive(false)
+						mouseMode.Set(false)
 						client.RenderCurrent()
 						continue
 					}

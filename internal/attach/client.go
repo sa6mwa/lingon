@@ -116,6 +116,7 @@ type Client struct {
 	stdout                    io.Writer
 	stderr                    io.Writer
 	stdinCloser               io.Closer
+	scrollbackMouse           *terminalMouseMode
 	errOnce                   sync.Once
 	runErr                    error
 	readErrMu                 sync.Mutex
@@ -376,9 +377,11 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		if enterAltScreen(c.clock(), c.stdoutWriter()) {
 			defer exitAltScreen(c.clock(), c.stdoutWriter())
 		}
-		if enableMouseReporting(c.clock(), c.stdoutWriter()) {
-			defer disableMouseReporting(c.clock(), c.stdoutWriter())
-		}
+		mouseMode := newTerminalMouseMode(c.clock(), c.stdoutWriter())
+		c.scrollbackMouse = mouseMode
+		defer func() {
+			mouseMode.Set(false)
+		}()
 		if stdinFile, ok := c.stdin.(*os.File); ok && term.IsTerminal(int(stdinFile.Fd())) {
 			stdinState, err := term.MakeRaw(int(stdinFile.Fd()))
 			if err != nil {
@@ -1014,6 +1017,7 @@ func (c *Client) setScrollbackActive(active bool) {
 	defer c.scrollbackMu.Unlock()
 	if !active {
 		c.scrollbackView.SetActive(false)
+		c.setScrollbackMouseActive(false)
 		return
 	}
 	snap := c.snapshotOrBlank()
@@ -1037,6 +1041,14 @@ func (c *Client) setScrollbackActive(active bool) {
 		rowOffset = 0
 	}
 	c.scrollbackView.EnterAt(totalRows, viewRows, rowOffset, contentCols, viewCols, colOffset)
+	c.setScrollbackMouseActive(true)
+}
+
+func (c *Client) setScrollbackMouseActive(active bool) {
+	if c == nil || c.scrollbackMouse == nil {
+		return
+	}
+	c.scrollbackMouse.Set(active)
 }
 
 func (c *Client) scrollbackPage(delta int, stepRows int) bool {
@@ -2328,6 +2340,39 @@ func restoreCursor(clk clock.Clock, w io.Writer) {
 		return
 	}
 	_ = writeAll(clk, w, []byte("\x1b[0m\x1b[?25h"))
+}
+
+type terminalMouseMode struct {
+	mu      sync.Mutex
+	clk     clock.Clock
+	w       io.Writer
+	enabled bool
+}
+
+func newTerminalMouseMode(clk clock.Clock, w io.Writer) *terminalMouseMode {
+	if !isTerminalWriter(w) {
+		return &terminalMouseMode{}
+	}
+	return &terminalMouseMode{clk: clk, w: w}
+}
+
+func (m *terminalMouseMode) Set(enabled bool) {
+	if m == nil || m.w == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.enabled == enabled {
+		return
+	}
+	if enabled {
+		if enableMouseReporting(m.clk, m.w) {
+			m.enabled = true
+		}
+		return
+	}
+	disableMouseReporting(m.clk, m.w)
+	m.enabled = false
 }
 
 func enterAltScreen(clk clock.Clock, w io.Writer) bool {
