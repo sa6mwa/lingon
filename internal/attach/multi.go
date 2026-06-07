@@ -1266,6 +1266,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				}
 				views[current.ID] = nextView
 				mu.Unlock()
+				if visible {
+					mouseMode.Set(nextView.client != nil && nextView.client.ScrollbackActive())
+				}
 				if nextView.client != nil {
 					nextView.client.RenderCurrent()
 				}

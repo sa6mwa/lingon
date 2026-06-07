@@ -29,6 +29,29 @@ Required status values:
 
 ## Active Items
 
+### B-086 Android terminal links must not span hard row breaks without wrap metadata
+
+- Status: `resolved`
+- Area: `android`, `terminal`, `links`
+- Summary: Android terminal link detection could join a URL at the last column of one row with unrelated text on the next row.
+- Report:
+  Review found that link detection inferred soft wrapping from a nonblank final cell, so hard line breaks that exactly filled the terminal width could produce incorrect URLs spanning the next prompt or command row.
+- Repro:
+  1. Render a terminal snapshot with `https://example.test` exactly filling a 20-column row.
+  2. Render `/prompt` on the next row after a hard line break.
+  3. Detect links from the snapshot.
+  4. Observe the link must be `https://example.test`, not `https://example.test/prompt`.
+- Regression coverage:
+  - `TerminalLinksTest.findHttpsLinksDoesNotJoinHardLineBreaksAtLastColumn`
+  - `TerminalLinksTest.findHttpsLinksDoesNotJoinRowsWithoutWrapMetadata`
+- Verification:
+  - Reproduced with `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalLinksTest.findHttpsLinksDoesNotJoinHardLineBreaksAtLastColumn`.
+  - Fixed by treating snapshot row boundaries as delimiters unless explicit wrap metadata is available.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalLinksTest.findHttpsLinksDoesNotJoinHardLineBreaksAtLastColumn` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalLinksTest` passed.
+  - `cd android && ./gradlew :app:testDebugUnitTest` passed.
+  - `cd android && ./gradlew :app:compileDebugAndroidTestKotlin` passed.
+
 ### B-085 `lingon attach` disables xterm text selection
 
 - Status: `resolved`
@@ -45,17 +68,22 @@ Required status values:
   - `TestAttachStartupDoesNotEnableMouseReporting`
   - `TestMultiAttachStartupDoesNotEnableMouseReporting`
   - `TestAttachScrollbackScopesMouseReporting`
+  - `TestMultiAttachReconnectDisablesScrollbackMouseReporting`
 - Verification:
   - Reproduced with `go test -tags integration ./integration/pty/attach -run TestAttachStartupDoesNotEnableMouseReporting -count=1`.
   - Failure evidence: attach startup raw output contains `ESC[?1000h` and `ESC[?1006h`, which enable xterm mouse reporting and suppress normal drag selection.
+  - Review follow-up reproduced stale mouse reporting after multi-attach reconnect with `go test -tags integration ./integration/pty/attach -run TestMultiAttachReconnectDisablesScrollbackMouseReporting -count=1`.
   - Fixed by removing unconditional attach startup mouse-reporting enablement and scoping mouse reporting to attach scrollback mode.
+  - Fixed reconnect follow-up by resyncing the outer terminal mouse mode from the replacement active view after reconnect.
   - `go test -tags integration ./integration/pty/attach -run 'Test(AttachStartupDoesNotEnableMouseReporting|MultiAttachStartupDoesNotEnableMouseReporting|AttachScrollbackScopesMouseReporting)$' -count=1` passed.
+  - `go test -tags integration ./integration/pty/attach -run TestMultiAttachReconnectDisablesScrollbackMouseReporting -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run TestAttachScrollbackWheelUpReachesOlderRows -count=1` passed.
   - `go test ./internal/attach -count=1` passed.
   - `go test ./...` passed.
   - `go vet ./...` passed.
   - `golint ./...` passed.
   - `golangci-lint run ./...` passed.
+  - Review follow-up verification: `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed after the reconnect fix.
 
 ### B-084 Android certificates settings detail overlaps the system top area
 

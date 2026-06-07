@@ -48,7 +48,7 @@ class TerminalLinksTest {
     }
 
     @Test
-    fun findHttpsLinksMapsSoftWrappedSnapshotCells() {
+    fun findHttpsLinksDoesNotJoinRowsWithoutWrapMetadata() {
         val snapshot = snapshot(
             cols = 10,
             rows = listOf(
@@ -58,15 +58,26 @@ class TerminalLinksTest {
             ),
         )
 
+        assertEquals(emptyList<TerminalLinkRange>(), TerminalLinks.findHttpsLinks(snapshot))
+    }
+
+    @Test
+    fun findHttpsLinksDoesNotJoinHardLineBreaksAtLastColumn() {
+        val snapshot = snapshot(
+            cols = 20,
+            rows = listOf(
+                "https://example.test",
+                "/prompt",
+            ),
+        )
+
         val link = TerminalLinks.findHttpsLinks(snapshot).single()
 
         assertEquals("https://example.test", link.url)
         assertEquals(0, link.startRow)
-        assertEquals(3, link.startCol)
-        assertEquals(2, link.endRow)
-        assertEquals(3, link.endColExclusive)
-        assertTrue(link.contains(row = 1, col = 0))
-        assertTrue(link.contains(row = 2, col = 2))
+        assertEquals(0, link.startCol)
+        assertEquals(0, link.endRow)
+        assertEquals(20, link.endColExclusive)
     }
 
     private fun snapshot(cols: Int, rows: List<String>): TerminalSnapshot {

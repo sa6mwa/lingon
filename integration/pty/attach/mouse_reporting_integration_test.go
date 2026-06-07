@@ -72,6 +72,33 @@ func TestAttachScrollbackScopesMouseReporting(t *testing.T) {
 	}
 }
 
+func TestMultiAttachReconnectDisablesScrollbackMouseReporting(t *testing.T) {
+	h, sessionID := startMouseReportingHost(t)
+
+	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
+		SessionID: sessionID,
+		Cols:      80,
+		Rows:      20,
+	})
+	t.Cleanup(attach.Cancel)
+	waitForClientCount(t, h, sessionID, 1, 3*time.Second)
+	ptytest.Advance(h.Clock(), 200*time.Millisecond)
+	_ = attach.DrainRaw()
+
+	attach.SendBytes([]byte{0x0c, '['})
+	if !waitForRawContains(t, attach, "\x1b[?1000h\x1b[?1006h", 2*time.Second) {
+		t.Fatalf("entering multi attach scrollback did not enable mouse reporting")
+	}
+
+	h.StopServer()
+	h.RestartServer()
+	waitForHost(t, h, sessionID, 15*time.Second)
+	waitForClientCount(t, h, sessionID, 1, 15*time.Second)
+	if !waitForRawContains(t, attach, "\x1b[?1006l\x1b[?1000l", 2*time.Second) {
+		t.Fatalf("replacing active multi attach view did not disable mouse reporting")
+	}
+}
+
 func startMouseReportingHost(t *testing.T) (*ptytest.Harness, string) {
 	t.Helper()
 	t.Setenv("PS1", "PROMPT> ")

@@ -27,11 +27,8 @@ object TerminalLinks {
 
         for (row in 0 until snapshot.rows) {
             if (row > 0) {
-                val previousRowWrapped = rowHasVisibleTextAt(snapshot, row - 1, snapshot.cols - 1)
-                if (!previousRowWrapped) {
-                    text.append('\n')
-                    cells.add(null)
-                }
+                text.append('\n')
+                cells.add(null)
             }
             for (col in 0 until snapshot.cols) {
                 appendCellText(snapshot, row, col, text, cells)
@@ -90,16 +87,6 @@ object TerminalLinks {
         repeat(cellText.length) {
             cells.add(CellRef(row = row, col = col))
         }
-    }
-
-    private fun rowHasVisibleTextAt(snapshot: TerminalSnapshot, row: Int, col: Int): Boolean {
-        if (row < 0 || row >= snapshot.rows || col < 0 || col >= snapshot.cols) return false
-        val idx = row * snapshot.cols + col
-        if (snapshot.modes.getOrElse(idx) { 0 } and MODE_HIDDEN != 0) return false
-        val grapheme = snapshot.graphemes?.getOrElse(idx) { "" } ?: ""
-        if (grapheme.isNotEmpty()) return grapheme.isNotBlank()
-        val rune = snapshot.runes.getOrElse(idx) { 32 }
-        return rune != 0 && !String(Character.toChars(rune)).isBlank()
     }
 
     private fun firstMappedCell(cells: List<CellRef?>, start: Int): CellRef? {
