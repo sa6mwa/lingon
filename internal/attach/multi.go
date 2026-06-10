@@ -699,11 +699,16 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			Endpoint: endpointLabel,
 			Message:  msg,
 		}})
-		renderActiveCurrent()
+		_, client, _, _, _ := activeViewSnapshot()
+		if client != nil {
+			client.RenderCurrent()
+		} else {
+			renderActiveCurrent()
+		}
 		scheduleOverlayRedraw(effect)
 	}
 	scheduleLoading := func(sessionID string, view *sessionView) {
-		if localSessionMode || view == nil {
+		if view == nil {
 			return
 		}
 		m.Clock.AfterFunc(3*time.Second, func() {
@@ -969,7 +974,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		if m.OnView != nil {
 			m.OnView(session.ID, client)
 		}
-		if visible {
+		if visible && !localSessionMode {
 			scheduleLoading(session.ID, view)
 		}
 		view.cancel = ccancel
@@ -1363,6 +1368,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			} else {
 				renderActiveCurrent()
 			}
+			if localSessionMode && view.connecting && !view.connected {
+				showLoading("loading local headless")
+			}
 			updateDisconnectOverlay()
 			if localSessionMode {
 				syncActiveRoutedStatus()
@@ -1402,6 +1410,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 		}
 		renderActiveCurrent()
+		if localSessionMode && view.connecting && !view.connected {
+			showLoading("loading local headless")
+		}
 		updateDisconnectOverlay()
 		if localSessionMode {
 			syncActiveRoutedStatus()
