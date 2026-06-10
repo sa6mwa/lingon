@@ -105,3 +105,84 @@ func TestReconcileKeepsNoPIDRecordWithSocket(t *testing.T) {
 		t.Fatalf("records = %+v, want legacy session", records)
 	}
 }
+
+func TestReconcileDoesNotRemoveStaleRecordPathOutsideHeadlessDir(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "keep.txt")
+	if err := os.WriteFile(outside, []byte("do not delete"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store := NewStore(dir)
+	now := time.Now().UTC()
+	if err := store.WithLock(func(state *State) error {
+		state.Sessions["stale"] = SessionRecord{
+			SessionID:  "stale",
+			PID:        999999999,
+			SocketPath: outside,
+			StartedAt:  now,
+			LastSeenAt: now,
+			Status:     "running",
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithLock: %v", err)
+	}
+
+	records, err := store.Reconcile()
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records len = %d, want 0", len(records))
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside file was removed or changed: %v", err)
+	}
+}
+
+func TestReconcileDoesNotRemoveSocketOutsideHeadlessDir(t *testing.T) {
+	dir := t.TempDir()
+	outsideSocket := filepath.Join(t.TempDir(), "outside.sock")
+	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrUnix{Name: outsideSocket}); err != nil {
+		_ = syscall.Close(fd)
+		t.Fatalf("bind unix socket: %v", err)
+	}
+	if err := syscall.Close(fd); err != nil {
+		t.Fatalf("close socket: %v", err)
+	}
+	if !SocketExists(outsideSocket) {
+		t.Fatalf("expected outside socket inode at %s", outsideSocket)
+	}
+
+	store := NewStore(dir)
+	now := time.Now().UTC()
+	if err := store.WithLock(func(state *State) error {
+		state.Sessions["stale"] = SessionRecord{
+			SessionID:  "stale",
+			PID:        999999999,
+			SocketPath: outsideSocket,
+			StartedAt:  now,
+			LastSeenAt: now,
+			Status:     "running",
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithLock: %v", err)
+	}
+
+	records, err := store.Reconcile()
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records len = %d, want 0", len(records))
+	}
+	if !SocketExists(outsideSocket) {
+		t.Fatalf("outside socket was removed")
+	}
+}

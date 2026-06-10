@@ -2,6 +2,7 @@ package headless
 
 import (
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -28,9 +29,7 @@ func (s *Store) Reconcile() ([]SessionRecord, error) {
 	err := s.WithLock(func(state *State) error {
 		for id, rec := range state.Sessions {
 			if !sessionRecordAlive(rec) {
-				if strings.TrimSpace(rec.SocketPath) != "" {
-					_ = os.Remove(rec.SocketPath)
-				}
+				s.removeOwnedSocket(rec.SocketPath)
 				delete(state.Sessions, id)
 				continue
 			}
@@ -52,4 +51,17 @@ func sessionRecordAlive(rec SessionRecord) bool {
 		return PIDAlive(rec.PID)
 	}
 	return SocketExists(rec.SocketPath)
+}
+
+func (s *Store) removeOwnedSocket(socketPath string) {
+	trimmed := strings.TrimSpace(socketPath)
+	if trimmed == "" || !SocketExists(trimmed) {
+		return
+	}
+	base := filepath.Clean(filepath.Dir(s.path))
+	target := filepath.Clean(trimmed)
+	if target == base || !strings.HasPrefix(target, base+string(os.PathSeparator)) {
+		return
+	}
+	_ = os.Remove(target)
 }

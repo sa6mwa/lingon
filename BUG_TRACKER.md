@@ -37,7 +37,7 @@ Required status values:
 - Report:
   The engineer reports `lingonx sessions` lists `lj` and `ljsh` as local headless sessions even though those PIDs are gone. A relay/non-headless `lj` may still exist, but that should not keep stale local-headless records alive.
 - Desired behavior:
-  Local headless session records represent running headless daemons. For records with a real positive PID, the PID is authoritative; if it is dead, reconcile must remove the state entry and any orphan socket file. Socket existence alone is only a fallback for records without a usable PID.
+  Local headless session records represent running headless daemons. For records with a real positive PID, the PID is authoritative; if it is dead, reconcile must remove the state entry and any owned orphan socket file. Socket existence alone is only a fallback for records without a usable PID. Cleanup must never remove arbitrary paths from malformed state.
 - Repro:
   1. Persist a local headless session record with a positive dead PID.
   2. Leave a Unix socket inode at the recorded socket path.
@@ -46,9 +46,12 @@ Required status values:
 - Regression coverage:
   - `TestReconcilePrunesDeadPIDEvenWhenSocketFileRemains`
   - `TestReconcileKeepsNoPIDRecordWithSocket`
+  - `TestReconcileDoesNotRemoveStaleRecordPathOutsideHeadlessDir`
+  - `TestReconcileDoesNotRemoveSocketOutsideHeadlessDir`
 - Verification:
   - Reproduced with a persisted local headless record using a positive dead PID plus an orphan Unix socket inode.
   - Fixed by making positive PID liveness authoritative during reconciliation and removing orphan socket files when pruning dead-PID records.
+  - Review follow-up fixed cleanup so reconciliation removes only Unix socket paths owned under this store's headless directory; malformed paths and sockets outside that directory are left untouched while their state records are pruned.
   - `go test ./internal/headless -run 'TestReconcile(PrunesDeadPIDEvenWhenSocketFileRemains|KeepsNoPIDRecordWithSocket)' -count=1` passed.
   - `go test ./cmd/lingon -run 'Test(SessionsHeadlessUsesLocalState|Detach|SendHeadless|ConfigDirForLoader)' -count=1` passed.
   - `go test ./...` passed.
