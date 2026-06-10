@@ -29,6 +29,35 @@ Required status values:
 
 ## Active Items
 
+### B-087 Geometry zero dimensions must preserve explicit dimensions and fail before detached headless startup
+
+- Status: `resolved`
+- Area: `cli`, `geometry`, `headless`, `session`
+- Summary: `--geometry 80x0` and `--geometry 0x50` could lose the explicit dimension in normal host startup, and invalid detached headless geometry could fail only after reexec.
+- Report:
+  Review found that non-headless partial-zero geometry was parsed correctly but later session startup auto-detected both dimensions when either dimension was zero. Review also found that detached headless startup accepted invalid free-form geometry in the parent and failed only in the detached child with output redirected away.
+- Repro:
+  1. Start a normal host with `--geometry 80x0` in a terminal sized `90x30`.
+  2. Observe the host should use `80x30`, preserving the explicit columns and auto-detecting only rows.
+  3. Start detached headless with `-x --geometry bad`.
+  4. Observe the parent should reject the invalid geometry before reexec instead of reporting background startup.
+- Regression coverage:
+  - `TestRunnerPartialSizeAutoDetectPreservesExplicitDimension`
+  - `TestValidateHeadlessReexecFlagsRejectsInvalidGeometry`
+  - `TestValidateHeadlessReexecFlagsAcceptsValidGeometry`
+- Verification:
+  - Reproduced partial non-headless geometry overwrite with `go test ./internal/session -run TestRunnerPartialSizeAutoDetectPreservesExplicitDimension -count=1`; failure evidence was `runner size = 90x30, want 80x30`.
+  - Fixed by only auto-detecting dimensions whose configured value is `<= 0`, preserving explicit dimensions.
+  - Fixed detached headless validation by parsing `--geometry` before `startHeadlessReexec` starts the child.
+  - `go test ./internal/session -run TestRunnerPartialSizeAutoDetectPreservesExplicitDimension -count=1` passed.
+  - `go test ./cmd/lingon -run 'TestValidateHeadlessReexecFlags|TestResolveRootHostSizeGeometryZeroDimensionsUseAutoDetectSentinels|TestResolveHeadlessSizeGeometryZeroDimensionsUseDefaults' -count=1` passed.
+  - `go test ./cmd/lingon ./internal/session -count=1` passed.
+  - `go test ./internal/session -run TestRemoteInputSurvivesStaleSessionsList -count=1` passed after one full-suite transient failure.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
 ### B-086 Android terminal links must not span hard row breaks without wrap metadata
 
 - Status: `resolved`

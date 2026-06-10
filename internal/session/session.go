@@ -312,7 +312,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.opts.Cols <= 0 || r.opts.Rows <= 0 {
 		cols, rows := termSizeAny(r.stdout(), r.stdin())
 		if cols > 0 && rows > 0 {
-			r.opts.Cols, r.opts.Rows = cols, rows
+			if r.opts.Cols <= 0 {
+				r.opts.Cols = cols
+			}
+			if r.opts.Rows <= 0 {
+				r.opts.Rows = rows
+			}
 		}
 	}
 	if r.opts.Cols <= 0 {

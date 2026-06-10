@@ -140,6 +140,28 @@ func TestResolveHeadlessSizeGeometryZeroDimensionsUseDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateHeadlessReexecFlagsRejectsInvalidGeometry(t *testing.T) {
+	cmd := geometryTestCommand(t)
+	if err := cmd.Flags().Set(geometryFlagName, "bad"); err != nil {
+		t.Fatalf("set geometry: %v", err)
+	}
+
+	if err := validateHeadlessReexecFlags(cmd); err == nil {
+		t.Fatalf("validateHeadlessReexecFlags accepted invalid geometry")
+	}
+}
+
+func TestValidateHeadlessReexecFlagsAcceptsValidGeometry(t *testing.T) {
+	cmd := geometryTestCommand(t)
+	if err := cmd.Flags().Set(geometryFlagName, "80x0"); err != nil {
+		t.Fatalf("set geometry: %v", err)
+	}
+
+	if err := validateHeadlessReexecFlags(cmd); err != nil {
+		t.Fatalf("validateHeadlessReexecFlags: %v", err)
+	}
+}
+
 func TestRootCommandRegistersGeometryFlag(t *testing.T) {
 	cmd := NewRootCommand(lingon.NewLoader())
 	flag := cmd.Flags().Lookup(geometryFlagName)

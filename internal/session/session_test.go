@@ -65,6 +65,51 @@ func TestRunnerLocalShellEcho(t *testing.T) {
 	}
 }
 
+func TestRunnerPartialSizeAutoDetectPreservesExplicitDimension(t *testing.T) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = slave.Close()
+	})
+	_ = pty.Setsize(master, &pty.Winsize{Cols: 90, Rows: 30})
+
+	r := New(Options{
+		Shell:      "/bin/sh",
+		Publish:    false,
+		Stdin:      slave,
+		Stdout:     slave,
+		Cols:       80,
+		Rows:       0,
+		DisableRaw: true,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	_ = master.Close()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("run error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("session did not exit")
+	}
+
+	if r.opts.Cols != 80 || r.opts.Rows != 30 {
+		t.Fatalf("runner size = %dx%d, want 80x30", r.opts.Cols, r.opts.Rows)
+	}
+}
+
 func readUntil(file *os.File, want string, timeout time.Duration) error {
 	if err := syscall.SetNonblock(int(file.Fd()), true); err != nil {
 		return err

@@ -34,6 +34,9 @@ func configDirForLoader(loader *lingon.Loader) string {
 }
 
 func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
+	if err := validateHeadlessReexecFlags(cmd); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(headless.BaseDir(configDir), 0o700); err != nil {
 		return err
 	}
@@ -84,6 +87,18 @@ func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "headless session starting in background (session=%s pid=%d socket=%s)\n", sessionID, child.Process.Pid, socketPath)
 	return nil
+}
+
+func validateHeadlessReexecFlags(cmd *cobra.Command) error {
+	if cmd == nil || !cmd.Flags().Changed(geometryFlagName) {
+		return nil
+	}
+	raw, err := cmd.Flags().GetString(geometryFlagName)
+	if err != nil {
+		return err
+	}
+	_, _, err = parseGeometry(raw)
+	return err
 }
 
 func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir string, cfg lingon.Config) error {
