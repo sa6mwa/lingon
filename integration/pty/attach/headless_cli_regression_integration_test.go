@@ -271,6 +271,30 @@ func TestRealCLILingonXAttachWithoutSessionIDRendersSingleLocalHeadlessPrompt(t 
 	waitForPromptVisible(t, attach, 8*time.Second)
 }
 
+func TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
+	const sessionID = "local-headless-real-lingonx-start"
+	startLingonXHeadlessSessionCLI(t, homeDir, sessionID)
+	t.Cleanup(func() {
+		_ = headless.DetachSession(context.Background(), cfgDir, sessionID)
+	})
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionCount(cfgDir) >= 1
+	})
+
+	attach := startLingonXAttachHeadlessCLI(t, homeDir, sessionID, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+}
+
 func TestRealCLIRootHeadlessAttachLocalHeadlessRendersPrompt(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
@@ -685,21 +709,40 @@ func startLingonRootHeadlessAttachCLI(t *testing.T, homeDir, sessionID string, c
 	return startLingonLocalHeadlessAttachCLI(t, homeDir, sessionID, cols, rows, buildLingonAttachBinary(t), "-x", "attach")
 }
 
+func startLingonXHeadlessSessionCLI(t *testing.T, homeDir, sessionID string) {
+	t.Helper()
+	aliasPath := lingonXAliasPath(t)
+	cmd := exec.Command(
+		aliasPath,
+		"--session", sessionID,
+		"--shell", fixedPromptEmitRowsBash(t),
+		"--geometry", "40x10",
+		"--disable-desktop-notifications",
+	)
+	cmd.Env = testAttachCLIEnv(homeDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start lingonx headless session: %v\n%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "headless session starting in background") {
+		t.Fatalf("unexpected lingonx start output: %s", string(output))
+	}
+}
+
 func startLingonXAttachHeadlessCLI(t *testing.T, homeDir, sessionID string, cols, rows int) *ptytest.PTYSession {
 	t.Helper()
-	bin := buildLingonAttachBinary(t)
-	if cols <= 0 {
-		cols = 80
-	}
-	if rows <= 0 {
-		rows = 24
-	}
+	aliasPath := lingonXAliasPath(t)
+	return startLingonLocalHeadlessAttachCLI(t, homeDir, sessionID, cols, rows, aliasPath, "attach")
+}
+
+func lingonXAliasPath(t *testing.T) string {
+	t.Helper()
 	aliasDir := t.TempDir()
 	aliasPath := filepath.Join(aliasDir, "lingonx")
-	if err := os.Symlink(bin, aliasPath); err != nil {
+	if err := os.Symlink(buildLingonAttachBinary(t), aliasPath); err != nil {
 		t.Fatalf("symlink lingonx alias: %v", err)
 	}
-	return startLingonLocalHeadlessAttachCLI(t, homeDir, sessionID, cols, rows, aliasPath, "attach")
+	return aliasPath
 }
 
 func startLingonLocalHeadlessAttachCLI(t *testing.T, homeDir, sessionID string, cols, rows int, bin string, prefixArgs ...string) *ptytest.PTYSession {

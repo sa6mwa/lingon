@@ -106,6 +106,10 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	if err != nil {
 		return err
 	}
+	offlineValue, err := cmd.Flags().GetBool("offline")
+	if err != nil {
+		return err
+	}
 	authPath, err := cmd.Flags().GetString("auth-file")
 	if err != nil {
 		return err
@@ -113,33 +117,41 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	if !cmd.Flags().Changed("auth-file") {
 		authPath = cfg.Client.AuthFile
 	}
-	endpointValue, err := cmd.Flags().GetString("endpoint")
-	if err != nil {
-		return err
-	}
-	endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointValue, authPath)
-	if err != nil {
-		return err
-	}
-	if endpointValue == "" {
-		return fmt.Errorf("endpoint is required")
-	}
 	tokenValue, err := cmd.Flags().GetString("token")
 	if err != nil {
 		return err
 	}
-	if !cmd.Flags().Changed("token") {
-		resolved, resolveErr := resolveAccessToken(cmd.Context(), endpointValue, authPath, cfg.Server.TLS.Dir, insecure)
-		if resolveErr != nil {
-			ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
-			if refreshErr != nil || !ok {
-				return resolveErr
+	endpointValue := ""
+	if !offlineValue {
+		endpointValue, err = cmd.Flags().GetString("endpoint")
+		if err != nil {
+			return err
+		}
+		endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointValue, authPath)
+		if err != nil {
+			return err
+		}
+		if endpointValue == "" {
+			return fmt.Errorf("endpoint is required")
+		}
+		if !cmd.Flags().Changed("token") {
+			resolved, resolveErr := resolveAccessToken(cmd.Context(), endpointValue, authPath, cfg.Server.TLS.Dir, insecure)
+			if resolveErr != nil {
+				ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
+				if refreshErr != nil || !ok {
+					if cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("token") || cmd.Flags().Changed("auth-file") {
+						return resolveErr
+					}
+					endpointValue = ""
+					authPath = ""
+					offlineValue = true
+				}
+			} else {
+				tokenValue = resolved
 			}
-		} else {
-			tokenValue = resolved
 		}
 	}
-	if tokenValue == "" && authPath == "" {
+	if endpointValue != "" && tokenValue == "" && authPath == "" {
 		return fmt.Errorf("access token is required")
 	}
 	if cmd.Flags().Changed("token") && !cmd.Flags().Changed("auth-file") {
@@ -174,10 +186,6 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	}
 	if !cmd.Flags().Changed("respawn") {
 		respawnValue = cfg.Terminal.Respawn
-	}
-	offlineValue, err := cmd.Flags().GetBool("offline")
-	if err != nil {
-		return err
 	}
 	hostnameOnlyValue, err := cmd.Flags().GetBool("hostname-only")
 	if err != nil {
