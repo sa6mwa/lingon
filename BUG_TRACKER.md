@@ -37,13 +37,14 @@ Required status values:
 - Report:
   The engineer reports that attaching to a headless session via `lingon attach` works, while `lingonx attach` shows no terminal content. The command sounds ambiguous, but the current README and CLI contract indicate `lingonx attach` should be equivalent to `lingon attach -x`.
 - Desired behavior:
-  `lingonx attach` is a local-headless attach UI. It must either render the selected local headless session content, show a visible local-headless loading/status state while connecting or waiting for the first snapshot, or exit with an actionable error. A plain black terminal is never valid behavior.
+  `lingonx attach` is a local-headless attach UI. It must either render the selected local headless session content, show a visible local-headless loading/status state while connecting or waiting for the first snapshot, or exit with an actionable error. A plain black terminal is never valid behavior, and neither is a loading label painted over stale pre-attach terminal contents.
 - Repro:
   1. With no relay auth file, start a local headless session through the real CLI alias: `lingonx --session <id> --shell <shell>`.
   2. Observe the parent reports background startup, but the detached child exits before writing local headless state because it tries to resolve relay auth.
   3. Run `lingonx attach <id>`.
   4. Observe the attached terminal should render the local headless session prompt/content rather than having no real session to attach to.
   5. If a local headless socket exists but does not produce a first snapshot yet, observe the attach UI should show `loading local headless` rather than a blank screen.
+  6. Observe the loading UI must clear stale terminal contents before painting the status label.
 - Regression coverage:
   - `TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot`
   - `TestRealCLILingonXAttachLocalHeadlessRendersPrompt`
@@ -57,6 +58,7 @@ Required status values:
   - Fixed by allowing default headless foreground startup to fall back to local-only/offline mode when relay auth is absent and no relay/auth flags were explicitly supplied.
   - Reproduced the remaining black-screen state with `go test ./internal/attach -run TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot -count=1`; failure evidence was an all-blank screen while a local headless socket was connected but no snapshot had arrived.
   - Fixed by rendering local-headless loading status immediately after active local view registration and allowing loading renders to use the attach client's blank snapshot fallback before the first real snapshot.
+  - Screenshot follow-up showed `loading local headless` painted over stale terminal contents. Fixed by forcing a full clear for pre-snapshot loading renders and extending `TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot` to assert full-redraw ANSI output.
   - `go test ./internal/attach -run TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run 'TestRealCLI(LingonXStartedHeadlessThenLingonXAttachRendersPrompt|LingonXAttachLocalHeadlessRendersPrompt|LingonXAttachWithoutSessionIDRendersSingleLocalHeadlessPrompt|RootHeadlessAttachLocalHeadlessRendersPrompt)' -count=1` passed.

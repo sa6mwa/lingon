@@ -56,10 +56,15 @@ func TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot(t *testing.
 	t.Cleanup(sess.Cancel)
 
 	h.Advance(time.Millisecond)
+	var raw string
 	sess.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		raw += sess.DrainRaw()
 		if strings.Contains(screen.String(), "loading local headless") {
 			return nil
 		}
 		return fmt.Errorf("expected local loading status instead of blank screen:\n%s", screen.String())
 	})
+	if !ptytest.HasFullRedrawANSI(raw, 24) {
+		t.Fatalf("expected local loading render to clear stale terminal contents, raw=%q", raw)
+	}
 }

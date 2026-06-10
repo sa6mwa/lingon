@@ -701,7 +701,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}})
 		_, client, _, _, _ := activeViewSnapshot()
 		if client != nil {
-			client.RenderCurrent()
+			if client.HasSnapshot() {
+				client.RenderCurrent()
+			} else {
+				client.RenderCurrentClear()
+			}
 		} else {
 			renderActiveCurrent()
 		}
