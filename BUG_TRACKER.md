@@ -29,6 +29,31 @@ Required status values:
 
 ## Active Items
 
+### B-088 `lingonx attach` to local headless session renders blank screen
+
+- Status: `blocked`
+- Area: `cli`, `attach`, `headless`, `pty`
+- Summary: `lingon attach -x` works for local headless sessions, but invoking the same mode through the `lingonx` argv0 alias reportedly shows nothing.
+- Report:
+  The engineer reports that attaching to a headless session via `lingon attach` works, while `lingonx attach` shows no terminal content. The command sounds ambiguous, but the current README and CLI contract indicate `lingonx attach` should be equivalent to `lingon attach -x`.
+- Repro:
+  1. Start a local headless session.
+  2. Run the CLI through an executable whose basename is `lingonx`.
+  3. Execute `lingonx attach <session-id>`.
+  4. Observe the attached terminal should render the headless session prompt/content rather than a blank screen.
+- Regression coverage:
+  - `TestRealCLILingonXAttachLocalHeadlessRendersPrompt`
+  - `TestRealCLILingonXAttachWithoutSessionIDRendersSingleLocalHeadlessPrompt`
+  - `TestRealCLIRootHeadlessAttachLocalHeadlessRendersPrompt`
+- Verification:
+  - Added isolated real-CLI PTY coverage for `lingonx attach <session-id>`, `lingonx attach` with one local headless session, and `lingon -x attach <session-id>`.
+  - These command shapes did not reproduce the blank screen: `go test -tags integration ./integration/pty/attach -run 'TestRealCLI(LingonXAttachLocalHeadlessRendersPrompt|LingonXAttachWithoutSessionIDRendersSingleLocalHeadlessPrompt|RootHeadlessAttachLocalHeadlessRendersPrompt)' -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - Remaining gap: needs the exact failing invocation and environment details because the documented alias paths render normally in the isolated real-CLI regression.
+
 ### B-087 Geometry zero dimensions must preserve explicit dimensions and fail before detached headless startup
 
 - Status: `resolved`
