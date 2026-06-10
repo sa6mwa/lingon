@@ -29,6 +29,33 @@ Required status values:
 
 ## Active Items
 
+### B-089 Local headless sessions keeps stale records when orphan socket files remain
+
+- Status: `resolved`
+- Area: `headless`, `cli`, `sessions`
+- Summary: `lingonx sessions` can list local headless sessions whose daemon PIDs are gone because stale Unix socket files still exist.
+- Report:
+  The engineer reports `lingonx sessions` lists `lj` and `ljsh` as local headless sessions even though those PIDs are gone. A relay/non-headless `lj` may still exist, but that should not keep stale local-headless records alive.
+- Desired behavior:
+  Local headless session records represent running headless daemons. For records with a real positive PID, the PID is authoritative; if it is dead, reconcile must remove the state entry and any orphan socket file. Socket existence alone is only a fallback for records without a usable PID.
+- Repro:
+  1. Persist a local headless session record with a positive dead PID.
+  2. Leave a Unix socket inode at the recorded socket path.
+  3. Run local headless session reconciliation, as used by `lingonx sessions`.
+  4. Observe the stale session should be pruned instead of listed.
+- Regression coverage:
+  - `TestReconcilePrunesDeadPIDEvenWhenSocketFileRemains`
+  - `TestReconcileKeepsNoPIDRecordWithSocket`
+- Verification:
+  - Reproduced with a persisted local headless record using a positive dead PID plus an orphan Unix socket inode.
+  - Fixed by making positive PID liveness authoritative during reconciliation and removing orphan socket files when pruning dead-PID records.
+  - `go test ./internal/headless -run 'TestReconcile(PrunesDeadPIDEvenWhenSocketFileRemains|KeepsNoPIDRecordWithSocket)' -count=1` passed.
+  - `go test ./cmd/lingon -run 'Test(SessionsHeadlessUsesLocalState|Detach|SendHeadless|ConfigDirForLoader)' -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
 ### B-088 `lingonx attach` to local headless session renders blank screen
 
 - Status: `resolved`

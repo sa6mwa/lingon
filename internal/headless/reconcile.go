@@ -27,9 +27,10 @@ func (s *Store) Reconcile() ([]SessionRecord, error) {
 	var out []SessionRecord
 	err := s.WithLock(func(state *State) error {
 		for id, rec := range state.Sessions {
-			alive := PIDAlive(rec.PID)
-			hasSocket := SocketExists(rec.SocketPath)
-			if !alive && !hasSocket {
+			if !sessionRecordAlive(rec) {
+				if strings.TrimSpace(rec.SocketPath) != "" {
+					_ = os.Remove(rec.SocketPath)
+				}
 				delete(state.Sessions, id)
 				continue
 			}
@@ -44,4 +45,11 @@ func (s *Store) Reconcile() ([]SessionRecord, error) {
 		return out[i].SessionID < out[j].SessionID
 	})
 	return out, nil
+}
+
+func sessionRecordAlive(rec SessionRecord) bool {
+	if rec.PID > 0 {
+		return PIDAlive(rec.PID)
+	}
+	return SocketExists(rec.SocketPath)
 }
