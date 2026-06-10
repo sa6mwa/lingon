@@ -197,13 +197,9 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 				_ = closer.Close()
 			}()
 			ctx := pslog.ContextWithLogger(cmd.Context(), logger)
-			colsValue := cols
-			if !cmd.Flags().Changed("cols") {
-				colsValue = 0
-			}
-			rowsValue := rows
-			if !cmd.Flags().Changed("rows") {
-				rowsValue = 0
+			colsValue, rowsValue, err := resolveRootHostSize(cmd, cols, rows)
+			if err != nil {
+				return err
 			}
 			scrollbackValue := cfg.Terminal.ScrollbackLines
 			if cmd.Flags().Changed("scrollback-lines") {
@@ -266,6 +262,7 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 	flags.StringVar(&token, "token", "", "access token (overrides stored auth)")
 	flags.IntVar(&cols, "cols", lingon.DefaultTerminalCols, "initial columns")
 	flags.IntVar(&rows, "rows", lingon.DefaultTerminalRows, "initial rows")
+	flags.StringP(geometryFlagName, "g", "", "initial terminal geometry as COLSxROWS, for example 80x24 (overrides --cols/--rows)")
 	flags.StringVar(&authFile, "auth-file", lingon.DefaultAuthPath(), "path to auth file")
 	flags.StringVar(&shellPath, "shell", "", "override login shell path")
 	flags.IntVar(&scrollbackLines, "scrollback-lines", lingon.DefaultScrollbackLines, "max scrollback lines to buffer")

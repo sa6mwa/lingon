@@ -168,7 +168,8 @@ Interactive host options (selection):
 - `--token` access token (overrides stored auth)
 - `--auth-file` path to auth file
 - `--shell` override login shell path
-- `--cols`, `--rows` terminal size
+- `-g, --geometry` terminal size as `COLSxROWS`, for example `80x24`; overrides `--cols`/`--rows`
+- `--cols`, `--rows` terminal size (`0` means auto-detect for interactive host; built-in default for headless)
 - `--scrollback-lines` scrollback lines
 - `--term` TERM value for the PTY
 - `-r, --respawn` respawn the shell on exit
@@ -200,6 +201,7 @@ lingonx -s local-shell
 Headless local mode notes:
 
 - `-x, --headless` switches root/attach/send/sessions to local headless mode.
+- `-g, --geometry COLSxROWS` sets the headless PTY size; `0` dimensions use built-in defaults because detached headless sessions have no foreground terminal to auto-detect.
 - Metadata and sockets are stored under `<config-dir>/headless/`.
 - `lingon attach -x` works even when relay publishing is offline/disconnected.
 - In `attach -x`, `Ctrl+l o` is local-host control and is allowed.

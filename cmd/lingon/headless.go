@@ -240,29 +240,6 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	return daemon.Run(ctx)
 }
 
-func resolveHeadlessSize(cmd *cobra.Command) (int, int, error) {
-	if cmd == nil {
-		return lingon.DefaultTerminalCols, lingon.DefaultTerminalRows, nil
-	}
-	colsValue := lingon.DefaultTerminalCols
-	rowsValue := lingon.DefaultTerminalRows
-	if cmd.Flags().Changed("cols") {
-		value, err := cmd.Flags().GetInt("cols")
-		if err != nil {
-			return 0, 0, err
-		}
-		colsValue = value
-	}
-	if cmd.Flags().Changed("rows") {
-		value, err := cmd.Flags().GetInt("rows")
-		if err != nil {
-			return 0, 0, err
-		}
-		rowsValue = value
-	}
-	return colsValue, rowsValue, nil
-}
-
 func resolveHeadlessWallInactiveAfterLevels(cmd *cobra.Command, cfg lingon.Config) ([]time.Duration, error) {
 	raw := strings.TrimSpace(cfg.Terminal.WallInactiveAfter)
 	if raw == "" {
