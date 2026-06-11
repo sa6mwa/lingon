@@ -935,9 +935,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			if showStatus && !localSessionMode {
 				showConnected(mvu.ConnectedToMessage(endpointLabel), 3*time.Second)
 			}
-			if !localSessionMode {
-				showLoading("")
-			}
+			showLoading("")
 			if showStatus && client.HasSnapshot() {
 				client.RenderCurrentFull()
 			}

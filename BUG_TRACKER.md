@@ -75,8 +75,10 @@ Required status values:
   4. Observe the attached terminal should render the local headless session prompt/content rather than having no real session to attach to.
   5. If a local headless socket exists but does not produce a first snapshot yet, observe the attach UI should show `loading local headless` rather than a blank screen.
   6. Observe the loading UI must clear stale terminal contents before painting the status label.
+  7. Once the first local-headless snapshot arrives and the view is ready, observe the `loading local headless` label must disappear.
 - Regression coverage:
   - `TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot`
+  - `TestMultiAttachLocalHeadlessClearsLoadingAfterFirstSnapshot`
   - `TestRealCLILingonXAttachLocalHeadlessRendersPrompt`
   - `TestRealCLILingonXAttachWithoutSessionIDRendersSingleLocalHeadlessPrompt`
   - `TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt`
@@ -89,7 +91,8 @@ Required status values:
   - Reproduced the remaining black-screen state with `go test ./internal/attach -run TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot -count=1`; failure evidence was an all-blank screen while a local headless socket was connected but no snapshot had arrived.
   - Fixed by rendering local-headless loading status immediately after active local view registration and allowing loading renders to use the attach client's blank snapshot fallback before the first real snapshot.
   - Screenshot follow-up showed `loading local headless` painted over stale terminal contents. Fixed by forcing a full clear for pre-snapshot loading renders and extending `TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot` to assert full-redraw ANSI output.
-  - `go test ./internal/attach -run TestMultiAttachLocalHeadlessShowsLoadingWhileWaitingForSnapshot -count=1` passed.
+  - Screenshot follow-up showed `loading local headless` remaining after local session content rendered. Fixed by clearing loading status in the shared ready path for local-headless views as well as relay views.
+  - `go test ./internal/attach -run 'TestMultiAttachLocalHeadless(ShowsLoadingWhileWaitingForSnapshot|ClearsLoadingAfterFirstSnapshot)' -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run 'TestRealCLI(LingonXStartedHeadlessThenLingonXAttachRendersPrompt|LingonXAttachLocalHeadlessRendersPrompt|LingonXAttachWithoutSessionIDRendersSingleLocalHeadlessPrompt|RootHeadlessAttachLocalHeadlessRendersPrompt)' -count=1` passed.
   - `go test ./...` passed.
