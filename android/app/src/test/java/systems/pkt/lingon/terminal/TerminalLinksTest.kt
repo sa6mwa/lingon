@@ -21,6 +21,22 @@ class TerminalLinksTest {
     }
 
     @Test
+    fun findHttpsLinksTrimsClosingFormatDelimiters() {
+        val links = TerminalLinks.findHttpsLinks(
+            "open <https://angle.example/test> \"https://quote.example/test\" 'https://single.example/test'",
+        )
+
+        assertEquals(
+            listOf(
+                "https://angle.example/test",
+                "https://quote.example/test",
+                "https://single.example/test",
+            ),
+            links.map { it.url },
+        )
+    }
+
+    @Test
     fun findHttpsLinksKeepsBalancedClosingPunctuation() {
         val links = TerminalLinks.findHttpsLinks("open https://example.test/a_(b)")
 

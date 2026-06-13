@@ -19,6 +19,7 @@ data class TerminalLinkRange(
 object TerminalLinks {
     private const val httpsScheme = "https://"
     private val trailingPunctuation = setOf('.', ',', ';', ':', '!', '?')
+    private val trailingFormatDelimiters = setOf('>', '"', '\'', '`')
 
     fun findHttpsLinks(snapshot: TerminalSnapshot): List<TerminalLinkRange> {
         if (snapshot.cols <= 0 || snapshot.rows <= 0) return emptyList()
@@ -117,6 +118,7 @@ object TerminalLinks {
             val char = text[end - 1]
             when {
                 char in trailingPunctuation -> end -= 1
+                char in trailingFormatDelimiters -> end -= 1
                 char == ')' && hasUnmatchedClosing(text, start, end, open = '(', close = ')') -> end -= 1
                 char == ']' && hasUnmatchedClosing(text, start, end, open = '[', close = ']') -> end -= 1
                 char == '}' && hasUnmatchedClosing(text, start, end, open = '{', close = '}') -> end -= 1

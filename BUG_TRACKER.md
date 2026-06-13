@@ -29,6 +29,33 @@ Required status values:
 
 ## Active Items
 
+### B-091 Android link detection includes closing format delimiters
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `links`
+- Summary: Android terminal link detection can include closing delimiters from common terminal output formats.
+- Report:
+  Review found that terminal output such as `<https://example.test>` or quoted URLs is scanned until whitespace, leaving closing `>` or quote characters in the detected URL.
+- Desired behavior:
+  Link underlines and tap handling should target the actual URL, not terminal formatting delimiters around it. Existing balanced URL punctuation such as `https://example.test/a_(b)` must remain intact.
+- Repro:
+  1. Detect links in terminal text containing `<https://angle.example/test>` or `"https://quote.example/test"`.
+  2. Observe the detected link URL should exclude the closing `>` or quote.
+  3. Observe balanced URL punctuation should still be preserved.
+- Regression coverage:
+  - `TerminalLinksTest.findHttpsLinksTrimsClosingFormatDelimiters`
+  - `TerminalGridViewInstrumentedTest.delimitedHttpsLinkTapOpensTrimmedLink`
+- Verification:
+  - Fixed parser trimming so trailing `>`, double quote, single quote, and backtick format delimiters are excluded from detected URLs while balanced closing punctuation remains preserved.
+  - `./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalLinksTest` passed.
+  - `./gradlew :app:testDebugUnitTest` passed.
+  - `./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - `./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=systems.pkt.lingon.terminal.TerminalGridViewInstrumentedTest#delimitedHttpsLinkTapOpensTrimmedLink` was attempted but blocked by `No connected devices!`; the adb server started by Gradle was stopped with the SDK adb.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
 ### B-090 Headless offline startup must preserve explicit relay configuration
 
 - Status: `resolved`

@@ -65,6 +65,52 @@ class TerminalGridViewInstrumentedTest {
         }
     }
 
+    @Test
+    fun delimitedHttpsLinkTapOpensTrimmedLink() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        var openedUrl: String? = null
+
+        instrumentation.runOnMainSync {
+            val view = TerminalGridView(instrumentation.targetContext).apply {
+                setOnOpenLink { url ->
+                    openedUrl = url
+                    true
+                }
+                measure(exactlyMeasureSpec(720), exactlyMeasureSpec(240))
+                layout(0, 0, 720, 240)
+                update(
+                    snapshot = terminalSnapshot(
+                        rows = listOf("open <https://example.test> now"),
+                        cols = 33,
+                    ),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 33,
+                    hostRows = 1,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+            }
+
+            assertEquals("https://example.test", view.getLinkAtCellForTesting(row = 0, col = 6))
+            assertEquals(null, view.getLinkAtCellForTesting(row = 0, col = 26))
+            val cellWidth = view.getScaledCellWidthForTesting()
+            val cellHeight = view.getScaledCellHeightForTesting()
+            assertTrue("terminal cell width was not measured", cellWidth > 0f)
+            assertTrue("terminal cell height was not measured", cellHeight > 0f)
+
+            dispatchSinglePointerTap(view, x = cellWidth * 7.5f, y = cellHeight * 0.5f)
+
+            assertEquals("https://example.test", openedUrl)
+        }
+    }
+
     private fun exactlyMeasureSpec(size: Int): Int {
         return View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY)
     }
