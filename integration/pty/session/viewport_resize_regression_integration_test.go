@@ -486,15 +486,12 @@ func TestHostResizePreservesScrolledWideOutputWithTabBarVisible(t *testing.T) {
 
 	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
 	eventuallyWithClock(t, h.Clock(), 10*time.Second, 50*time.Millisecond, func() error {
-		row := host.Screen().Row(0)
-		if strings.Contains(row, "connected to ") {
-			return fmt.Errorf("waiting for transient connection banner to clear, row=%q", row)
+		screen := host.Screen()
+		if err := requireViewportResizeTabRow(screen, "viewport-preserve-wide-scroll-output-"); err != nil {
+			return fmt.Errorf("expected tab bar visible before resize: %w", err)
 		}
-		if !strings.Contains(row, "viewport-preserve-wide-scroll-output-tabs") {
-			return fmt.Errorf("expected tab bar visible before resize, got row=%q\nscreen:\n%s", row, host.Screen().String())
-		}
-		if !host.Screen().Contains("RIGHT-30") || !host.Screen().Contains("PROMPT>") {
-			return fmt.Errorf("expected initial scrolled wide output with prompt, got:\n%s", host.Screen().String())
+		if !screen.Contains("RIGHT-30") || !screen.Contains("PROMPT>") {
+			return fmt.Errorf("expected initial scrolled wide output with prompt, got:\n%s", screen.String())
 		}
 		return nil
 	})
@@ -799,8 +796,8 @@ func TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar(t *tes
 		if !strings.Contains(screen.String(), "RIGHT-30-END") {
 			return fmt.Errorf("expected expanded screen to restore right tail after shrunk prompt advance, got:\n%s", screen.String())
 		}
-		if !strings.Contains(screen.Row(0), "viewport-resize-prompt-advance-host") {
-			return fmt.Errorf("expected tab bar visible after expand, got row=%q\nscreen:\n%s", screen.Row(0), screen.String())
+		if err := requireViewportResizeTabRow(screen, "viewport-resize-prompt-advance-"); err != nil {
+			return fmt.Errorf("expected tab bar visible after expand: %w", err)
 		}
 		if err := compareScreensWithNormalizedTabTitles(
 			screen,
@@ -2398,6 +2395,16 @@ func compareScreensWithNormalizedTabTitles(got, want ptytest.Screen, gotTitle, w
 
 var viewportResizeTabTokenRe = regexp.MustCompile(`viewport-resize[^ ]*`)
 
+func requireViewportResizeTabRow(screen ptytest.Screen, tokens ...string) error {
+	row := screen.Row(0)
+	for _, token := range tokens {
+		if strings.Contains(row, token) {
+			return nil
+		}
+	}
+	return fmt.Errorf("got row=%q\nscreen:\n%s", row, screen.String())
+}
+
 func normalizeViewportResizeTabRow(line string, titles ...string) string {
 	const banner = "connected to "
 	prefix := line
@@ -2410,6 +2417,7 @@ func normalizeViewportResizeTabRow(line string, titles ...string) string {
 		prefix = strings.ReplaceAll(prefix, title, "<SESSION>")
 	}
 	prefix = viewportResizeTabTokenRe.ReplaceAllString(prefix, "<SESSION>")
+	prefix = strings.ReplaceAll(prefix, "*<SESSION>", "<SESSION>")
 	return prefix + suffix
 }
 

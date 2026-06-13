@@ -29,6 +29,66 @@ Required status values:
 
 ## Active Items
 
+### B-092 Resize integration tab-row comparator treats control active tab as content mismatch
+
+- Status: `resolved`
+- Area: `integration`, `pty`, `session`, `resize`
+- Summary: `TestHostResizeLargeViewportClearThenShortCommandMatchesControl` fails because the screen comparator normalizes tab titles but still compares active-tab markers between different control sessions.
+- Report:
+  Prerelease Go integration audit found a deterministic failure in `integration/pty/session`: the host and control screen bodies matched after resize, clear, and short command output, but row 1 differed only in which normalized tab carried the active `*` marker.
+- Desired behavior:
+  Resize content comparison tests should compare terminal body output and cursor state after normalizing tab titles. They should not fail because the host-under-test and control host are intentionally different active local tabs.
+- Repro:
+  1. Run `go test -count=1 -tags integration ./integration/pty/session -run '^TestHostResizeLargeViewportClearThenShortCommandMatchesControl$' -v`.
+  2. Observe row 1 mismatch: `host: " <SESSION>  *<SESSION>"`, `control: " *<SESSION>  <SESSION>"`.
+- Regression coverage:
+  - `TestHostResizeLargeViewportClearThenShortCommandMatchesControl`
+- Verification:
+  - `go test -count=1 -tags integration ./integration/pty/session -run '^TestHostResizeLargeViewportClearThenShortCommandMatchesControl$' -v`
+  - `go test -p 1 -count=1 -tags integration ./integration/...`
+
+### B-093 Resize integration tab-bar assertions require unclipped long titles
+
+- Status: `resolved`
+- Area: `integration`, `pty`, `session`, `resize`
+- Summary: Resize integration tests failed deterministically when long session names were clipped in the visible tab row, even though the tab bar and terminal body were rendered.
+- Report:
+  Prerelease Go integration audit found deterministic failures in `TestHostResizePreservesScrolledWideOutputWithTabBarVisible` and `TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar`. Both expected a full active session title on row 1, but the viewport legitimately clipped the active title and, in one case, also showed the connection banner on the same row.
+- Desired behavior:
+  Tests should prove the tab bar is visible under constrained widths without requiring complete long session titles that cannot fit in the viewport.
+- Repro:
+  1. Run `go test -count=1 -tags integration ./integration/pty/session -run '^TestHostResizePreservesScrolledWideOutputWithTabBarVisible$' -v`.
+  2. Observe row 1 contains `viewport-preserve-wide-scroll-output-peer` and a clipped active title, but not the full active session name.
+  3. Run `go test -count=1 -tags integration ./integration/pty/session -run '^TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar$' -v`.
+  4. Observe row 1 contains the tab row plus `connected to ...`, but not the full active session name.
+- Regression coverage:
+  - `TestHostResizePreservesScrolledWideOutputWithTabBarVisible`
+  - `TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar`
+- Verification:
+  - `go test -count=1 -tags integration ./integration/pty/session -run '^TestHostResizePreservesScrolledWideOutputWithTabBarVisible$' -v`
+  - `go test -count=1 -tags integration ./integration/pty/session -run '^TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar$' -v`
+  - `go test -p 1 -count=1 -tags integration ./integration/...`
+
+### B-094 Android integration batch leaves terminal renderer unmeasured
+
+- Status: `blocked`
+- Area: `android`, `integration`, `terminal`
+- Summary: Full Android integration prerelease gate failed in the 45-test batch with connected sessions whose terminal renderer reported zero render scale and no visible rows.
+- Report:
+  `make android-integration-test` passed the initial 7-test batch and the late-host 1-test scenario, then failed the larger 45-test instrumentation batch with seven failures. Most failures timed out while the app was connected and receiving frames, but reported `renderScaleX=0.0`, `renderScaleY=0.0`, and `visibleEndRowExclusive=0`; two touch tests could not find the `terminal_focus` node.
+- Desired behavior:
+  Android instrumentation tests should wait for or establish a measured terminal surface before terminal-render, zoom, resize, or focus interactions, and the prerelease integration target should pass reliably under its managed emulator resource profile.
+- Repro:
+  1. Run `make android-integration-test`.
+  2. Observe the large `EndToEndTest` batch fail after earlier Android integration batches pass.
+- Regression coverage:
+  - Existing Android instrumentation failures include `zoomed_viewport_does_not_reset_after_frame_and_resume`, `terminal_fills_from_top_before_live_scrolling`, `resize_setting_disabled_for_view_only_share_token`, `login_with_unreachable_endpoint_shows_error`, `headless_resize_action_disabled_and_input_remains_blocked_without_control`, `pinch_zoom_adjusts_view_and_resets`, and `share_token_width_is_authoritative`.
+- Verification:
+  - `make android-integration-test` failed in the large `EndToEndTest` batch after the earlier Android integration batches passed.
+  - `LINGON_IT_ONLY=zoomed_viewport_does_not_reset_after_frame_and_resume make android-integration-test` reproduced the failure repeatedly.
+  - Additional temporary diagnostics showed `UiState` was connected to `host-4` with rows/cols/frame data while the Compose tree still rendered `settings_screen` and no `terminal_view`/`terminal_focus` was mounted. The experimental diagnostics and harness changes did not fix the repro and were not kept.
+  - Remaining gap: root cause for stale Settings-route composition during focused Android instrumentation is unresolved, so the full Android prerelease gate and release gate were not completed.
+
 ### B-091 Android link detection includes closing format delimiters
 
 - Status: `needs_verification`
