@@ -72,10 +72,13 @@ Required status values:
   4. Observe explicit configured endpoints should fail with the auth error instead of silently becoming local-only.
   5. Resolve headless startup with `--offline`, no explicit relay/auth flags, and an auth file containing multiple stored endpoints.
   6. Observe default offline local-only startup should not fail with endpoint ambiguity when relay publishing was not requested.
-  7. Observe default `--offline` with no auth may still become local-only.
+  7. Resolve headless startup with `--offline`, no explicit relay/auth flags, and a single valid stored auth endpoint.
+  8. Observe the daemon should keep the inferred endpoint/auth/token while starting offline, so it can publish when toggled online later.
+  9. Observe default `--offline` with no auth may still become local-only.
 - Regression coverage:
   - `TestResolveHeadlessRelayConfigPreservesExplicitOfflineRelay`
   - `TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly`
+  - `TestResolveHeadlessRelayConfigDefaultOfflineSingleStoredAuthPreservesRelay`
   - `TestResolveHeadlessRelayConfigDefaultOfflineAmbiguousStoredAuthFallsBackLocalOnly`
   - `TestResolveHeadlessRelayConfigExplicitOfflineAuthFileAmbiguityRequiresEndpoint`
   - `TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth`
@@ -85,6 +88,7 @@ Required status values:
   - Fixed by resolving relay endpoint/auth independently of the initial offline state and only falling back to local-only for non-explicit no-auth startup.
   - Review follow-up fixed explicit endpoint detection for config/env endpoints, not only `--endpoint`.
   - Review follow-up fixed non-explicit offline startup so it skips auth endpoint inference and starts local-only even when stored auth contains multiple endpoints; explicit `--auth-file` still reports endpoint ambiguity.
+  - Review follow-up narrowed non-explicit offline fallback to endpoint ambiguity only, preserving a single inferred stored relay auth entry.
   - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig' -count=1` passed.
   - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig|TestResolveHeadlessSize|TestHeadlessAliasEnabled' -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt -count=1` passed.

@@ -138,6 +138,25 @@ func TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly(t *tes
 	}
 }
 
+func TestResolveHeadlessRelayConfigDefaultOfflineSingleStoredAuthPreservesRelay(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	writeAuthEndpoints(t, authPath, "https://relay.example/v1")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = authPath
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "https://relay.example/v1" || got.Token != "access-https://relay.example/v1" || got.AuthPath != authPath || !got.Offline {
+		t.Fatalf("relay config = %+v, want offline stored relay auth preserved", got)
+	}
+}
+
 func TestResolveHeadlessRelayConfigDefaultOfflineAmbiguousStoredAuthFallsBackLocalOnly(t *testing.T) {
 	cmd := headlessRelayTestCommand(t)
 	if err := cmd.Flags().Set("offline", "true"); err != nil {

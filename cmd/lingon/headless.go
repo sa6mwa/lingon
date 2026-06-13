@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -243,13 +244,13 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 	if err != nil {
 		return headlessRelayConfig{}, err
 	}
-	if headlessLocalOnlyOfflineRequested(cmd, loader, cfg, offlineValue) {
-		return headlessRelayConfig{
-			Offline: true,
-		}, nil
-	}
 	endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointFlag, authPath)
 	if err != nil {
+		if headlessLocalOnlyOfflineRequested(cmd, loader, cfg, offlineValue) && errors.Is(err, errEndpointAmbiguous) {
+			return headlessRelayConfig{
+				Offline: true,
+			}, nil
+		}
 		return headlessRelayConfig{}, err
 	}
 	if endpointValue == "" {
