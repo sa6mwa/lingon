@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-090 Headless offline startup must preserve explicit relay configuration
+
+- Status: `resolved`
+- Area: `cli`, `headless`, `offline`, `relay`
+- Summary: `lingon -x --offline` with explicit relay configuration could start as local-only and lose the ability to publish when toggled online.
+- Report:
+  Review found that the headless no-auth fallback skipped endpoint and token resolution whenever `--offline` was set. That changed offline startup from "configured relay but initially disconnected" into "local-only" for explicit relay invocations.
+- Desired behavior:
+  `--offline` controls initial connection state only. If relay configuration is explicit or auth is available, the headless daemon must retain endpoint/token/auth and start with publishing configured but offline. Only default, non-explicit, no-auth startup may fall back to local-only mode.
+- Repro:
+  1. Resolve headless startup with `--offline --endpoint https://relay.example/v1 --token secret-token`.
+  2. Observe the resolved daemon config should keep the endpoint and token while setting `Offline=true`.
+  3. Observe default `--offline` with no auth may still become local-only.
+- Regression coverage:
+  - `TestResolveHeadlessRelayConfigPreservesExplicitOfflineRelay`
+  - `TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly`
+  - `TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth`
+- Verification:
+  - Fixed by resolving relay endpoint/auth independently of the initial offline state and only falling back to local-only for non-explicit no-auth startup.
+  - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig|TestResolveHeadlessSize|TestHeadlessAliasEnabled' -count=1` passed.
+  - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
 ### B-089 Local headless sessions keeps stale records when orphan socket files remain
 
 - Status: `resolved`

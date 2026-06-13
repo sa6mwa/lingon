@@ -106,56 +106,9 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	if err != nil {
 		return err
 	}
-	offlineValue, err := cmd.Flags().GetBool("offline")
+	relay, err := resolveHeadlessRelayConfig(cmd, loader, cfg, insecure)
 	if err != nil {
 		return err
-	}
-	authPath, err := cmd.Flags().GetString("auth-file")
-	if err != nil {
-		return err
-	}
-	if !cmd.Flags().Changed("auth-file") {
-		authPath = cfg.Client.AuthFile
-	}
-	tokenValue, err := cmd.Flags().GetString("token")
-	if err != nil {
-		return err
-	}
-	endpointValue := ""
-	if !offlineValue {
-		endpointValue, err = cmd.Flags().GetString("endpoint")
-		if err != nil {
-			return err
-		}
-		endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointValue, authPath)
-		if err != nil {
-			return err
-		}
-		if endpointValue == "" {
-			return fmt.Errorf("endpoint is required")
-		}
-		if !cmd.Flags().Changed("token") {
-			resolved, resolveErr := resolveAccessToken(cmd.Context(), endpointValue, authPath, cfg.Server.TLS.Dir, insecure)
-			if resolveErr != nil {
-				ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
-				if refreshErr != nil || !ok {
-					if cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("token") || cmd.Flags().Changed("auth-file") {
-						return resolveErr
-					}
-					endpointValue = ""
-					authPath = ""
-					offlineValue = true
-				}
-			} else {
-				tokenValue = resolved
-			}
-		}
-	}
-	if endpointValue != "" && tokenValue == "" && authPath == "" {
-		return fmt.Errorf("access token is required")
-	}
-	if cmd.Flags().Changed("token") && !cmd.Flags().Changed("auth-file") {
-		authPath = ""
 	}
 	sessionID, err := cmd.Flags().GetString("session")
 	if err != nil {
@@ -240,18 +193,18 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	}
 	daemon := headlessd.New(headlessd.Options{
 		ConfigDir:               configDir,
-		Endpoint:                endpointValue,
-		Token:                   tokenValue,
-		AuthFile:                authPath,
+		Endpoint:                relay.Endpoint,
+		Token:                   relay.Token,
+		AuthFile:                relay.AuthPath,
 		SessionID:               sessionID,
 		Cols:                    colsValue,
 		Rows:                    rowsValue,
 		Shell:                   shellPath,
 		Term:                    termValue,
 		Respawn:                 respawnValue,
-		Offline:                 offlineValue,
+		Offline:                 relay.Offline,
 		WallInactiveAfterLevels: wallInactiveAfterLevels,
-		Publish:                 endpointValue != "",
+		Publish:                 relay.Endpoint != "",
 		PublishControl:          true,
 		HostnameOnly:            hostnameOnlyValue,
 		ScrollbackLines:         scrollbackValue,
@@ -261,6 +214,70 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 		Trace:                   traceWriter,
 	})
 	return daemon.Run(ctx)
+}
+
+type headlessRelayConfig struct {
+	Endpoint string
+	Token    string
+	AuthPath string
+	Offline  bool
+}
+
+func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg lingon.Config, insecure bool) (headlessRelayConfig, error) {
+	offlineValue, err := cmd.Flags().GetBool("offline")
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	authPath, err := cmd.Flags().GetString("auth-file")
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	if !cmd.Flags().Changed("auth-file") {
+		authPath = cfg.Client.AuthFile
+	}
+	tokenValue, err := cmd.Flags().GetString("token")
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	endpointFlag, err := cmd.Flags().GetString("endpoint")
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointFlag, authPath)
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	if endpointValue == "" {
+		return headlessRelayConfig{}, fmt.Errorf("endpoint is required")
+	}
+	if !cmd.Flags().Changed("token") {
+		resolved, resolveErr := resolveAccessToken(cmd.Context(), endpointValue, authPath, cfg.Server.TLS.Dir, insecure)
+		if resolveErr != nil {
+			ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
+			if refreshErr != nil || !ok {
+				if cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("token") || cmd.Flags().Changed("auth-file") {
+					return headlessRelayConfig{}, resolveErr
+				}
+				endpointValue = ""
+				authPath = ""
+				offlineValue = true
+			}
+		} else {
+			tokenValue = resolved
+		}
+	}
+	if endpointValue != "" && tokenValue == "" && authPath == "" {
+		return headlessRelayConfig{}, fmt.Errorf("access token is required")
+	}
+	if cmd.Flags().Changed("token") && !cmd.Flags().Changed("auth-file") {
+		authPath = ""
+	}
+	return headlessRelayConfig{
+		Endpoint: endpointValue,
+		Token:    tokenValue,
+		AuthPath: authPath,
+		Offline:  offlineValue,
+	}, nil
 }
 
 func resolveHeadlessWallInactiveAfterLevels(cmd *cobra.Command, cfg lingon.Config) ([]time.Duration, error) {

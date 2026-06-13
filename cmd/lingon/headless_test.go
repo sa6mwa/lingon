@@ -1,7 +1,9 @@
 package main
 
 import (
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +95,69 @@ func TestFirstLocalHeadlessSessionUsesIDOrder(t *testing.T) {
 	}
 }
 
+func TestResolveHeadlessRelayConfigPreservesExplicitOfflineRelay(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	if err := cmd.Flags().Set("endpoint", "https://relay.example/v1"); err != nil {
+		t.Fatalf("set endpoint: %v", err)
+	}
+	if err := cmd.Flags().Set("token", "secret-token"); err != nil {
+		t.Fatalf("set token: %v", err)
+	}
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), lingon.Config{}, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "https://relay.example/v1" || got.Token != "secret-token" || !got.Offline {
+		t.Fatalf("relay config = %+v, want offline relay endpoint/token preserved", got)
+	}
+	if got.AuthPath != "" {
+		t.Fatalf("AuthPath = %q, want empty when --token is explicit", got.AuthPath)
+	}
+}
+
+func TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	missingAuth := filepath.Join(t.TempDir(), "missing-auth.json")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = missingAuth
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "" || got.Token != "" || got.AuthPath != "" || !got.Offline {
+		t.Fatalf("relay config = %+v, want local-only offline fallback", got)
+	}
+}
+
+func TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	if err := cmd.Flags().Set("endpoint", "https://relay.example/v1"); err != nil {
+		t.Fatalf("set endpoint: %v", err)
+	}
+	missingAuth := filepath.Join(t.TempDir(), "missing-auth.json")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = missingAuth
+
+	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err == nil {
+		t.Fatalf("expected explicit offline endpoint without auth to fail")
+	}
+	if !strings.Contains(err.Error(), "auth file not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveHeadlessWallInactiveAfterLevelsUsesConfigDefault(t *testing.T) {
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().String("wall-inactive-after", lingon.DefaultWallInactiveAfterCSV, "")
@@ -110,6 +175,16 @@ func TestResolveHeadlessWallInactiveAfterLevelsUsesConfigDefault(t *testing.T) {
 	if !reflect.DeepEqual(levels, want) {
 		t.Fatalf("levels = %v, want %v", levels, want)
 	}
+}
+
+func headlessRelayTestCommand(t *testing.T) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().Bool("offline", false, "")
+	cmd.Flags().String("auth-file", lingon.DefaultAuthPath(), "")
+	cmd.Flags().String("token", "", "")
+	cmd.Flags().String("endpoint", lingon.DefaultClientEndpoint, "")
+	return cmd
 }
 
 func TestResolveHeadlessWallInactiveAfterLevelsFlagOverridesConfig(t *testing.T) {
