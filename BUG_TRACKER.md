@@ -70,16 +70,21 @@ Required status values:
   2. Observe the resolved daemon config should keep the endpoint and token while setting `Offline=true`.
   3. Resolve headless startup with `--offline` and `client.endpoint` set through config or `LINGON_CLIENT_ENDPOINT`, but with missing auth.
   4. Observe explicit configured endpoints should fail with the auth error instead of silently becoming local-only.
-  5. Observe default `--offline` with no auth may still become local-only.
+  5. Resolve headless startup with `--offline`, no explicit relay/auth flags, and an auth file containing multiple stored endpoints.
+  6. Observe default offline local-only startup should not fail with endpoint ambiguity when relay publishing was not requested.
+  7. Observe default `--offline` with no auth may still become local-only.
 - Regression coverage:
   - `TestResolveHeadlessRelayConfigPreservesExplicitOfflineRelay`
   - `TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly`
+  - `TestResolveHeadlessRelayConfigDefaultOfflineAmbiguousStoredAuthFallsBackLocalOnly`
+  - `TestResolveHeadlessRelayConfigExplicitOfflineAuthFileAmbiguityRequiresEndpoint`
   - `TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth`
   - `TestResolveHeadlessRelayConfigConfiguredOfflineEndpointRequiresAuth`
   - `TestResolveHeadlessRelayConfigEnvOfflineEndpointRequiresAuth`
 - Verification:
   - Fixed by resolving relay endpoint/auth independently of the initial offline state and only falling back to local-only for non-explicit no-auth startup.
   - Review follow-up fixed explicit endpoint detection for config/env endpoints, not only `--endpoint`.
+  - Review follow-up fixed non-explicit offline startup so it skips auth endpoint inference and starts local-only even when stored auth contains multiple endpoints; explicit `--auth-file` still reports endpoint ambiguity.
   - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig' -count=1` passed.
   - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig|TestResolveHeadlessSize|TestHeadlessAliasEnabled' -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt -count=1` passed.

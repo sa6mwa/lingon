@@ -138,6 +138,45 @@ func TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly(t *tes
 	}
 }
 
+func TestResolveHeadlessRelayConfigDefaultOfflineAmbiguousStoredAuthFallsBackLocalOnly(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	writeAuthEndpoints(t, authPath, "https://alpha.example/v1", "https://beta.example/v1")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = authPath
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "" || got.Token != "" || got.AuthPath != "" || !got.Offline {
+		t.Fatalf("relay config = %+v, want local-only offline fallback", got)
+	}
+}
+
+func TestResolveHeadlessRelayConfigExplicitOfflineAuthFileAmbiguityRequiresEndpoint(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	writeAuthEndpoints(t, authPath, "https://alpha.example/v1", "https://beta.example/v1")
+	if err := cmd.Flags().Set("auth-file", authPath); err != nil {
+		t.Fatalf("set auth-file: %v", err)
+	}
+
+	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), lingon.Config{}, false)
+	if err == nil {
+		t.Fatalf("expected explicit auth file with ambiguous endpoints to fail")
+	}
+	if !strings.Contains(err.Error(), "endpoint is ambiguous") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth(t *testing.T) {
 	cmd := headlessRelayTestCommand(t)
 	if err := cmd.Flags().Set("offline", "true"); err != nil {
@@ -231,6 +270,22 @@ func headlessRelayTestCommand(t *testing.T) *cobra.Command {
 	cmd.Flags().String("token", "", "")
 	cmd.Flags().String("endpoint", lingon.DefaultClientEndpoint, "")
 	return cmd
+}
+
+func writeAuthEndpoints(t *testing.T, authPath string, endpoints ...string) {
+	t.Helper()
+	now := time.Now().UTC()
+	for _, endpoint := range endpoints {
+		if err := lingon.SaveAuth(authPath, lingon.AuthState{
+			Endpoint:         endpoint,
+			AccessToken:      "access-" + endpoint,
+			AccessExpiresAt:  now.Add(5 * time.Minute),
+			RefreshToken:     "refresh-" + endpoint,
+			RefreshExpiresAt: now.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("SaveAuth(%q): %v", endpoint, err)
+		}
+	}
 }
 
 func TestResolveHeadlessWallInactiveAfterLevelsFlagOverridesConfig(t *testing.T) {

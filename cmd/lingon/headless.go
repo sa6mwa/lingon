@@ -243,6 +243,11 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 	if err != nil {
 		return headlessRelayConfig{}, err
 	}
+	if headlessLocalOnlyOfflineRequested(cmd, loader, cfg, offlineValue) {
+		return headlessRelayConfig{
+			Offline: true,
+		}, nil
+	}
 	endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointFlag, authPath)
 	if err != nil {
 		return headlessRelayConfig{}, err
@@ -285,6 +290,10 @@ func headlessRelayExplicit(cmd *cobra.Command, loader *lingon.Loader, cfg lingon
 		return true
 	}
 	return endpointExplicitlyConfigured(loader) && strings.TrimSpace(cfg.Client.Endpoint) != ""
+}
+
+func headlessLocalOnlyOfflineRequested(cmd *cobra.Command, loader *lingon.Loader, cfg lingon.Config, offline bool) bool {
+	return offline && !headlessRelayExplicit(cmd, loader, cfg)
 }
 
 func resolveHeadlessWallInactiveAfterLevels(cmd *cobra.Command, cfg lingon.Config) ([]time.Duration, error) {
