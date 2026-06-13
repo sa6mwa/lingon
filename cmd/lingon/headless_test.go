@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -152,6 +153,51 @@ func TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth(t *testin
 	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
 	if err == nil {
 		t.Fatalf("expected explicit offline endpoint without auth to fail")
+	}
+	if !strings.Contains(err.Error(), "auth file not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveHeadlessRelayConfigConfiguredOfflineEndpointRequiresAuth(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example/v1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	loader := lingon.NewLoader()
+	loader.SetConfigFile(configPath)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Client.AuthFile = filepath.Join(t.TempDir(), "missing-auth.json")
+
+	_, err = resolveHeadlessRelayConfig(cmd, loader, cfg, false)
+	if err == nil {
+		t.Fatalf("expected configured offline endpoint without auth to fail")
+	}
+	if !strings.Contains(err.Error(), "auth file not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveHeadlessRelayConfigEnvOfflineEndpointRequiresAuth(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	t.Setenv("LINGON_CLIENT_ENDPOINT", "https://env.example/v1")
+	cfg := lingon.Config{}
+	cfg.Client.Endpoint = "https://env.example/v1"
+	cfg.Client.AuthFile = filepath.Join(t.TempDir(), "missing-auth.json")
+
+	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err == nil {
+		t.Fatalf("expected env offline endpoint without auth to fail")
 	}
 	if !strings.Contains(err.Error(), "auth file not found") {
 		t.Fatalf("unexpected error: %v", err)

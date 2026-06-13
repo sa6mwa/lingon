@@ -255,7 +255,7 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 		if resolveErr != nil {
 			ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
 			if refreshErr != nil || !ok {
-				if cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("token") || cmd.Flags().Changed("auth-file") {
+				if headlessRelayExplicit(cmd, loader, cfg) {
 					return headlessRelayConfig{}, resolveErr
 				}
 				endpointValue = ""
@@ -278,6 +278,13 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 		AuthPath: authPath,
 		Offline:  offlineValue,
 	}, nil
+}
+
+func headlessRelayExplicit(cmd *cobra.Command, loader *lingon.Loader, cfg lingon.Config) bool {
+	if cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("token") || cmd.Flags().Changed("auth-file") {
+		return true
+	}
+	return endpointExplicitlyConfigured(loader) && strings.TrimSpace(cfg.Client.Endpoint) != ""
 }
 
 func resolveHeadlessWallInactiveAfterLevels(cmd *cobra.Command, cfg lingon.Config) ([]time.Duration, error) {

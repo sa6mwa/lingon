@@ -41,13 +41,19 @@ Required status values:
 - Repro:
   1. Resolve headless startup with `--offline --endpoint https://relay.example/v1 --token secret-token`.
   2. Observe the resolved daemon config should keep the endpoint and token while setting `Offline=true`.
-  3. Observe default `--offline` with no auth may still become local-only.
+  3. Resolve headless startup with `--offline` and `client.endpoint` set through config or `LINGON_CLIENT_ENDPOINT`, but with missing auth.
+  4. Observe explicit configured endpoints should fail with the auth error instead of silently becoming local-only.
+  5. Observe default `--offline` with no auth may still become local-only.
 - Regression coverage:
   - `TestResolveHeadlessRelayConfigPreservesExplicitOfflineRelay`
   - `TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly`
   - `TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth`
+  - `TestResolveHeadlessRelayConfigConfiguredOfflineEndpointRequiresAuth`
+  - `TestResolveHeadlessRelayConfigEnvOfflineEndpointRequiresAuth`
 - Verification:
   - Fixed by resolving relay endpoint/auth independently of the initial offline state and only falling back to local-only for non-explicit no-auth startup.
+  - Review follow-up fixed explicit endpoint detection for config/env endpoints, not only `--endpoint`.
+  - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig' -count=1` passed.
   - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig|TestResolveHeadlessSize|TestHeadlessAliasEnabled' -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt -count=1` passed.
   - `go test ./...` passed.
