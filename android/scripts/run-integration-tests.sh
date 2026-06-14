@@ -10,6 +10,7 @@ EMULATOR_BIN="${EMULATOR:-${ANDROID_SDK_ROOT}/emulator/emulator}"
 EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-snapshot}"
 PRESET="${PRESET:-medium}"
 AVD_NAME="${AVD_NAME:-}"
+EMULATOR_WORKSPACE="${LINGON_IT_EMULATOR_WORKSPACE:-8}"
 HARNESS_BIN="${ROOT_DIR}/bin/lingon-android-harness"
 ARTIFACT_OUT="${ANDROID_DIR}/test-artifacts"
 HARNESS_LOG="${ARTIFACT_OUT}/harness.log"
@@ -290,6 +291,18 @@ resolve_avd_name() {
   esac
 }
 
+start_emulator() {
+  local avd_name="$1"
+  local emu_port="$2"
+  if command -v xws >/dev/null 2>&1; then
+    echo "Starting emulator ${avd_name} on port ${emu_port} via xws workspace ${EMULATOR_WORKSPACE}..."
+    xws -w "${EMULATOR_WORKSPACE}" -- "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} >/dev/null 2>&1 &
+  else
+    echo "Starting emulator ${avd_name} on port ${emu_port}..."
+    "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} >/dev/null 2>&1 &
+  fi
+}
+
 acquire_lock() {
   if [[ -f "${LOCK_PATH}" ]]; then
     local existing_pid=""
@@ -554,8 +567,7 @@ if [[ -z "${DEVICE_SERIAL}" ]]; then
     "${ANDROID_DIR}/scripts/configure-avd.sh"
   AVD_NAME="${AVD_NAME}" "${ANDROID_DIR}/scripts/cleanup-avd-snapshots.sh" || true
   EMU_PORT="$(ADB="${ADB_BIN}" "${ANDROID_DIR}/scripts/find-emu-port.sh")"
-  echo "Starting emulator ${AVD_NAME} on port ${EMU_PORT}..."
-  "${EMULATOR_BIN}" -avd "${AVD_NAME}" -port "${EMU_PORT}" ${EMULATOR_FLAGS} >/dev/null 2>&1 &
+  start_emulator "${AVD_NAME}" "${EMU_PORT}"
   DEVICE_SERIAL="emulator-${EMU_PORT}"
   EMULATOR_STARTED="1"
 fi

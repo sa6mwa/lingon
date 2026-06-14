@@ -29,6 +29,26 @@ Required status values:
 
 ## Active Items
 
+### B-095 Android integration emulator should launch on a non-active workspace
+
+- Status: `resolved`
+- Area: `android`, `integration`, `emulator`, `desktop`
+- Summary: Managed Android integration emulator windows open on the active desktop and interfere with other work.
+- Report:
+  The Android integration test launcher starts the emulator GUI directly. On Xfce/xfwm4 this places the emulator on the current workspace, interrupting unrelated laptop work during long integration runs.
+- Desired behavior:
+  If `xws` exists on `PATH`, managed Android integration tests should start the emulator through `xws -w 8 -- ...` so the emulator lands on workspace index 8 (Workspace 9). If `xws` is unavailable, the launcher should fall back to the current direct emulator invocation. The workspace should be overrideable for local setups.
+- Repro:
+  1. Run the managed emulator launch used by `make android-integration-test`.
+  2. Observe emulator windows appear on the active workspace.
+- Regression coverage:
+  - Shell syntax validation for `android/scripts/run-integration-tests.sh`.
+  - Manual `xws` + `wmctrl` verification with `lingon-medium`.
+- Verification:
+  - Manual assertion before wiring: `xws -w 8 -- ~/Android/Sdk/emulator/emulator -avd lingon-medium -port 5554 -gpu host -no-snapshot`; `wmctrl -l` showed both `Emulator` and `Android Emulator - lingon-medium:5554` on workspace index `8`.
+  - `bash -n android/scripts/run-integration-tests.sh`
+  - `LINGON_IT_ONLY=top_bar_settings_is_accessible make android-integration-test` passed and logged `Starting emulator lingon-medium on port 5554 via xws workspace 8...`.
+
 ### B-092 Resize integration tab-row comparator treats control active tab as content mismatch
 
 - Status: `resolved`

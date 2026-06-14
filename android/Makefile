@@ -80,6 +80,7 @@ help:
 	@echo "  make integration-test LINGON_IT_CPU_QUOTA_PERCENT=400 LINGON_IT_MEMORY_MAX=6G"
 	@echo "                      (default: systemd cgroup, CPUQuota=min(half of online CPUs, 200%), MemoryMax=7G, fresh managed emulator)"
 	@echo "                      set LINGON_IT_REUSE_DEVICE=1 only when deliberately using an existing device/emulator"
+	@echo "                      uses xws -w 8 for the emulator GUI when xws is on PATH; override with LINGON_IT_EMULATOR_WORKSPACE=N"
 
 list-presets:
 	@echo "Available PRESET values:"
