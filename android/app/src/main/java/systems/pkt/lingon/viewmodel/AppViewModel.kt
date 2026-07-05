@@ -2149,6 +2149,11 @@ class AppViewModel(
     }
 
     override fun onCleared() {
+        stopReconnect()
+        stopSessionPoll()
+        refreshJob?.cancel()
+        refreshJob = null
+        closeWebSocket("view model cleared")
         transientStatusJob?.cancel()
         transientStatusJob = null
         super.onCleared()

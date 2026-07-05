@@ -93,7 +93,9 @@ class PersistentCookieJar(
             }
         }
         if (mutated) {
-            persistAsync()
+            runBlocking {
+                persist()
+            }
         }
     }
 
@@ -122,19 +124,23 @@ class PersistentCookieJar(
 
     private fun persistAsync() {
         scope.launch(Dispatchers.IO) {
-            mutex.withLock {
-                val snapshot = synchronized(lock) {
-                    cookieStore.values.flatten()
-                        .filter { it.persistent }
-                        .map { CookieRecord.fromCookie(it) }
-                }
-                val encoded = LingonJson.encodeToString(ListSerializer(CookieRecord.serializer()), snapshot)
-                dataStore.edit { prefs ->
-                    if (snapshot.isEmpty()) {
-                        prefs.remove(cookiesKey)
-                    } else {
-                        prefs[cookiesKey] = encoded
-                    }
+            persist()
+        }
+    }
+
+    private suspend fun persist() {
+        mutex.withLock {
+            val snapshot = synchronized(lock) {
+                cookieStore.values.flatten()
+                    .filter { it.persistent }
+                    .map { CookieRecord.fromCookie(it) }
+            }
+            val encoded = LingonJson.encodeToString(ListSerializer(CookieRecord.serializer()), snapshot)
+            dataStore.edit { prefs ->
+                if (snapshot.isEmpty()) {
+                    prefs.remove(cookiesKey)
+                } else {
+                    prefs[cookiesKey] = encoded
                 }
             }
         }

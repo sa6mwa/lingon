@@ -1294,6 +1294,8 @@ func (r *Runner) clearOverlays(stdout *os.File, stdin *os.File) {
 		cols, rows = int(snap.Cols), int(snap.Rows)
 	}
 	cursor := mvu.CursorFromSnapshot(snap, cols, rows)
+	r.stdoutMu.Lock()
+	defer r.stdoutMu.Unlock()
 	frame, err := ui.RenderHostFrame(mvu.RuntimeHostFrameInput{
 		Snapshot:  snap,
 		Cols:      cols,
@@ -1307,8 +1309,6 @@ func (r *Runner) clearOverlays(stdout *os.File, stdin *os.File) {
 		return
 	}
 	rendered := frame.Rendered
-	r.stdoutMu.Lock()
-	defer r.stdoutMu.Unlock()
 	_ = writeAll(context.Background(), stdout, rendered.Bytes, r.clock)
 }
 

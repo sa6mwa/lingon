@@ -118,6 +118,13 @@ func NewUsersCommand(loader *lingon.Loader) *cobra.Command {
 			if err := store.Save(path); err != nil {
 				return err
 			}
+			cfg, err := loader.Load()
+			if err != nil {
+				return err
+			}
+			if err := revokePersistedUserAuth(cfg.Server.DataDir, resp.User.Username, time.Now().UTC()); err != nil {
+				return err
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "password: %s\n", resp.Password)
 			return nil
 		},
@@ -142,6 +149,13 @@ func NewUsersCommand(loader *lingon.Loader) *cobra.Command {
 				return formatUserError(err)
 			}
 			if err := store.Save(path); err != nil {
+				return err
+			}
+			cfg, err := loader.Load()
+			if err != nil {
+				return err
+			}
+			if err := revokePersistedUserAuth(cfg.Server.DataDir, resp.User.Username, time.Now().UTC()); err != nil {
 				return err
 			}
 			printUserTOTP(cmd.OutOrStdout(), resp)
@@ -176,16 +190,8 @@ func NewUsersCommand(loader *lingon.Loader) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			stateDir := strings.TrimSpace(cfg.Server.DataDir)
-			if stateDir != "" {
-				stateStore, err := relay.LoadStore(stateDir)
-				if err != nil {
-					return err
-				}
-				stateStore.RevokeTokensForUsername(user.Username)
-				if err := stateStore.Save(stateDir); err != nil {
-					return err
-				}
+			if err := revokePersistedUserAuth(cfg.Server.DataDir, user.Username, time.Now().UTC()); err != nil {
+				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "user deleted")
 			return nil
@@ -237,6 +243,24 @@ func formatUserError(err error) error {
 	default:
 		return err
 	}
+}
+
+func revokePersistedUserAuth(stateDir, username string, now time.Time) error {
+	stateDir = strings.TrimSpace(stateDir)
+	username = strings.TrimSpace(username)
+	if stateDir == "" || username == "" {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	stateStore, err := relay.LoadStore(stateDir)
+	if err != nil {
+		return err
+	}
+	stateStore.RevokeTokensForUsername(username)
+	stateStore.RevokeShareTokensForUsername(username, now)
+	return stateStore.Save(stateDir)
 }
 
 func promptPassword(label string) (string, error) {

@@ -24,7 +24,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import systems.pkt.lingon.data.certs.CertificateState
 import systems.pkt.lingon.data.certs.CertificateStore
+import systems.pkt.lingon.data.certs.StoredCert
 
 class HttpClientProviderTest {
     @Test
@@ -107,6 +109,32 @@ class HttpClientProviderTest {
 
         val cookieJar = PersistentCookieJar(dataStore, backgroundScope)
         assertFalse(cookieJar.loadForRequest(endpoint).any { it.name == "session_only" })
+    }
+
+    @Test
+    fun certificateStoreFindsLegacyRawEndpointKeyByNormalizedUrl() = runTest {
+        val dataStore = testDataStore()
+        val cert = StoredCert(
+            id = "cert-1",
+            pem = "pem",
+            subject = "subject",
+            issuer = "issuer",
+            fingerprint = "fingerprint",
+            addedAt = "2026-01-12T00:00:00Z",
+        )
+        dataStore.edit { prefs ->
+            prefs[stringPreferencesKey("trusted_certs_json")] =
+                LingonJson.encodeToString(
+                    CertificateState.serializer(),
+                    CertificateState(mapOf("https://example.test" to listOf(cert))),
+                )
+        }
+        val store = CertificateStore(dataStore)
+
+        assertEquals(listOf(cert), store.list("https://example.test/"))
+
+        store.removeCertificate("https://example.test/", cert.id)
+        assertEquals(emptyList<StoredCert>(), store.list("https://example.test"))
     }
 
     @Test

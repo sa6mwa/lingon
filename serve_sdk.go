@@ -80,7 +80,9 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		Window:   cfg.Server.ConnectLimit.Window,
 		Headroom: 3,
 	})
-	if err := relay.StartUserReloadLoop(ctx, cfg.Server.UsersFile, users, logger); err != nil {
+	if err := relay.StartUserReloadLoopWithHook(ctx, cfg.Server.UsersFile, users, logger, func(changedUsers []string) {
+		relayServer.InvalidateReloadedUsers(changedUsers, time.Now().UTC())
+	}); err != nil {
 		logger.Warn("relay.users.reload.disabled", "err", err)
 	}
 

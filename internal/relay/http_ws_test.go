@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -1042,6 +1043,157 @@ func TestHostWebsocketCloseStillMarksSessionInactive(t *testing.T) {
 	if server.Hub.HasHost(sessionID) {
 		t.Fatalf("expected host to be unregistered after websocket close")
 	}
+}
+
+func TestWSClientReconnectWithoutHostClosesReplacedClient(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+	ts := newTestServer(t, server.Handler())
+	defer ts.Close()
+
+	access, err := store.CreateAccessToken(user.Username, DefaultAccessTokenTTL, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+	const sessionID = "client-reconnect-no-host"
+	store.CreateSession(Session{
+		ID:       sessionID,
+		Username: user.Username,
+		Status:   "inactive",
+	})
+	oldClient := &fakeConn{id: "client-old", role: RoleClient, sessionID: sessionID, scope: ShareScopeControl}
+	server.Hub.RegisterClient(oldClient, sessionID, "android-1", true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clientConn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/client"), &websocket.DialOptions{
+		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + access.Token}},
+	})
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+	defer func() {
+		_ = clientConn.Close(websocket.StatusNormalClosure, "bye")
+	}()
+	hello := &protocolpb.Frame{
+		SessionId: sessionID,
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "android-1",
+			WantsControl: true,
+			ClientType:   "android",
+		}},
+	}
+	data, err := proto.Marshal(hello)
+	if err != nil {
+		t.Fatalf("marshal client hello: %v", err)
+	}
+	if err := clientConn.Write(ctx, websocket.MessageBinary, data); err != nil {
+		t.Fatalf("send client hello: %v", err)
+	}
+
+	frame := readWSFrame(t, clientConn)
+	if got := frame.GetError(); got == nil || got.GetMessage() != "no host connected" {
+		t.Fatalf("client reconnect error = %+v, want no host connected", got)
+	}
+	if oldClient.closed != 1 {
+		t.Fatalf("replaced client closed %d times, want 1", oldClient.closed)
+	}
+	rejected := oldClient.sentFrame(0).GetError()
+	if rejected == nil || !rejected.GetSessionRejected() || !strings.Contains(rejected.GetMessage(), "superseded by reconnect") {
+		t.Fatalf("replaced client rejection = %+v, want superseded session_rejected", rejected)
+	}
+}
+
+func TestWSHostPersistFailureClosesReplacedHost(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+	badDataDir := t.TempDir() + "/state-file"
+	if err := os.WriteFile(badDataDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile bad data dir: %v", err)
+	}
+	server.DataDir = badDataDir
+	ts := newTestServer(t, server.Handler())
+	defer ts.Close()
+
+	access, err := store.CreateAccessToken(user.Username, DefaultAccessTokenTTL, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+	const sessionID = "host-persist-fail"
+	oldHost := &fakeConn{id: "host-old", role: RoleHost, sessionID: sessionID, scope: ShareScopeControl}
+	if err := server.Hub.RegisterHost(oldHost, sessionID, 80, 24); err != nil {
+		t.Fatalf("RegisterHost old: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	hostConn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/host"), &websocket.DialOptions{
+		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + access.Token}},
+	})
+	if err != nil {
+		t.Fatalf("host dial: %v", err)
+	}
+	defer func() {
+		_ = hostConn.Close(websocket.StatusNormalClosure, "bye")
+	}()
+	hello := &protocolpb.Frame{
+		SessionId: sessionID,
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			Cols:         80,
+			Rows:         24,
+			WantsControl: true,
+			ClientType:   "host",
+		}},
+	}
+	data, err := proto.Marshal(hello)
+	if err != nil {
+		t.Fatalf("marshal host hello: %v", err)
+	}
+	if err := hostConn.Write(ctx, websocket.MessageBinary, data); err != nil {
+		t.Fatalf("send host hello: %v", err)
+	}
+
+	frame := readWSFrame(t, hostConn)
+	if got := frame.GetError(); got == nil || got.GetMessage() != "failed to persist state" {
+		t.Fatalf("host persist error = %+v, want failed to persist state", got)
+	}
+	if oldHost.closed != 1 {
+		t.Fatalf("replaced host closed %d times, want 1", oldHost.closed)
+	}
+	rejected := oldHost.sentFrame(0).GetError()
+	if rejected == nil || !rejected.GetSessionRejected() || !strings.Contains(rejected.GetMessage(), "superseded by reconnect") {
+		t.Fatalf("replaced host rejection = %+v, want superseded session_rejected", rejected)
+	}
+	if server.Hub.HasHost(sessionID) {
+		t.Fatalf("expected no registered host after persist failure")
+	}
+}
+
+func readWSFrame(t *testing.T, conn *websocket.Conn) *protocolpb.Frame {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, message, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read websocket frame: %v", err)
+	}
+	var frame protocolpb.Frame
+	if err := proto.Unmarshal(message, &frame); err != nil {
+		t.Fatalf("decode websocket frame: %v", err)
+	}
+	return &frame
 }
 
 func waitForPersistedSessionStatus(t *testing.T, dir, sessionID, want string, timeout time.Duration) {

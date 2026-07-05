@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,7 +83,7 @@ func TestUserReloadLoopDetectsContentChangeSameMtime(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := startUserReloadLoop(ctx, path, store, nil, 10*time.Millisecond); err != nil {
+	if err := startUserReloadLoop(ctx, path, store, nil, 10*time.Millisecond, nil); err != nil {
 		t.Fatalf("startUserReloadLoop: %v", err)
 	}
 
@@ -109,4 +110,104 @@ func TestUserReloadLoopDetectsContentChangeSameMtime(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("expected reload with updated totp secret")
+}
+
+func TestCredentialChangedUsersDetectsCredentialsAndRemoval(t *testing.T) {
+	changed := credentialChangedUsers(
+		[]User{
+			{Username: "alice", PasswordHash: "old", TOTPSecret: "same"},
+			{Username: "bob", PasswordHash: "same", TOTPSecret: "old"},
+			{Username: "carol", PasswordHash: "removed", TOTPSecret: "removed"},
+			{Username: "dave", PasswordHash: "same", TOTPSecret: "same"},
+		},
+		[]User{
+			{Username: "alice", PasswordHash: "new", TOTPSecret: "same"},
+			{Username: "bob", PasswordHash: "same", TOTPSecret: "new"},
+			{Username: "dave", PasswordHash: "same", TOTPSecret: "same"},
+			{Username: "erin", PasswordHash: "added", TOTPSecret: "added"},
+		},
+	)
+	want := []string{"alice", "bob", "carol"}
+	if len(changed) != len(want) {
+		t.Fatalf("changed users = %v, want %v", changed, want)
+	}
+	for i := range want {
+		if changed[i] != want[i] {
+			t.Fatalf("changed users = %v, want %v", changed, want)
+		}
+	}
+}
+
+func TestUserReloadLoopInvalidatesChangedCredentials(t *testing.T) {
+	dir := testutil.TempDir(t)
+	now := time.Date(2026, 1, 12, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(dir, "users.json")
+
+	users := NewUserStore()
+	users.Upsert(User{
+		Username:     "alice",
+		PasswordHash: "old",
+		TOTPSecret:   "oldsecret",
+		CreatedAt:    now,
+	})
+	if err := users.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	state := NewStore()
+	access, err := state.CreateAccessToken("alice", DefaultAccessTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+	refresh, err := state.CreateRefreshToken("alice", DefaultRefreshTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+	state.CreateSession(Session{
+		ID:           "alice-session",
+		Username:     "alice",
+		CreatedAt:    now,
+		LastActiveAt: now,
+		Status:       "active",
+	})
+	share, err := state.CreateShareToken("alice-session", ShareScopeView, time.Hour, now)
+	if err != nil {
+		t.Fatalf("CreateShareToken: %v", err)
+	}
+	server := NewHTTPServer(state, users, NewAuthenticator(users), nil, NewHub(nil))
+	server.DataDir = dir
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := startUserReloadLoop(ctx, path, users, nil, 10*time.Millisecond, func(changedUsers []string) {
+		server.InvalidateReloadedUsers(changedUsers, now)
+	}); err != nil {
+		t.Fatalf("startUserReloadLoop: %v", err)
+	}
+
+	updated := NewUserStore()
+	updated.Upsert(User{
+		Username:     "alice",
+		PasswordHash: "new",
+		TOTPSecret:   "oldsecret",
+		CreatedAt:    now,
+	})
+	if err := updated.Save(path); err != nil {
+		t.Fatalf("Save updated: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_, accessErr := state.ValidateAccessToken(access.Token, now)
+		_, refreshErr := state.ValidateRefreshToken(refresh.Token, now)
+		storedShare, shareOK := state.GetShareToken(share.Token)
+		if errors.Is(accessErr, ErrTokenNotFound) &&
+			errors.Is(refreshErr, ErrTokenNotFound) &&
+			shareOK &&
+			storedShare.RevokedAt != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected reload to revoke access, refresh, and share token")
 }

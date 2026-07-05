@@ -1501,6 +1501,47 @@ class AppViewModelTest {
     }
 
     @Test
+    fun clearingViewModelClosesTerminalWebSocketWithoutReconnect() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                connectionState = ConnectionState.Disconnected,
+                shareToken = null,
+            ),
+        )
+
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.connectCount)
+        assertEquals(0, wsClient.closeCount)
+
+        invokeOnClearedForTest(viewModel)
+        advanceTimeBy(5_000)
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.closeCount)
+        assertEquals(1, wsClient.connectCount)
+    }
+
+    @Test
     fun manualRefreshPreservesScrollbackOffset() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
@@ -2415,6 +2456,12 @@ private fun setActiveConnectionForTest(viewModel: AppViewModel, sessionId: Strin
     val field = AppViewModel::class.java.getDeclaredField("activeConnection")
     field.isAccessible = true
     field.set(viewModel, key)
+}
+
+private fun invokeOnClearedForTest(viewModel: AppViewModel) {
+    val method = AppViewModel::class.java.getDeclaredMethod("onCleared")
+    method.isAccessible = true
+    method.invoke(viewModel)
 }
 
 private fun welcomeFrame(): Frame {

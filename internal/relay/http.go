@@ -1108,20 +1108,13 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 		})
 		if err := s.persist(); err != nil {
 			_ = ws.SendImmediate(ctx, frameError("failed to persist state"))
+			closeReplacedConnection(replacedHost, "superseded by reconnect")
 			s.Hub.Unregister(ws)
 			unregistered = true
 			return
 		}
 	}
-	if replacedHost != nil {
-		rejected := frameErrorSessionRejected("superseded by reconnect")
-		if replacedWS, ok := replacedHost.(*wsConn); ok {
-			_ = replacedWS.SendImmediate(context.Background(), rejected)
-		} else {
-			_ = replacedHost.Send(context.Background(), rejected)
-		}
-		_ = replacedHost.Close(context.Background(), "superseded by reconnect")
-	}
+	closeReplacedConnection(replacedHost, "superseded by reconnect")
 	logger.Info("relay.host.connect.done", "session", frame.SessionId, "reconnected", reconnected, "ip", remoteIP)
 	s.notifySessions(username)
 
@@ -1265,6 +1258,7 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	reconnected := s.Hub.HasClientID(sessionID, clientID)
 	replacedClient, granted, holder, cols, rows := s.Hub.registerClient(ws, sessionID, clientID, frame.GetHello().WantsControl, true)
 	if !s.Hub.HasHost(sessionID) {
+		closeReplacedConnection(replacedClient, "superseded by reconnect")
 		_ = ws.SendImmediate(ctx, frameError("no host connected"))
 		return
 	}
@@ -1273,15 +1267,7 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		s.Hub.BroadcastControl(ctx, sessionID)
 	}
 	_ = s.Hub.HandleClientFrame(ctx, ws, frame)
-	if replacedClient != nil {
-		rejected := frameErrorSessionRejected("superseded by reconnect")
-		if replacedWS, ok := replacedClient.(*wsConn); ok {
-			_ = replacedWS.SendImmediate(context.Background(), rejected)
-		} else {
-			_ = replacedClient.Send(context.Background(), rejected)
-		}
-		_ = replacedClient.Close(context.Background(), "superseded by reconnect")
-	}
+	closeReplacedConnection(replacedClient, "superseded by reconnect")
 	logger.Info("relay.client.connect.done", "session", sessionID, "client", clientID, "reconnected", reconnected, "ip", remoteIP)
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
@@ -1357,6 +1343,22 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 			}
 		}
 	}
+}
+
+func closeReplacedConnection(conn connection, reason string) {
+	if conn == nil {
+		return
+	}
+	if reason == "" {
+		reason = "superseded by reconnect"
+	}
+	rejected := frameErrorSessionRejected(reason)
+	if replacedWS, ok := conn.(*wsConn); ok {
+		_ = replacedWS.SendImmediate(context.Background(), rejected)
+	} else {
+		_ = conn.Send(context.Background(), rejected)
+	}
+	_ = conn.Close(context.Background(), reason)
 }
 
 func (s *HTTPServer) pingLoop(ctx context.Context, conn *wsConn) {
@@ -1789,6 +1791,42 @@ func (s *HTTPServer) disconnectUserAuth(shareTokens, sessionIDs []string, reason
 	}
 	if s.Hub != nil {
 		s.Hub.DisconnectSessions(sessionIDs, reason)
+	}
+}
+
+// InvalidateReloadedUsers revokes existing authority for users whose
+// credentials changed or were removed by a successful users-file reload.
+func (s *HTTPServer) InvalidateReloadedUsers(usernames []string, now time.Time) {
+	if s == nil || s.Store == nil || len(usernames) == 0 {
+		return
+	}
+	type disconnectPlan struct {
+		username    string
+		shareTokens []string
+		sessionIDs  []string
+	}
+	plans := make([]disconnectPlan, 0, len(usernames))
+	for _, username := range usernames {
+		username = strings.TrimSpace(username)
+		if username == "" {
+			continue
+		}
+		shareTokens, sessionIDs := s.invalidateUserAuth(username, now)
+		plans = append(plans, disconnectPlan{username: username, shareTokens: shareTokens, sessionIDs: sessionIDs})
+	}
+	if len(plans) == 0 {
+		return
+	}
+	if err := s.persist(); err != nil {
+		if s.Logger != nil {
+			s.Logger.Error("relay.users.reload.invalidate.persist.failed", "err", err)
+		}
+	}
+	for _, plan := range plans {
+		s.disconnectUserAuth(plan.shareTokens, plan.sessionIDs, "credentials changed")
+		if s.sessions != nil {
+			s.notifySessions(plan.username)
+		}
 	}
 }
 
