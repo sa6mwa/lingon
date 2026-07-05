@@ -60,6 +60,15 @@ type Options struct {
 	Clock  clock.Clock
 	Logger pslog.Logger
 	Trace  *trace.Writer
+
+	OnStartupReady func(StartupReady)
+}
+
+// StartupReady reports that the daemon has bound its local socket and started
+// the local attach server.
+type StartupReady struct {
+	SessionID  string
+	SocketPath string
 }
 
 // Daemon runs one local headless PTY session and serves local attach clients over UDS websocket.
@@ -306,6 +315,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer stopHeartbeat()
 	go d.heartbeat(heartbeatCtx)
 	go d.monitorLocalWallInactivity(ctx)
+	if d.opts.OnStartupReady != nil {
+		d.opts.OnStartupReady(StartupReady{
+			SessionID:  d.sessionID,
+			SocketPath: d.socketPath,
+		})
+	}
 
 	runnerDone := false
 	var runnerErr error

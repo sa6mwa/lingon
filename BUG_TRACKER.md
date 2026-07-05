@@ -29,6 +29,35 @@ Required status values:
 
 ## Active Items
 
+### B-096 Detached headless startup hides child initialization failures
+
+- Status: `resolved`
+- Area: `cli`, `headless`, `auth`, `dx`
+- Summary: `lingonx` / `lingon -x` can report background startup while the detached child immediately exits with a hidden startup error.
+- Report:
+  The engineer reported that `lingonx` or `lingon -x` appeared to do nothing when relay login/auth was unavailable. The important failure is not necessarily the relay requirement itself; it is that the detached parent discarded the foreground child's startup error, so the CLI did not explain that auth was missing or that `--offline` was required for local-only startup.
+- Desired behavior:
+  Detached headless startup must have an explicit parent/child startup contract. The parent should print the existing background-started message only after the child reports readiness. If the child fails during initialization, the parent should fail visibly with the real error and actionable guidance.
+- Repro:
+  1. Run `lingonx --endpoint https://relay.example/v1 --auth-file <missing> --session <id>`.
+  2. Observe the parent should not print `headless session starting in background`.
+  3. Observe the command should fail with `headless startup failed`, the missing-auth reason, and guidance to use `--offline` for local-only headless startup.
+- Regression coverage:
+  - `TestHeadlessStartupReporterWritesReadyStatus`
+  - `TestHeadlessStartupReporterWritesFailureWithOfflineHint`
+  - `TestRealCLILingonXReportsMissingRelayAuthBeforeDetachedExit`
+- Verification:
+  - Implemented a one-shot JSON startup status pipe from detached foreground child to parent. The parent now prints background startup only after a `ready` status and returns a visible `headless startup failed: ...` error when the child reports initialization failure.
+  - Added `headlessd.Options.OnStartupReady`, fired after the daemon binds its local socket, writes local state, starts the runner, and starts the local attach HTTP server.
+  - The child closes the startup-status fd immediately after reporting readiness so it does not linger in the daemon or user shell environment.
+  - `go test ./cmd/lingon -run 'TestHeadlessStartupReporter|TestResolveHeadlessRelayConfig|TestResolveHeadlessSize|TestHeadlessAliasEnabled' -count=1` passed.
+  - `go test -tags integration ./integration/pty/attach -run 'TestRealCLILingonX(ReportsMissingRelayAuthBeforeDetachedExit|StartedHeadlessThenLingonXAttachRendersPrompt)' -count=1 -v` passed.
+  - `go test ./internal/headlessd -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
 ### B-095 Android integration emulator should launch on a non-active workspace
 
 - Status: `resolved`

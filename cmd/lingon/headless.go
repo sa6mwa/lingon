@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +21,23 @@ import (
 	"pkt.systems/lingon/internal/session"
 	"pkt.systems/pslog"
 )
+
+const (
+	headlessStartupStatusEnv     = "__LINGON__HEADLESS_STARTUP_STATUS_FD"
+	headlessStartupStatusFD      = 3
+	headlessStartupStatusTimeout = 10 * time.Second
+)
+
+type headlessStartupStatus struct {
+	Status  string `json:"status"`
+	Error   string `json:"error,omitempty"`
+	Session string `json:"session,omitempty"`
+	Socket  string `json:"socket,omitempty"`
+}
+
+type headlessStartupReporter struct {
+	file *os.File
+}
 
 func headlessAliasEnabled(argv0 string) bool {
 	name := strings.TrimSpace(filepath.Base(argv0))
@@ -63,9 +84,20 @@ func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 	if err != nil {
 		return err
 	}
+	statusR, statusW, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = statusR.Close()
+	}()
+	defer func() {
+		_ = statusW.Close()
+	}()
 	child := exec.Command(exePath, args...)
 	configureDetachedProcess(child)
-	child.Env = withEnv(os.Environ(), headless.EnvForeground, headless.ForegroundValue)
+	child.ExtraFiles = []*os.File{statusW}
+	child.Env = withEnv(withEnv(os.Environ(), headless.EnvForeground, headless.ForegroundValue), headlessStartupStatusEnv, strconv.Itoa(headlessStartupStatusFD))
 	nullIn, err := os.Open(os.DevNull)
 	if err != nil {
 		return err
@@ -86,6 +118,17 @@ func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 	if err := child.Start(); err != nil {
 		return err
 	}
+	_ = statusW.Close()
+	status, err := waitForHeadlessStartupStatus(statusR, child, logPathForHeadlessStartup(cmd))
+	if err != nil {
+		return err
+	}
+	if status.Status != "ready" {
+		if strings.TrimSpace(status.Error) == "" {
+			return fmt.Errorf("headless startup failed before reporting readiness")
+		}
+		return fmt.Errorf("headless startup failed: %s", status.Error)
+	}
 	fmt.Fprintf(cmd.OutOrStdout(), "headless session starting in background (session=%s pid=%d socket=%s)\n", sessionID, child.Process.Pid, socketPath)
 	return nil
 }
@@ -102,7 +145,21 @@ func validateHeadlessReexecFlags(cmd *cobra.Command) error {
 	return err
 }
 
-func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir string, cfg lingon.Config) error {
+func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir string, cfg lingon.Config) (retErr error) {
+	startupReporter := headlessStartupReporterFromEnv()
+	if startupReporter != nil {
+		_ = os.Unsetenv(headlessStartupStatusEnv)
+	}
+	startupReady := false
+	defer func() {
+		if startupReporter == nil {
+			return
+		}
+		defer startupReporter.Close()
+		if retErr != nil && !startupReady {
+			_ = startupReporter.Failed(retErr)
+		}
+	}()
 	insecure, err := cmd.Flags().GetBool("insecure")
 	if err != nil {
 		return err
@@ -213,8 +270,112 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 		Insecure:                insecure,
 		Logger:                  logger,
 		Trace:                   traceWriter,
+		OnStartupReady: func(ready headlessd.StartupReady) {
+			startupReady = true
+			if startupReporter != nil {
+				_ = startupReporter.Ready(ready)
+				startupReporter.Close()
+				startupReporter = nil
+			}
+		},
 	})
 	return daemon.Run(ctx)
+}
+
+func headlessStartupReporterFromEnv() *headlessStartupReporter {
+	raw := strings.TrimSpace(os.Getenv(headlessStartupStatusEnv))
+	if raw == "" {
+		return nil
+	}
+	fd, err := strconv.Atoi(raw)
+	if err != nil || fd < 0 {
+		return nil
+	}
+	return &headlessStartupReporter{file: os.NewFile(uintptr(fd), "headless-startup-status")}
+}
+
+func (r *headlessStartupReporter) Ready(ready headlessd.StartupReady) error {
+	if r == nil || r.file == nil {
+		return nil
+	}
+	return json.NewEncoder(r.file).Encode(headlessStartupStatus{
+		Status:  "ready",
+		Session: ready.SessionID,
+		Socket:  ready.SocketPath,
+	})
+}
+
+func (r *headlessStartupReporter) Failed(err error) error {
+	if r == nil || r.file == nil || err == nil {
+		return nil
+	}
+	return json.NewEncoder(r.file).Encode(headlessStartupStatus{
+		Status: "error",
+		Error:  headlessStartupErrorMessage(err),
+	})
+}
+
+func (r *headlessStartupReporter) Close() {
+	if r == nil || r.file == nil {
+		return
+	}
+	_ = r.file.Close()
+	r.file = nil
+}
+
+func waitForHeadlessStartupStatus(r io.Reader, child *exec.Cmd, logPath string) (headlessStartupStatus, error) {
+	statusCh := make(chan headlessStartupStatus, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		var status headlessStartupStatus
+		err := json.NewDecoder(bufio.NewReader(r)).Decode(&status)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		statusCh <- status
+	}()
+	timer := time.NewTimer(headlessStartupStatusTimeout)
+	defer timer.Stop()
+	select {
+	case status := <-statusCh:
+		return status, nil
+	case err := <-errCh:
+		if errors.Is(err, io.EOF) {
+			return headlessStartupStatus{}, fmt.Errorf("headless startup failed before reporting readiness")
+		}
+		return headlessStartupStatus{}, fmt.Errorf("read headless startup status: %w", err)
+	case <-timer.C:
+		if child != nil && child.Process != nil {
+			_ = child.Process.Kill()
+		}
+		if strings.TrimSpace(logPath) != "" {
+			return headlessStartupStatus{}, fmt.Errorf("headless startup did not report readiness within %s; see %s", headlessStartupStatusTimeout, logPath)
+		}
+		return headlessStartupStatus{}, fmt.Errorf("headless startup did not report readiness within %s", headlessStartupStatusTimeout)
+	}
+}
+
+func headlessStartupErrorMessage(err error) string {
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "unknown error"
+	}
+	if strings.Contains(msg, "auth file not found") && !strings.Contains(msg, "--offline") {
+		msg += "; use `--offline` for local-only headless startup"
+	}
+	return msg
+}
+
+func logPathForHeadlessStartup(cmd *cobra.Command) string {
+	if cmd == nil {
+		return lingon.DefaultLogPath()
+	}
+	value, err := cmd.Flags().GetString("log-file")
+	if err != nil || strings.TrimSpace(value) == "" {
+		return lingon.DefaultLogPath()
+	}
+	return value
 }
 
 type headlessRelayConfig struct {

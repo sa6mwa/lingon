@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"pkt.systems/lingon"
+	"pkt.systems/lingon/internal/headlessd"
 )
 
 func TestHeadlessAliasEnabled(t *testing.T) {
@@ -44,6 +46,58 @@ func TestWithEnvReplacesExistingKey(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("new key not found: %v", out)
+	}
+}
+
+func TestHeadlessStartupReporterWritesReadyStatus(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	defer func() {
+		_ = readFile.Close()
+	}()
+	reporter := &headlessStartupReporter{file: writeFile}
+	if err := reporter.Ready(headlessd.StartupReady{
+		SessionID:  "session-a",
+		SocketPath: "/tmp/lingon/headless/s.session-a.sock",
+	}); err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	reporter.Close()
+
+	status, err := waitForHeadlessStartupStatus(readFile, nil, "")
+	if err != nil {
+		t.Fatalf("waitForHeadlessStartupStatus: %v", err)
+	}
+	if status.Status != "ready" || status.Session != "session-a" || status.Socket != "/tmp/lingon/headless/s.session-a.sock" {
+		t.Fatalf("status = %+v, want ready session/socket", status)
+	}
+}
+
+func TestHeadlessStartupReporterWritesFailureWithOfflineHint(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	defer func() {
+		_ = readFile.Close()
+	}()
+	reporter := &headlessStartupReporter{file: writeFile}
+	if err := reporter.Failed(errors.New("auth file not found at /tmp/auth.json; run `lingon login -e https://relay.example/v1`")); err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	reporter.Close()
+
+	status, err := waitForHeadlessStartupStatus(readFile, nil, "")
+	if err != nil {
+		t.Fatalf("waitForHeadlessStartupStatus: %v", err)
+	}
+	if status.Status != "error" {
+		t.Fatalf("status = %+v, want error", status)
+	}
+	if !strings.Contains(status.Error, "auth file not found") || !strings.Contains(status.Error, "--offline") {
+		t.Fatalf("error = %q, want auth failure with offline hint", status.Error)
 	}
 }
 
