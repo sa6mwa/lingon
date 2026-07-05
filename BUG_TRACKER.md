@@ -77,18 +77,24 @@ Required status values:
 - Regression coverage:
   - `TestHeadlessStartupReporterWritesReadyStatus`
   - `TestHeadlessStartupReporterWritesFailureWithOfflineHint`
+  - `TestResolveHeadlessRelayConfigDefaultNoAuthRequiresOffline`
+  - `TestRealCLILingonXDefaultMissingRelayAuthRequiresOffline`
   - `TestRealCLILingonXReportsMissingRelayAuthBeforeDetachedExit`
 - Verification:
   - Implemented a one-shot JSON startup status pipe from detached foreground child to parent. The parent now prints background startup only after a `ready` status and returns a visible `headless startup failed: ...` error when the child reports initialization failure.
   - Added `headlessd.Options.OnStartupReady`, fired after the daemon binds its local socket, writes local state, starts the runner, and starts the local attach HTTP server.
   - The child closes the startup-status fd immediately after reporting readiness so it does not linger in the daemon or user shell environment.
+  - Review follow-up preserved the normal logged-out `lingonx` / `lingon -x` failure path by requiring explicit `--offline` before missing default auth can fall back to local-only mode.
+  - Reproduced the review regression before the resolver fix: `go test ./cmd/lingon -run TestResolveHeadlessRelayConfigDefaultNoAuthRequiresOffline -count=1` failed because default missing auth did not require `--offline`.
+  - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig|TestHeadlessStartupReporterWritesFailureWithOfflineHint' -count=1` passed.
+  - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXDefaultMissingRelayAuthRequiresOffline -count=1 -v` passed.
   - `go test ./cmd/lingon -run 'TestHeadlessStartupReporter|TestResolveHeadlessRelayConfig|TestResolveHeadlessSize|TestHeadlessAliasEnabled' -count=1` passed.
   - `go test -tags integration ./integration/pty/attach -run 'TestRealCLILingonX(ReportsMissingRelayAuthBeforeDetachedExit|StartedHeadlessThenLingonXAttachRendersPrompt)' -count=1 -v` passed.
   - `go test ./internal/headlessd -count=1` passed.
   - `go test ./...` passed.
   - `go vet ./...` passed.
-  - `golint ./...` passed.
-  - `golangci-lint run ./...` passed.
+  - `go run golang.org/x/lint/golint@latest ./...` passed.
+  - `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...` passed.
 
 ### B-095 Android integration emulator should launch on a non-active workspace
 

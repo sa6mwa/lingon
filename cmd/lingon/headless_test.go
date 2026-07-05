@@ -192,6 +192,21 @@ func TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly(t *tes
 	}
 }
 
+func TestResolveHeadlessRelayConfigDefaultNoAuthRequiresOffline(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	missingAuth := filepath.Join(t.TempDir(), "missing-auth.json")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = missingAuth
+
+	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err == nil {
+		t.Fatalf("expected default missing auth to require --offline")
+	}
+	if !strings.Contains(err.Error(), "auth file not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveHeadlessRelayConfigDefaultOfflineSingleStoredAuthPreservesRelay(t *testing.T) {
 	cmd := headlessRelayTestCommand(t)
 	if err := cmd.Flags().Set("offline", "true"); err != nil {

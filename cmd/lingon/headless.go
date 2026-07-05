@@ -422,7 +422,7 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 		if resolveErr != nil {
 			ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
 			if refreshErr != nil || !ok {
-				if headlessRelayExplicit(cmd, loader, cfg) && !headlessLocalOnlyOfflineRequested(cmd, offlineValue) {
+				if !headlessLocalOnlyOfflineRequested(cmd, offlineValue) {
 					return headlessRelayConfig{}, resolveErr
 				}
 				endpointValue = ""
@@ -445,13 +445,6 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 		AuthPath: authPath,
 		Offline:  offlineValue,
 	}, nil
-}
-
-func headlessRelayExplicit(cmd *cobra.Command, loader *lingon.Loader, cfg lingon.Config) bool {
-	if headlessRelayCLIExplicit(cmd) {
-		return true
-	}
-	return endpointExplicitlyConfigured(loader) && strings.TrimSpace(cfg.Client.Endpoint) != ""
 }
 
 func headlessRelayCLIExplicit(cmd *cobra.Command) bool {

@@ -379,6 +379,39 @@ func TestRealCLILingonXReportsMissingRelayAuthBeforeDetachedExit(t *testing.T) {
 	}
 }
 
+func TestRealCLILingonXDefaultMissingRelayAuthRequiresOffline(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	aliasPath := lingonXAliasPath(t)
+	cmd := exec.Command(
+		aliasPath,
+		"--session", "headless-default-missing-relay-auth",
+		"--shell", fixedPromptEmitRowsBash(t),
+		"--disable-desktop-notifications",
+	)
+	cmd.Env = testAttachCLIEnv(homeDir)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected default lingonx startup to fail without relay auth, output:\n%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "headless startup failed") {
+		t.Fatalf("startup failure did not name headless startup:\n%s", text)
+	}
+	if !strings.Contains(text, "auth file not found") {
+		t.Fatalf("startup failure did not report missing auth:\n%s", text)
+	}
+	if !strings.Contains(text, "--offline") {
+		t.Fatalf("startup failure did not suggest local-only offline startup:\n%s", text)
+	}
+	if strings.Contains(text, "headless session starting in background") {
+		t.Fatalf("startup reported background success despite missing auth:\n%s", text)
+	}
+}
+
 func TestRealCLIRootHeadlessAttachLocalHeadlessRendersPrompt(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
