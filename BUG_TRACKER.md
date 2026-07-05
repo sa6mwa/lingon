@@ -29,6 +29,38 @@ Required status values:
 
 ## Active Items
 
+### B-097 `lingonx -o` should start local headless when logged out
+
+- Status: `resolved`
+- Area: `cli`, `headless`, `offline`, `auth`, `dx`
+- Summary: `lingonx -o` can still fail while logged out when relay endpoint configuration exists.
+- Report:
+  The engineer reported that `lingonx -o` does not start a headless offline session when logged out.
+- Desired behavior:
+  `lingonx -o` / `lingon -x -o` should start a local-only offline headless session when relay auth is unavailable and no CLI relay/auth flags were explicitly supplied. Ambient config/env relay endpoints should not prevent the explicit offline command from starting local headless while logged out. Explicit CLI relay/auth intent, such as `--endpoint` or `--auth-file`, should still fail visibly if auth is unavailable.
+- Repro:
+  1. Configure a relay endpoint in Lingon config.
+  2. Remove or point away the auth file.
+  3. Run `lingonx -o --session <id>`.
+  4. Observe the command should report background startup and the local headless session should be attachable.
+- Regression coverage:
+  - `TestResolveHeadlessRelayConfigConfiguredOfflineEndpointNoAuthFallsBackLocalOnly`
+  - `TestResolveHeadlessRelayConfigEnvOfflineEndpointNoAuthFallsBackLocalOnly`
+  - `TestRealCLILingonXOfflineStartsLocalHeadlessWithConfiguredEndpointLoggedOut`
+  - `TestRealCLILingonXReportsMissingRelayAuthBeforeDetachedExit`
+- Verification:
+  - Reproduced at the resolver boundary: configured/env endpoint plus explicit offline and missing auth still returned `auth file not found`.
+  - Fixed by allowing explicit offline startup to fall back to local-only when auth is unavailable unless relay/auth intent came from CLI flags (`--endpoint`, `--token`, or `--auth-file`).
+  - Preserved explicit CLI relay failure behavior: `lingonx --endpoint ... --auth-file <missing>` still fails visibly instead of silently starting local-only.
+  - `go test ./cmd/lingon -run 'TestResolveHeadlessRelayConfig|TestHeadlessStartupReporter' -count=1` passed.
+  - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXOfflineStartsLocalHeadlessWithConfiguredEndpointLoggedOut -count=1 -v` passed.
+  - `go test -tags integration ./integration/pty/attach -run TestRealCLILingonXReportsMissingRelayAuthBeforeDetachedExit -count=1 -v` passed.
+  - `go test ./cmd/lingon -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golint ./...` passed.
+  - `golangci-lint run ./...` passed.
+
 ### B-096 Detached headless startup hides child initialization failures
 
 - Status: `resolved`

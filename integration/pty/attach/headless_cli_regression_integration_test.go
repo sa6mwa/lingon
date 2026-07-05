@@ -295,6 +295,54 @@ func TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt(t *testing.
 	waitForPromptVisible(t, attach, 8*time.Second)
 }
 
+func TestRealCLILingonXOfflineStartsLocalHeadlessWithConfiguredEndpointLoggedOut(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(cfgDir, lingon.DefaultConfigFileName)
+	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example/v1\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	const sessionID = "local-headless-lingonx-offline-configured"
+	aliasPath := lingonXAliasPath(t)
+	cmd := exec.Command(
+		aliasPath,
+		"-o",
+		"--session", sessionID,
+		"--shell", fixedPromptEmitRowsBash(t),
+		"--geometry", "40x10",
+		"--disable-desktop-notifications",
+	)
+	cmd.Env = testAttachCLIEnv(homeDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start lingonx -o headless session: %v\n%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "headless session starting in background") {
+		t.Fatalf("unexpected lingonx -o start output: %s", string(output))
+	}
+	t.Cleanup(func() {
+		_ = headless.DetachSession(context.Background(), cfgDir, sessionID)
+	})
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionCount(cfgDir) >= 1
+	})
+
+	attach := startLingonXAttachHeadlessCLI(t, homeDir, sessionID, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+}
+
 func TestRealCLILingonXReportsMissingRelayAuthBeforeDetachedExit(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")

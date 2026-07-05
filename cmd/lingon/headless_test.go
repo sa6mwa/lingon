@@ -271,7 +271,7 @@ func TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth(t *testin
 	}
 }
 
-func TestResolveHeadlessRelayConfigConfiguredOfflineEndpointRequiresAuth(t *testing.T) {
+func TestResolveHeadlessRelayConfigConfiguredOfflineEndpointNoAuthFallsBackLocalOnly(t *testing.T) {
 	cmd := headlessRelayTestCommand(t)
 	if err := cmd.Flags().Set("offline", "true"); err != nil {
 		t.Fatalf("set offline: %v", err)
@@ -288,16 +288,16 @@ func TestResolveHeadlessRelayConfigConfiguredOfflineEndpointRequiresAuth(t *test
 	}
 	cfg.Client.AuthFile = filepath.Join(t.TempDir(), "missing-auth.json")
 
-	_, err = resolveHeadlessRelayConfig(cmd, loader, cfg, false)
-	if err == nil {
-		t.Fatalf("expected configured offline endpoint without auth to fail")
+	got, err := resolveHeadlessRelayConfig(cmd, loader, cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
 	}
-	if !strings.Contains(err.Error(), "auth file not found") {
-		t.Fatalf("unexpected error: %v", err)
+	if got.Endpoint != "" || got.Token != "" || got.AuthPath != "" || !got.Offline {
+		t.Fatalf("relay config = %+v, want local-only offline fallback", got)
 	}
 }
 
-func TestResolveHeadlessRelayConfigEnvOfflineEndpointRequiresAuth(t *testing.T) {
+func TestResolveHeadlessRelayConfigEnvOfflineEndpointNoAuthFallsBackLocalOnly(t *testing.T) {
 	cmd := headlessRelayTestCommand(t)
 	if err := cmd.Flags().Set("offline", "true"); err != nil {
 		t.Fatalf("set offline: %v", err)
@@ -307,12 +307,12 @@ func TestResolveHeadlessRelayConfigEnvOfflineEndpointRequiresAuth(t *testing.T) 
 	cfg.Client.Endpoint = "https://env.example/v1"
 	cfg.Client.AuthFile = filepath.Join(t.TempDir(), "missing-auth.json")
 
-	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
-	if err == nil {
-		t.Fatalf("expected env offline endpoint without auth to fail")
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
 	}
-	if !strings.Contains(err.Error(), "auth file not found") {
-		t.Fatalf("unexpected error: %v", err)
+	if got.Endpoint != "" || got.Token != "" || got.AuthPath != "" || !got.Offline {
+		t.Fatalf("relay config = %+v, want local-only offline fallback", got)
 	}
 }
 

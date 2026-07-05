@@ -407,7 +407,7 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 	}
 	endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointFlag, authPath)
 	if err != nil {
-		if headlessLocalOnlyOfflineRequested(cmd, loader, cfg, offlineValue) && errors.Is(err, errEndpointAmbiguous) {
+		if headlessLocalOnlyOfflineRequested(cmd, offlineValue) && errors.Is(err, errEndpointAmbiguous) {
 			return headlessRelayConfig{
 				Offline: true,
 			}, nil
@@ -422,7 +422,7 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 		if resolveErr != nil {
 			ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
 			if refreshErr != nil || !ok {
-				if headlessRelayExplicit(cmd, loader, cfg) {
+				if headlessRelayExplicit(cmd, loader, cfg) && !headlessLocalOnlyOfflineRequested(cmd, offlineValue) {
 					return headlessRelayConfig{}, resolveErr
 				}
 				endpointValue = ""
@@ -448,14 +448,21 @@ func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg l
 }
 
 func headlessRelayExplicit(cmd *cobra.Command, loader *lingon.Loader, cfg lingon.Config) bool {
-	if cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("token") || cmd.Flags().Changed("auth-file") {
+	if headlessRelayCLIExplicit(cmd) {
 		return true
 	}
 	return endpointExplicitlyConfigured(loader) && strings.TrimSpace(cfg.Client.Endpoint) != ""
 }
 
-func headlessLocalOnlyOfflineRequested(cmd *cobra.Command, loader *lingon.Loader, cfg lingon.Config, offline bool) bool {
-	return offline && !headlessRelayExplicit(cmd, loader, cfg)
+func headlessRelayCLIExplicit(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	return cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("token") || cmd.Flags().Changed("auth-file")
+}
+
+func headlessLocalOnlyOfflineRequested(cmd *cobra.Command, offline bool) bool {
+	return offline && !headlessRelayCLIExplicit(cmd)
 }
 
 func resolveHeadlessWallInactiveAfterLevels(cmd *cobra.Command, cfg lingon.Config) ([]time.Duration, error) {
