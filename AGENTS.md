@@ -1,10 +1,7 @@
 # AGENTS.md
 
-This file is a repository-specific supplement for Lingon. The master Codex
-AGENTS.md leads for general operating behavior, including spec-first judgment,
-implementation autonomy, verification discipline, commit policy, and
-communication style. Do not restate or weaken those rules here; keep this file
-limited to Lingon-specific constraints.
+This file is a repository-specific supplement for Lingon. Keep it limited to
+Lingon-specific constraints.
 
 ## Absolute first rule: terminal isolation
 
