@@ -15,6 +15,8 @@ var (
 	ErrUserNotFound = errors.New("user not found")
 	// ErrUsernameRequired indicates a missing username.
 	ErrUsernameRequired = errors.New("username is required")
+	// ErrUsernameInvalid indicates a username that cannot be represented safely in the HTTP API.
+	ErrUsernameInvalid = errors.New("username is invalid")
 )
 
 // UserCreateResult is returned when creating a user.
@@ -47,8 +49,8 @@ func CreateUser(store *UserStore, username, password string, now time.Time) (Use
 	if username == "" {
 		return UserCreateResult{}, ErrUsernameRequired
 	}
-	if _, exists := store.Get(username); exists {
-		return UserCreateResult{}, ErrUserExists
+	if strings.ContainsAny(username, `/\`) {
+		return UserCreateResult{}, ErrUsernameInvalid
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -74,7 +76,9 @@ func CreateUser(store *UserStore, username, password string, now time.Time) (Use
 		TOTPSecret:   secret,
 		CreatedAt:    now,
 	}
-	store.Upsert(user)
+	if !store.Create(user) {
+		return UserCreateResult{}, ErrUserExists
+	}
 	return UserCreateResult{
 		User:       user,
 		Password:   password,

@@ -13,6 +13,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 
 private const val accessCookieName = "lingon_access"
 private const val refreshCookieName = "lingon_refresh"
+private const val shareCookieName = "bifrons_share_session"
 private const val refreshSkewMillis = 10_000L
 
 private class AuthRefreshInterceptor(
@@ -29,7 +30,7 @@ private class AuthRefreshInterceptor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        if (isAuthEndpoint(request.url) || isShareTokenWsEndpoint(request.url)) {
+        if (isAuthEndpoint(request.url) || isShareSessionWsEndpoint(request)) {
             return chain.proceed(request)
         }
 
@@ -102,13 +103,16 @@ private class AuthRefreshInterceptor(
             url.encodedPath.endsWith("/auth/refresh") -> true
             url.encodedPath.endsWith("/auth/logout") -> true
             url.encodedPath.endsWith("/auth/logout/clients") -> true
+            url.encodedPath.endsWith("/auth/share") -> true
             else -> false
         }
     }
 
-
-    private fun isShareTokenWsEndpoint(url: HttpUrl): Boolean {
-        return url.encodedPath.endsWith("/ws/client") && !url.queryParameter("token").isNullOrBlank()
+    private fun isShareSessionWsEndpoint(request: Request): Boolean {
+        val url = request.url
+        if (!url.encodedPath.endsWith("/ws/client")) return false
+        if (request.header("X-Lingon-Share-Session") != "1") return false
+        return cookieJar.loadForRequest(url).any { it.name == shareCookieName && it.value.isNotBlank() }
     }
 
     private fun canRetry(request: Request): Boolean {

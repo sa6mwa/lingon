@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -36,6 +37,10 @@ type connection interface {
 	SessionID() string
 	Send(ctx context.Context, frame *protocolpb.Frame) error
 	Close(ctx context.Context, reason string) error
+}
+
+type shareTokenConnection interface {
+	ShareToken() string
 }
 
 // Hub routes messages between host and clients.
@@ -292,6 +297,95 @@ func (h *Hub) CloseAll(reason string) {
 	}
 }
 
+// DisconnectShareToken disconnects all active clients authenticated by token.
+func (h *Hub) DisconnectShareToken(token, reason string) int {
+	token = strings.TrimSpace(token)
+	if h == nil || token == "" {
+		return 0
+	}
+	if reason == "" {
+		reason = "share token revoked"
+	}
+	h.mu.Lock()
+	var conns []connection
+	for _, state := range h.sessions {
+		for connID, client := range state.clients {
+			shareConn, ok := client.(shareTokenConnection)
+			if !ok || shareConn.ShareToken() != token {
+				continue
+			}
+			conns = append(conns, client)
+			delete(state.clients, connID)
+			delete(state.clientIDs, connID)
+			delete(state.pendingClients, connID)
+			if state.controller == connID {
+				state.controller = ""
+			}
+		}
+	}
+	h.mu.Unlock()
+
+	for _, conn := range conns {
+		if ws, ok := conn.(*wsConn); ok {
+			ws.closeNow()
+			continue
+		}
+		frame := frameError(reason)
+		_ = conn.Send(context.Background(), frame)
+		_ = conn.Close(context.Background(), reason)
+	}
+	return len(conns)
+}
+
+// DisconnectSessions disconnects every active participant for the listed sessions.
+func (h *Hub) DisconnectSessions(sessionIDs []string, reason string) int {
+	if h == nil || len(sessionIDs) == 0 {
+		return 0
+	}
+	if reason == "" {
+		reason = "session disconnected"
+	}
+	wanted := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID != "" {
+			wanted[sessionID] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return 0
+	}
+
+	h.mu.Lock()
+	var conns []connection
+	for sessionID := range wanted {
+		state := h.sessions[sessionID]
+		if state == nil {
+			continue
+		}
+		if state.host != nil {
+			conns = append(conns, state.host)
+		}
+		for _, client := range state.clients {
+			conns = append(conns, client)
+		}
+		delete(h.sessions, sessionID)
+	}
+	h.mu.Unlock()
+
+	frame := frameError(reason)
+	for _, conn := range conns {
+		if ws, ok := conn.(*wsConn); ok {
+			_ = ws.SendImmediate(context.Background(), frame)
+			ws.closeNow()
+			continue
+		}
+		_ = conn.Send(context.Background(), frame)
+		_ = conn.Close(context.Background(), reason)
+	}
+	return len(conns)
+}
+
 // HandleHostFrame routes host frames to clients.
 func (h *Hub) HandleHostFrame(ctx context.Context, conn connection, frame *protocolpb.Frame) error {
 	h.mu.Lock()
@@ -443,6 +537,7 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 		lastSeq := hello.GetLastSeq()
 		if ok, replay := h.replaySinceLocked(state, lastSeq); ok {
 			host := state.host
+			canResizeHost := conn.Scope() == ShareScopeControl
 			holder := state.clientIDs[state.controller]
 			if holder == "" {
 				holder = state.controller
@@ -457,7 +552,7 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 				if err := conn.Send(ctx, frameControl(conn.SessionID(), holder)); err != nil && !isExpectedSendError(err) {
 					h.logger.Debug("relay.client.empty_replay_control.failed", "err", err)
 				}
-				if host != nil && cols > 0 && rows > 0 {
+				if canResizeHost && host != nil && cols > 0 && rows > 0 {
 					resize := &protocolpb.Frame{
 						SessionId: conn.SessionID(),
 						Payload: &protocolpb.Frame_Resize{Resize: &protocolpb.Resize{
@@ -481,7 +576,7 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 					return nil
 				}
 			}
-			if host != nil {
+			if canResizeHost && host != nil {
 				cols := hello.GetCols()
 				rows := hello.GetRows()
 				if cols > 0 && rows > 0 {
@@ -524,6 +619,13 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 		}
 		clients = append(clients, client)
 	}
+	holderID := ""
+	if controlChanged {
+		holderID = state.clientIDs[conn.ID()]
+		if holderID == "" {
+			holderID = conn.ID()
+		}
+	}
 	h.mu.Unlock()
 
 	if conn.Scope() != ShareScopeControl && (frame.GetIn() != nil || frame.GetResize() != nil || frame.GetCommand() != nil) {
@@ -531,10 +633,6 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 	}
 
 	if controlChanged {
-		holderID := state.clientIDs[conn.ID()]
-		if holderID == "" {
-			holderID = conn.ID()
-		}
 		ctrl := frameControl(frame.SessionId, holderID)
 		for _, client := range clients {
 			_ = client.Send(ctx, ctrl)
@@ -618,6 +716,9 @@ func (h *Hub) replaySinceLocked(state *sessionState, lastSeq uint64) (bool, []*p
 func isExpectedSendError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, errSendQueueFull) {
+		return true
 	}
 	if errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.EPIPE) {
 		return true

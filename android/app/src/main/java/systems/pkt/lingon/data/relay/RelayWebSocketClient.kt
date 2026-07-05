@@ -2,14 +2,20 @@ package systems.pkt.lingon.data.relay
 
 import com.google.protobuf.ByteString as ProtoByteString
 import android.util.Log
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import okhttp3.HttpUrl
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString as OkioByteString
 import okio.ByteString.Companion.toByteString
 import systems.pkt.lingon.data.HttpClientProvider
+import systems.pkt.lingon.data.LingonJson
 import systems.pkt.lingon.protocol.Frame
 import systems.pkt.lingon.protocol.Hello
 import systems.pkt.lingon.protocol.In
@@ -38,9 +44,12 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
     }
 
     open fun connect(options: ConnectOptions, listener: Listener): WebSocket {
-        val wsUrl = buildWsUrl(options.baseUrl, options.shareToken)
-        val request = Request.Builder().url(wsUrl).build()
         val client = httpClientProvider.clientFor(options.baseUrl)
+        val requestBuilder = Request.Builder().url(buildWsUrl(options.baseUrl))
+        if (!options.shareToken.isNullOrBlank()) {
+            requestBuilder.header("X-Lingon-Share-Session", "1")
+        }
+        val request = requestBuilder.build()
         return client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val hello = Hello.newBuilder()
@@ -95,15 +104,12 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
     }
 
     open fun sendInput(webSocket: WebSocket, data: ByteArray) {
-        val hex = data.joinToString(" ") { b -> "%02x".format(b) }
-        Log.d("lingon-input", "sendInput bytes=$hex len=${data.size}")
         val input = In.newBuilder().setData(ProtoByteString.copyFrom(data)).build()
         val frame = Frame.newBuilder().setIn(input).build()
         webSocket.send(frame.toOkioByteString())
     }
 
     open fun sendInput(webSocket: WebSocket, text: String) {
-        Log.d("lingon-input", "sendInput text=\"${text}\"")
         sendInput(webSocket, text.toByteArray())
     }
 
@@ -120,13 +126,33 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         webSocket.send(frame.toOkioByteString())
     }
 
-    private fun buildWsUrl(baseUrl: HttpUrl, shareToken: String?): HttpUrl {
-        val builder = baseUrl.newBuilder()
-            .addPathSegments("ws/client")
-        if (!shareToken.isNullOrBlank()) {
-            builder.addQueryParameter("token", shareToken)
+    open fun authenticateShareSession(baseUrl: HttpUrl, shareToken: String): RelayShareSession {
+        val client = httpClientProvider.clientFor(baseUrl)
+        val url = baseUrl.newBuilder()
+            .addPathSegments("auth/share")
+            .build()
+        val body = LingonJson.encodeToString(ShareAuthRequest(token = shareToken))
+        val request = Request.Builder()
+            .url(url)
+            .post(body.toRequestBody(jsonMediaType))
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IllegalStateException("share authentication failed: HTTP ${response.code}")
+            }
+            val raw = response.body?.string().orEmpty()
+            val shareSession = LingonJson.decodeFromString<RelayShareSession>(raw)
+            if (shareSession.sessionId.isBlank()) {
+                throw IllegalStateException("share authentication failed: missing session")
+            }
+            return shareSession
         }
-        return builder.build()
+    }
+
+    private fun buildWsUrl(baseUrl: HttpUrl): HttpUrl {
+        return baseUrl.newBuilder()
+            .addPathSegments("ws/client")
+            .build()
     }
 
     private fun frameType(frame: Frame): String {
@@ -151,7 +177,16 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
     private fun isLoggable(tag: String, level: Int): Boolean {
         return runCatching { Log.isLoggable(tag, level) }.getOrDefault(false)
     }
+
+    companion object {
+        private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+    }
 }
+
+@Serializable
+private data class ShareAuthRequest(
+    val token: String,
+)
 
 private fun Frame.toOkioByteString(): OkioByteString {
     return toByteArray().toByteString()

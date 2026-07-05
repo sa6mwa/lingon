@@ -3166,14 +3166,6 @@ func termSizeAny(files ...*os.File) (int, int) {
 			return cols, rows
 		}
 	}
-	if tty, err := os.Open("/dev/tty"); err == nil {
-		defer func() {
-			_ = tty.Close()
-		}()
-		if cols, rows := termSize(tty); cols > 0 && rows > 0 {
-			return cols, rows
-		}
-	}
 	return 0, 0
 }
 

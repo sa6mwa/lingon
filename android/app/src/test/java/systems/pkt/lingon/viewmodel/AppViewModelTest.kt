@@ -22,6 +22,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -38,6 +39,7 @@ import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.data.LingonClient
 import systems.pkt.lingon.data.WallWorkStateStore
 import systems.pkt.lingon.data.relay.RelaySession
+import systems.pkt.lingon.data.relay.RelayShareSession
 import systems.pkt.lingon.data.relay.RelayWallEventsPage
 import systems.pkt.lingon.data.certs.TrustedCert
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
@@ -50,6 +52,7 @@ import systems.pkt.lingon.protocol.Scrollback
 import systems.pkt.lingon.protocol.Snapshot
 import systems.pkt.lingon.protocol.Sessions
 import systems.pkt.lingon.protocol.SessionInfo
+import systems.pkt.lingon.protocol.SessionClosed
 import systems.pkt.lingon.protocol.Welcome
 import systems.pkt.lingon.protocol.WallInactivityStatus
 import systems.pkt.lingon.protocol.ScrollbackRow
@@ -257,6 +260,57 @@ class AppViewModelTest {
 
         assertEquals(0, wsClient.lastConnectOptions?.cols)
         assertEquals(0, wsClient.lastConnectOptions?.rows)
+    }
+
+    @Test
+    fun sharedSessionClosedUsesAuthenticatedSessionId() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+        }
+        wsClient.shareSession = RelayShareSession(sessionId = "real-session", name = "Shared real", scope = "view")
+        val viewModel = AppViewModel(repository, wsClient)
+
+        viewModel.handleSharedToken("token", "https://example")
+        advanceUntilIdle()
+
+        assertEquals("real-session", viewModel.state.value.activeSessionId)
+        assertEquals("real-session", wsClient.lastConnectOptions?.sessionId)
+
+        wsClient.fireFrame(
+            Frame.newBuilder()
+                .setSessionId("real-session")
+                .setSessionClosed(SessionClosed.newBuilder().setReason("closed").build())
+                .build(),
+        )
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.activeSessionId)
+        assertTrue(viewModel.state.value.sessions.isEmpty())
+    }
+
+    @Test
+    fun staleShareAuthenticationFailureDoesNotReplaceCurrentTokenState() = runTest {
+        val repository = FakeRepository()
+        lateinit var viewModel: AppViewModel
+        val wsClient = FakeWsClient()
+        wsClient.onAuthenticateShareSession = { _, shareToken ->
+            if (shareToken == "old-token") {
+                viewModel.handleSharedToken("new-token", "https://example")
+                throw IllegalStateException("old token failed")
+            }
+            RelayShareSession(sessionId = "new-session", name = "New shared", scope = "view")
+        }
+        viewModel = AppViewModel(repository, wsClient)
+
+        viewModel.handleSharedToken("old-token", "https://example")
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals("new-token", state.shareToken)
+        assertEquals("new-session", state.activeSessionId)
+        assertNull(state.shareTokenError)
+        assertNotEquals(ConnectionState.Disconnected, state.connectionState)
     }
 
     @Test
@@ -671,6 +725,42 @@ class AppViewModelTest {
         assertEquals(1, repository.refreshAuthCalls)
         assertEquals(1, wsClient.connectCount)
         assertEquals("host-1", viewModel.state.value.activeSessionId)
+    }
+
+    @Test
+    fun connectActiveSessionSkipsStaleOpenAfterRefreshRace() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+        repository.onRefreshAuth = {
+            setUiStateForTest(
+                viewModel,
+                viewModel.state.value.copy(
+                    endpoint = "https://other.example/v1",
+                    sessions = listOf(RelaySession(id = "host-2", name = "Host 2", status = "active")),
+                    activeSessionId = "host-2",
+                ),
+            )
+        }
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                shareToken = null,
+                connectionState = ConnectionState.Disconnected,
+            ),
+        )
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+
+        assertEquals(1, repository.refreshAuthCalls)
+        assertEquals(0, wsClient.connectCount)
+        assertEquals("host-2", viewModel.state.value.activeSessionId)
     }
 
     @Test
@@ -2086,6 +2176,7 @@ private class FakeRepository(
     var refreshAuthCalls: Int = 0
     var saveZoomCalls: Int = 0
     var onSetBackgroundWallEnabled: ((Boolean) -> Unit)? = null
+    var onRefreshAuth: (suspend () -> Unit)? = null
     val savedZooms = initialSessionZooms.toMutableMap()
 
     override fun setEndpoint(value: String) {
@@ -2144,6 +2235,7 @@ private class FakeRepository(
 
     override suspend fun refreshAuth(): Boolean {
         refreshAuthCalls += 1
+        onRefreshAuth?.invoke()
         refreshAuthError?.let { throw it }
         return refreshAuthResult
     }
@@ -2191,6 +2283,8 @@ private class FakeWsClient(
     var lastSentCommand: CommandKind? = null
     var resizeCount: Int = 0
     var closeCount: Int = 0
+    var shareSession: RelayShareSession = RelayShareSession(sessionId = "shared-real", name = "Shared session", scope = "view")
+    var onAuthenticateShareSession: ((okhttp3.HttpUrl, String) -> RelayShareSession)? = null
     private var pendingConnect: ((WebSocket) -> Unit)? = null
     val fakeSocket: WebSocket = object : WebSocket {
         override fun request(): okhttp3.Request = okhttp3.Request.Builder().url("https://localhost/").build()
@@ -2212,6 +2306,11 @@ private class FakeWsClient(
         lastListener = listener
         pendingConnect = { socket -> onConnect(options, listener, socket) }
         return fakeSocket
+    }
+
+    override fun authenticateShareSession(baseUrl: okhttp3.HttpUrl, shareToken: String): RelayShareSession {
+        onAuthenticateShareSession?.let { return it(baseUrl, shareToken) }
+        return shareSession
     }
 
     fun fireConnect() {

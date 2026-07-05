@@ -3,15 +3,18 @@ package relay
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/sharetoken"
 )
 
 func TestLoginFlow(t *testing.T) {
@@ -56,6 +59,44 @@ func TestLoginFlow(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsOversizedJSONBody(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	if _, err := SeedTestUser(users); err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+
+	body := `{"username":"test","password":"` + strings.Repeat("x", maxJSONBody) + `","totp":"000000"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusBadRequest)
+	}
+}
+
+func TestLoginRejectsTrailingOversizedJSONBody(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	if _, err := SeedTestUser(users); err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+
+	body := `{"username":"test","password":"test","totp":"000000"}` + strings.Repeat(" ", maxJSONBody+1)
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusBadRequest)
+	}
+}
+
 func TestRefreshFlow(t *testing.T) {
 	store := NewStore()
 	users := NewUserStore()
@@ -85,6 +126,80 @@ func TestRefreshFlow(t *testing.T) {
 	}
 	if out.AccessToken == "" {
 		t.Fatalf("expected access token")
+	}
+}
+
+func TestRefreshRejectsTokenForRemovedUser(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+
+	now := time.Now().UTC()
+	refresh, err := store.CreateRefreshToken(user.Username, DefaultRefreshTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+	access, err := store.CreateAccessTokenForRefresh(user.Username, refresh.Token, "", DefaultAccessTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateAccessTokenForRefresh: %v", err)
+	}
+	if _, ok := users.Delete(user.Username); !ok {
+		t.Fatalf("delete user")
+	}
+
+	payload, _ := json.Marshal(refreshRequest{RefreshToken: refresh.Token})
+	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(payload))
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusUnauthorized)
+	}
+	if _, err := store.ValidateAccessToken(access.Token, now); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("access token err = %v, want %v", err, ErrTokenNotFound)
+	}
+	store.mu.RLock()
+	stored := store.RefreshTokens[refresh.Token]
+	store.mu.RUnlock()
+	if stored.RevokedAt == nil {
+		t.Fatalf("refresh token was not revoked")
+	}
+}
+
+func TestAuthenticatedRequestRejectsAccessTokenForRemovedUser(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+
+	now := time.Now().UTC()
+	access, err := store.CreateAccessToken(user.Username, DefaultAccessTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+	if _, ok := users.Delete(user.Username); !ok {
+		t.Fatalf("delete user")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+access.Token)
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusUnauthorized)
+	}
+	if _, err := store.ValidateAccessToken(access.Token, now); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("access token err = %v, want %v", err, ErrTokenNotFound)
 	}
 }
 
@@ -522,6 +637,94 @@ func TestShareSessionCookieCannotAccessAuthenticatedAPIs(t *testing.T) {
 		if resp.Code != http.StatusUnauthorized {
 			t.Fatalf("%s %s status = %d, want %d", tc.method, tc.path, resp.Code, http.StatusUnauthorized)
 		}
+	}
+}
+
+func TestShareCreateRejectsNegativeTTL(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+	now := time.Now().UTC()
+	store.CreateSession(Session{
+		ID:           "share-session",
+		Username:     user.Username,
+		CreatedAt:    now,
+		LastActiveAt: now,
+		Status:       "active",
+	})
+	access, err := store.CreateAccessToken(user.Username, DefaultAccessTokenTTL, now)
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	body, _ := json.Marshal(shareCreateRequest{
+		SessionID: "share-session",
+		Scope:     string(ShareScopeView),
+		TTL:       "-1h",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/share/create", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+access.Token)
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusBadRequest)
+	}
+	if tokens := store.ListShareTokens(user.Username); len(tokens) != 0 {
+		t.Fatalf("created %d share tokens, want 0", len(tokens))
+	}
+}
+
+func TestShareAuthAcceptsCanonicalEmbeddedPasteToken(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+
+	now := time.Now().UTC()
+	store.CreateSession(Session{
+		ID:           "share-session",
+		Username:     user.Username,
+		Name:         "Shared host",
+		CreatedAt:    now,
+		LastActiveAt: now,
+		Status:       "active",
+	})
+	share, err := store.CreateShareToken("share-session", ShareScopeView, time.Hour, now)
+	if err != nil {
+		t.Fatalf("CreateShareToken: %v", err)
+	}
+	parsed, err := sharetoken.Parse(share.Token)
+	if err != nil {
+		t.Fatalf("Parse share token: %v", err)
+	}
+	embedded, err := sharetoken.EncodeEmbedded(parsed.Random, "https://relay.example/v1")
+	if err != nil {
+		t.Fatalf("EncodeEmbedded: %v", err)
+	}
+	pasted := strings.ToLower(embedded[:3] + "-" + embedded[3:8] + "-" + embedded[8:])
+
+	shareBody, _ := json.Marshal(shareAuthRequest{Token: pasted})
+	shareReq := httptest.NewRequest(http.MethodPost, "/auth/share", bytes.NewReader(shareBody))
+	shareResp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(shareResp, shareReq)
+	if shareResp.Code != http.StatusOK {
+		t.Fatalf("share auth status = %d, want %d", shareResp.Code, http.StatusOK)
+	}
+	var got shareSessionResponse
+	if err := json.NewDecoder(shareResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode share auth response: %v", err)
+	}
+	if got.SessionID != "share-session" {
+		t.Fatalf("session id = %q, want share-session", got.SessionID)
 	}
 }
 

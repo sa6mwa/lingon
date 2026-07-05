@@ -1,10 +1,12 @@
 package headless
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SocketExists reports whether path exists and is a unix socket.
@@ -48,9 +50,26 @@ func (s *Store) Reconcile() ([]SessionRecord, error) {
 
 func sessionRecordAlive(rec SessionRecord) bool {
 	if rec.PID > 0 {
-		return PIDAlive(rec.PID)
+		if PIDAlive(rec.PID) && RecordedProcessMayMatch(rec.PID, rec.StartedAt) {
+			return true
+		}
+		return SocketReachable(rec.SocketPath)
 	}
-	return SocketExists(rec.SocketPath)
+	return SocketReachable(rec.SocketPath)
+}
+
+// SocketReachable reports whether path is a live unix socket accepting connections.
+func SocketReachable(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" || !SocketExists(trimmed) {
+		return false
+	}
+	conn, err := net.DialTimeout("unix", trimmed, 100*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func (s *Store) removeOwnedSocket(socketPath string) {

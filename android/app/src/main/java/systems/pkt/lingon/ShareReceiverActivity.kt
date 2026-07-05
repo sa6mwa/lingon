@@ -19,12 +19,9 @@ class ShareReceiverActivity : ComponentActivity() {
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             if (parsed != null) {
                 val bare = ShareTokens.bareToken(parsed)
-                if (bare != null) {
-                    putExtra(MainActivity.EXTRA_SHARE_TOKEN, bare)
-                }
-                parsed.endpoint?.let { endpoint ->
-                    putExtra(MainActivity.EXTRA_ENDPOINT_OVERRIDE, endpoint)
-                }
+                val requestId = PendingShareLaunches.put(bare, parsed.endpoint)
+                action = MainActivity.ACTION_INTERNAL_SHARE
+                putExtra(MainActivity.EXTRA_SHARE_REQUEST_ID, requestId)
             }
         }
         if (parsed == null) {

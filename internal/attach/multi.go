@@ -360,10 +360,12 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		if !active {
 			return
 		}
+		_, _, connected, connectedOnce, reconnectAt := activeViewSnapshot()
 		result := ui.ApplyAction(mvu.AttachConnectivityAction{Input: mvu.AttachConnectivityInput{
-			Connected:          false,
-			ConnectedOnce:      true,
-			WaitingForSessions: true,
+			Connected:          connected,
+			ConnectedOnce:      connectedOnce,
+			ReconnectAt:        reconnectAt,
+			WaitingForSessions: !connectedOnce,
 			WaitUntil:          until,
 			Endpoint:           endpointLabel,
 			Now:                m.Clock.Now(),
@@ -672,7 +674,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			Connected:          connected,
 			ConnectedOnce:      connectedOnce,
 			ReconnectAt:        reconnectAt,
-			WaitingForSessions: waitingActive,
+			WaitingForSessions: waitingActive && !connectedOnce,
 			WaitUntil:          until,
 			Endpoint:           endpointLabel,
 			Now:                m.Clock.Now(),

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -139,7 +140,7 @@ func UsersDeleteWithTLSDir(ctx context.Context, endpoint, accessToken, username,
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, httpURL+"/users/"+username, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, httpURL+"/users/"+url.PathEscape(username), nil)
 	if err != nil {
 		return err
 	}
@@ -170,7 +171,7 @@ func UsersRotateTOTPWithTLSDir(ctx context.Context, endpoint, accessToken, usern
 	if err != nil {
 		return UserTOTPResponse{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpURL+"/users/"+username+"/rotate-totp", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpURL+"/users/"+url.PathEscape(username)+"/rotate-totp", nil)
 	if err != nil {
 		return UserTOTPResponse{}, err
 	}
@@ -209,7 +210,7 @@ func UsersChpasswdWithTLSDir(ctx context.Context, endpoint, accessToken, usernam
 	if err != nil {
 		return UserPasswordResponse{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpURL+"/users/"+username+"/password", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpURL+"/users/"+url.PathEscape(username)+"/password", bytes.NewReader(payload))
 	if err != nil {
 		return UserPasswordResponse{}, err
 	}

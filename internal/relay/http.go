@@ -22,6 +22,7 @@ import (
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/server"
+	"pkt.systems/lingon/internal/sharetoken"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/webui"
 	"pkt.systems/pslog"
@@ -31,6 +32,7 @@ const (
 	wsReadLimit    = config.DefaultWSReadLimit
 	wsPingInterval = 30 * time.Second
 	wsPongTimeout  = 60 * time.Second
+	maxJSONBody    = 1 << 20
 
 	accessCookieName  = "lingon_access"
 	refreshCookieName = "lingon_refresh"
@@ -42,6 +44,7 @@ var (
 	errMissingAuthorization = errors.New("missing authorization")
 	errInvalidAuthorization = errors.New("invalid authorization")
 	errStoreUnavailable     = errors.New("store unavailable")
+	errForbidden            = errors.New("forbidden")
 )
 
 // HTTPServer exposes relay HTTP and WSS endpoints.
@@ -193,7 +196,7 @@ func (s *HTTPServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -238,7 +241,7 @@ func (s *HTTPServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req refreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeOptionalJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -251,6 +254,11 @@ func (s *HTTPServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	refresh, err := s.Store.ValidateRefreshToken(req.RefreshToken, now)
 	if err != nil {
 		writeAuthError(w, http.StatusUnauthorized, err)
+		return
+	}
+	if _, ok := s.Users.Get(refresh.Username); !ok {
+		_ = s.Store.RevokeRefreshTokenAndAccess(refresh.Token, now)
+		writeAuthError(w, http.StatusUnauthorized, ErrInvalidCredentials)
 		return
 	}
 	clientType := normalizeClientType(refresh.ClientType)
@@ -282,12 +290,12 @@ func (s *HTTPServer) handleShareAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req shareAuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	token := strings.TrimSpace(req.Token)
-	if token == "" {
+	token, err := canonicalShareToken(req.Token)
+	if err != nil {
 		setLogReason(w, "invalid_share_token")
 		s.clearShareSessionCookie(w)
 		writeError(w, http.StatusUnauthorized, "invalid share token")
@@ -332,7 +340,7 @@ func (s *HTTPServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req refreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeOptionalJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -448,8 +456,8 @@ func (s *HTTPServer) handleUsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "store unavailable")
 		return
 	}
-	if _, err := s.requireAuth(r); err != nil {
-		writeAuthError(w, http.StatusUnauthorized, err)
+	if _, err := s.requireLocalAuth(r); err != nil {
+		writeAuthError(w, authStatus(err), err)
 		return
 	}
 
@@ -466,7 +474,7 @@ func (s *HTTPServer) handleUsers(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
 		var req userCreateRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(w, r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -475,6 +483,8 @@ func (s *HTTPServer) handleUsers(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case errors.Is(err, ErrUsernameRequired):
 				writeError(w, http.StatusBadRequest, "username is required")
+			case errors.Is(err, ErrUsernameInvalid):
+				writeError(w, http.StatusBadRequest, "username is invalid")
 			case errors.Is(err, ErrUserExists):
 				writeError(w, http.StatusConflict, "username already exists")
 			default:
@@ -501,17 +511,21 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "store unavailable")
 		return
 	}
-	if _, err := s.requireAuth(r); err != nil {
-		writeAuthError(w, http.StatusUnauthorized, err)
+	if _, err := s.requireLocalAuth(r); err != nil {
+		writeAuthError(w, authStatus(err), err)
 		return
 	}
-	path := strings.TrimPrefix(r.URL.Path, "/users/")
+	path := strings.TrimPrefix(r.URL.EscapedPath(), "/users/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
 		writeError(w, http.StatusBadRequest, "user is required")
 		return
 	}
-	username := parts[0]
+	username, err := url.PathUnescape(parts[0])
+	if err != nil || strings.ContainsAny(username, `/\`) {
+		writeError(w, http.StatusBadRequest, "user is invalid")
+		return
+	}
 
 	if len(parts) == 1 && r.Method == http.MethodDelete {
 		user, err := DeleteUser(s.Users, username)
@@ -527,11 +541,22 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if s.Store != nil {
-			s.Store.RevokeTokensForUsername(user.Username)
-		}
-		if err := s.persistUsers(); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to persist state")
-			return
+			now := time.Now().UTC()
+			shareTokens, sessionIDs := s.invalidateUserAuth(user.Username, now)
+			if err := s.persist(); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist state")
+				return
+			}
+			if err := s.persistUsers(); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist state")
+				return
+			}
+			s.disconnectUserAuth(shareTokens, sessionIDs, "user deleted")
+		} else {
+			if err := s.persistUsers(); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist state")
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 		return
@@ -552,15 +577,22 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
+			now := time.Now().UTC()
+			shareTokens, sessionIDs := s.invalidateUserAuth(result.User.Username, now)
+			if err := s.persist(); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist state")
+				return
+			}
 			if err := s.persistUsers(); err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to persist state")
 				return
 			}
+			s.disconnectUserAuth(shareTokens, sessionIDs, "credentials changed")
 			writeJSON(w, http.StatusOK, userTOTPResponse{TOTPSecret: result.TOTPSecret, TOTPURL: result.TOTPURL})
 			return
 		case "password":
 			var req userPasswordRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if err := decodeJSONBody(w, r, &req); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid json")
 				return
 			}
@@ -576,10 +608,17 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
+			now := time.Now().UTC()
+			shareTokens, sessionIDs := s.invalidateUserAuth(result.User.Username, now)
+			if err := s.persist(); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to persist state")
+				return
+			}
 			if err := s.persistUsers(); err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to persist state")
 				return
 			}
+			s.disconnectUserAuth(shareTokens, sessionIDs, "credentials changed")
 			writeJSON(w, http.StatusOK, userPasswordResponse{Password: result.Password})
 			return
 		}
@@ -609,7 +648,7 @@ func (s *HTTPServer) handleShareCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req shareCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -625,7 +664,7 @@ func (s *HTTPServer) handleShareCreate(w http.ResponseWriter, r *http.Request) {
 	var ttl time.Duration
 	if req.TTL != "" {
 		parsed, err := time.ParseDuration(req.TTL)
-		if err != nil {
+		if err != nil || parsed <= 0 {
 			writeError(w, http.StatusBadRequest, "invalid ttl")
 			return
 		}
@@ -748,7 +787,7 @@ func (s *HTTPServer) handleShareRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req shareRevokeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -756,11 +795,16 @@ func (s *HTTPServer) handleShareRevoke(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "store unavailable")
 		return
 	}
-	if owner, ok := s.Store.ShareTokenOwner(req.Token); !ok || owner != username {
+	token, err := canonicalShareToken(req.Token)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "share token not found")
 		return
 	}
-	if err := s.Store.RevokeShareToken(req.Token, time.Now().UTC()); err != nil {
+	if owner, ok := s.Store.ShareTokenOwner(token); !ok || owner != username {
+		writeError(w, http.StatusNotFound, "share token not found")
+		return
+	}
+	if err := s.Store.RevokeShareToken(token, time.Now().UTC()); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -768,6 +812,7 @@ func (s *HTTPServer) handleShareRevoke(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to persist state")
 		return
 	}
+	s.disconnectShareToken(token)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
@@ -785,10 +830,15 @@ func (s *HTTPServer) handleShareRevokeAll(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "store unavailable")
 		return
 	}
-	revoked := s.Store.RevokeShareTokensForUsername(username, time.Now().UTC())
+	now := time.Now().UTC()
+	tokens := s.activeShareTokensForUsername(username, now)
+	revoked := s.Store.RevokeShareTokensForUsername(username, now)
 	if err := s.persist(); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist state")
 		return
+	}
+	for _, token := range tokens {
+		s.disconnectShareToken(token)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "revoked": revoked})
 }
@@ -804,7 +854,7 @@ func (s *HTTPServer) handleWall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req wallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -900,7 +950,7 @@ func (s *HTTPServer) handleWallInactivity(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req wallInactivityRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -1083,7 +1133,11 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 	s.Hub.Unregister(ws)
 	unregistered = true
 	if s.Store != nil {
-		_ = s.Store.MarkSessionInactive(frame.SessionId, hostConnID, time.Now().UTC())
+		if s.Store.MarkSessionInactive(frame.SessionId, hostConnID, time.Now().UTC()) {
+			if err := s.persist(); err != nil && logger != nil {
+				logger.Error("relay.host.disconnect.persist.failed", "err", err, "session", frame.SessionId)
+			}
+		}
 	}
 	s.notifySessions(username)
 }
@@ -1115,34 +1169,44 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	var sessionID string
 	scope := ShareScopeControl
 	var username string
-	shareToken := strings.TrimSpace(r.URL.Query().Get("token"))
 	shareAuthenticated := false
-	if shareSession, err := s.shareSessionFromRequest(r, time.Now().UTC()); err == nil {
-		sessionID = shareSession.SessionID
-		scope = shareSession.Scope
-		shareAuthenticated = true
-	} else if shareToken != "" {
-		if s.Store == nil {
-			writeError(w, http.StatusInternalServerError, "store unavailable")
-			return
-		}
-		share, ok := s.Store.GetShareToken(shareToken)
-		if !ok || share.IsExpired(time.Now().UTC()) {
+	activeShareToken := ""
+	shareToken := strings.TrimSpace(r.URL.Query().Get("token"))
+	if shareToken != "" {
+		shareSession, err := s.shareSessionForToken(shareToken, time.Now().UTC())
+		if err != nil {
 			setLogReason(w, "invalid_share_token")
 			writeError(w, http.StatusUnauthorized, "invalid share token")
 			return
 		}
-		sessionID = share.SessionID
-		scope = share.Scope
+		sessionID = shareSession.SessionID
+		scope = shareSession.Scope
+		activeShareToken = shareSession.ShareToken
 		shareAuthenticated = true
-	} else {
-		token, err := s.accessTokenFromRequest(r)
+	} else if wantsShareSession(r) {
+		shareSession, err := s.shareSessionFromRequest(r, time.Now().UTC())
 		if err != nil {
 			writeAuthError(w, http.StatusUnauthorized, err)
 			return
 		}
-		username = token.Username
-		s.markTokenClientType(token, "client")
+		sessionID = shareSession.SessionID
+		scope = shareSession.Scope
+		activeShareToken = shareSession.ShareToken
+		shareAuthenticated = true
+	} else {
+		token, authErr := s.accessTokenFromRequest(r)
+		if authErr == nil {
+			username = token.Username
+			s.markTokenClientType(token, "client")
+		} else if shareSession, shareErr := s.shareSessionFromRequest(r, time.Now().UTC()); shareErr == nil {
+			sessionID = shareSession.SessionID
+			scope = shareSession.Scope
+			activeShareToken = shareSession.ShareToken
+			shareAuthenticated = true
+		} else {
+			writeAuthError(w, http.StatusUnauthorized, authErr)
+			return
+		}
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -1152,6 +1216,7 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws := newWSConn(newConnID(), RoleClient, sessionID, scope, conn, logger)
+	ws.shareToken = activeShareToken
 	defer func() {
 		_ = ws.Close(ctx, "closing")
 		s.Hub.Unregister(ws)
@@ -1165,6 +1230,18 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	if frame.GetHello() == nil {
 		_ = ws.SendImmediate(ctx, frameError("missing hello"))
 		return
+	}
+	if !shareAuthenticated && username != "" && frame.SessionId == "" {
+		if shareSession, err := s.shareSessionFromRequest(r, time.Now().UTC()); err == nil {
+			sessionID = shareSession.SessionID
+			scope = shareSession.Scope
+			activeShareToken = shareSession.ShareToken
+			shareAuthenticated = true
+			username = ""
+			ws.sessionID = sessionID
+			ws.scope = scope
+			ws.shareToken = activeShareToken
+		}
 	}
 	if frame.SessionId != "" {
 		if shareAuthenticated && sessionID != "" && frame.SessionId != sessionID {
@@ -1308,6 +1385,52 @@ func (s *HTTPServer) requireAuth(r *http.Request) (string, error) {
 	return access.Username, nil
 }
 
+func (s *HTTPServer) requireLocalAuth(r *http.Request) (string, error) {
+	username, err := s.requireAuth(r)
+	if err != nil {
+		return "", err
+	}
+	if !isLocalRequest(r) {
+		return "", errForbidden
+	}
+	return username, nil
+}
+
+func isLocalRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if !requestAddrIsLoopback(r.RemoteAddr) {
+		return false
+	}
+	localAddr, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if localAddr == nil || !requestAddrIsLoopback(localAddr.String()) {
+		return false
+	}
+	if hasForwardedClientHeaders(r) {
+		return false
+	}
+	return true
+}
+
+func requestAddrIsLoopback(value string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		host = strings.TrimSpace(value)
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func hasForwardedClientHeaders(r *http.Request) bool {
+	for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Real-IP"} {
+		if strings.TrimSpace(r.Header.Get(name)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *HTTPServer) accessTokenFromRequest(r *http.Request) (AccessToken, error) {
 	token, err := tokenFromRequest(r)
 	if err != nil {
@@ -1316,7 +1439,17 @@ func (s *HTTPServer) accessTokenFromRequest(r *http.Request) (AccessToken, error
 	if s.Store == nil {
 		return AccessToken{}, errStoreUnavailable
 	}
-	return s.Store.ValidateAccessToken(token, time.Now().UTC())
+	access, err := s.Store.ValidateAccessToken(token, time.Now().UTC())
+	if err != nil {
+		return AccessToken{}, err
+	}
+	if s.Users != nil {
+		if _, ok := s.Users.Get(access.Username); !ok {
+			s.Store.DeleteAccessToken(access.Token)
+			return AccessToken{}, ErrInvalidCredentials
+		}
+	}
+	return access, nil
 }
 
 func tokenFromRequest(r *http.Request) (string, error) {
@@ -1332,6 +1465,39 @@ func tokenFromRequest(r *http.Request) (string, error) {
 		return strings.TrimSpace(cookie.Value), nil
 	}
 	return "", errMissingAuthorization
+}
+
+func wantsShareSession(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("X-Lingon-Share-Session"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, out any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("invalid trailing json")
+	}
+	return nil
+}
+
+func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request, out any) error {
+	err := decodeJSONBody(w, r, out)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
 }
 
 func (s *HTTPServer) markTokenClientType(access AccessToken, clientType string) {
@@ -1499,20 +1665,12 @@ func (s *HTTPServer) sessionName(sessionID string) string {
 }
 
 func (s *HTTPServer) issueShareSession(token string, now time.Time) (shareSession, error) {
-	if s.Store == nil {
-		return shareSession{}, errStoreUnavailable
+	session, err := s.shareSessionForToken(token, now)
+	if err != nil {
+		return shareSession{}, err
 	}
-	share, ok := s.Store.GetShareToken(token)
-	if !ok || share.IsExpired(now) {
-		return shareSession{}, ErrTokenNotFound
-	}
-	session := shareSession{
-		ID:         newConnID(),
-		ShareToken: token,
-		SessionID:  share.SessionID,
-		Scope:      share.Scope,
-		ExpiresAt:  now.Add(shareSessionTTL),
-	}
+	session.ID = newConnID()
+	session.ExpiresAt = now.Add(shareSessionTTL)
 	s.shareMu.Lock()
 	s.pruneShareSessionsLocked(now)
 	if s.shareSessions == nil {
@@ -1521,6 +1679,27 @@ func (s *HTTPServer) issueShareSession(token string, now time.Time) (shareSessio
 	s.shareSessions[session.ID] = session
 	s.shareMu.Unlock()
 	return session, nil
+}
+
+func (s *HTTPServer) shareSessionForToken(token string, now time.Time) (shareSession, error) {
+	if s.Store == nil {
+		return shareSession{}, errStoreUnavailable
+	}
+	token, err := canonicalShareToken(token)
+	if err != nil {
+		return shareSession{}, ErrTokenNotFound
+	}
+	share, ok := s.Store.GetShareToken(token)
+	if !ok || share.IsExpired(now) {
+		return shareSession{}, ErrTokenNotFound
+	}
+	return shareSession{
+		ID:         newConnID(),
+		ShareToken: token,
+		SessionID:  share.SessionID,
+		Scope:      share.Scope,
+		ExpiresAt:  now.Add(shareSessionTTL),
+	}, nil
 }
 
 func (s *HTTPServer) shareSessionFromRequest(r *http.Request, now time.Time) (shareSession, error) {
@@ -1553,6 +1732,88 @@ func (s *HTTPServer) shareSessionFromRequest(r *http.Request, now time.Time) (sh
 	session.SessionID = share.SessionID
 	session.Scope = share.Scope
 	return session, nil
+}
+
+func canonicalShareToken(token string) (string, error) {
+	parsed, err := sharetoken.Parse(token)
+	if err != nil {
+		return "", err
+	}
+	return sharetoken.BareToken(parsed)
+}
+
+func (s *HTTPServer) activeShareTokensForUsername(username string, now time.Time) []string {
+	if s.Store == nil {
+		return nil
+	}
+	tokens := s.Store.ListShareTokens(username)
+	out := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if token.IsExpired(now) {
+			continue
+		}
+		out = append(out, token.Token)
+	}
+	return out
+}
+
+func (s *HTTPServer) sessionIDsForUsername(username string) []string {
+	if s.Store == nil {
+		return nil
+	}
+	sessions := s.Store.ListSessions(username)
+	out := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		sessionID := strings.TrimSpace(session.ID)
+		if sessionID != "" {
+			out = append(out, sessionID)
+		}
+	}
+	return out
+}
+
+func (s *HTTPServer) invalidateUserAuth(username string, now time.Time) ([]string, []string) {
+	if s.Store == nil {
+		return nil, nil
+	}
+	shareTokens := s.activeShareTokensForUsername(username, now)
+	sessionIDs := s.sessionIDsForUsername(username)
+	s.Store.RevokeTokensForUsername(username)
+	s.Store.RevokeShareTokensForUsername(username, now)
+	return shareTokens, sessionIDs
+}
+
+func (s *HTTPServer) disconnectUserAuth(shareTokens, sessionIDs []string, reason string) {
+	for _, token := range shareTokens {
+		s.disconnectShareToken(token)
+	}
+	if s.Hub != nil {
+		s.Hub.DisconnectSessions(sessionIDs, reason)
+	}
+}
+
+func (s *HTTPServer) disconnectShareToken(token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	s.revokeShareSessionsForToken(token)
+	if s.Hub != nil {
+		s.Hub.DisconnectShareToken(token, "share token revoked")
+	}
+}
+
+func (s *HTTPServer) revokeShareSessionsForToken(token string) {
+	if strings.TrimSpace(token) == "" {
+		return
+	}
+	s.shareMu.Lock()
+	for id, session := range s.shareSessions {
+		if session.ShareToken == token {
+			delete(s.shareSessions, id)
+		}
+	}
+	s.shareMu.Unlock()
 }
 
 func (s *HTTPServer) pruneShareSessionsLocked(now time.Time) {
@@ -1690,6 +1951,8 @@ func authReason(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, errForbidden):
+		return "forbidden"
 	case errors.Is(err, ErrTokenExpired):
 		return "token_expired"
 	case errors.Is(err, ErrTokenNotFound):
@@ -1707,6 +1970,13 @@ func authReason(err error) string {
 	default:
 		return "auth_failed"
 	}
+}
+
+func authStatus(err error) int {
+	if errors.Is(err, errForbidden) {
+		return http.StatusForbidden
+	}
+	return http.StatusUnauthorized
 }
 
 func writeAuthError(w http.ResponseWriter, status int, err error) {

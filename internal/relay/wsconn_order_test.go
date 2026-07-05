@@ -94,3 +94,21 @@ func TestWSConnSendPreservesFIFOOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestWSConnSendClosesWhenQueueFull(t *testing.T) {
+	conn := &wsConn{
+		sendCh: make(chan *protocolpb.Frame, 1),
+		done:   make(chan struct{}),
+	}
+	conn.sendCh <- &protocolpb.Frame{Seq: 1}
+
+	err := conn.Send(context.Background(), &protocolpb.Frame{Seq: 2})
+	if err != errSendQueueFull {
+		t.Fatalf("Send error = %v, want %v", err, errSendQueueFull)
+	}
+	select {
+	case <-conn.done:
+	default:
+		t.Fatalf("connection was not closed after send queue overflow")
+	}
+}

@@ -17,7 +17,8 @@ const storeFilename = "state.json"
 
 // Store persists relay data to disk.
 type Store struct {
-	mu sync.RWMutex
+	mu     sync.RWMutex
+	saveMu sync.Mutex
 
 	Sessions      map[string]Session       `json:"sessions"`
 	Active        map[string]ActiveSession `json:"active"`
@@ -84,6 +85,9 @@ func (s *Store) Save(dir string) error {
 		return err
 	}
 	path := filepath.Join(dir, storeFilename)
+
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 
 	s.mu.RLock()
 	data, err := json.MarshalIndent(s, "", "  ")

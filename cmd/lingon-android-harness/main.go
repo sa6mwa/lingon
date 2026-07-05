@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"golang.org/x/term"
 	"google.golang.org/protobuf/proto"
 
 	"pkt.systems/lingon"
@@ -906,8 +905,9 @@ exec "%s" -i
 		initialLinesEnv = fmt.Sprintf("export LINGON_HOST_ECHO_INITIAL_LINES=%d\n", initialLines)
 	}
 	content := fmt.Sprintf(`#!/bin/sh
-%sexec "%s" -host-echo -host-id "%s"
-`, initialLinesEnv, harnessPath, id)
+export LINGON_HOST_ECHO_OWNED_PTY=1
+	%sexec "%s" -host-echo -host-id "%s"
+	`, initialLinesEnv, harnessPath, id)
 	if err := os.WriteFile(scriptPath, []byte(content), 0o700); err != nil {
 		return "", err
 	}
@@ -935,14 +935,9 @@ func runHostEcho(id string) {
 		_, _ = fmt.Fprintf(logFile, format+"\n", args...)
 	}
 	logf("host-echo start id=%s", id)
-
-	if state, err := term.MakeRaw(int(os.Stdin.Fd())); err == nil {
-		defer func() {
-			_ = term.Restore(int(os.Stdin.Fd()), state)
-		}()
-		logf("term.MakeRaw ok")
-	} else {
-		logf("term.MakeRaw failed err=%v", err)
+	if os.Getenv("LINGON_HOST_ECHO_OWNED_PTY") != "1" {
+		logf("host-echo refused without owned pty marker")
+		return
 	}
 
 	writer := bufio.NewWriterSize(os.Stdout, 4096)

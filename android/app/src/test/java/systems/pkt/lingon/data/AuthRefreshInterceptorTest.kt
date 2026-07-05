@@ -5,6 +5,8 @@ import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
@@ -12,7 +14,7 @@ import org.junit.Test
 
 class AuthRefreshInterceptorTest {
     @Test
-    fun shareTokenWebsocketRequestBypassesAuthRefresh() {
+    fun shareAuthRequestBypassesAuthRefresh() {
         val server = MockWebServer()
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
         server.start()
@@ -25,12 +27,16 @@ class AuthRefreshInterceptorTest {
                 .addInterceptor(authRefreshInterceptor(endpoint, refreshClient, cookieJar, Any()))
                 .build()
 
-            client.newCall(Request.Builder().url(server.url("/v1/ws/client?token=abc")).build()).execute().use { response ->
+            val request = Request.Builder()
+                .url(server.url("/v1/auth/share"))
+                .post("{}".toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(request).execute().use { response ->
                 assertEquals(200, response.code)
             }
 
-            val request = server.takeRequest()
-            assertEquals("/v1/ws/client?token=abc", request.path)
+            val recorded = server.takeRequest()
+            assertEquals("/v1/auth/share", recorded.path)
         } finally {
             server.shutdown()
         }
@@ -59,11 +65,53 @@ class AuthRefreshInterceptorTest {
         }
     }
 
+    @Test
+    fun shareSessionWebsocketRequestBypassesAuthRefresh() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
+        server.start()
+        try {
+            val endpoint = server.url("/v1")
+            val cookieJar = TestCookieJar(
+                Cookie.Builder()
+                    .name("bifrons_share_session")
+                    .value("share-session")
+                    .domain(endpoint.host)
+                    .path("/")
+                    .build(),
+            )
+            val refreshClient = OkHttpClient.Builder().cookieJar(cookieJar).build()
+            val client = OkHttpClient.Builder()
+                .cookieJar(cookieJar)
+                .addInterceptor(authRefreshInterceptor(endpoint, refreshClient, cookieJar, Any()))
+                .build()
+
+            val request = Request.Builder()
+                .url(server.url("/v1/ws/client"))
+                .header("X-Lingon-Share-Session", "1")
+                .build()
+            client.newCall(request).execute().use { response ->
+                assertEquals(200, response.code)
+            }
+
+            val recorded = server.takeRequest()
+            assertEquals("/v1/ws/client", recorded.path)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     private class TestCookieJar : CookieJar {
-        override fun loadForRequest(url: HttpUrl): List<Cookie> = emptyList()
+        private val cookies: MutableList<Cookie> = mutableListOf()
+
+        constructor(vararg initial: Cookie) {
+            cookies.addAll(initial)
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> = cookies.toList()
 
         override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-            // no-op for tests
+            this.cookies.addAll(cookies)
         }
     }
 }

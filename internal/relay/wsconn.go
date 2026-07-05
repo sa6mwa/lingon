@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -15,13 +16,18 @@ import (
 	"pkt.systems/pslog"
 )
 
+const wsWriteTimeout = 5 * time.Second
+
+var errSendQueueFull = errors.New("connection send queue full")
+
 type wsConn struct {
-	id        string
-	role      Role
-	sessionID string
-	scope     ShareScope
-	conn      *websocket.Conn
-	logger    pslog.Logger
+	id         string
+	role       Role
+	sessionID  string
+	scope      ShareScope
+	shareToken string
+	conn       *websocket.Conn
+	logger     pslog.Logger
 
 	sendMu       sync.Mutex
 	lastActivity atomic.Int64
@@ -49,10 +55,11 @@ func newWSConn(id string, role Role, sessionID string, scope ShareScope, conn *w
 	return ws
 }
 
-func (c *wsConn) ID() string        { return c.id }
-func (c *wsConn) Role() Role        { return c.role }
-func (c *wsConn) Scope() ShareScope { return c.scope }
-func (c *wsConn) SessionID() string { return c.sessionID }
+func (c *wsConn) ID() string         { return c.id }
+func (c *wsConn) Role() Role         { return c.role }
+func (c *wsConn) Scope() ShareScope  { return c.scope }
+func (c *wsConn) SessionID() string  { return c.sessionID }
+func (c *wsConn) ShareToken() string { return c.shareToken }
 
 func (c *wsConn) Send(ctx context.Context, frame *protocolpb.Frame) error {
 	if frame == nil {
@@ -65,10 +72,15 @@ func (c *wsConn) SendImmediate(ctx context.Context, frame *protocolpb.Frame) err
 	if frame == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	data, err := proto.Marshal(frame)
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, wsWriteTimeout)
+	defer cancel()
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if err := c.conn.Write(ctx, websocket.MessageBinary, data); err != nil {
@@ -140,6 +152,18 @@ func (c *wsConn) enqueue(ctx context.Context, ch chan *protocolpb.Frame, frame *
 		return ctx.Err()
 	case ch <- frame:
 		return nil
+	default:
+		c.closeNow()
+		return errSendQueueFull
+	}
+}
+
+func (c *wsConn) closeNow() {
+	c.closed.Do(func() {
+		close(c.done)
+	})
+	if c.conn != nil {
+		_ = c.conn.CloseNow()
 	}
 }
 
@@ -150,7 +174,10 @@ func (c *wsConn) writeLoop() {
 			return
 		case frame := <-c.sendCh:
 			if frame != nil {
-				_ = c.writeFrame(frame)
+				if err := c.writeFrame(frame); err != nil {
+					_ = c.Close(context.Background(), "write failed")
+					return
+				}
 			}
 		}
 	}
@@ -161,9 +188,11 @@ func (c *wsConn) writeFrame(frame *protocolpb.Frame) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), wsWriteTimeout)
+	defer cancel()
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	if err := c.conn.Write(context.Background(), websocket.MessageBinary, data); err != nil {
+	if err := c.conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 		return err
 	}
 	c.touchActivity()

@@ -2,6 +2,7 @@ package systems.pkt.lingon.terminal
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import systems.pkt.lingon.protocol.Diff
 import systems.pkt.lingon.protocol.DiffRow
@@ -62,5 +63,55 @@ class TerminalSnapshotTest {
         val updated = TerminalSnapshot.applyDiff(model, diff)
         assertNotNull(updated.graphemes)
         assertEquals("ZZ", updated.graphemes?.get(0))
+    }
+
+    @Test
+    fun applyDiffClearsStaleGraphemeWhenPlainRuneUpdatesCell() {
+        val snapshot = Snapshot.newBuilder()
+            .setCols(1)
+            .setRows(1)
+            .addRunes(0)
+            .addGraphemes("😀")
+            .build()
+
+        val model = TerminalSnapshot.fromProto(snapshot)
+        val diff = Diff.newBuilder()
+            .setCols(1)
+            .setRows(1)
+            .addDiffRows(
+                DiffRow.newBuilder()
+                    .setRow(0)
+                    .addRunes(65)
+                    .build(),
+            )
+            .build()
+
+        val updated = TerminalSnapshot.applyDiff(model, diff)
+        assertEquals(65, updated.runes[0])
+        assertEquals("", updated.graphemes?.get(0))
+    }
+
+    @Test
+    fun fromProtoRejectsOversizedDimensionsBeforeAllocatingCells() {
+        val snapshot = Snapshot.newBuilder()
+            .setCols(1000)
+            .setRows(1000)
+            .build()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            TerminalSnapshot.fromProto(snapshot)
+        }
+    }
+
+    @Test
+    fun applyDiffRejectsOversizedDimensionsBeforeAllocatingCells() {
+        val diff = Diff.newBuilder()
+            .setCols(1000)
+            .setRows(1000)
+            .build()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            TerminalSnapshot.applyDiff(null, diff)
+        }
     }
 }

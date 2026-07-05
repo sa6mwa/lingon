@@ -1,25 +1,114 @@
 package systems.pkt.lingon.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import okhttp3.Cookie
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import systems.pkt.lingon.data.certs.CertificateStore
 
 class HttpClientProviderTest {
+    @Test
+    fun clearPreventsQueuedCookiePersistenceFromRestoringAuth() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = {
+                Files.createTempFile("lingon-cookie-clear", ".preferences_pb").toFile()
+            },
+        )
+        val endpoint = "https://example.test/v1".toHttpUrl()
+        val cookieJar = PersistentCookieJar(dataStore, backgroundScope)
+
+        seedCookies(
+            cookieJar = cookieJar,
+            endpoint = endpoint,
+            accessValue = "access",
+            accessExpiresAt = System.currentTimeMillis() + 60_000,
+            refreshValue = "refresh",
+            refreshExpiresAt = System.currentTimeMillis() + 120_000,
+        )
+        cookieJar.clear()
+        advanceUntilIdle()
+
+        val reloaded = PersistentCookieJar(dataStore, backgroundScope)
+        val cookies = reloaded.loadForRequest(endpoint)
+        assertFalse(cookies.any { it.name == "lingon_access" || it.name == "lingon_refresh" })
+    }
+
+    @Test
+    fun sessionCookiesAreNotPersistedAcrossJarReload() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = {
+                Files.createTempFile("lingon-session-cookie", ".preferences_pb").toFile()
+            },
+        )
+        val endpoint = "https://example.test/v1".toHttpUrl()
+        val cookieJar = PersistentCookieJar(dataStore, backgroundScope)
+        val sessionCookie = Cookie.Builder()
+            .name("session_only")
+            .value("secret")
+            .hostOnlyDomain(endpoint.host)
+            .path(endpoint.encodedPath)
+            .httpOnly()
+            .build()
+
+        cookieJar.saveFromResponse(endpoint, listOf(sessionCookie))
+        assertTrue(cookieJar.loadForRequest(endpoint).any { it.name == "session_only" })
+        advanceUntilIdle()
+
+        val reloaded = PersistentCookieJar(dataStore, backgroundScope)
+        assertFalse(reloaded.loadForRequest(endpoint).any { it.name == "session_only" })
+    }
+
+    @Test
+    fun legacyPersistedSessionCookiesAreSkippedOnLoad() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = {
+                Files.createTempFile("lingon-legacy-session-cookie", ".preferences_pb").toFile()
+            },
+        )
+        val endpoint = "https://example.test/v1".toHttpUrl()
+        val legacyRecord = CookieRecord(
+            name = "session_only",
+            value = "secret",
+            domain = endpoint.host,
+            path = endpoint.encodedPath,
+            expiresAt = Long.MAX_VALUE,
+            secure = false,
+            httpOnly = true,
+            hostOnly = true,
+            persistent = false,
+        )
+        dataStore.edit { prefs ->
+            prefs[stringPreferencesKey("cookies_json")] =
+                LingonJson.encodeToString(ListSerializer(CookieRecord.serializer()), listOf(legacyRecord))
+        }
+
+        val cookieJar = PersistentCookieJar(dataStore, backgroundScope)
+        assertFalse(cookieJar.loadForRequest(endpoint).any { it.name == "session_only" })
+    }
+
     @Test
     fun preflightRefreshesWhenAccessTokenIsNearExpiry() {
         val server = MockWebServer()

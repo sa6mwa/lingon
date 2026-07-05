@@ -23,6 +23,7 @@ class PersistentCookieJar(
 ) : CookieJar {
     private val mutex = Mutex()
     private val lock = Any()
+    @Volatile
     private var loaded = false
     private val cookiesKey = stringPreferencesKey("cookies_json")
     private val cookieStore = mutableMapOf<String, MutableList<Cookie>>()
@@ -106,10 +107,13 @@ class PersistentCookieJar(
                 val records = runCatching {
                     LingonJson.decodeFromString(ListSerializer(CookieRecord.serializer()), raw)
                 }.getOrNull() ?: emptyList()
-                for (record in records) {
-                    val cookie = record.toCookie() ?: continue
-                    val list = cookieStore.getOrPut(cookie.domain) { mutableListOf() }
-                    list.add(cookie)
+                synchronized(lock) {
+                    for (record in records) {
+                        if (!record.persistent) continue
+                        val cookie = record.toCookie() ?: continue
+                        val list = cookieStore.getOrPut(cookie.domain) { mutableListOf() }
+                        list.add(cookie)
+                    }
                 }
             }
             loaded = true
@@ -117,13 +121,21 @@ class PersistentCookieJar(
     }
 
     private fun persistAsync() {
-        val snapshot = synchronized(lock) {
-            cookieStore.values.flatten().map { CookieRecord.fromCookie(it) }
-        }
         scope.launch(Dispatchers.IO) {
-            val encoded = LingonJson.encodeToString(ListSerializer(CookieRecord.serializer()), snapshot)
-            dataStore.edit { prefs ->
-                prefs[cookiesKey] = encoded
+            mutex.withLock {
+                val snapshot = synchronized(lock) {
+                    cookieStore.values.flatten()
+                        .filter { it.persistent }
+                        .map { CookieRecord.fromCookie(it) }
+                }
+                val encoded = LingonJson.encodeToString(ListSerializer(CookieRecord.serializer()), snapshot)
+                dataStore.edit { prefs ->
+                    if (snapshot.isEmpty()) {
+                        prefs.remove(cookiesKey)
+                    } else {
+                        prefs[cookiesKey] = encoded
+                    }
+                }
             }
         }
     }
@@ -158,7 +170,9 @@ data class CookieRecord(
             .name(name)
             .value(value)
             .path(path)
-            .expiresAt(expiresAt)
+        if (persistent) {
+            builder.expiresAt(expiresAt)
+        }
         if (hostOnly) {
             builder.hostOnlyDomain(domain)
         } else {

@@ -25,6 +25,16 @@ data class RelaySession(
 )
 
 @Serializable
+data class RelayShareSession(
+    @SerialName("session_id")
+    val sessionId: String = "",
+    @SerialName("name")
+    val name: String? = null,
+    @SerialName("scope")
+    val scope: String = "",
+)
+
+@Serializable
 data class RelayWallEvent(
     @SerialName("id")
     val id: Long = 0,

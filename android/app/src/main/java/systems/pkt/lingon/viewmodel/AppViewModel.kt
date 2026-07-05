@@ -2,6 +2,7 @@ package systems.pkt.lingon.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,6 +12,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -24,6 +26,7 @@ import okhttp3.WebSocket
 import systems.pkt.lingon.data.ApiException
 import systems.pkt.lingon.data.LingonClient
 import systems.pkt.lingon.data.relay.RelaySession
+import systems.pkt.lingon.data.relay.RelayShareSession
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.notifications.NoopWallDeliveryCoordinator
 import systems.pkt.lingon.notifications.WallDeliveryCoordinator
@@ -1207,11 +1210,72 @@ class AppViewModel(
                 // Refreshing auth can fail transiently on mobile networks; attempt WS anyway and
                 // rely on explicit 401 handling from the WS connection path.
                 runCatching { repository.refreshAuth() }
+                val current = _state.value
+                if (!current.loggedIn ||
+                    current.shareToken != shareToken ||
+                    current.activeSessionId != sessionId ||
+                    current.endpoint.trim().toHttpUrlOrNull() != baseUrl
+                ) {
+                    return@launch
+                }
                 openWebSocket(baseUrl, sessionId, shareToken, state)
             }
             return
         }
-        openWebSocket(baseUrl, sessionId, shareToken, state)
+        viewModelScope.launch {
+            val shareSession: RelayShareSession
+            try {
+                shareSession = withContext(Dispatchers.IO) {
+                    wsClient.authenticateShareSession(baseUrl, shareToken)
+                }
+            } catch (err: Exception) {
+                val current = _state.value
+                if (current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl) {
+                    return@launch
+                }
+                _state.update {
+                    it.copy(
+                        shareTokenError = err.message ?: "share authentication failed",
+                        sessionSyncing = false,
+                        connectionState = ConnectionState.Disconnected,
+                    )
+                }
+                setStatus("share authentication failed", StatusLevel.Error)
+                syncWallPollingSchedule()
+                return@launch
+            }
+            val current = _state.value
+            if (current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl) {
+                return@launch
+            }
+            val authenticatedSessionID = shareSession.sessionId.trim()
+            val authenticatedSession = RelaySession(
+                id = authenticatedSessionID,
+                name = shareSession.name ?: "Shared session",
+                status = "active",
+            )
+            _state.update {
+                it.copy(
+                    sessions = listOf(authenticatedSession),
+                    activeSessionId = authenticatedSessionID,
+                )
+            }
+            openWebSocket(baseUrl, authenticatedSessionID, shareToken, _state.value)
+        }
+    }
+
+    private fun rejectTerminalFrame(frame: systems.pkt.lingon.protocol.Frame, frameType: String, err: Exception) {
+        val message = err.message ?: "invalid terminal frame"
+        _state.update {
+            it.copy(
+                lastFrameSeq = frame.seq,
+                lastFrameType = frameType,
+                lastFrameAtMs = System.currentTimeMillis(),
+                lastFrameError = message,
+                sessionSyncing = false,
+            )
+        }
+        setStatus(message, StatusLevel.Error)
     }
 
     private fun openWebSocket(baseUrl: HttpUrl, sessionId: String?, shareToken: String?, state: UiState) {
@@ -1248,21 +1312,29 @@ class AppViewModel(
                 return ws !== webSocket
             }
 
+            private fun onCurrent(webSocket: WebSocket, block: () -> Unit) {
+                viewModelScope.launch {
+                    if (isStale(webSocket)) return@launch
+                    block()
+                }
+            }
+
             override fun onOpen(webSocket: WebSocket) {
-                if (isStale(webSocket)) return
-                socketOpen = true
-                reconnectAttempt = 0
-                stopReconnect()
-                clearStatus()
-                syncWallPollingSchedule()
+                onCurrent(webSocket) {
+                    socketOpen = true
+                    reconnectAttempt = 0
+                    stopReconnect()
+                    clearStatus()
+                    syncWallPollingSchedule()
+                }
             }
 
             override fun onFrame(webSocket: WebSocket, frame: systems.pkt.lingon.protocol.Frame) {
-                if (isStale(webSocket)) return
-                if (frame.seq != 0L) {
-                    lastSeq = frame.seq
-                }
-                when {
+                onCurrent(webSocket) {
+                    if (frame.seq != 0L) {
+                        lastSeq = frame.seq
+                    }
+                    when {
                     frame.hasSessions() -> {
                         val updated = frame.sessions.sessionsList.map { session ->
                             RelaySession(
@@ -1328,7 +1400,13 @@ class AppViewModel(
                     }
                     frame.hasSnapshot() -> {
                         forceFullSnapshotOnNextConnect = false
-                        val snapshot = TerminalSnapshot.fromProto(frame.snapshot)
+                        val snapshot = try {
+                            TerminalSnapshot.fromProto(frame.snapshot)
+                        } catch (err: IllegalArgumentException) {
+                            forceFullSnapshotOnNextConnect = true
+                            rejectTerminalFrame(frame, "snapshot", err)
+                            return@onCurrent
+                        }
                         liveSnapshot = snapshot
                         val display = if (scrollbackOffset > 0) {
                             buildScrollbackSnapshot(snapshot, scrollbackRows, scrollbackOffset)
@@ -1356,7 +1434,13 @@ class AppViewModel(
                         clearStatus()
                     }
                     frame.hasDiff() -> {
-                        val nextLive = TerminalSnapshot.applyDiff(liveSnapshot, frame.diff)
+                        val nextLive = try {
+                            TerminalSnapshot.applyDiff(liveSnapshot, frame.diff)
+                        } catch (err: IllegalArgumentException) {
+                            forceFullSnapshotOnNextConnect = true
+                            rejectTerminalFrame(frame, "diff", err)
+                            return@onCurrent
+                        }
                         liveSnapshot = nextLive
                         val display = if (scrollbackOffset > 0) {
                             buildScrollbackSnapshot(nextLive, scrollbackRows, scrollbackOffset)
@@ -1538,7 +1622,7 @@ class AppViewModel(
                             if (pendingWallInactivitySessionId == cleanedSessionId) {
                                 pendingWallInactivitySessionId = null
                             }
-                            return
+                            return@onCurrent
                         }
                         val shouldShowBanner =
                             pendingWallInactivitySessionId == cleanedSessionId || previousState != nextState
@@ -1567,61 +1651,64 @@ class AppViewModel(
                                 reconnectState = ConnectionState.Waiting,
                             )
                             syncCurrentSessionCache()
-                            return
+                            return@onCurrent
                         }
                         if (msg.contains("control not permitted", ignoreCase = true)) {
                             setStatus("view-only session", StatusLevel.Warn)
                             syncCurrentSessionCache()
-                            return
+                            return@onCurrent
                         }
                         if (msg.contains("authorization", ignoreCase = true)) {
                             handleRecoverableAuthFailure()
                             syncCurrentSessionCache()
-                            return
+                            return@onCurrent
                         }
                         val retryAfter = frame.error.retryAfterSeconds.takeIf { it > 0 }
                         scheduleReconnect(msg, retryAfter)
                     }
                 }
-                if (frame.seq != 0L) {
-                    syncCurrentSessionCache()
+                    if (frame.seq != 0L) {
+                        syncCurrentSessionCache()
+                    }
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable?, response: Response?) {
-                if (isStale(webSocket)) return
-                ws = null
-                socketOpen = false
-                if (response?.code == 401) {
-                    handleRecoverableAuthFailure()
-                    return
+                onCurrent(webSocket) {
+                    ws = null
+                    socketOpen = false
+                    if (response?.code == 401) {
+                        handleRecoverableAuthFailure()
+                        return@onCurrent
+                    }
+                    _state.update {
+                        it.copy(
+                            lastFrameType = "failure",
+                            lastFrameAtMs = System.currentTimeMillis(),
+                            lastFrameError = t?.message,
+                            sessionSyncing = false,
+                        )
+                    }
+                    scheduleReconnect(t?.message)
+                    syncWallPollingSchedule()
                 }
-                _state.update {
-                    it.copy(
-                        lastFrameType = "failure",
-                        lastFrameAtMs = System.currentTimeMillis(),
-                        lastFrameError = t?.message,
-                        sessionSyncing = false,
-                    )
-                }
-                scheduleReconnect(t?.message)
-                syncWallPollingSchedule()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String?) {
-                if (isStale(webSocket)) return
-                ws = null
-                socketOpen = false
-                _state.update {
-                    it.copy(
-                        lastFrameType = "closed",
-                        lastFrameAtMs = System.currentTimeMillis(),
-                        lastFrameError = reason,
-                        sessionSyncing = false,
-                    )
+                onCurrent(webSocket) {
+                    ws = null
+                    socketOpen = false
+                    _state.update {
+                        it.copy(
+                            lastFrameType = "closed",
+                            lastFrameAtMs = System.currentTimeMillis(),
+                            lastFrameError = reason,
+                            sessionSyncing = false,
+                        )
+                    }
+                    scheduleReconnect(reason)
+                    syncWallPollingSchedule()
                 }
-                scheduleReconnect(reason)
-                syncWallPollingSchedule()
             }
         })
     }

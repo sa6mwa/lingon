@@ -45,15 +45,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        intent?.let { incoming ->
-            val endpointOverride = incoming.getStringExtra(EXTRA_ENDPOINT_OVERRIDE)
-            val shareToken = incoming.getStringExtra(EXTRA_SHARE_TOKEN)
-            if (!shareToken.isNullOrBlank()) {
-                viewModel.handleSharedToken(shareToken, endpointOverride)
-            } else if (!endpointOverride.isNullOrBlank()) {
-                viewModel.updateEndpoint(endpointOverride)
-            }
-        }
+        handleIncomingIntent(intent)
         setContent {
             LingonApp(viewModel)
         }
@@ -69,8 +61,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        val endpointOverride = intent.getStringExtra(EXTRA_ENDPOINT_OVERRIDE)
-        val shareToken = intent.getStringExtra(EXTRA_SHARE_TOKEN)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        if (intent.action != ACTION_INTERNAL_SHARE) return
+        val pending = PendingShareLaunches.take(intent.getStringExtra(EXTRA_SHARE_REQUEST_ID)) ?: return
+        val endpointOverride = pending.endpointOverride
+        val shareToken = pending.shareToken
         if (!shareToken.isNullOrBlank()) {
             viewModel.handleSharedToken(shareToken, endpointOverride)
         } else if (!endpointOverride.isNullOrBlank()) {
@@ -124,7 +123,7 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        const val EXTRA_SHARE_TOKEN = "share_token"
-        const val EXTRA_ENDPOINT_OVERRIDE = "endpoint_override"
+        const val ACTION_INTERNAL_SHARE = "systems.pkt.lingon.action.INTERNAL_SHARE"
+        const val EXTRA_SHARE_REQUEST_ID = "share_request_id"
     }
 }
