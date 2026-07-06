@@ -47,12 +47,9 @@ object ShareTokens {
     }
 
     fun findInText(text: String): Parsed? {
-        val regex = Regex("(LGB|LGE)[0-9A-Za-z\\-]+", RegexOption.IGNORE_CASE)
+        val regex = Regex("(LGB|LGE)[0-9A-Za-z\\-\\s]+", RegexOption.IGNORE_CASE)
         for (match in regex.findAll(text)) {
-            val parsed = parse(match.value)
-            if (parsed != null) {
-                return parsed
-            }
+            parseCandidate(match.value)?.let { return it }
         }
         return null
     }
@@ -118,6 +115,17 @@ object ShareTokens {
         if (crc16(payload) != crc.toShort()) return null
         val random = raw.copyOfRange(1, 1 + randomSize)
         return Parsed(kind = Kind.Embedded, version = version, random = random, endpoint = endpoint)
+    }
+
+    private fun parseCandidate(candidate: String): Parsed? {
+        val bounded = candidate.take(maxCandidateChars)
+        for (end in bounded.length downTo 4) {
+            if (!bounded[end - 1].isLetterOrDigit()) {
+                continue
+            }
+            parse(bounded.substring(0, end))?.let { return it }
+        }
+        return null
     }
 
     private fun encodeCrockford(data: ByteArray): String {

@@ -29,4 +29,19 @@ class ShareTokensTest {
         assertNull(ShareTokens.parse(oversized))
         assertNull(ShareTokens.findInText("share this $oversized"))
     }
+
+    @Test
+    fun findInTextAcceptsWrappedEmbeddedToken() {
+        val random = ByteArray(20) { (it * 3).toByte() }
+        val endpoint = "https://relay.example/v1/share/session/abcdef"
+        val encoded = requireNotNull(ShareTokens.encodeEmbedded(random, endpoint))
+        val wrapped = encoded.chunked(17).joinToString("\n")
+
+        val parsed = ShareTokens.findInText("Join this Lingon session:\n$wrapped\nShared from chat")
+
+        assertNotNull(parsed)
+        assertEquals(ShareTokens.Kind.Embedded, parsed?.kind)
+        assertArrayEquals(random, parsed?.random)
+        assertEquals(endpoint, parsed?.endpoint)
+    }
 }

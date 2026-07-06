@@ -29,6 +29,28 @@ Required status values:
 
 ## Active Items
 
+### B-098 Android share receiver rejects wrapped embedded tokens
+
+- Status: `needs_verification`
+- Area: `android`, `share`, `tokens`
+- Summary: Android share-token extraction fails when a valid embedded share token is line-wrapped by the source app.
+- Report:
+  Review found that `ShareTokens.findInText` only extracted contiguous alphanumeric/hyphen token candidates even though the token parser accepts spaces and newlines inside Crockford bodies. A long `LGE...` embedded token shared through Android's share sheet can be wrapped by chat/email apps, causing extraction to pass only the first fragment to `parse` and report no Lingon token found.
+- Desired behavior:
+  Android shared-text extraction should accept a valid bare or embedded Lingon token even when the token body contains whitespace wrapping, while still rejecting oversized or invalid candidates.
+- Repro:
+  1. Generate a valid embedded `LGE...` token.
+  2. Insert line breaks into the token body as a share-sheet source app may do.
+  3. Pass surrounding prose plus the wrapped token to `ShareTokens.findInText`.
+  4. Observe the embedded token should parse with the original random bytes and endpoint.
+- Regression coverage:
+  - `ShareTokensTest.findInTextAcceptsWrappedEmbeddedToken`
+- Verification:
+  - Fixed by widening shared-text candidate extraction to include token body whitespace and by parsing bounded candidate prefixes, so valid wrapped tokens can be found even when nearby prose follows the token.
+  - Added `ShareTokensTest.findInTextAcceptsWrappedEmbeddedToken`, which wraps a valid embedded token across newlines and verifies extraction preserves the embedded endpoint and random bytes.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.share.ShareTokensTest` was attempted but blocked because `JAVA_HOME` is not set and no `java` executable is available on `PATH`.
+  - Remaining gap: Android unit and compile checks must be rerun in an environment with a JDK.
+
 ### B-097 `lingonx -o` should start local headless when logged out
 
 - Status: `resolved`
