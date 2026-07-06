@@ -344,12 +344,10 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	if err != nil {
 		return err
 	}
-	c.ws = ws
+	c.setWebSocket(ws)
 	c.touchActivity()
 	defer func() {
-		c.mu.Lock()
-		c.ws = nil
-		c.mu.Unlock()
+		c.clearWebSocket(ws)
 	}()
 	if c.controlCh == nil {
 		c.controlCh = make(chan struct{}, 1)
@@ -457,6 +455,20 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 
 	_ = httpURL
 	return c.error()
+}
+
+func (c *Client) setWebSocket(ws *websocket.Conn) {
+	c.mu.Lock()
+	c.ws = ws
+	c.mu.Unlock()
+}
+
+func (c *Client) clearWebSocket(ws *websocket.Conn) {
+	c.mu.Lock()
+	if c.ws == ws {
+		c.ws = nil
+	}
+	c.mu.Unlock()
 }
 
 func (c *Client) clock() clock.Clock {

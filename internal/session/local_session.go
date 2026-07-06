@@ -1282,15 +1282,22 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	}()
 
 	localErr := make(chan error, 1)
+	readCtx, stopReader := context.WithCancel(ctx)
+	readerDone := make(chan struct{})
+	defer func() {
+		stopReader()
+		<-readerDone
+	}()
 	go func() {
+		defer close(readerDone)
 		buf := make([]byte, 4096)
 		for {
 			select {
-			case <-ctx.Done():
+			case <-readCtx.Done():
 				return
 			default:
 			}
-			n, err := readPTY(ctx, ptyFile, buf)
+			n, err := readPTY(readCtx, ptyFile, buf)
 			if err != nil {
 				if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
 					s.clock.Sleep(10 * time.Millisecond)
