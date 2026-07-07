@@ -129,6 +129,32 @@ func TestRefreshFlow(t *testing.T) {
 	}
 }
 
+func TestRefreshFlowWithoutUserStore(t *testing.T) {
+	store := NewStore()
+	server := NewHTTPServer(store, nil, nil, nil, nil)
+
+	refresh, err := store.CreateRefreshToken("embedded", DefaultRefreshTokenTTL, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+
+	payload, _ := json.Marshal(refreshRequest{RefreshToken: refresh.Token})
+	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(payload))
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%q", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	var out loginResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.AccessToken == "" {
+		t.Fatalf("expected access token")
+	}
+}
+
 func TestRefreshRejectsTokenForRemovedUser(t *testing.T) {
 	store := NewStore()
 	users := NewUserStore()

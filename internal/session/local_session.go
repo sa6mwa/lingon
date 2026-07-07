@@ -1177,8 +1177,6 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	s.cmd = cmd
 	s.ptyMu.Unlock()
 
-	defer s.closePTY()
-
 	s.captureVEOF()
 	if ttyFile != nil {
 		_ = ttyFile.Close()
@@ -1284,10 +1282,7 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	localErr := make(chan error, 1)
 	readCtx, stopReader := context.WithCancel(ctx)
 	readerDone := make(chan struct{})
-	defer func() {
-		stopReader()
-		<-readerDone
-	}()
+	defer shutdownPTYReader(stopReader, s.closePTY, readerDone)
 	go func() {
 		defer close(readerDone)
 		buf := make([]byte, 4096)

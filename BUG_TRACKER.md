@@ -29,6 +29,38 @@ Required status values:
 
 ## Active Items
 
+### B-102 Review regressions in PTY shutdown and nil-user refresh
+
+- Status: `needs_verification`
+- Area: `session`, `relay`, `auth`
+- Summary: Recent race/auth changes introduced a non-Linux local-session shutdown hang risk and broke refresh-token use for embedded relay servers without a user store.
+- Report:
+  Review found that local-session shutdown waited for the PTY reader before closing the PTY, which can hang on non-Linux builds where `readPTY` blocks in `file.Read` and ignores context. Review also found that `/auth/refresh` validation dereferenced or rejected nil `Users` store configurations even though `NewHTTPServer` supports embedded callers without a user store.
+- Desired behavior:
+  Linux should preserve the race-safe reader shutdown order. Non-Linux builds should close the PTY before waiting so blocking reads are unblocked. Relay refresh should reject tokens for removed users only when a user store exists, and should continue accepting valid refresh tokens when the server was constructed with `Users == nil`.
+- Repro:
+  1. On a non-Linux build, cancel a local session while its PTY reader is blocked in `Read`.
+  2. Observe shutdown should not hang waiting for the reader before closing the PTY.
+  3. Construct `HTTPServer` with a store containing a valid refresh token and `Users == nil`.
+  4. POST `/auth/refresh` with that token and observe the request should return 200 instead of panic or 500.
+- Regression coverage:
+  - `TestShutdownPTYReaderLinuxWaitsBeforeClose`
+  - `TestShutdownPTYReaderLinuxCancelsContext`
+  - `TestShutdownPTYReaderNonLinuxClosesBeforeWaiting`
+  - `TestRefreshFlowWithoutUserStore`
+- Verification:
+  - Fixed by moving PTY-reader shutdown into platform-specific helpers: Linux cancels and waits before closing to preserve the race fix, while non-Linux cancels and closes before waiting to unblock `file.Read`.
+  - Fixed `/auth/refresh` by validating removed users only when `HTTPServer.Users` is non-nil, preserving embedded nil-user-store refresh support.
+  - `go test ./internal/session -run 'TestShutdownPTYReaderLinux|TestLocalSessionCancelWaitsForPTYReaderBeforeClose' -count=1` passed.
+  - `go test ./internal/relay -run 'TestRefreshFlowWithoutUserStore|TestRefreshRejectsTokenForRemovedUser|TestRefreshFlow' -count=1` passed.
+  - `go test -race ./internal/session -run 'TestShutdownPTYReaderLinux|TestLocalSessionCancelWaitsForPTYReaderBeforeClose' -count=1` passed.
+  - `GOOS=darwin go test -c -o /dev/null ./internal/session` passed, covering compile validity of the non-Linux shutdown helper and regression test.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `go run golang.org/x/lint/golint@latest ./...` passed.
+  - Remaining gap: non-Linux shutdown helper test is build-tagged `!linux` and must run on a non-Linux builder for direct platform execution.
+
 ### B-100 Android cleartext share-token websocket loses authentication
 
 - Status: `needs_verification`

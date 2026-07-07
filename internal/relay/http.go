@@ -236,10 +236,6 @@ func (s *HTTPServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if s.Users == nil {
-		writeError(w, http.StatusInternalServerError, "user store unavailable")
-		return
-	}
 	var req refreshRequest
 	if err := decodeOptionalJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -256,10 +252,12 @@ func (s *HTTPServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusUnauthorized, err)
 		return
 	}
-	if _, ok := s.Users.Get(refresh.Username); !ok {
-		_ = s.Store.RevokeRefreshTokenAndAccess(refresh.Token, now)
-		writeAuthError(w, http.StatusUnauthorized, ErrInvalidCredentials)
-		return
+	if s.Users != nil {
+		if _, ok := s.Users.Get(refresh.Username); !ok {
+			_ = s.Store.RevokeRefreshTokenAndAccess(refresh.Token, now)
+			writeAuthError(w, http.StatusUnauthorized, ErrInvalidCredentials)
+			return
+		}
 	}
 	clientType := normalizeClientType(refresh.ClientType)
 	access, err := s.Store.CreateAccessTokenForRefresh(refresh.Username, refresh.Token, clientType, DefaultAccessTokenTTL, now)
