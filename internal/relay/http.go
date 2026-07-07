@@ -1410,7 +1410,23 @@ func isLocalRequest(r *http.Request) bool {
 	if hasForwardedClientHeaders(r) {
 		return false
 	}
+	if !requestHostIsLoopback(r.Host) {
+		return false
+	}
 	return true
+}
+
+func requestHostIsLoopback(value string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		host = strings.TrimSpace(value)
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func requestAddrIsLoopback(value string) bool {

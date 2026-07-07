@@ -384,6 +384,32 @@ func TestUsersEndpointsRejectHeaderlessLoopbackProxyHost(t *testing.T) {
 	}
 }
 
+func TestUsersEndpointsRejectHeaderlessLoopbackProxyWithLoopbackListener(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	admin, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+	access, err := store.CreateAccessToken(admin.Username, DefaultAccessTokenTTL, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Host = "relay.example.com"
+	req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080}))
+	req.Header.Set("Authorization", "Bearer "+access.Token)
+	resp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resp, req)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusForbidden)
+	}
+}
+
 func TestUsersEndpointsRejectLoopbackProxyOnPublicListener(t *testing.T) {
 	store := NewStore()
 	users := NewUserStore()

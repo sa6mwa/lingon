@@ -29,6 +29,31 @@ Required status values:
 
 ## Active Items
 
+### B-103 User-management local guard accepts headerless loopback proxy requests
+
+- Status: `resolved`
+- Area: `relay`, `auth`, `users`, `security`
+- Summary: `/users` management endpoints can treat headerless same-machine reverse-proxy traffic as local.
+- Report:
+  Review found that the new local-only guard for user-management endpoints accepts requests where both `RemoteAddr` and server `LocalAddr` are loopback and no `Forwarded`/`X-Forwarded-*` headers are present. A same-machine reverse proxy that strips forwarding headers can produce exactly that shape for a remote original client.
+- Desired behavior:
+  User-management endpoints should require an authenticated request that is locally connected and explicitly targeted at a loopback host such as `localhost`, `127.0.0.1`, or `::1`. Headerless loopback proxy traffic preserving a public relay `Host` must be rejected.
+- Repro:
+  1. Send an authenticated `/users` request with `RemoteAddr=127.0.0.1:<port>`.
+  2. Set `http.LocalAddrContextKey` to a loopback listener address.
+  3. Omit forwarding headers and set `Host=relay.example.com`.
+  4. Observe the request should return 403.
+- Regression coverage:
+  - `TestUsersEndpointsRejectHeaderlessLoopbackProxyWithLoopbackListener`
+- Verification:
+  - Fixed by requiring local user-management requests to target a loopback host (`localhost`, `127.0.0.1`, or `::1`) in addition to having loopback socket addresses and no forwarded-client headers.
+  - `go test ./internal/relay -run 'TestUsersEndpoints(RejectHeaderlessLoopbackProxyWithLoopbackListener|RejectHeaderlessLoopbackProxyHost|RejectLoopbackProxyForRemoteClient|RejectSpoofedLoopbackForwardedClient|RejectLoopbackProxyOnPublicListener)|TestUsersLifecycle' -count=1` passed.
+  - `go test ./internal/relay -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `go run golang.org/x/lint/golint@latest ./...` passed.
+
 ### B-102 Review regressions in PTY shutdown and nil-user refresh
 
 - Status: `needs_verification`
