@@ -39,29 +39,30 @@ import (
 
 // Options configures a local interactive session.
 type Options struct {
-	Endpoint         string
-	Token            string
-	AuthFile         string
-	SessionID        string
-	SessionName      string
-	Cols             int
-	Rows             int
-	Shell            string
-	Term             string
-	Respawn          bool
-	Offline          bool
-	Theme            string
-	Publish          bool
-	PublishControl   bool
-	HostnameOnly     bool
-	ScrollbackLines  int
-	MaxReplayScreens int
-	TLSDir           string
-	Insecure         bool
-	Stdin            *os.File
-	Stdout           *os.File
-	DisableRaw       bool
-	Logger           pslog.Logger
+	Endpoint              string
+	Token                 string
+	AuthFile              string
+	SessionID             string
+	SessionName           string
+	Cols                  int
+	Rows                  int
+	Shell                 string
+	Term                  string
+	Respawn               bool
+	Offline               bool
+	Theme                 string
+	Publish               bool
+	PublishControl        bool
+	DisableRemoteSessions bool
+	HostnameOnly          bool
+	ScrollbackLines       int
+	MaxReplayScreens      int
+	TLSDir                string
+	Insecure              bool
+	Stdin                 *os.File
+	Stdout                *os.File
+	DisableRaw            bool
+	Logger                pslog.Logger
 	// Clock controls time-based behavior (reconnects, overlays).
 	Clock           clock.Clock
 	OnPTYRead       func([]byte)
@@ -410,7 +411,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 
-	if r.opts.Publish {
+	if r.opts.Publish && !r.opts.DisableRemoteSessions {
 		r.remoteSessions = newRemoteManager(remoteOptions{
 			Endpoint:                    r.opts.Endpoint,
 			Token:                       r.opts.Token,

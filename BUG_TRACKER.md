@@ -29,6 +29,30 @@ Required status values:
 
 ## Active Items
 
+### B-099 Headless session can hang irrecoverably against existing relay
+
+- Status: `needs_verification`
+- Area: `headless`, `relay`, `session`, `pty`
+- Summary: Current Lingon may wedge a headless-served terminal when connected to the previous relay.
+- Report:
+  The engineer reported a totally hanging Lingon session against the previous relay after running the current version. The break appears unrecoverable from the client side and may involve the new/current Lingon running as headless while serving a terminal.
+- Desired behavior:
+  A current headless Lingon session should continue serving PTY output/input through an existing compatible relay. Relay disconnects, reconnects, client detach, or shutdown paths must not leave the PTY/session in a wedged state that cannot recover.
+- Repro:
+  1. Run the current Lingon as a headless session publishing to the previous relay.
+  2. Attach to the served terminal through the relay.
+  3. Observe whether terminal output/input stops permanently and whether reconnecting fails to recover the session.
+- Regression coverage:
+  - `TestRunnerPublishCanDisableRemoteSessions`
+- Verification:
+  - Live inspection of session `psl` PID `3789305` showed `/usr/local/bin/lingon -s psl` was alive, `offline=false`, heartbeat state was updating, the child `/bin/bash` was idle on `/dev/pts/16`, and the process held two established TLS connections to the relay.
+  - That made a permanent-offline rejection unlikely and pointed to headless mode running both the host publisher and the interactive remote-session manager in the same daemon.
+  - Fixed by adding `session.Options.DisableRemoteSessions` and setting it from `headlessd`, so headless daemons still publish the local PTY to the relay for Android/remote attach but no longer create a relay client/view connection for remote sessions.
+  - `go test ./internal/session -run TestRunnerPublishCanDisableRemoteSessions -count=1` passed.
+  - `go test ./internal/session ./internal/headlessd -count=1` passed.
+  - `go test -tags integration ./integration/pty/attach -run 'TestRelayHeadlessMultiAttachReceivesInitialSnapshot|TestRealCLIRelayHeadlessInitialConnectAndWinchResizePTY' -count=1` passed, proving relay-published headless sessions still render and resize through normal attach.
+  - Remaining gap: not yet reproduced against the engineer's exact previous relay instance.
+
 ### B-098 Android share receiver rejects wrapped embedded tokens
 
 - Status: `needs_verification`

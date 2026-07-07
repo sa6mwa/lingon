@@ -264,6 +264,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		Offline:                     d.opts.Offline,
 		Publish:                     d.opts.Publish,
 		PublishControl:              d.opts.PublishControl,
+		DisableRemoteSessions:       true,
 		HostnameOnly:                d.opts.HostnameOnly,
 		ScrollbackLines:             d.opts.ScrollbackLines,
 		TLSDir:                      d.opts.TLSDir,
