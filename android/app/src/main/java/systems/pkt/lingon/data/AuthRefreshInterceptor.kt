@@ -112,6 +112,7 @@ private class AuthRefreshInterceptor(
         val url = request.url
         if (!url.encodedPath.endsWith("/ws/client")) return false
         if (request.header("X-Lingon-Share-Session") != "1") return false
+        if (!url.queryParameter("token").isNullOrBlank()) return true
         return cookieJar.loadForRequest(url).any { it.name == shareCookieName && it.value.isNotBlank() }
     }
 

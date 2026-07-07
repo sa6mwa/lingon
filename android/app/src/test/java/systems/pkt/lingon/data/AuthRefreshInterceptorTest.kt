@@ -101,6 +101,35 @@ class AuthRefreshInterceptorTest {
         }
     }
 
+    @Test
+    fun cleartextShareTokenWebsocketRequestBypassesAuthRefreshWithoutCookie() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
+        server.start()
+        try {
+            val endpoint = server.url("/v1")
+            val cookieJar = TestCookieJar()
+            val refreshClient = OkHttpClient.Builder().cookieJar(cookieJar).build()
+            val client = OkHttpClient.Builder()
+                .cookieJar(cookieJar)
+                .addInterceptor(authRefreshInterceptor(endpoint, refreshClient, cookieJar, Any()))
+                .build()
+
+            val request = Request.Builder()
+                .url(server.url("/v1/ws/client?token=LGE-cleartext-token"))
+                .header("X-Lingon-Share-Session", "1")
+                .build()
+            client.newCall(request).execute().use { response ->
+                assertEquals(200, response.code)
+            }
+
+            val recorded = server.takeRequest()
+            assertEquals("/v1/ws/client?token=LGE-cleartext-token", recorded.path)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     private class TestCookieJar : CookieJar {
         private val cookies: MutableList<Cookie> = mutableListOf()
 

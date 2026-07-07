@@ -29,6 +29,34 @@ Required status values:
 
 ## Active Items
 
+### B-100 Android cleartext share-token websocket loses authentication
+
+- Status: `needs_verification`
+- Area: `android`, `share`, `relay`, `websocket`
+- Summary: Android share-token attaches to cleartext/local endpoints can authenticate `/auth/share` and then fail `/ws/client` with 401.
+- Report:
+  Review found that Android now depends on the Secure `bifrons_share_session` cookie for share-token websocket authentication. Debug/local cleartext endpoints use `http://`/`ws://`, where OkHttp will not send Secure cookies, so the websocket request has only `X-Lingon-Share-Session: 1` and no usable credential.
+- Desired behavior:
+  Android should keep the share-session cookie path for HTTPS endpoints and preserve a token fallback for cleartext/local websocket endpoints so debug and local relays continue to work.
+- Repro:
+  1. Use an Android debug/local cleartext endpoint such as `http://127.0.0.1:8080/v1`.
+  2. Authenticate a share token through `/auth/share`.
+  3. Open `/ws/client` through the Android websocket client.
+  4. Observe that the websocket should authenticate instead of failing with 401 because the Secure share cookie is unavailable over cleartext.
+- Regression coverage:
+  - `RelayWebSocketClientTest.cleartextShareTokenWebsocketRequestCarriesTokenFallback`
+  - `RelayWebSocketClientTest.httpsShareTokenWebsocketRequestUsesShareSessionCookieOnly`
+  - `AuthRefreshInterceptorTest.cleartextShareTokenWebsocketRequestBypassesAuthRefreshWithoutCookie`
+- Verification:
+  - Fixed by adding the share-token `?token=` fallback only for cleartext websocket requests, while keeping HTTPS share-token websocket requests on the Secure share-session cookie path.
+  - Updated the Android auth-refresh interceptor to bypass local refresh auth for share websocket requests that carry an explicit share-token query fallback, so cleartext share websockets can reach the relay even when no Secure share cookie is available.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.data.relay.RelayWebSocketClientTest --tests systems.pkt.lingon.data.AuthRefreshInterceptorTest` was attempted but blocked because `JAVA_HOME` is not set and no `java` executable is available on `PATH`.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `go run golang.org/x/lint/golint@latest ./...` passed.
+  - Remaining gap: Android unit tests must be rerun in an environment with a JDK.
+
 ### B-099 Headless session can hang irrecoverably against existing relay
 
 - Status: `needs_verification`

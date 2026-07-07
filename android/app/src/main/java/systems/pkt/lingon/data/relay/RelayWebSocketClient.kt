@@ -45,11 +45,7 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
 
     open fun connect(options: ConnectOptions, listener: Listener): WebSocket {
         val client = httpClientProvider.clientFor(options.baseUrl)
-        val requestBuilder = Request.Builder().url(buildWsUrl(options.baseUrl))
-        if (!options.shareToken.isNullOrBlank()) {
-            requestBuilder.header("X-Lingon-Share-Session", "1")
-        }
-        val request = requestBuilder.build()
+        val request = buildWebSocketRequest(options)
         return client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val hello = Hello.newBuilder()
@@ -103,6 +99,14 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         })
     }
 
+    internal fun buildWebSocketRequest(options: ConnectOptions): Request {
+        val requestBuilder = Request.Builder().url(buildWsUrl(options.baseUrl, options.shareToken))
+        if (!options.shareToken.isNullOrBlank()) {
+            requestBuilder.header("X-Lingon-Share-Session", "1")
+        }
+        return requestBuilder.build()
+    }
+
     open fun sendInput(webSocket: WebSocket, data: ByteArray) {
         val input = In.newBuilder().setData(ProtoByteString.copyFrom(data)).build()
         val frame = Frame.newBuilder().setIn(input).build()
@@ -149,10 +153,13 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         }
     }
 
-    private fun buildWsUrl(baseUrl: HttpUrl): HttpUrl {
-        return baseUrl.newBuilder()
+    private fun buildWsUrl(baseUrl: HttpUrl, shareToken: String?): HttpUrl {
+        val builder = baseUrl.newBuilder()
             .addPathSegments("ws/client")
-            .build()
+        if (!baseUrl.isHttps && !shareToken.isNullOrBlank()) {
+            builder.addQueryParameter("token", shareToken)
+        }
+        return builder.build()
     }
 
     private fun frameType(frame: Frame): String {
