@@ -498,7 +498,8 @@ func TestWSClientConnectsWithShareSessionCookie(t *testing.T) {
 
 	clientConn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/client"), &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
-			"Cookie": {accountCookie + "; " + shareCookie},
+			"Cookie":                 {accountCookie + "; " + shareCookie},
+			"X-Lingon-Share-Session": {"1"},
 		},
 	})
 	if err != nil {
@@ -535,6 +536,119 @@ func TestWSClientConnectsWithShareSessionCookie(t *testing.T) {
 	}
 	if frame.GetWelcome().GetGrantedControl() {
 		t.Fatalf("share cookie with account cookie was granted control")
+	}
+}
+
+func TestWSClientAccountSessionListIgnoresLingeringShareCookie(t *testing.T) {
+	store := NewStore()
+	users := NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := NewAuthenticator(users)
+	server := NewHTTPServer(store, users, auth, nil, nil)
+	ts := newTestServer(t, server.Handler())
+	defer ts.Close()
+
+	access, err := store.CreateAccessToken(user.Username, DefaultAccessTokenTTL, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	hostConn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/host"), &websocket.DialOptions{
+		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + access.Token}},
+	})
+	if err != nil {
+		t.Fatalf("host dial: %v", err)
+	}
+	defer func() {
+		_ = hostConn.Close(websocket.StatusNormalClosure, "bye")
+	}()
+	hostHello := &protocolpb.Frame{
+		SessionId: "session_account_list",
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			Cols:         80,
+			Rows:         24,
+			WantsControl: true,
+			ClientType:   "host",
+		}},
+	}
+	hostData, err := proto.Marshal(hostHello)
+	if err != nil {
+		t.Fatalf("marshal host hello: %v", err)
+	}
+	if err := hostConn.Write(ctx, websocket.MessageBinary, hostData); err != nil {
+		t.Fatalf("send host hello: %v", err)
+	}
+
+	share, err := store.CreateShareToken("session_account_list", ShareScopeView, time.Hour, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateShareToken: %v", err)
+	}
+	shareBody, _ := json.Marshal(shareAuthRequest{Token: share.Token})
+	shareReq := httptest.NewRequest(http.MethodPost, "/auth/share", bytes.NewReader(shareBody))
+	shareResp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(shareResp, shareReq)
+	if shareResp.Code != http.StatusOK {
+		t.Fatalf("share auth status = %d, want %d", shareResp.Code, http.StatusOK)
+	}
+	var shareCookie string
+	for _, cookie := range shareResp.Result().Cookies() {
+		if cookie.Name == shareCookieName {
+			shareCookie = cookie.String()
+			break
+		}
+	}
+	if shareCookie == "" {
+		t.Fatalf("expected share session cookie")
+	}
+	accountCookie := (&http.Cookie{
+		Name:  accessCookieName,
+		Value: access.Token,
+		Path:  "/",
+	}).String()
+
+	clientConn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/client"), &websocket.DialOptions{
+		HTTPHeader: map[string][]string{"Cookie": {accountCookie + "; " + shareCookie}},
+	})
+	if err != nil {
+		t.Fatalf("client dial with lingering share cookie: %v", err)
+	}
+	defer func() {
+		_ = clientConn.Close(websocket.StatusNormalClosure, "bye")
+	}()
+	clientHello := &protocolpb.Frame{
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId:     "web-list",
+			WantsControl: true,
+			ClientType:   "web",
+		}},
+	}
+	clientData, err := proto.Marshal(clientHello)
+	if err != nil {
+		t.Fatalf("marshal client hello: %v", err)
+	}
+	if err := clientConn.Write(ctx, websocket.MessageBinary, clientData); err != nil {
+		t.Fatalf("send client hello: %v", err)
+	}
+
+	_, message, err := clientConn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read sessions frame: %v", err)
+	}
+	var frame protocolpb.Frame
+	if err := proto.Unmarshal(message, &frame); err != nil {
+		t.Fatalf("decode frame: %v", err)
+	}
+	sessions := frame.GetSessions()
+	if sessions == nil {
+		t.Fatalf("expected sessions frame, got %+v", frame.Payload)
+	}
+	if len(sessions.Sessions) != 1 || sessions.Sessions[0].Id != "session_account_list" {
+		t.Fatalf("unexpected sessions frame: %+v", sessions.Sessions)
 	}
 }
 

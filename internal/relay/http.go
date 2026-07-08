@@ -1222,18 +1222,6 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		_ = ws.SendImmediate(ctx, frameError("missing hello"))
 		return
 	}
-	if !shareAuthenticated && username != "" && frame.SessionId == "" {
-		if shareSession, err := s.shareSessionFromRequest(r, time.Now().UTC()); err == nil {
-			sessionID = shareSession.SessionID
-			scope = shareSession.Scope
-			activeShareToken = shareSession.ShareToken
-			shareAuthenticated = true
-			username = ""
-			ws.sessionID = sessionID
-			ws.scope = scope
-			ws.shareToken = activeShareToken
-		}
-	}
 	if frame.SessionId != "" {
 		if shareAuthenticated && sessionID != "" && frame.SessionId != sessionID {
 			_ = ws.SendImmediate(ctx, frameError("session mismatch"))
@@ -1242,6 +1230,13 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		sessionID = frame.SessionId
 	}
 	if sessionID == "" {
+		if !shareAuthenticated && username != "" {
+			streamCtx, cancelStream := context.WithCancel(ctx)
+			go s.streamSessionsWS(streamCtx, ws, username)
+			s.serveWSLoop(ctx, ws)
+			cancelStream()
+			return
+		}
 		_ = ws.SendImmediate(ctx, frameError("missing session"))
 		return
 	}

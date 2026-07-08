@@ -29,6 +29,33 @@ Required status values:
 
 ## Active Items
 
+### B-106 Lingering share cookie overrides authenticated websocket listing
+
+- Status: `resolved`
+- Area: `relay`, `websocket`, `auth`, `share`
+- Summary: A valid account-authenticated `/ws/client` listing connection can be silently switched to share-cookie auth.
+- Report:
+  Review found that after a websocket hello without `SessionId`, `handleWSClient` consumed a `bifrons_share_session` cookie even when normal user auth had already succeeded. That lets a stale share cookie override a valid account websocket session-list request and reconnect the client to a previous share.
+- Desired behavior:
+  Share cookies should be consumed only when the request explicitly asks for share-session auth, or when normal auth fails. A normal authenticated websocket without `SessionId` should remain account-authenticated and receive session-list frames.
+- Repro:
+  1. Authenticate as a normal user and keep a valid access cookie.
+  2. Also keep a valid `bifrons_share_session` cookie from a previous share.
+  3. Open `/ws/client` without `X-Lingon-Share-Session` and send hello without `SessionId`.
+  4. Observe the connection should receive account session-list frames, not a share-session welcome.
+- Regression coverage:
+  - `TestWSClientAccountSessionListIgnoresLingeringShareCookie`
+- Verification:
+  - Fixed by removing the post-hello implicit share-cookie override for successfully account-authenticated websocket connections.
+  - Preserved explicit share-cookie websocket attach by requiring `X-Lingon-Share-Session` when a share-session cookie should be consumed.
+  - Added account session-list handling for authenticated websocket hellos without `SessionId`, so lingering share cookies do not turn the listing connection into a share attach.
+  - `go test ./internal/relay -run 'TestWSClient(AccountSessionListIgnoresLingeringShareCookie|ConnectsWithShareSessionCookie|StaleShareCookieDoesNotOverrideAccountAuth)' -count=1` passed.
+  - `go test ./internal/relay -count=1` passed.
+  - First `go test ./...` run exposed an isolated `TestWSHostPersistFailureClosesReplacedHost` timing failure; rerunning that exact test passed, rerunning `go test ./internal/relay -count=1` passed, and rerunning `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `go run golang.org/x/lint/golint@latest ./...` passed.
+
 ### B-105 Share foreground recovery reopens healthy authenticated websocket
 
 - Status: `needs_verification`
