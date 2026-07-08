@@ -29,6 +29,31 @@ Required status values:
 
 ## Active Items
 
+### B-105 Share foreground recovery reopens healthy authenticated websocket
+
+- Status: `needs_verification`
+- Area: `android`, `share`, `websocket`, `lifecycle`
+- Summary: Share-token foreground recovery can re-authenticate and reopen an already healthy websocket.
+- Report:
+  Review found that `connectActiveSession()` builds its active connection key with `sessionId = null` whenever `shareToken` is active, while `openWebSocket()` records the key with the authenticated session id returned by `/auth/share`. Later share lifecycle calls therefore miss the healthy-connection guard and reconnect.
+- Desired behavior:
+  Once `/auth/share` resolves the real session id, share-mode reconnect checks should reuse that authenticated session id so healthy foreground/reselection paths do not tear down and reopen the websocket.
+- Repro:
+  1. Enter share-token mode and authenticate `/auth/share` to `real-session`.
+  2. Open the websocket successfully.
+  3. Trigger foreground recovery while the socket remains open.
+  4. Observe no second share authentication, websocket close, or websocket reconnect should occur.
+- Regression coverage:
+  - `AppViewModelTest.shareForegroundRecoveryReusesAuthenticatedSessionConnection`
+- Verification:
+  - Fixed by deriving the share-mode connection key from the authenticated `activeSessionId` after it replaces the placeholder shared session id.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.viewmodel.AppViewModelTest.shareForegroundRecoveryReusesAuthenticatedSessionConnection` was attempted but blocked because `JAVA_HOME` is not set and no `java` executable is available on `PATH`.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `go run golang.org/x/lint/golint@latest ./...` passed.
+  - Remaining gap: Android unit tests must be rerun in an environment with a JDK.
+
 ### B-104 Android terminal link scan runs twice per frame update
 
 - Status: `needs_verification`

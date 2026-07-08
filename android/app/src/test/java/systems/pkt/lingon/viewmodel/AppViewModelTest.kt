@@ -290,6 +290,31 @@ class AppViewModelTest {
     }
 
     @Test
+    fun shareForegroundRecoveryReusesAuthenticatedSessionConnection() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+        }
+        wsClient.shareSession = RelayShareSession(sessionId = "real-session", name = "Shared real", scope = "view")
+        val viewModel = AppViewModel(repository, wsClient)
+
+        viewModel.handleSharedToken("token", "https://example")
+        advanceUntilIdle()
+
+        assertEquals("real-session", viewModel.state.value.activeSessionId)
+        assertEquals("real-session", wsClient.lastConnectOptions?.sessionId)
+        assertEquals(1, wsClient.connectCount)
+
+        viewModel.onAppBackgroundAt(0L)
+        viewModel.onAppForegroundAt(5_000L)
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.connectCount)
+        assertEquals(0, wsClient.closeCount)
+        assertEquals("real-session", wsClient.lastConnectOptions?.sessionId)
+    }
+
+    @Test
     fun staleShareAuthenticationFailureDoesNotReplaceCurrentTokenState() = runTest {
         val repository = FakeRepository()
         lateinit var viewModel: AppViewModel

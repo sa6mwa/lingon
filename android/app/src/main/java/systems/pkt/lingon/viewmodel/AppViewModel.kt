@@ -1159,7 +1159,7 @@ class AppViewModel(
         }
         val shareToken = state.shareToken
         var sessionId = if (!shareToken.isNullOrBlank()) {
-            null
+            state.activeSessionId?.takeIf { it != sharedSessionId }
         } else {
             state.activeSessionId?.takeIf { candidate ->
                 state.sessions.any { session -> session.id == candidate }
