@@ -498,8 +498,7 @@ func TestWSClientConnectsWithShareSessionCookie(t *testing.T) {
 
 	clientConn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/client"), &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
-			"Cookie":                 {accountCookie + "; " + shareCookie},
-			"X-Lingon-Share-Session": {"1"},
+			"Cookie": {accountCookie + "; " + shareCookie},
 		},
 	})
 	if err != nil {
@@ -510,7 +509,7 @@ func TestWSClientConnectsWithShareSessionCookie(t *testing.T) {
 	}()
 	clientHello := &protocolpb.Frame{
 		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
-			ClientId:     "web-share",
+			ClientId:     "",
 			WantsControl: true,
 			ClientType:   "web",
 		}},
@@ -583,6 +582,7 @@ func TestWSClientAccountSessionListIgnoresLingeringShareCookie(t *testing.T) {
 	if err := hostConn.Write(ctx, websocket.MessageBinary, hostData); err != nil {
 		t.Fatalf("send host hello: %v", err)
 	}
+	waitForActiveSessionCount(t, ts.URL, access.Token, 1, 2*time.Second)
 
 	share, err := store.CreateShareToken("session_account_list", ShareScopeView, time.Hour, time.Now().UTC())
 	if err != nil {
@@ -624,7 +624,7 @@ func TestWSClientAccountSessionListIgnoresLingeringShareCookie(t *testing.T) {
 		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
 			ClientId:     "web-list",
 			WantsControl: true,
-			ClientType:   "web",
+			ClientType:   "android",
 		}},
 	}
 	clientData, err := proto.Marshal(clientHello)

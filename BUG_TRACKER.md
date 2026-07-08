@@ -29,6 +29,33 @@ Required status values:
 
 ## Active Items
 
+### B-107 Browser share websocket cannot set share-session header
+
+- Status: `resolved`
+- Area: `relay`, `websocket`, `auth`, `share`, `webui`
+- Summary: Browser share-token websocket attach fails when an account cookie is also present.
+- Report:
+  Review found that the fix for lingering share cookies required `X-Lingon-Share-Session` to consume a share-session cookie, but browser `WebSocket` cannot set custom headers. The Web UI share flow sends the share session only as a cookie and sends an empty `SessionId` hello for share views.
+- Desired behavior:
+  Browser Web UI share attaches should be able to use the share-session cookie even when a valid account cookie is present. Generic account websocket listing should still ignore lingering share cookies.
+- Repro:
+  1. Authenticate a browser account and keep the account cookie.
+  2. Attach with a share token so `/auth/share` sets `bifrons_share_session`.
+  3. Open browser `/ws/client` without custom headers and send a Web UI share hello: empty `SessionId`, empty `ClientId`, `ClientType=web`.
+  4. Observe the websocket should attach to the shared terminal instead of taking the account session-list path.
+- Regression coverage:
+  - `TestWSClientConnectsWithShareSessionCookie`
+  - `TestWSClientAccountSessionListIgnoresLingeringShareCookie`
+- Verification:
+  - Fixed by allowing a valid share-session cookie to override account auth only for the Web UI share hello shape: empty `SessionId`, empty `ClientId`, and `ClientType=web`.
+  - Preserved generic account websocket listing by keeping non-share no-session hellos on the account session-list path.
+  - `go test ./internal/relay -run 'TestWSClient(AccountSessionListIgnoresLingeringShareCookie|ConnectsWithShareSessionCookie|StaleShareCookieDoesNotOverrideAccountAuth)' -count=1` passed.
+  - `go test ./internal/relay -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `go run golang.org/x/lint/golint@latest ./...` passed.
+
 ### B-106 Lingering share cookie overrides authenticated websocket listing
 
 - Status: `resolved`

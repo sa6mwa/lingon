@@ -1222,6 +1222,18 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		_ = ws.SendImmediate(ctx, frameError("missing hello"))
 		return
 	}
+	if !shareAuthenticated && username != "" && frame.SessionId == "" && isBrowserShareSessionHello(frame.GetHello()) {
+		if shareSession, err := s.shareSessionFromRequest(r, time.Now().UTC()); err == nil {
+			sessionID = shareSession.SessionID
+			scope = shareSession.Scope
+			activeShareToken = shareSession.ShareToken
+			shareAuthenticated = true
+			username = ""
+			ws.sessionID = sessionID
+			ws.scope = scope
+			ws.shareToken = activeShareToken
+		}
+	}
 	if frame.SessionId != "" {
 		if shareAuthenticated && sessionID != "" && frame.SessionId != sessionID {
 			_ = ws.SendImmediate(ctx, frameError("session mismatch"))
@@ -1268,6 +1280,13 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 
 	s.serveWSLoop(ctx, ws)
 	cancelStream()
+}
+
+func isBrowserShareSessionHello(hello *protocolpb.Hello) bool {
+	if hello == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(hello.ClientType), "web") && strings.TrimSpace(hello.ClientId) == ""
 }
 
 func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
