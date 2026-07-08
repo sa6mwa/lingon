@@ -210,13 +210,15 @@ class TerminalGridView @JvmOverloads constructor(
         localInputNonce: Long = 0,
     ) {
         var invalidate = false
+        var snapshotChanged = false
+        var frameSeqChanged = false
         if (this.snapshot !== snapshot) {
             this.snapshot = snapshot
+            snapshotChanged = true
             if (snapshot == null) {
                 cameraMode = TerminalViewportMode.LiveBottom
                 cursorFollowReturnMode = TerminalViewportMode.LiveBottom
             }
-            terminalLinks = snapshot?.let { TerminalLinks.findHttpsLinks(it) } ?: emptyList()
             invalidate = true
         }
         if (this.palette !== palette) {
@@ -233,13 +235,16 @@ class TerminalGridView @JvmOverloads constructor(
         }
         if (this.frameSeq != frameSeq) {
             this.frameSeq = frameSeq
+            frameSeqChanged = true
             restoredViewportState = null
             restoredViewportFrameSeq = Long.MIN_VALUE
             if (suppressLiveAutoFollowFrameSeq != frameSeq) {
                 suppressLiveAutoFollowFrameSeq = null
             }
-            terminalLinks = snapshot?.let { TerminalLinks.findHttpsLinks(it) } ?: emptyList()
             invalidate = true
+        }
+        TerminalLinks.refreshForUpdate(snapshot, snapshotChanged, frameSeqChanged)?.let {
+            terminalLinks = it
         }
         if (this.hostCols != hostCols) {
             this.hostCols = hostCols

@@ -96,6 +96,48 @@ class TerminalLinksTest {
         assertEquals(20, link.endColExclusive)
     }
 
+    @Test
+    fun refreshForUpdateScansOnceWhenSnapshotAndFrameSeqChange() {
+        val snapshot = snapshot(
+            cols = 32,
+            rows = listOf("open https://example.test now"),
+        )
+        var scans = 0
+
+        val links = TerminalLinks.refreshForUpdate(
+            snapshot = snapshot,
+            snapshotChanged = true,
+            frameSeqChanged = true,
+        ) {
+            scans += 1
+            TerminalLinks.findHttpsLinks(it)
+        }
+
+        assertEquals(1, scans)
+        assertEquals(listOf("https://example.test"), links?.map { it.url })
+    }
+
+    @Test
+    fun refreshForUpdateSkipsScanWhenSnapshotAndFrameSeqAreUnchanged() {
+        val snapshot = snapshot(
+            cols = 32,
+            rows = listOf("open https://example.test now"),
+        )
+        var scans = 0
+
+        val links = TerminalLinks.refreshForUpdate(
+            snapshot = snapshot,
+            snapshotChanged = false,
+            frameSeqChanged = false,
+        ) {
+            scans += 1
+            TerminalLinks.findHttpsLinks(it)
+        }
+
+        assertEquals(0, scans)
+        assertEquals(null, links)
+    }
+
     private fun snapshot(cols: Int, rows: List<String>): TerminalSnapshot {
         val runes = IntArray(cols * rows.size) { ' '.code }
         rows.forEachIndexed { row, text ->

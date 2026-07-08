@@ -49,6 +49,16 @@ object TerminalLinks {
         }
     }
 
+    internal fun refreshForUpdate(
+        snapshot: TerminalSnapshot?,
+        snapshotChanged: Boolean,
+        frameSeqChanged: Boolean,
+        finder: (TerminalSnapshot) -> List<TerminalLinkRange> = ::findHttpsLinks,
+    ): List<TerminalLinkRange>? {
+        if (!snapshotChanged && !frameSeqChanged) return null
+        return snapshot?.let(finder) ?: emptyList()
+    }
+
     fun findHttpsLinks(text: String): List<TextLinkRange> {
         val links = ArrayList<TextLinkRange>()
         var searchStart = 0

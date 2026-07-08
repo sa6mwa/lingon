@@ -29,6 +29,31 @@ Required status values:
 
 ## Active Items
 
+### B-104 Android terminal link scan runs twice per frame update
+
+- Status: `needs_verification`
+- Area: `android`, `terminal`, `performance`
+- Summary: Terminal link detection can scan the full terminal snapshot twice on normal frame updates.
+- Report:
+  Review found that `TerminalGridView.update(...)` recomputes `TerminalLinks.findHttpsLinks(snapshot)` in both the snapshot-reference change block and the `frameSeq` change block. Normal snapshot/diff updates can change both, causing two full terminal-cell scans and avoidable UI-thread allocation work.
+- Desired behavior:
+  Terminal links should be recomputed once per effective snapshot/frame update and skipped when neither the snapshot nor frame sequence changed.
+- Repro:
+  1. Call terminal update with a new snapshot object and a new `frameSeq`.
+  2. Observe link detection should run exactly once for that effective update.
+- Regression coverage:
+  - `TerminalLinksTest.refreshForUpdateScansOnceWhenSnapshotAndFrameSeqChange`
+  - `TerminalLinksTest.refreshForUpdateSkipsScanWhenSnapshotAndFrameSeqAreUnchanged`
+- Verification:
+  - Fixed by collecting `snapshotChanged` and `frameSeqChanged` during `TerminalGridView.update(...)` and refreshing terminal links once after both state transitions are evaluated.
+  - Added `TerminalLinks.refreshForUpdate(...)` so the one-scan behavior is unit-testable without instantiating an Android `View`.
+  - `cd android && ./gradlew :app:testDebugUnitTest --tests systems.pkt.lingon.terminal.TerminalLinksTest` was attempted but blocked because `JAVA_HOME` is not set and no `java` executable is available on `PATH`.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `go run golang.org/x/lint/golint@latest ./...` passed.
+  - Remaining gap: Android unit tests must be rerun in an environment with a JDK.
+
 ### B-103 User-management local guard accepts headerless loopback proxy requests
 
 - Status: `resolved`
