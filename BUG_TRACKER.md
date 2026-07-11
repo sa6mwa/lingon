@@ -29,6 +29,34 @@ Required status values:
 
 ## Active Items
 
+### B-108 Attach clients require a second Escape keystroke
+
+- Status: `resolved`
+- Area: `attach`, `input`, `pty`
+- Summary: A standalone Escape entered through either attach UI is retained by the normal-input mouse-report filter until another byte arrives.
+- Report:
+  The engineer reports that Lingon multi-attach, and likely single attach/client mode, require Escape to be pressed twice before applications receive Escape. This differs from normal SSH/xterm terminal behavior and prevents a single Escape from working in interactive applications.
+- Desired behavior:
+  A single Escape typed through both single attach and multi-attach must reach the remote application as one `0x1b` byte without waiting for a subsequent keystroke. Attach scrollback mouse reports must continue to work.
+- Repro:
+  1. Start a Lingon host running a shell.
+  2. Attach with either `lingon attach` or multi-attach/client mode.
+  3. Run a noncanonical one-byte read in the remote shell.
+  4. Press Escape once.
+  5. Observe that the read remains blocked until a second key is pressed.
+- Regression coverage:
+  - `TestAttachSingleEscKeyPassthrough`
+  - `TestAttachMultiEscKeyPassthrough`
+- Verification:
+  - Investigation found `mouseReportFilter` buffers every `ESC` in normal attach input while it waits to distinguish `ESC [ <...M` mouse reports. Mouse reporting is now scoped to attach scrollback, where input takes the dedicated scrollback parser, so the normal-input filter is stale and causes the retained-Escape behavior.
+  - Removed the stale normal-input filter from both attach input loops; scrollback continues to parse its own mouse reports.
+  - The new regressions failed before the change with `waiting for ESC_OK` for both attach modes, then passed after the change.
+  - `go test -tags integration ./integration/pty/attach -run 'TestAttach(Single|Multi)EscKeyPassthrough|Test(Attach|MultiAttach)ScrollbackScopesMouseReporting' -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `golint ./...` is unavailable in this environment; equivalent `go run golang.org/x/lint/golint@latest ./...` passed.
+
 ### B-107 Browser share websocket cannot set share-session header
 
 - Status: `resolved`

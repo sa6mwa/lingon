@@ -1785,7 +1785,6 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	}()
 	var prefix control.Prefix
 	var scrollState scrollInputState
-	var mouseFilter mouseReportFilter
 	pending := make([]byte, 0, 2048)
 	resolveNextTab := func(delta int) (string, string) {
 		mu.Lock()
@@ -2194,7 +2193,6 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				return true
 			}
 			filtered := make([]byte, 0, len(data))
-			mouseChunk := make([]byte, 0, 8)
 			allHandledByScrollback := true
 			for _, b := range data {
 				_, client, _, _, _ := activeViewSnapshot()
@@ -2255,8 +2253,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					continue
 				}
 				allHandledByScrollback = false
-				mouseChunk = filterMouseByte(&mouseFilter, b, mouseChunk)
-				filtered = append(filtered, mouseChunk...)
+				filtered = append(filtered, b)
 			}
 			if allHandledByScrollback {
 				continue

@@ -2099,7 +2099,6 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 	var prefix control.Prefix
 	pending := make([]byte, 0, 2048)
 	var scrollState scrollInputState
-	var mouseFilter mouseReportFilter
 	for {
 		select {
 		case <-ctx.Done():
@@ -2252,7 +2251,6 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 			}
 			return true
 		}
-		filtered := make([]byte, 0, 8)
 		for _, b := range data {
 			if c.ScrollbackActive() {
 				cmd := scrollState.feed(b)
@@ -2306,13 +2304,9 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				}
 				continue
 			}
-			filtered = filterMouseByte(&mouseFilter, b, filtered)
-			for _, fb := range filtered {
-				if !processNormalByte(fb) {
-					return
-				}
+			if !processNormalByte(b) {
+				return
 			}
-			filtered = filtered[:0]
 		}
 		if !flushPending() {
 			return
