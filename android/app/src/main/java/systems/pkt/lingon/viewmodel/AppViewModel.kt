@@ -25,6 +25,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import systems.pkt.lingon.data.ApiException
 import systems.pkt.lingon.data.LingonClient
+import systems.pkt.lingon.data.certs.normalizeCertificateEndpointKey
 import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.data.relay.RelayShareSession
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
@@ -168,7 +169,9 @@ class AppViewModel(
             repository.certificatesFlow.collectLatest { allCerts ->
                 val endpoint = _state.value.selectedCertEndpoint
                 if (endpoint.isNullOrBlank()) return@collectLatest
-                _state.update { it.copy(trustedCerts = allCerts[endpoint].orEmpty()) }
+                _state.update {
+                    it.copy(trustedCerts = allCerts[normalizeCertificateEndpointKey(endpoint)].orEmpty())
+                }
             }
         }
         viewModelScope.launch {

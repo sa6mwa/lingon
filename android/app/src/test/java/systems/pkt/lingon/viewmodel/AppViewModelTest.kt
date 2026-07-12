@@ -84,6 +84,27 @@ class AppViewModelTest {
     }
 
     @Test
+    fun certificateFlowUsesNormalizedSelectedEndpointKey() = runTest {
+        val certificate = TrustedCert(
+            id = "cert-1",
+            subject = "CN=relay.example",
+            issuer = "CN=test-ca",
+            fingerprint = "fingerprint",
+            addedAt = "2026-07-13T00:00:00Z",
+        )
+        val repository = FakeRepository(
+            savedEndpoints = listOf("https://relay.example"),
+            initialCertificates = mapOf("https://relay.example/" to listOf(certificate)),
+        )
+        val viewModel = AppViewModel(repository, FakeWsClient())
+
+        advanceUntilIdle()
+
+        assertEquals("https://relay.example", viewModel.state.value.selectedCertEndpoint)
+        assertEquals(listOf(certificate), viewModel.state.value.trustedCerts)
+    }
+
+    @Test
     fun selectSessionOnActiveTabKeepsVisibleSnapshot() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
@@ -2226,6 +2247,8 @@ private class FakeRepository(
     followOnReadEnabled: Boolean = false,
     initialSessionZooms: Map<String, Float> = emptyMap(),
     initialLastActiveSessionByEndpoint: Map<String, String> = emptyMap(),
+    savedEndpoints: List<String> = listOf("https://localhost:12843/v1"),
+    initialCertificates: Map<String, List<TrustedCert>> = emptyMap(),
 ) : LingonClient {
     private val backgroundWallEnabledState = MutableStateFlow(backgroundWallEnabled)
     private val followOnReadEnabledState = MutableStateFlow(followOnReadEnabled)
@@ -2236,8 +2259,8 @@ private class FakeRepository(
         backgroundWallEnabledFlowOverride ?: backgroundWallEnabledState
     override val followOnReadEnabledFlow: Flow<Boolean> = followOnReadEnabledState
     override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
-    override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(listOf("https://localhost:12843/v1"))
-    override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
+    override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(savedEndpoints)
+    override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(initialCertificates)
     private val lastActiveSessionByEndpoint = initialLastActiveSessionByEndpoint.toMutableMap()
     var refreshAuthCalls: Int = 0
     var saveZoomCalls: Int = 0

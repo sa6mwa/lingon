@@ -29,14 +29,16 @@ class CertificateStore(
             emptyMap()
         } else {
             runCatching {
-                LingonJson.decodeFromString(CertificateState.serializer(), raw).endpoints
+                normalizeCertificateEndpoints(
+                    LingonJson.decodeFromString(CertificateState.serializer(), raw).endpoints,
+                )
             }.getOrElse { emptyMap() }
         }
     }
 
     suspend fun list(endpoint: String): List<StoredCert> {
         val state = loadState()
-        val key = normalizeEndpointKey(endpoint)
+        val key = normalizeCertificateEndpointKey(endpoint)
         val rawKey = endpoint.trim()
         return (state.endpoints[key].orEmpty() + state.endpoints[rawKey].orEmpty()).distinctBy { it.id }
     }
@@ -44,7 +46,7 @@ class CertificateStore(
     fun listBlocking(endpoint: String): List<StoredCert> = runBlocking { list(endpoint) }
 
     suspend fun addCertificates(endpoint: String, pem: String): List<StoredCert> {
-        val key = normalizeEndpointKey(endpoint)
+        val key = normalizeCertificateEndpointKey(endpoint)
         val rawKey = endpoint.trim()
         val certs = parseCertificates(pem)
         if (certs.isEmpty()) {
@@ -76,7 +78,7 @@ class CertificateStore(
     }
 
     suspend fun removeCertificate(endpoint: String, certId: String) {
-        val key = normalizeEndpointKey(endpoint)
+        val key = normalizeCertificateEndpointKey(endpoint)
         val rawKey = endpoint.trim()
         val state = loadState()
         val existing = (state.endpoints[key].orEmpty() + state.endpoints[rawKey].orEmpty()).distinctBy { it.id }
@@ -127,10 +129,22 @@ class CertificateStore(
         return digest.joinToString("") { b -> "%02x".format(b) }
     }
 
-    private fun normalizeEndpointKey(endpoint: String): String {
-        val trimmed = endpoint.trim()
-        return trimmed.toHttpUrlOrNull()?.toString() ?: trimmed
+}
+
+internal fun normalizeCertificateEndpointKey(endpoint: String): String {
+    val trimmed = endpoint.trim()
+    return trimmed.toHttpUrlOrNull()?.toString() ?: trimmed
+}
+
+private fun normalizeCertificateEndpoints(
+    endpoints: Map<String, List<StoredCert>>,
+): Map<String, List<StoredCert>> {
+    val normalized = LinkedHashMap<String, LinkedHashMap<String, StoredCert>>()
+    endpoints.forEach { (endpoint, certs) ->
+        val merged = normalized.getOrPut(normalizeCertificateEndpointKey(endpoint)) { LinkedHashMap() }
+        certs.forEach { cert -> merged.putIfAbsent(cert.id, cert) }
     }
+    return normalized.mapValues { (_, certs) -> certs.values.toList() }
 }
 
 @Serializable

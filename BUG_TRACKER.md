@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-109 Android certificate UI loses canonical endpoint entries
+
+- Status: `needs_verification`
+- Area: `android`, `certificates`, `settings`
+- Summary: The trusted-certificate UI indexes certificate-flow entries with a raw selected endpoint while certificate storage uses canonical HTTP URL keys.
+- Report:
+  Review found that `https://relay.example` is persisted as `https://relay.example/`, but the ViewModel later looks up the flow with the selected raw endpoint. A certificate add or removal can therefore make the UI display an empty trusted-certificate list while the certificate remains stored and active for HTTP clients.
+- Desired behavior:
+  Certificate storage and all flow consumers must use the same canonical endpoint key, while legacy raw-key entries remain visible.
+- Repro:
+  1. Select endpoint `https://relay.example`.
+  2. Add a trusted certificate.
+  3. Observe the persisted/flow key is `https://relay.example/`.
+  4. Refresh the certificate state and observe the settings UI must still show the certificate.
+- Regression coverage:
+  - `AppViewModelTest.certificateFlowUsesNormalizedSelectedEndpointKey`.
+- Verification:
+  - Added shared certificate endpoint-key normalization for storage and the ViewModel lookup. Certificate-flow entries are normalized and legacy/raw endpoint entries are merged by certificate ID.
+  - Targeted Android unit test was attempted before and after the fix, but cannot start because `JAVA_HOME` is unset and `java` is not on `PATH`.
+  - `./gradlew :app:compileDebugAndroidTestKotlin` was also blocked by the missing JDK before compilation began.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `golint ./...` is unavailable in this environment; equivalent `go run golang.org/x/lint/golint@latest ./...` passed.
+  - Remaining gap: Android unit and instrumentation-test compilation must run in an environment with a JDK.
+
 ### B-108 Attach clients require a second Escape keystroke
 
 - Status: `resolved`
