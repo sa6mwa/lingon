@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-111 Relay restart causes excessive reconnect replay load with many hosts
+
+- Status: `open`
+- Area: `relay`, `publisher`, `session`, `scrollback`, `performance`
+- Summary: Restarting a relay with roughly 15–20 active hosted sessions causes an excessive CPU spike while hosts reconnect and replay terminal state.
+- Report:
+  The engineer observes huge CPU load during relay restart when many sessions reconnect. The current defaults may retain and replay too much terminal history per session.
+- Desired behavior:
+  Relay restart and reconnect must have bounded, predictable CPU and memory use for 15–20 active sessions, without losing the current terminal state required to recover an attached client.
+- Repro:
+  1. Run 15–20 Lingon hosts that have accumulated normal terminal scrollback.
+  2. Restart the relay.
+  3. Observe all hosts reconnect and resend recovery state.
+  4. Measure relay and host CPU, allocation rate, and resident memory until recovery completes.
+- Investigation:
+  - The default `terminal.scrollback_lines` is 5,000. A normal local host retains that data twice: once in the terminal emulator and once in `localSession`; both stores deep-copy every row and cell.
+  - On a client reconnect after relay history is lost, the relay forwards the client's hello to its host. `Publisher.readWS` responds by deep-copying all retained scrollback, converting every row to protobuf, building all 100-row frames, and sending them synchronously before the current snapshot.
+  - At 80 columns, one 5,000-row `terminal.Cell` store is approximately 12.2 MiB (32 bytes per cell). The two retained copies are therefore approximately 24.4 MiB per host, or approximately 488 MiB across 20 hosts, before snapshot, protobuf, websocket, and GC-transient allocations.
+  - The relay clones and sizes each recovery frame while recording its 512 KiB per-session replay history. That cap bounds retained relay history to roughly 10 MiB for 20 sessions, but it does not bound the one-time decode/clone/encode allocation work of a 5,000-row resend.
+  - Publisher reconnect backoff starts at a fixed one second with no jitter, so hosts and clients that lost the same relay restart retry in lockstep. Each host handshake also serializes and atomically rewrites the full relay `state.json`; each connection notifies every session-list websocket, which recomputes and sends the active-session list.
+- Proposed remediation (pending approval):
+  1. Lower the default scrollback cap from 5,000 to 1,000 lines while retaining the existing config and `--scrollback-lines` override for larger histories.
+  2. Add bounded per-session reconnect jitter so recovery work is spread over a short interval rather than synchronized.
+  3. Add a 20-host restart benchmark/integration regression that records recovery time, allocation volume, peak retained history, and verifies a bounded replay payload per session.
+  4. Profile a production-shaped restart using the existing opt-in `pprof` build before deciding whether to batch persistence/session-list notifications or change the recovery protocol to request scrollback only when needed.
+
 ### B-110 Detached headless startup reports ready before its PTY launches
 
 - Status: `resolved`
