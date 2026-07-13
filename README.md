@@ -398,7 +398,7 @@ client:
   auth_file: auth.json
 terminal:
   term: xterm-256color
-  scrollback_lines: 5000
+  scrollback_lines: 1337
   disable_desktop_notifications: false
   wall_inactive_after: 2m,5m,15m
 ```

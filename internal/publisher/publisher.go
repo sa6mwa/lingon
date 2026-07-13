@@ -43,6 +43,9 @@ type Options struct {
 	Insecure         bool
 	Logger           pslog.Logger
 	BackoffPolicy    *backoff.Policy
+	// ReconnectJitter overrides the random jitter sampler for reconnect delays.
+	// A nil value uses crypto-secure randomness.
+	ReconnectJitter backoff.Jitter
 }
 
 // Publisher publishes terminal updates to the relay and receives remote input.
@@ -78,8 +81,9 @@ type Publisher struct {
 	scrollbackSnapshot   func() []terminal.ScrollbackRow
 	wallInactivityStatus func() *protocolpb.WallInactivityStatus
 
-	backoffPolicy  backoff.Policy
-	backoffAttempt int
+	backoffPolicy   backoff.Policy
+	reconnectJitter backoff.Jitter
+	backoffAttempt  int
 
 	tokenRefresher func(context.Context) (string, error)
 	clock          clock.Clock
@@ -126,14 +130,15 @@ func New(opts Options) *Publisher {
 		maxScreens = 10
 	}
 	return &Publisher{
-		opts:           opts,
-		Logger:         opts.Logger,
-		backoffPolicy:  policy,
-		outputQueue:    relaywire.NewFrameQueue(0),
-		maxScreens:     maxScreens,
-		tokenRefresher: opts.TokenRefresher,
-		clock:          opts.Clock,
-		stateChangeCh:  make(chan struct{}, 1),
+		opts:            opts,
+		Logger:          opts.Logger,
+		backoffPolicy:   policy,
+		reconnectJitter: opts.ReconnectJitter,
+		outputQueue:     relaywire.NewFrameQueue(0),
+		maxScreens:      maxScreens,
+		tokenRefresher:  opts.TokenRefresher,
+		clock:           opts.Clock,
+		stateChangeCh:   make(chan struct{}, 1),
 	}
 }
 
@@ -194,12 +199,10 @@ func (p *Publisher) Run(ctx context.Context) error {
 			continue
 		}
 
-		delay := p.backoffPolicy.Next(p.backoffAttempt)
+		delay := p.reconnectDelay(err)
 		if retryDelay, ok := retryafter.FromError(err); ok && retryDelay > 0 {
-			delay = retryDelay
 			p.backoffAttempt = 0
 		}
-		delay = p.normalizeReconnectDelay(delay)
 		p.backoffAttempt++
 		if err := p.waitBackoff(ctx, delay); err != nil {
 			if errors.Is(err, errPublisherOffline) {
@@ -295,6 +298,15 @@ func (p *Publisher) normalizeReconnectDelay(delay time.Duration) time.Duration {
 		fallback = backoff.DefaultPolicy.Base
 	}
 	return fallback
+}
+
+func (p *Publisher) reconnectDelay(err error) time.Duration {
+	delay := p.backoffPolicy.Next(p.backoffAttempt)
+	if retryDelay, ok := retryafter.FromError(err); ok && retryDelay > 0 {
+		delay = retryDelay
+	}
+	delay = p.normalizeReconnectDelay(delay)
+	return p.backoffPolicy.WithJitter(delay, p.reconnectJitter)
 }
 
 // SetOffline toggles relay connectivity for this publisher.

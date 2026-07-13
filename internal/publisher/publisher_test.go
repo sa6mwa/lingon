@@ -691,6 +691,28 @@ func TestPublisherNormalizeReconnectDelayFallsBackToDefaultBase(t *testing.T) {
 	}
 }
 
+func TestPublisherReconnectDelayAddsConfiguredJitter(t *testing.T) {
+	p := New(Options{
+		SessionID: "session",
+		BackoffPolicy: &backoff.Policy{
+			Base:   time.Second,
+			Factor: 2,
+			Max:    time.Minute,
+			Jitter: 10 * time.Second,
+		},
+		ReconnectJitter: func(max time.Duration) time.Duration {
+			if max != 10*time.Second {
+				t.Fatalf("jitter max = %v, want 10s", max)
+			}
+			return 4 * time.Second
+		},
+	})
+
+	if got := p.reconnectDelay(nil); got != 5*time.Second {
+		t.Fatalf("reconnectDelay = %v, want 5s", got)
+	}
+}
+
 func threadCreateProfileCount() int {
 	n, _ := runtime.ThreadCreateProfile(nil)
 	if n <= 0 {

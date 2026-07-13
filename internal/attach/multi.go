@@ -83,6 +83,9 @@ type MultiClient struct {
 	OnActive func(sessionID string)
 	// BackoffPolicy overrides the default reconnect backoff.
 	BackoffPolicy backoff.Policy
+	// ReconnectJitter overrides the random jitter sampler for reconnect delays.
+	// A nil value uses crypto-secure randomness.
+	ReconnectJitter backoff.Jitter
 	// Gate throttles session list/stream/network retries.
 	Gate *netgate.Gate
 
@@ -117,6 +120,15 @@ func normalizeReconnectDelay(delay, policyBase time.Duration) time.Duration {
 		return policyBase
 	}
 	return backoff.DefaultPolicy.Base
+}
+
+func reconnectDelay(policy backoff.Policy, attempt int, err error, jitter backoff.Jitter) time.Duration {
+	delay := policy.Next(attempt)
+	if retryDelay, ok := retryafter.FromError(err); ok && retryDelay > delay {
+		delay = retryDelay
+	}
+	delay = normalizeReconnectDelay(delay, policy.Base)
+	return policy.WithJitter(delay, jitter)
 }
 
 type sessionView struct {
@@ -1184,11 +1196,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 						return
 					}
 				}
-				delay := m.backoffPolicy.Next(attempt)
-				if retryDelay, ok := retryafter.FromError(err); ok && retryDelay > delay {
-					delay = retryDelay
-				}
-				delay = normalizeReconnectDelay(delay, m.backoffPolicy.Base)
+				delay := reconnectDelay(m.backoffPolicy, attempt, err, m.ReconnectJitter)
 				attempt++
 				mu.Lock()
 				backoffAttempts[current.ID] = attempt

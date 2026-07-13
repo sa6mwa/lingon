@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/term"
 
+	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
@@ -57,12 +58,15 @@ type Options struct {
 	HostnameOnly          bool
 	ScrollbackLines       int
 	MaxReplayScreens      int
-	TLSDir                string
-	Insecure              bool
-	Stdin                 *os.File
-	Stdout                *os.File
-	DisableRaw            bool
-	Logger                pslog.Logger
+	// ReconnectJitter overrides the publisher reconnect jitter sampler.
+	// A nil value uses crypto-secure randomness.
+	ReconnectJitter backoff.Jitter
+	TLSDir          string
+	Insecure        bool
+	Stdin           *os.File
+	Stdout          *os.File
+	DisableRaw      bool
+	Logger          pslog.Logger
 	// Clock controls time-based behavior (reconnects, overlays).
 	Clock           clock.Clock
 	OnPTYRead       func([]byte)
@@ -1893,6 +1897,7 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			Rows:             r.opts.Rows,
 			PublishControl:   r.opts.PublishControl,
 			MaxReplayScreens: r.opts.MaxReplayScreens,
+			ReconnectJitter:  r.opts.ReconnectJitter,
 			TLSDir:           r.opts.TLSDir,
 			Insecure:         r.opts.Insecure,
 			Logger:           r.logger,

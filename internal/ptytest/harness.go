@@ -542,6 +542,7 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		Stdout:                      slave,
 		DisableRaw:                  opts.DisableRaw,
 		Clock:                       clk,
+		ReconnectJitter:             func(time.Duration) time.Duration { return 0 },
 		OnPTYRead:                   opts.OnPTYRead,
 		DisableDesktopNotifications: disableDesktopNotifications,
 		DesktopNotifier:             desktopNotifier,
@@ -815,6 +816,7 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 		OnViewClosed:                opts.OnViewClosed,
 		OnActive:                    opts.OnActive,
 		BackoffPolicy:               opts.BackoffPolicy,
+		ReconnectJitter:             func(time.Duration) time.Duration { return 0 },
 		InactiveTTL:                 opts.InactiveTTL,
 		RefreshInterval:             opts.RefreshInterval,
 	}

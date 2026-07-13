@@ -35,7 +35,7 @@ const (
 	// DefaultTerminalRows is the default terminal rows.
 	DefaultTerminalRows = 24
 	// DefaultScrollbackLines is the default buffered scrollback line count.
-	DefaultScrollbackLines = 5000
+	DefaultScrollbackLines = 1337
 	// DefaultReplayHistoryBytes is the default byte cap for relay replay history.
 	DefaultReplayHistoryBytes = 512 * 1024
 	// DefaultWSReadLimit is the maximum websocket frame size to accept.

@@ -1,15 +1,23 @@
 package backoff
 
 import (
+	cryptorand "crypto/rand"
 	"math"
+	"math/big"
 	"time"
 )
+
+// Jitter supplies a randomized delay from zero through the supplied maximum.
+// It is injectable so callers can make retry timing deterministic in tests.
+type Jitter func(max time.Duration) time.Duration
 
 // Policy defines exponential backoff behavior.
 type Policy struct {
 	Base   time.Duration
 	Factor float64
 	Max    time.Duration
+	// Jitter is added to each reconnect delay to spread simultaneous retries.
+	Jitter time.Duration
 }
 
 // DefaultPolicy is tuned to avoid aggressive reconnect loops.
@@ -17,6 +25,7 @@ var DefaultPolicy = Policy{
 	Base:   time.Second,
 	Factor: 2,
 	Max:    1 * time.Minute,
+	Jitter: 10 * time.Second,
 }
 
 // Next returns the delay for the given attempt (0-based).
@@ -63,4 +72,41 @@ func (p Policy) Next(attempt int) time.Duration {
 		return p.Max
 	}
 	return delay
+}
+
+// WithJitter adds the policy's bounded reconnect jitter to delay.
+// A nil sampler uses crypto-secure randomness.
+func (p Policy) WithJitter(delay time.Duration, sampler Jitter) time.Duration {
+	if delay <= 0 || p.Jitter <= 0 {
+		return delay
+	}
+	if sampler == nil {
+		sampler = RandomJitter
+	}
+	jitter := sampler(p.Jitter)
+	if jitter < 0 {
+		jitter = 0
+	}
+	if jitter > p.Jitter {
+		jitter = p.Jitter
+	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	if delay > maxDuration-jitter {
+		return maxDuration
+	}
+	return delay + jitter
+}
+
+// RandomJitter returns a crypto-random duration in the inclusive range [0, max].
+func RandomJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	limit := big.NewInt(int64(max))
+	limit.Add(limit, big.NewInt(1))
+	value, err := cryptorand.Int(cryptorand.Reader, limit)
+	if err != nil {
+		return 0
+	}
+	return time.Duration(value.Int64())
 }

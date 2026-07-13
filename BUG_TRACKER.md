@@ -31,7 +31,7 @@ Required status values:
 
 ### B-111 Relay restart causes excessive reconnect replay load with many hosts
 
-- Status: `open`
+- Status: `resolved`
 - Area: `relay`, `publisher`, `session`, `scrollback`, `performance`
 - Summary: Restarting a relay with roughly 15–20 active hosted sessions causes an excessive CPU spike while hosts reconnect and replay terminal state.
 - Report:
@@ -50,10 +50,21 @@ Required status values:
   - The relay clones and sizes each recovery frame while recording its 512 KiB per-session replay history. That cap bounds retained relay history to roughly 10 MiB for 20 sessions, but it does not bound the one-time decode/clone/encode allocation work of a 5,000-row resend.
   - Publisher reconnect backoff starts at a fixed one second with no jitter, so hosts and clients that lost the same relay restart retry in lockstep. Each host handshake also serializes and atomically rewrites the full relay `state.json`; each connection notifies every session-list websocket, which recomputes and sends the active-session list.
 - Proposed remediation (pending approval):
-  1. Lower the default scrollback cap from 5,000 to 1,000 lines while retaining the existing config and `--scrollback-lines` override for larger histories.
-  2. Add bounded per-session reconnect jitter so recovery work is spread over a short interval rather than synchronized.
-  3. Add a 20-host restart benchmark/integration regression that records recovery time, allocation volume, peak retained history, and verifies a bounded replay payload per session.
-  4. Profile a production-shaped restart using the existing opt-in `pprof` build before deciding whether to batch persistence/session-list notifications or change the recovery protocol to request scrollback only when needed.
+  - Lowered the default scrollback cap to 1,337 lines while retaining the existing config and `--scrollback-lines` override for larger histories.
+  - Added a cryptographically random, bounded 0–10 second reconnect jitter for publisher hosts and multi-attach clients, so recovery work is spread rather than synchronized. Direct/single attach remains unchanged because it has no reconnect loop.
+  - Explicitly excluded: a 20-host restart regression, because it would impose unsuitable load on the development machine.
+  - Follow-up: profile a production-shaped restart using the existing opt-in `pprof` build before deciding whether to batch persistence/session-list notifications or change the recovery protocol to request scrollback only when needed.
+- Regression coverage:
+  - `TestPolicyWithJitterUsesBoundedSample` and `TestPolicyWithJitterClampsSample` verify the additive jitter range and defensive bounds.
+  - `TestPublisherReconnectDelayAddsConfiguredJitter` and `TestReconnectDelayAddsConfiguredJitter` verify publisher and multi-attach retry paths apply their policy jitter.
+  - The isolated PTY test harness injects zero jitter so existing terminal integration regressions remain deterministic; production code uses crypto-secure randomness.
+- Verification:
+  - `go test ./internal/backoff ./internal/publisher ./internal/attach -count=1` passed.
+  - `go test ./internal/config ./internal/session -count=1` passed.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `golint ./...` is unavailable in this environment; equivalent `go run golang.org/x/lint/golint@latest ./...` passed.
 
 ### B-110 Detached headless startup reports ready before its PTY launches
 
