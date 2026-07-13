@@ -100,7 +100,8 @@ class CertificateStore(
             return CertificateState(emptyMap())
         }
         return runCatching {
-            LingonJson.decodeFromString(CertificateState.serializer(), raw)
+            val decoded = LingonJson.decodeFromString(CertificateState.serializer(), raw)
+            CertificateState(normalizeCertificateEndpoints(decoded.endpoints))
         }.getOrElse { CertificateState(emptyMap()) }
     }
 

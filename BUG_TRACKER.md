@@ -45,9 +45,11 @@ Required status values:
   4. Refresh the certificate state and observe the settings UI must still show the certificate.
 - Regression coverage:
   - `AppViewModelTest.certificateFlowUsesNormalizedSelectedEndpointKey`.
+  - `CertificateStoreTest.listFindsLegacyRawEndpointKeyThroughNormalizedLookup`.
 - Verification:
   - Added shared certificate endpoint-key normalization for storage and the ViewModel lookup. Certificate-flow entries are normalized and legacy/raw endpoint entries are merged by certificate ID.
-  - Targeted Android unit test was attempted before and after the fix, but cannot start because `JAVA_HOME` is unset and `java` is not on `PATH`.
+  - Review found that storage lookups still decoded raw legacy keys. `loadState` now normalizes that decoded map before list/add/remove operations, with `CertificateStoreTest.listFindsLegacyRawEndpointKeyThroughNormalizedLookup` covering the normalized lookup of a legacy no-slash entry.
+  - Targeted Android unit tests for both the ViewModel and legacy-store regressions were attempted before and after the fixes, but cannot start because `JAVA_HOME` is unset and `java` is not on `PATH`.
   - `./gradlew :app:compileDebugAndroidTestKotlin` was also blocked by the missing JDK before compilation began.
   - `go test ./...` passed.
   - `go vet ./...` passed.
