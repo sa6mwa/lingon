@@ -101,6 +101,8 @@ type localSession struct {
 
 	remoteInputCh chan []byte
 	outputNotify  chan struct{}
+	startupOnce   sync.Once
+	startupCh     chan error
 
 	resizeRedrawMu      sync.Mutex
 	ignoreNextPTYOutput bool
@@ -477,6 +479,7 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 		allowRemoteResize: opts.AllowRemoteResize,
 		remoteInputCh:     make(chan []byte, 256),
 		outputNotify:      make(chan struct{}, 1),
+		startupCh:         make(chan error, 1),
 	}
 	if opts.Cols > 0 && opts.Rows > 0 {
 		session.snapshot = &protocolpb.Snapshot{
@@ -491,6 +494,27 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 	session.setOscDefaults(opts.DefaultFg, opts.DefaultBg, opts.DefaultCursor)
 	go session.runRemoteInput()
 	return session
+}
+
+func (s *localSession) waitForStartup(ctx context.Context) error {
+	if s == nil || s.startupCh == nil {
+		return fmt.Errorf("local session startup is unavailable")
+	}
+	select {
+	case err := <-s.startupCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *localSession) reportStartup(err error) {
+	if s == nil || s.startupCh == nil {
+		return
+	}
+	s.startupOnce.Do(func() {
+		s.startupCh <- err
+	})
 }
 
 func (s *localSession) ID() string {
@@ -1169,6 +1193,7 @@ func (s *localSession) closePTY() {
 func (s *localSession) runOnce(ctx context.Context) error {
 	ptyFile, ttyFile, cmd, err := startShell(s.shell, s.term)
 	if err != nil {
+		s.reportStartup(err)
 		return err
 	}
 	s.ptyMu.Lock()
@@ -1274,6 +1299,7 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	if snapErr == nil {
 		s.storeSnapshot(protocol.SnapshotToProto(rawSnap), 0)
 	}
+	s.reportStartup(nil)
 	_ = setNonblock(ptyFile, true)
 	defer func() {
 		_ = setNonblock(ptyFile, false)

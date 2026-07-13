@@ -29,6 +29,32 @@ Required status values:
 
 ## Active Items
 
+### B-110 Detached headless startup reports ready before its PTY launches
+
+- Status: `resolved`
+- Area: `headless`, `startup`, `session`
+- Summary: The headless daemon signals detached-startup readiness after binding its local socket but before its initial local terminal runner has launched a shell.
+- Report:
+  Review found that an invalid shell can make the initial local runner fail immediately after the detached parent has already received a successful `ready` status and printed its background-start message.
+- Desired behavior:
+  Detached startup reports ready only after the initial local PTY has launched. If runner initialization fails, startup returns the error and never signals ready.
+- Repro:
+  1. Start a headless daemon with an invalid shell path.
+  2. Observe the runner fail during its initial local-session start.
+  3. Verify no startup-ready callback or detached success status is emitted.
+- Regression coverage:
+  - `TestDaemonDoesNotReportReadyWhenInitialShellFails`.
+- Verification:
+  - Investigation confirmed `headlessd.Daemon.Run` starts `runner.Run` in a goroutine and calls `OnStartupReady` before the runner's initial local session invokes `startShell`.
+  - Added an initial-PTY readiness signal from the session runner. The daemon waits for it before serving its local socket or reporting detached startup readiness, and propagates startup errors instead.
+  - The regression failed before the fix because the daemon returned `nil` after `start shell: fork/exec ... no such file or directory`; it now passes.
+  - `go test ./internal/headlessd -run TestDaemonDoesNotReportReadyWhenInitialShellFails -count=1` passed.
+  - `go test ./internal/session ./internal/headlessd -count=1` initially exposed an unrelated `TestRemoteInputSurvivesStaleSessionsList` timing failure; rerunning that exact test passed, and the full suite passed afterward.
+  - `go test ./...` passed.
+  - `go vet ./...` passed.
+  - `golangci-lint run ./...` passed.
+  - `golint ./...` is unavailable in this environment; equivalent `go run golang.org/x/lint/golint@latest ./...` passed.
+
 ### B-109 Android certificate UI loses canonical endpoint entries
 
 - Status: `needs_verification`

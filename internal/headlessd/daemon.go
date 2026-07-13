@@ -251,6 +251,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	runnerCtx, cancelRunner := context.WithCancel(ctx)
 	defer cancelRunner()
+	runnerReadyCh := make(chan error, 1)
 	runner := session.New(session.Options{
 		Endpoint:                    d.opts.Endpoint,
 		Token:                       d.opts.Token,
@@ -281,6 +282,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		OnPublishStatus:             d.handlePublishStatus,
 		OnPublishWall:               d.handlePublishWall,
 		OnStatus:                    d.handleSessionStatus,
+		OnInitialSessionReady: func(err error) {
+			runnerReadyCh <- err
+		},
 		ToggleWallInactivityFallback: func(ctx context.Context, sessionID string) (session.WallInactivityToggleResult, error) {
 			return d.toggleWallInactivityFallback(sessionID), nil
 		},
@@ -300,6 +304,21 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go func() {
 		runnerErrCh <- runner.Run(runnerCtx)
 	}()
+	select {
+	case err := <-runnerReadyCh:
+		if err != nil {
+			_ = d.writeState("stopped", err.Error())
+			return err
+		}
+	case err := <-runnerErrCh:
+		if err != nil {
+			_ = d.writeState("stopped", err.Error())
+			return err
+		}
+		return fmt.Errorf("initial local runner exited before reporting readiness")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/client", d.handleWSClient)

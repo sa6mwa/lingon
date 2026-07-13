@@ -70,6 +70,10 @@ type Options struct {
 	OnPublishStatus func(PublishStatus)
 	OnPublishWall   func(*protocolpb.Wall)
 	OnStatus        func(StatusUpdate)
+	// OnInitialSessionReady reports whether the first local PTY launched.
+	// It is called once before Run enters its steady state, or with the startup
+	// error that prevents it from doing so.
+	OnInitialSessionReady func(error)
 	// DisableDesktopNotifications suppresses best-effort desktop notifications for inactivity walls.
 	DisableDesktopNotifications bool
 	DesktopNotifier             desktopnotify.Notifier
@@ -294,7 +298,18 @@ func (r *Runner) initializeSessionIdentity() {
 }
 
 // Run starts the local terminal session and blocks until exit.
-func (r *Runner) Run(ctx context.Context) error {
+func (r *Runner) Run(ctx context.Context) (retErr error) {
+	startupReported := false
+	reportInitialSessionReady := func(err error) {
+		if startupReported || r.opts.OnInitialSessionReady == nil {
+			return
+		}
+		startupReported = true
+		r.opts.OnInitialSessionReady(err)
+	}
+	defer func() {
+		reportInitialSessionReady(retErr)
+	}()
 	if r.opts.Logger == nil {
 		r.opts.Logger = logging.Default()
 	}
@@ -410,6 +425,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := r.startInitialLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput); err != nil {
 		return err
 	}
+	reportInitialSessionReady(nil)
 
 	if r.opts.Publish && !r.opts.DisableRemoteSessions {
 		r.remoteSessions = newRemoteManager(remoteOptions{
@@ -1772,6 +1788,9 @@ func (r *Runner) firstLocalID() string {
 func (r *Runner) startInitialLocalSession(ctx context.Context, tokenRefresher func(context.Context) (string, error), gate *netgate.Gate, stdout, stdin *os.File, debugRemoteInput bool) error {
 	session, err := r.addLocalSession(ctx, r.opts.SessionID, r.sessionName, r.opts.Respawn, r.opts.Offline, tokenRefresher, gate, stdout, stdin, debugRemoteInput)
 	if err != nil {
+		return err
+	}
+	if err := session.waitForStartup(ctx); err != nil {
 		return err
 	}
 	r.setActiveSession(session.ID(), true)
