@@ -29,6 +29,50 @@ Required status values:
 
 ## Active Items
 
+### B-112 Attach alt-screen exit can leak prompt background across its restored line
+
+- Status: `resolved`
+- Area: `attach`, `render`, `terminal`, `pty`
+- Summary: After an attached application leaves the alternate screen with its
+  cursor at the lower-right corner, the attach display can retain the blue
+  background used by the first three cells of the shell prompt across the
+  restored line.
+- Report:
+  The engineer observes this only through Lingon attach; the same command in a
+  direct xterm or SSH terminal restores the prompt background correctly.
+- Desired behavior:
+  Leaving an application alternate screen must not transfer delayed-wrap state
+  to the restored primary screen. Prompt-specific background styling must
+  remain confined to its source cells.
+- Repro:
+  1. Use a shell prompt whose first three cells have a blue background.
+  2. Attach to the session and start an alternate-screen application.
+  3. Exit while the application cursor is at the lower-right corner.
+  4. Observe the restored prompt line must have the default background beyond
+     its styled cells, not the prompt's blue background.
+- Investigation:
+  - The emulator keeps delayed-wrap state globally while switching between
+    primary and alternate screens. A final printable cell at the alternate
+    screen's lower-right corner leaves that state set. The first primary-screen
+    prompt character then triggers an unintended scroll with the prompt's
+    active background color, filling the restored line.
+- Regression coverage:
+  - `TestAltScreenSwitchClearsDelayedWrap` asserts that a bottom-right
+    alternate-screen write cannot scroll or recolor the restored primary
+    screen.
+  - `TestAttachAltScreenExitDoesNotLeakPromptBackgroundToRestoredPromptLine`
+    is an isolated PTY integration regression that verifies the visible attach
+    terminal keeps prompt background styling limited to its first three cells.
+- Verification:
+  - The attach PTY regression failed before the fix with the restored prompt
+    line background `0x1000004` (blue), then passed after the alternate-screen
+    transition began clearing delayed-wrap state.
+  - `go test ./internal/terminal/emu -run TestAltScreenSwitchClearsDelayedWrap -count=1` passed.
+  - `go test -tags integration ./integration/pty/attach -run TestAttachAltScreenExitDoesNotLeakPromptBackgroundToRestoredCursorCell -count=1` passed.
+  - `go test ./...`, `go vet ./...`, and `golint ./...` passed.
+  - `golangci-lint run ./...` is blocked by the installed linter binary: it
+    was built with Go 1.26 while this repository requires Go 1.27.
+
 ### B-111 Relay restart causes excessive reconnect replay load with many hosts
 
 - Status: `resolved`
