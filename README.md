@@ -336,6 +336,9 @@ Android wall behavior:
 
 ## Known caveats and parity notes
 
+- Windows is not a supported Lingon platform. Windows-specific build tags and
+  stubs exist only to keep shared packages buildable; they do not establish
+  runtime compatibility or support for detached headless mode.
 - The CLI no-flicker/tab-overlay invariants are enforced by integration and
   architecture tests in `internal/session`, `internal/attach`, and `internal/mvu`.
 - Web UI and Android do not use the `internal/mvu` renderer directly; they use
