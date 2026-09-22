@@ -29,6 +29,40 @@ Required status values:
 
 ## Active Items
 
+### B-115 Relay reconnect storm times out host pings with a dozen sessions
+
+- Status: `needs_verification`
+- Area: `relay`, `publisher`, `performance`, `reconnect`
+- Summary: Roughly a dozen remote sessions repeatedly reconnect; the relay runs hot and hosts close with `ping timeout` soon after registration.
+- Report: At least 50–100 concurrent sessions must remain usable on a two-core relay.
+- Repro: Reconnect a dozen or more hosts using one account while watching relay CPU and `relay.ws.read.failed` logs; hosts register and then disconnect with a host-originated ping timeout.
+- Investigation:
+  - Each websocket handshake persisted token metadata even when unchanged, and each host registration persisted the full store.
+  - Every registration/disconnect woke every session-list websocket, each of which rebuilt and sent the full list. A 100-host reconnect burst could therefore trigger up to 100 list pushes per subscriber. The publisher's two-second ping timeout made the burst prone to false disconnects under scheduling pressure.
+  - On `gertrude3` on 2026-09-22, the running relay used about 93% CPU with 12 active sessions and a 25,696,473-byte `state.json`. It contained 62,456 access tokens; 62,451 were expired and only five were current. Every host registration and disconnect serialized and rewrote that file. The host WebSocket reader started only after this synchronous save, so the relay could not answer host pings while persistence was busy.
+- Fix:
+  - Coalesce session-list notifications per user over 100 ms. New subscribers still receive an immediate current list; a pending timer is canceled when the last subscriber leaves.
+  - Persist host/client token classification only when access or refresh token metadata changes.
+  - Increase default publisher heartbeat interval from 2 to 5 seconds and pong timeout from 2 to 10 seconds. Environment overrides remain available.
+  - Prune expired access tokens from the in-memory store and persisted JSON during every save. Keep current access tokens and refresh tokens.
+  - Start the host WebSocket read loop immediately after registration, before state persistence, so pings can be answered during a slow save. Preserve unregister and close behavior when persistence fails.
+- Regression coverage:
+  - `TestSessionNotifierCoalescesReconnectBurst` uses a mock clock to prove 100 changes yield one notification for each of 100 subscribers. It failed before the fix because notifications arrived immediately; it passes after the fix. `TestSessionNotifierKeepsUsersSeparate` checks account isolation.
+  - `TestMarkTokenClientTypeSkipsUnchangedMetadata` checks reconnects do not trigger redundant token persistence.
+  - `TestStoreSavePrunesExpiredAccessTokens` uses a mock clock and checks expired tokens are removed from memory and disk while current access and refresh tokens survive. It failed before the fix and passed afterward.
+  - `TestHostPingAnsweredWhileRegistrationPersists` blocks a registration save and requires a live host ping to receive a pong before the save can finish. It failed before the fix with a ping timeout and passed afterward.
+  - Opt-in `TestRelayHundredHostReconnectBurst` reloads 100 persisted sessions and distinct host tokens alongside 62,451 expired tokens, reconnects 100 WebSockets concurrently, checks all 100 are active together, and checks the saved JSON contains only the 100 current access tokens. It uses no PTY or inherited terminal.
+- Verification:
+  - The opt-in 100-host check passed with `GOMAXPROCS=2` and also under `go test -race` after seeding the expired-token backlog (0.36 s and 4.38 s, respectively).
+  - `go test -race ./internal/relay -run '^TestSessionNotifier' -count=1` passed.
+  - `go test -race ./internal/relay -run '^(TestHostPingAnsweredWhileRegistrationPersists|TestWSHostPersistFailureClosesReplacedHost|TestStoreSavePrunesExpiredAccessTokens)$' -count=3` passed.
+  - `go test ./internal/relay -count=3` passed after correcting the ping regression's test-server cleanup ordering.
+  - `go test ./internal/session -run '^TestNo401OnExpiredAuthAfterRelayRestart$' -count=1` passed after pruning.
+  - `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed after the follow-up fix.
+  - The changed notifier, persistence, publisher heartbeat, and relay handler paths were reviewed after implementation. A pre-existing relay logger nil check was removed to clear staticcheck, and the pre-existing relay-restart integration test now injects zero reconnect jitter; it passed three consecutive runs.
+- Remaining gap: Deploy the fix and observe the actual two-core relay with real publishers and terminal replay. Verify that `state.json` shrinks, CPU settles, and hosts remain connected without repeated `ping timeout` cycles. A sustained 100-session production soak is still needed to establish CPU headroom.
+- Follow-up report (2026-09-22 22:26 UTC): Hosts including `psl`, `cpkt`, and `omm` cycled through register, connect, immediate `ping timeout`, and disconnect. Attach clients came online quickly, but new sessions remained unstable. Logs showed 7–15 seconds between `relay.hub.host.register` and `relay.host.connect.done`; the prior 100-host test only checked registration and missed this heartbeat window.
+
 ### B-112 Attach alt-screen exit can leak prompt background across its restored line
 
 - Status: `resolved`

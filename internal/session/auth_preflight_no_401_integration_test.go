@@ -122,18 +122,19 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 
 	sessionID := "session_auth_preflight"
 	runner := New(Options{
-		Endpoint:   endpoint,
-		TLSDir:     tlsDir,
-		Token:      access.Token,
-		AuthFile:   authPath,
-		SessionID:  sessionID,
-		Cols:       80,
-		Rows:       24,
-		Shell:      "/bin/sh",
-		Publish:    true,
-		Stdin:      inR,
-		Stdout:     outW,
-		DisableRaw: true,
+		Endpoint:        endpoint,
+		TLSDir:          tlsDir,
+		Token:           access.Token,
+		AuthFile:        authPath,
+		SessionID:       sessionID,
+		Cols:            80,
+		Rows:            24,
+		Shell:           "/bin/sh",
+		Publish:         true,
+		Stdin:           inR,
+		Stdout:          outW,
+		DisableRaw:      true,
+		ReconnectJitter: func(time.Duration) time.Duration { return 0 },
 	})
 	runErr := make(chan error, 1)
 	go func() {
@@ -174,6 +175,7 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		Stderr:              io.Discard,
 		TermSize:            size,
 		DisableSignalResize: true,
+		ReconnectJitter:     func(time.Duration) time.Duration { return 0 },
 		RefreshInterval:     200 * time.Millisecond,
 		BackoffPolicy: backoff.Policy{
 			Base:   50 * time.Millisecond,

@@ -1076,6 +1076,11 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 		reconnected = true
 	}
 	replacedHost := s.Hub.registerHost(ws, frame.SessionId, cols, rows)
+	readDone := make(chan struct{})
+	go func() {
+		s.serveWSLoop(ctx, ws)
+		close(readDone)
+	}()
 	if s.Store != nil {
 		now := time.Now().UTC()
 		if !sessionExists {
@@ -1105,10 +1110,12 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 			LastSeenAt:       now,
 		})
 		if err := s.persist(); err != nil {
-			_ = ws.SendImmediate(ctx, frameError("failed to persist state"))
 			closeReplacedConnection(replacedHost, "superseded by reconnect")
 			s.Hub.Unregister(ws)
 			unregistered = true
+			_ = ws.SendImmediate(ctx, frameError("failed to persist state"))
+			ws.closeNow()
+			<-readDone
 			return
 		}
 	}
@@ -1119,7 +1126,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	go s.streamSessionsWS(streamCtx, ws, username)
 
-	s.serveWSLoop(ctx, ws)
+	<-readDone
 	cancelStream()
 	s.Hub.Unregister(ws)
 	unregistered = true
@@ -1537,8 +1544,9 @@ func (s *HTTPServer) markTokenClientType(access AccessToken, clientType string) 
 	if clientType == "" {
 		return
 	}
-	s.Store.MarkTokenClientType(access.Token, clientType)
-	_ = s.persist()
+	if s.Store.MarkTokenClientType(access.Token, clientType) {
+		_ = s.persist()
+	}
 }
 
 func (s *HTTPServer) notifySessions(username string) {
@@ -2093,9 +2101,5 @@ func (s *HTTPServer) loggerWithContext(ctx context.Context) pslog.Logger {
 	if ctx == nil {
 		return s.Logger
 	}
-	logger := pslog.Ctx(ctx)
-	if logger != nil {
-		return logger
-	}
-	return s.Logger
+	return pslog.Ctx(ctx)
 }

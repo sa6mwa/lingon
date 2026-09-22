@@ -197,37 +197,46 @@ func (s *Store) DeleteAccessToken(value string) {
 	delete(s.AccessTokens, value)
 }
 
-// MarkTokenClientType updates access and refresh tokens with a client type.
-func (s *Store) MarkTokenClientType(accessValue, clientType string) {
+// MarkTokenClientType updates access and refresh tokens with a client type and
+// reports whether persisted metadata changed.
+func (s *Store) MarkTokenClientType(accessValue, clientType string) bool {
 	if s == nil {
-		return
+		return false
 	}
 	if clientType == "" {
-		return
+		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	access, ok := s.AccessTokens[accessValue]
 	if !ok {
-		return
+		return false
 	}
 	if access.ClientType == "host" && clientType != "host" {
-		return
+		return false
 	}
-	access.ClientType = clientType
-	s.AccessTokens[accessValue] = access
+	changed := false
+	if access.ClientType != clientType {
+		access.ClientType = clientType
+		s.AccessTokens[accessValue] = access
+		changed = true
+	}
 	if access.RefreshToken == "" {
-		return
+		return changed
 	}
 	refresh, ok := s.RefreshTokens[access.RefreshToken]
 	if !ok {
-		return
+		return changed
 	}
 	if refresh.ClientType == "host" && clientType != "host" {
-		return
+		return changed
 	}
-	refresh.ClientType = clientType
-	s.RefreshTokens[access.RefreshToken] = refresh
+	if refresh.ClientType != clientType {
+		refresh.ClientType = clientType
+		s.RefreshTokens[access.RefreshToken] = refresh
+		changed = true
+	}
+	return changed
 }
 
 // RevokeClientTokens revokes non-host tokens for a user and returns the count revoked.

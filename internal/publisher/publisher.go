@@ -97,8 +97,8 @@ type Publisher struct {
 const HostControlID = "host"
 
 var publisherWSDialTimeout = 12 * time.Second
-var publisherPingInterval = durationFromEnv("LINGON_HOST_PUBLISHER_PING_INTERVAL", 2*time.Second)
-var publisherPingTimeout = durationFromEnv("LINGON_HOST_PUBLISHER_PING_TIMEOUT", 2*time.Second)
+var publisherPingInterval = durationFromEnv("LINGON_HOST_PUBLISHER_PING_INTERVAL", 5*time.Second)
+var publisherPingTimeout = durationFromEnv("LINGON_HOST_PUBLISHER_PING_TIMEOUT", 10*time.Second)
 var publisherSessionCloseTimeout = 1500 * time.Millisecond
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {

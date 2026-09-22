@@ -79,8 +79,12 @@ func LoadStoreFromBytes(data []byte) (*Store, error) {
 	return &s, nil
 }
 
-// Save writes the store to disk.
+// Save removes expired access tokens and writes the store to disk.
 func (s *Store) Save(dir string) error {
+	return s.saveAt(dir, time.Now().UTC())
+}
+
+func (s *Store) saveAt(dir string, now time.Time) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -89,9 +93,14 @@ func (s *Store) Save(dir string) error {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 
-	s.mu.RLock()
+	s.mu.Lock()
+	for value, token := range s.AccessTokens {
+		if token.IsExpired(now) {
+			delete(s.AccessTokens, value)
+		}
+	}
 	data, err := json.MarshalIndent(s, "", "  ")
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
