@@ -108,6 +108,20 @@ func (s *scrollInputState) feed(b byte) scrollCommand {
 		s.reset()
 		return scrollNone
 	case 3:
+		switch b {
+		case 'A':
+			s.reset()
+			return scrollLineUp
+		case 'B':
+			s.reset()
+			return scrollLineDown
+		case 'H':
+			s.reset()
+			return scrollTop
+		case 'F':
+			s.reset()
+			return scrollBottom
+		}
 		if b == '~' {
 			cmd := scrollFromTildeSeq(s.escBuf)
 			s.reset()

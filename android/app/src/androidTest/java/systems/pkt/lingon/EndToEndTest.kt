@@ -344,6 +344,41 @@ class EndToEndTest {
     }
 
     @Test
+    fun keyboard_input_forwards_ctrl_alt_and_modified_arrows() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_DPAD_UP, alt = true)
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_DPAD_DOWN, ctrl = true, alt = true, shift = true)
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_D, ctrl = true, alt = true, shift = true)
+
+        waitUntilNoError(20_000L) {
+            snapshotContainsSequence(
+                "ECHO_${sessionId} 1b",
+                "ECHO_${sessionId} 5b",
+                "ECHO_${sessionId} 31",
+                "ECHO_${sessionId} 3b",
+                "ECHO_${sessionId} 33",
+                "ECHO_${sessionId} 41",
+                "ECHO_${sessionId} 1b",
+                "ECHO_${sessionId} 5b",
+                "ECHO_${sessionId} 31",
+                "ECHO_${sessionId} 3b",
+                "ECHO_${sessionId} 38",
+                "ECHO_${sessionId} 42",
+                "ECHO_${sessionId} 1b",
+                "ECHO_${sessionId} 04",
+            )
+        }
+    }
+
+    @Test
     fun pinch_zoom_adjusts_view_and_resets() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -4265,7 +4300,22 @@ class EndToEndTest {
     }
 
     private fun sendKeyStroke(keyCode: Int, shift: Boolean = false) {
+        sendModifiedKeyStroke(keyCode, shift = shift)
+    }
+
+    private fun sendModifiedKeyStroke(
+        keyCode: Int,
+        ctrl: Boolean = false,
+        alt: Boolean = false,
+        shift: Boolean = false,
+    ) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (ctrl) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT))
+        }
+        if (alt) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ALT_LEFT))
+        }
         if (shift) {
             instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SHIFT_LEFT))
         }
@@ -4273,6 +4323,12 @@ class EndToEndTest {
         instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, keyCode))
         if (shift) {
             instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SHIFT_LEFT))
+        }
+        if (alt) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ALT_LEFT))
+        }
+        if (ctrl) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT))
         }
     }
 

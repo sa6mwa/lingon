@@ -63,6 +63,108 @@ Required status values:
 - Remaining gap: Deploy the fix and observe the actual two-core relay with real publishers and terminal replay. Verify that `state.json` shrinks, CPU settles, and hosts remain connected without repeated `ping timeout` cycles. A sustained 100-session production soak is still needed to establish CPU headroom.
 - Follow-up report (2026-09-22 22:26 UTC): Hosts including `psl`, `cpkt`, and `omm` cycled through register, connect, immediate `ping timeout`, and disconnect. Attach clients came online quickly, but new sessions remained unstable. Logs showed 7–15 seconds between `relay.hub.host.register` and `relay.host.connect.done`; the prior 100-host test only checked registration and missed this heartbeat window.
 
+### B-114 Android modifier chords and Alt+Arrow input are not consistently forwarded
+
+- Status: `needs_verification`
+- Area: `android`, `terminal-input`, `attach`, `pty`
+- Summary: Android terminal input does not consistently encode Ctrl+Alt chords
+  or modified navigation keys. In particular, on-screen modifier toggles bypass
+  the cursor-key encoding path for quick-key arrows, and physical Alt+Up/Down can be
+  dropped before it reaches the terminal. Attach scrollback also does not
+  recognize standard modified CSI arrow sequences.
+- Report:
+  Ctrl and Alt should be independently selectable in the Android terminal,
+  then apply together to the next key regardless of letter case. Alt+Up/Down
+  must work from Android and Lingon attach.
+- Desired behavior:
+  Android must send conventional terminal encodings for Ctrl, Alt, and
+  Ctrl+Alt character chords and modified navigation keys. Attach must accept
+  Alt-modified Up/Down in its scrollback input mode without regressing normal
+  remote input forwarding.
+- Repro:
+  1. In Android, toggle Alt then use the on-screen Up or Down quick key, or
+     press Alt+Up/Down on a physical keyboard.
+  2. Observe that the quick key produces a malformed escape sequence and the
+     physical key can be ignored.
+  3. In attach scrollback, send CSI `1;3A` or `1;3B` and observe that it is
+     not treated as an Up/Down navigation command.
+- Investigation:
+  - Android's quick keys pass cursor escape sequences through the ordinary
+    character modifier encoder. With Alt selected, that encoder prepended ESC
+    to every byte of `ESC [ A/B`, rather than emitting a single modified cursor
+    sequence. Physical modified cursor events had no Unicode character, then
+    fell through the letter-only key-code fallback and were dropped.
+  - Attach's normal relay input already forwards modified bytes unchanged. Its
+    scrollback parser, however, accepts only unmodified CSI `A/B` finals and
+    discarded `CSI 1;3A/B`, the conventional Alt+Up/Down encoding.
+- Regression coverage:
+  - `TerminalInputDispatchTest` verifies uppercase Ctrl+Alt letters, Android
+    Alt/Ctrl+Alt/Ctrl+Alt+Shift cursor encodings, and preserves modified CSI
+    sequences in application-cursor mode.
+  - `EndToEndTest.keyboard_input_forwards_ctrl_alt_and_modified_arrows` drives
+    actual Android modifier key-down/up events and checks the host receives
+    Alt+Up (`CSI 1;3A`), Ctrl+Alt+Shift+Down (`CSI 1;8B`), and Ctrl+Alt+Shift+D
+    (`ESC 0x04`).
+  - `TestAttachScrollbackModifiedArrowKeysMoveImmediately` is an isolated PTY
+    integration test that drives `CSI 1;3A/B` through attach scrollback and
+    asserts observable viewport movement. Unit coverage keeps host and attach
+    scrollback parsers aligned for Alt and Ctrl+Alt+Shift arrows.
+- Verification:
+  - `./gradlew :app:testDebugUnitTest --tests
+    systems.pkt.lingon.ui.TerminalInputDispatchTest` passed (16 tests).
+  - `./gradlew :app:testDebugUnitTest` completed without failing test-result
+    XML reports.
+  - `./gradlew :app:compileDebugAndroidTestKotlin` passed.
+  - The targeted connected test compiled and packaged, but could not run: no
+    Android device/emulator was connected. The adb server that Gradle started
+    for device discovery was stopped afterward.
+  - `go test -count=1 ./internal/attach ./internal/session -run
+    TestScrollbackInputMappings` passed.
+  - `go test -count=1 -tags integration ./integration/pty/attach -run
+    TestAttachScrollbackModifiedArrowKeysMoveImmediately` passed.
+  - `go test ./...` reached an unrelated failure in pre-existing
+    `internal/session.TestNo401OnExpiredAuthAfterRelayRestart` (`timeout
+    waiting for condition`), matching the known B-113 suite instability. No
+    input-related test failed.
+- Remaining gap:
+  - A connected Android device/emulator is required to run the new targeted
+    end-to-end regression and move this item to `resolved`.
+
+### B-113 Session-list polling floods production logs at info level
+
+- Status: `needs_verification`
+- Area: `server`, `logging`, `relay`
+- Summary: Successful session-list polling requests are emitted as info-level
+  HTTP access logs, creating a high-volume production log stream.
+- Report:
+  Normal session polling produces repeated successful access events at info
+  level.
+- Desired behavior:
+  All successful HTTP access requests must emit trace-level logs. Client errors
+  must remain warn-level logs and server errors must remain error-level logs.
+- Repro:
+  1. Poll a relay session list.
+  2. Observe a successful access event is emitted at info level for every poll.
+- Regression coverage:
+  - `TestAccessLogUsesResponseSeverity` directly records the middleware's
+    logger calls and asserts 200 → trace, 400 → warn, and 500 → error.
+- Verification:
+  - `go test ./internal/server -run
+    'TestAccessLog(EmitsStatusAndIP|UsesResponseSeverity)' -count=1` passed.
+  - `go test ./...` initially passed before the unrelated relay lint cleanup.
+    After that cleanup was reverted, the full suite twice failed in the
+    pre-existing `internal/session` integration test
+    `TestNo401OnExpiredAuthAfterRelayRestart` with `timeout waiting for
+    condition`, including one isolated rerun.
+  - `go vet ./...` and `golint ./...` passed.
+  - `golangci-lint run ./...` is blocked by pre-existing staticcheck findings
+    in `internal/relay/http.go` (SA4023); no unrelated relay change is included
+    in this access-log fix.
+  - Follow-up during B-115: removed the unreachable relay logger nil check and
+    made the relay-restart test's host and attach jitter deterministic. The
+    targeted restart test passed three consecutive runs; `go test ./...` and
+    `golangci-lint run ./...` now pass.
+
 ### B-112 Attach alt-screen exit can leak prompt background across its restored line
 
 - Status: `resolved`

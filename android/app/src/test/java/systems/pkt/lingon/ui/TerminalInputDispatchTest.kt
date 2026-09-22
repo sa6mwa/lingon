@@ -68,6 +68,16 @@ class TerminalInputDispatchTest {
     }
 
     @Test
+    fun dispatchWithCtrlAltTreatsUppercaseLettersAsTheSameControlChord() {
+        val out = dispatchSoftInput(payload = "D", ctrlActive = true, altActive = true)
+
+        assertNull(out.text)
+        assertArrayEquals(byteArrayOf(0x1b, 0x04), out.bytes)
+        assertEquals(false, out.nextCtrlActive)
+        assertEquals(false, out.nextAltActive)
+    }
+
+    @Test
     fun dispatchEnterWithAltSendsPlainCarriageReturn() {
         val out = dispatchSoftInput(payload = "\n", ctrlActive = false, altActive = true)
 
@@ -112,6 +122,18 @@ class TerminalInputDispatchTest {
     }
 
     @Test
+    fun buildModifiedBytesUsesSingleCsiSequenceForModifiedCursorKeys() {
+        assertArrayEquals(
+            "\u001b[1;3A".encodeToByteArray(),
+            buildModifiedBytes("\u001b[A", ctrlActive = false, altActive = true),
+        )
+        assertArrayEquals(
+            "\u001b[1;7B".encodeToByteArray(),
+            buildModifiedBytes("\u001b[B", ctrlActive = true, altActive = true),
+        )
+    }
+
+    @Test
     fun hardwareKeyBytesMapsArrowAndHomeEndKeys() {
         assertArrayEquals("\u001b[A".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_DPAD_UP))
         assertArrayEquals("\u001b[B".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_DPAD_DOWN))
@@ -119,6 +141,27 @@ class TerminalInputDispatchTest {
         assertArrayEquals("\u001b[C".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_DPAD_RIGHT))
         assertArrayEquals("\u001b[H".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_MOVE_HOME))
         assertArrayEquals("\u001b[F".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_MOVE_END))
+    }
+
+    @Test
+    fun hardwareKeyBytesMapsModifiedCursorKeys() {
+        assertArrayEquals(
+            "\u001b[1;3A".encodeToByteArray(),
+            hardwareKeyBytes(AndroidKeyEvent.KEYCODE_DPAD_UP, altActive = true),
+        )
+        assertArrayEquals(
+            "\u001b[1;7B".encodeToByteArray(),
+            hardwareKeyBytes(AndroidKeyEvent.KEYCODE_DPAD_DOWN, ctrlActive = true, altActive = true),
+        )
+        assertArrayEquals(
+            "\u001b[1;8B".encodeToByteArray(),
+            hardwareKeyBytes(
+                AndroidKeyEvent.KEYCODE_DPAD_DOWN,
+                ctrlActive = true,
+                altActive = true,
+                shiftActive = true,
+            ),
+        )
     }
 
     @Test

@@ -18,7 +18,7 @@ var attachWheelUpSeq = []byte{0x1b, '[', '<', '6', '4', ';', '1', ';', '1', 'M'}
 var attachWheelDownSeq = []byte{0x1b, '[', '<', '6', '5', ';', '1', ';', '1', 'M'}
 var attachVisibleLinePattern = regexp.MustCompile(`LINE-(\d{2,3})`)
 
-func TestAttachScrollbackDownMovesImmediately(t *testing.T) {
+func TestAttachScrollbackModifiedArrowKeysMoveImmediately(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
 	shell := "/bin/sh"
 	if _, err := os.Stat("/bin/bash"); err == nil {
@@ -75,11 +75,18 @@ func TestAttachScrollbackDownMovesImmediately(t *testing.T) {
 	}
 
 	top := attach.Screen().String()
-	attach.SendBytes([]byte{0x1b, '[', 'B'})
+	attach.SendBytes([]byte{0x1b, '[', '1', ';', '3', 'B'})
 	h.Advance(120 * time.Millisecond)
-	after := attach.Screen().String()
-	if after == top {
-		t.Fatalf("expected scroll down to move immediately from top; got unchanged screen:\n%s", after)
+	afterAltDown := attach.Screen().String()
+	if afterAltDown == top {
+		t.Fatalf("expected Alt+Down to move scrollback immediately from top; got unchanged screen:\n%s", afterAltDown)
+	}
+
+	attach.SendBytes([]byte{0x1b, '[', '1', ';', '3', 'A'})
+	h.Advance(120 * time.Millisecond)
+	afterAltUp := attach.Screen().String()
+	if afterAltUp == afterAltDown {
+		t.Fatalf("expected Alt+Up to move scrollback immediately; got unchanged screen:\n%s", afterAltUp)
 	}
 }
 

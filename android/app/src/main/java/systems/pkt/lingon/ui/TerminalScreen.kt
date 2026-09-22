@@ -273,8 +273,14 @@ fun TerminalScreen(
         val ctrlActiveNative = native.metaState and AndroidKeyEvent.META_CTRL_ON != 0
         val altActiveNative = native.metaState and AndroidKeyEvent.META_ALT_ON != 0
 
-        val directBytes = hardwareKeyBytes(native.keyCode)
-        if (directBytes != null && !ctrlActiveNative && !altActiveNative) {
+        val shiftActiveNative = native.metaState and AndroidKeyEvent.META_SHIFT_ON != 0
+        val directBytes = hardwareKeyBytes(
+            keyCode = native.keyCode,
+            ctrlActive = ctrlActiveNative,
+            altActive = altActiveNative,
+            shiftActive = shiftActiveNative,
+        )
+        if (directBytes != null) {
             viewModel.sendRawBytes(directBytes)
             return true
         }
