@@ -29,6 +29,25 @@ Required status values:
 
 ## Active Items
 
+### B-116 Android FN input, terminal selection, and clipboard
+
+- Status: `resolved`
+- Area: `android`, `terminal-input`, `terminal-rendering`
+- Report: Modified arrow chords are still reported as missing in the Android app. Add a rotating ALT/FN control, persistent FN function-key shortcuts, terminal text selection, and copy/paste across sessions through the current Android clipboard.
+- Repro: Use each on-screen ALT/Ctrl arrow combination; cycle ALT into FN and type `1` through `0`, `@`, `#`; use FN+S, drag over text, FN+C, switch sessions, and FN+P.
+- Intended behavior: ALT cycles off → ALT → FN → off; FN stays active after a key and excludes Ctrl. In selection mode one finger selects and two fingers pan, while pinch zoom works. FN+C replaces the clipboard text; FN+P reads the current Android clipboard. Selection is drawn with a white background.
+- Regression coverage:
+  - `TerminalInputDispatchTest` covers all four arrows with Alt, Ctrl, and Ctrl+Alt; ALT → FN cycling; FN commands; F1–F12 touch encodings; and physical Ctrl+Alt+F-key encodings. The first new test run failed to compile because the FN API did not exist; the physical F-key test then failed before its implementation. Both pass after the changes.
+  - `TerminalSelectionTest` covers forward and reverse multi-row selection, Unicode continuation cells, and concealed text. The concealed-cell test failed before the copy path was corrected.
+  - `TerminalGridViewInstrumentedTest.selectionDragCopiesCellsWithWhiteHighlightAndTwoFingerPanPreservesSelection` drives touch events and checks copied text, white highlight, and two-finger pan.
+  - `EndToEndTest.touch_modifiers_forward_all_arrows_and_fn_keys_stay_active` and `fn_selection_copies_visible_cells_and_pastes_current_clipboard_in_another_session` drive the Android UI against harness hosts. The existing physical modified-arrow end-to-end test remains in place.
+- Verification:
+  - `./gradlew :app:testDebugUnitTest` and `:app:compileDebugAndroidTestKotlin` pass. Previously failing ViewModel tests pass after giving share authentication a test dispatcher, making the fake repository reflect endpoint writes, using a distinct fake socket per connection, and keeping the DataStore scope inside the test lifetime. The `HttpClientProviderTest` DataStore scheduler deadlock was also fixed in test setup.
+  - Targeted connected runs pass for physical modified arrows; on-screen Alt, Ctrl, and Ctrl+Alt arrows and persistent FN function keys; cross-session selection/copy/paste using the current Android clipboard; and the grid's white highlight, one-finger selection, and two-finger pan. The first connected run failed because the isolated host echo PTY buffered input; after putting that harness-owned PTY in raw mode, the modified-key run exposed missing modifier metadata in test-injected keys. Both failures were corrected and all four cases pass.
+  - The integration harness now stores AVD data and emulator preferences under ignored `android/build/integration-emulator/`, overrides Android home paths, and uses an isolated adb server port. The final harness path passed a connected grid smoke test.
+  - `go test ./...`, `go vet ./...`, `golint ./...`, `golangci-lint run ./...`, shell syntax checks, and `git diff --check` pass.
+- Remaining gap: None for this repro. A full Android integration sweep remains the release gate under repository policy.
+
 ### B-115 Relay reconnect storm times out host pings with a dozen sessions
 
 - Status: `needs_verification`
@@ -65,7 +84,7 @@ Required status values:
 
 ### B-114 Android modifier chords and Alt+Arrow input are not consistently forwarded
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Area: `android`, `terminal-input`, `attach`, `pty`
 - Summary: Android terminal input does not consistently encode Ctrl+Alt chords
   or modified navigation keys. In particular, on-screen modifier toggles bypass
@@ -126,9 +145,11 @@ Required status values:
     `internal/session.TestNo401OnExpiredAuthAfterRelayRestart` (`timeout
     waiting for condition`), matching the known B-113 suite instability. No
     input-related test failed.
-- Remaining gap:
-  - A connected Android device/emulator is required to run the new targeted
-    end-to-end regression and move this item to `resolved`.
+- Follow-up verification (2026-09-24): The targeted connected
+  `keyboard_input_forwards_ctrl_alt_and_modified_arrows` test passes on the
+  isolated emulator, proving the host receives Alt+Up, Ctrl+Alt+Shift+Down,
+  and Ctrl+Alt+Shift+D. The full Android unit and Go standard checks pass.
+  The Android test injector now sets modifier metadata on the key events.
 
 ### B-113 Session-list polling floods production logs at info level
 

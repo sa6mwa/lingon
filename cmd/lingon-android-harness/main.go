@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"golang.org/x/term"
 	"google.golang.org/protobuf/proto"
 
 	"pkt.systems/lingon"
@@ -939,6 +940,14 @@ func runHostEcho(id string) {
 		logf("host-echo refused without owned pty marker")
 		return
 	}
+	// The harness launches this process on its own child PTY. Byte-level echo
+	// must not wait for a newline in the PTY's canonical input mode.
+	ptyState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		logf("host-echo raw mode failed: %v", err)
+		return
+	}
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), ptyState) }()
 
 	writer := bufio.NewWriterSize(os.Stdout, 4096)
 	if raw := strings.TrimSpace(os.Getenv("LINGON_HOST_ECHO_INITIAL_LINES")); raw != "" {

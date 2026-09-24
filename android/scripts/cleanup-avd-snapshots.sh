@@ -2,7 +2,7 @@
 set -euo pipefail
 
 AVD_NAME="${AVD_NAME:-lingon-aosp-35}"
-AVD_DIR="${HOME}/.android/avd/${AVD_NAME}.avd"
+AVD_DIR="${ANDROID_AVD_HOME:-${ANDROID_USER_HOME:-${HOME}/.android}/avd}/${AVD_NAME}.avd"
 CONFIG_PATH="${AVD_DIR}/config.ini"
 QUICKBOOT_CHOICE_PATH="${AVD_DIR}/quickbootChoice.ini"
 

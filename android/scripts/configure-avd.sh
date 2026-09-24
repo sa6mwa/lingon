@@ -2,7 +2,8 @@
 set -euo pipefail
 
 AVD_NAME="${AVD_NAME:-lingon-aosp-35}"
-CONFIG_PATH="${HOME}/.android/avd/${AVD_NAME}.avd/config.ini"
+AVD_DIR="${ANDROID_AVD_HOME:-${ANDROID_USER_HOME:-${HOME}/.android}/avd}/${AVD_NAME}.avd"
+CONFIG_PATH="${AVD_DIR}/config.ini"
 AVD_RAM_MB="${AVD_RAM_MB:-4096}"
 AVD_CPU_CORES="${AVD_CPU_CORES:-6}"
 
@@ -13,7 +14,7 @@ fi
 
 drop_avd_conf_key() {
   local key="$1"
-  local avd_conf_path="${HOME}/.android/avd/${AVD_NAME}.avd/AVD.conf"
+  local avd_conf_path="${AVD_DIR}/AVD.conf"
   if [[ ! -f "${avd_conf_path}" ]]; then
     return
   fi
@@ -45,9 +46,9 @@ ensure_kv "firstboot.bootFromLocalSnapshot" "no"
 ensure_kv "firstboot.saveToLocalSnapshot" "no"
 drop_avd_conf_key 'set\\enforceKeycodeForwarding'
 
-printf 'saveOnExit = false\n' > "${HOME}/.android/avd/${AVD_NAME}.avd/quickbootChoice.ini"
+printf 'saveOnExit = false\n' > "${AVD_DIR}/quickbootChoice.ini"
 
 echo "Updated ${CONFIG_PATH} (perf mode: host GPU, ${AVD_RAM_MB}MB RAM, ${AVD_CPU_CORES} cores, no device frame; hardware keyboard enabled)"
-if [[ -f "${HOME}/.android/avd/${AVD_NAME}.avd/AVD.conf" ]]; then
-  echo "Updated ${HOME}/.android/avd/${AVD_NAME}.avd/AVD.conf (removed enforceKeycodeForwarding override if present)"
+if [[ -f "${AVD_DIR}/AVD.conf" ]]; then
+  echo "Updated ${AVD_DIR}/AVD.conf (removed enforceKeycodeForwarding override if present)"
 fi

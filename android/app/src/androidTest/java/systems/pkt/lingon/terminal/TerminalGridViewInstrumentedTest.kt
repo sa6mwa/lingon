@@ -1,5 +1,7 @@
 package systems.pkt.lingon.terminal
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -15,6 +17,49 @@ import systems.pkt.lingon.DefaultTerminalZoom
 
 @RunWith(AndroidJUnit4::class)
 class TerminalGridViewInstrumentedTest {
+    @Test
+    fun selectionDragCopiesCellsWithWhiteHighlightAndTwoFingerPanPreservesSelection() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val view = TerminalGridView(instrumentation.targetContext).apply {
+                measure(exactlyMeasureSpec(200), exactlyMeasureSpec(100))
+                layout(0, 0, 200, 100)
+                update(
+                    snapshot = terminalSnapshot(rows = listOf("hello world".padEnd(40)), cols = 40),
+                    fontSizeSp = 14,
+                    minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1,
+                    hostCols = 40,
+                    hostRows = 1,
+                    fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom,
+                    panResetNonce = 0,
+                    scrollbackOffsetRows = 0,
+                    imeVisible = false,
+                    isLoading = false,
+                )
+                setSelectionMode(true)
+            }
+            val cellWidth = view.getScaledCellWidthForTesting()
+            val cellHeight = view.getScaledCellHeightForTesting()
+            val downTime = SystemClock.uptimeMillis()
+            view.dispatchTouchEvent(MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, cellWidth * 1.5f, cellHeight * 0.5f, 0))
+            view.dispatchTouchEvent(MotionEvent.obtain(downTime, downTime + 16, MotionEvent.ACTION_MOVE, cellWidth * 3.5f, cellHeight * 0.5f, 0))
+            view.dispatchTouchEvent(MotionEvent.obtain(downTime, downTime + 32, MotionEvent.ACTION_UP, cellWidth * 3.5f, cellHeight * 0.5f, 0))
+            assertEquals("ell", view.selectedText())
+
+            val bitmap = Bitmap.createBitmap(200, 100, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(bitmap))
+            assertEquals(android.graphics.Color.WHITE, bitmap.getPixel((cellWidth * 2f + 1f).toInt(), 1))
+
+            val initialCameraX = view.getCameraOffsetXForTesting()
+            dispatchTwoFingerPan(view, 160f, 120f, 50f, downTime + 64)
+            assertTrue(view.getCameraOffsetXForTesting() > initialCameraX)
+            assertEquals("ell", view.selectedText())
+        }
+    }
+
     @Test
     fun httpsLinkTapOpensLinkWithoutFocusTapFallback() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -144,5 +189,24 @@ class TerminalGridViewInstrumentedTest {
         val startTime = SystemClock.uptimeMillis()
         view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime, MotionEvent.ACTION_DOWN, x, y, 0))
         view.dispatchTouchEvent(MotionEvent.obtain(startTime, startTime + 32, MotionEvent.ACTION_UP, x, y, 0))
+    }
+
+    private fun dispatchTwoFingerPan(view: View, firstX: Float, secondX: Float, y: Float, time: Long) {
+        view.dispatchTouchEvent(MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, firstX, y, 0))
+        fun multiEvent(action: Int, x1: Float, x2: Float, eventTime: Long): MotionEvent {
+            val properties = arrayOf(
+                MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+                MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            )
+            val coords = arrayOf(
+                MotionEvent.PointerCoords().apply { x = x1; this.y = y; pressure = 1f; size = 1f },
+                MotionEvent.PointerCoords().apply { x = x2; this.y = y; pressure = 1f; size = 1f },
+            )
+            return MotionEvent.obtain(time, eventTime, action, 2, properties, coords, 0, 0, 1f, 1f, 0, 0, 0, 0)
+        }
+        view.dispatchTouchEvent(multiEvent(MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT), firstX, secondX, time + 8))
+        view.dispatchTouchEvent(multiEvent(MotionEvent.ACTION_MOVE, firstX - 50f, secondX - 50f, time + 24))
+        view.dispatchTouchEvent(multiEvent(MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT), firstX - 50f, secondX - 50f, time + 32))
+        view.dispatchTouchEvent(MotionEvent.obtain(time, time + 40, MotionEvent.ACTION_UP, firstX - 50f, y, 0))
     }
 }

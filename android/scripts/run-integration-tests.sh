@@ -3,8 +3,26 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ANDROID_DIR="${ROOT_DIR}/android"
+HOST_HOME="${HOME}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${HOST_HOME}/Android/Sdk}"
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+export CA_PEM_PATH="${CA_PEM_PATH:-${HOST_HOME}/.lingon/tls/ca.pem}"
+export GRADLE_USER_HOME="${GRADLE_USER_HOME:-${HOST_HOME}/.gradle}"
+export GOCACHE="${GOCACHE:-${HOST_HOME}/.cache/go-build}"
+export GOPATH="${GOPATH:-${HOST_HOME}/go}"
 
-ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+# Keep the harness's AVD, emulator preferences, and snapshots away from the
+# developer's normal Android profile. All of these paths are ignored build data.
+EMULATOR_PROFILE="${ANDROID_DIR}/build/integration-emulator"
+export HOME="${EMULATOR_PROFILE}"
+export ANDROID_SDK_HOME="${EMULATOR_PROFILE}"
+export ANDROID_USER_HOME="${EMULATOR_PROFILE}/.android"
+export ANDROID_EMULATOR_HOME="${ANDROID_USER_HOME}"
+export ANDROID_AVD_HOME="${ANDROID_USER_HOME}/avd"
+export XDG_CONFIG_HOME="${EMULATOR_PROFILE}/.config"
+export LINGON_IT_ADB_SERVER_PORT="${LINGON_IT_ADB_SERVER_PORT:-$((20000 + RANDOM))}"
+export ANDROID_ADB_SERVER_PORT="${LINGON_IT_ADB_SERVER_PORT}"
+
 ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
 EMULATOR_BIN="${EMULATOR:-${ANDROID_SDK_ROOT}/emulator/emulator}"
 EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-snapshot}"
@@ -18,6 +36,7 @@ LOCK_PATH="${ARTIFACT_OUT}/integration-test.lock"
 CURRENT_TEST_PID=""
 CURRENT_TEST_PGID=""
 EMULATOR_STARTED="0"
+ADB_SERVER_OWNED="0"
 HOST_COLS_OVERRIDE="${HOST_COLS:-}"
 HOST_ROWS_OVERRIDE="${HOST_ROWS:-}"
 CONFIG_PATH=""
@@ -375,6 +394,9 @@ cleanup() {
   if [[ "${EMULATOR_STARTED}" == "1" ]] && [[ "${KEEP_EMULATOR}" != "1" ]] && [[ -n "${DEVICE_SERIAL:-}" ]]; then
     "${ADB_BIN}" -s "${DEVICE_SERIAL}" emu kill >/dev/null 2>&1 || true
   fi
+  if [[ "${ADB_SERVER_OWNED}" == "1" ]]; then
+    "${ADB_BIN}" kill-server >/dev/null 2>&1 || true
+  fi
   release_lock
   if [[ -n "${CONFIG_PATH:-}" ]]; then
     rm -f "${CONFIG_PATH}" || true
@@ -394,6 +416,15 @@ trap cleanup EXIT
 
 mkdir -p "${ROOT_DIR}/bin" "${ARTIFACT_OUT}"
 acquire_lock
+if ! command -v ss >/dev/null 2>&1; then
+  echo "ss is required to verify the isolated adb server port." >&2
+  exit 1
+fi
+if [[ -n "$(ss -H -ltn "sport = :${ANDROID_ADB_SERVER_PORT}")" ]]; then
+  echo "Isolated adb server port ${ANDROID_ADB_SERVER_PORT} is already in use; set LINGON_IT_ADB_SERVER_PORT." >&2
+  exit 1
+fi
+ADB_SERVER_OWNED="1"
 start_cgroup_monitor
 if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" && "${KEEP_EMULATOR}" == "1" ]]; then
   echo "LINGON_IT_KEEP_EMULATOR=1 is ignored for contained integration runs; the managed emulator must exit with the cgroup."
@@ -424,7 +455,18 @@ TEST_SRC="${ANDROID_DIR}/app/src/androidTest/java/systems/pkt/lingon/EndToEndTes
 TESTS=()
 SELECTED_TESTS=()
 ONLY_TEST="${LINGON_IT_ONLY:-}"
-if [[ -f "${TEST_SRC}" ]]; then
+TARGET_CLASS="${LINGON_IT_CLASS:-}"
+if [[ -n "${TARGET_CLASS}" ]]; then
+  if [[ ! "${TARGET_CLASS}" =~ ^[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?$ ]]; then
+    echo "Invalid LINGON_IT_CLASS: ${TARGET_CLASS}" >&2
+    exit 1
+  fi
+  if [[ -n "${ONLY_TEST}" ]]; then
+    echo "Set only one of LINGON_IT_CLASS and LINGON_IT_ONLY." >&2
+    exit 1
+  fi
+  TESTS=("${TARGET_CLASS}")
+elif [[ -f "${TEST_SRC}" ]]; then
   mapfile -t TESTS < <(run_android_tools test-names --file "${TEST_SRC}")
 fi
 if [[ "${#TESTS[@]}" -eq 0 ]]; then
@@ -557,7 +599,7 @@ if [[ "${REUSE_DEVICE}" == "1" ]]; then
 fi
 if [[ -z "${DEVICE_SERIAL}" ]]; then
   AVD_NAME="$(resolve_avd_name)"
-  if [[ ! -d "${HOME}/.android/avd/${AVD_NAME}.avd" ]]; then
+  if [[ ! -d "${ANDROID_AVD_HOME}/${AVD_NAME}.avd" ]]; then
     echo "Creating AVD ${AVD_NAME} (PRESET=${PRESET})..."
     (cd "${ANDROID_DIR}" && make avd PRESET="${PRESET}")
   fi
@@ -602,7 +644,11 @@ set +e
       if [[ -n "${class_arg}" ]]; then
         class_arg+=","
       fi
-      class_arg+="systems.pkt.lingon.EndToEndTest#${test_name}"
+      if [[ -n "${TARGET_CLASS}" ]]; then
+        class_arg+="${test_name}"
+      else
+        class_arg+="systems.pkt.lingon.EndToEndTest#${test_name}"
+      fi
     done
     reset_test_apps
     ensure_adb_reverse

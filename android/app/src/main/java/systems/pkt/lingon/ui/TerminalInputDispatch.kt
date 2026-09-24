@@ -3,6 +3,50 @@ package systems.pkt.lingon.ui
 import android.view.KeyEvent as AndroidKeyEvent
 import java.io.ByteArrayOutputStream
 
+internal enum class AltButtonMode {
+    Off, Alt, Fn;
+
+    fun next(): AltButtonMode = when (this) {
+        Off -> Alt
+        Alt -> Fn
+        Fn -> Off
+    }
+}
+
+internal fun fnFunctionKeyBytes(key: Char): ByteArray? {
+    val sequence = when (key) {
+        '1' -> "\u001bOP"
+        '2' -> "\u001bOQ"
+        '3' -> "\u001bOR"
+        '4' -> "\u001bOS"
+        '5' -> "\u001b[15~"
+        '6' -> "\u001b[17~"
+        '7' -> "\u001b[18~"
+        '8' -> "\u001b[19~"
+        '9' -> "\u001b[20~"
+        '0' -> "\u001b[21~"
+        '@' -> "\u001b[23~"
+        '#' -> "\u001b[24~"
+        else -> return null
+    }
+    return sequence.encodeToByteArray()
+}
+
+internal sealed interface FnInput {
+    data object ToggleSelection : FnInput
+    data object Copy : FnInput
+    data object Paste : FnInput
+    data class FunctionKey(val bytes: ByteArray) : FnInput
+    data class Literal(val text: String) : FnInput
+}
+
+internal fun dispatchFnKey(key: Char): FnInput = when (key.lowercaseChar()) {
+    's' -> FnInput.ToggleSelection
+    'c' -> FnInput.Copy
+    'p' -> FnInput.Paste
+    else -> fnFunctionKeyBytes(key)?.let(FnInput::FunctionKey) ?: FnInput.Literal(key.toString())
+}
+
 internal data class SoftInputDispatch(
     val text: String? = null,
     val bytes: ByteArray? = null,
@@ -143,6 +187,18 @@ internal fun hardwareKeyBytes(
     altActive: Boolean = false,
     shiftActive: Boolean = false,
 ): ByteArray? {
+    val functionIndex = keyCode - AndroidKeyEvent.KEYCODE_F1
+    if (functionIndex in 0..11) {
+        val modifier = cursorModifierParameter(ctrlActive, altActive, shiftActive)
+        if (modifier == 1) return fnFunctionKeyBytes("1234567890@#"[functionIndex])
+        val sequence = if (functionIndex < 4) {
+            "\u001b[1;${modifier}${"PQRS"[functionIndex]}"
+        } else {
+            val parameter = intArrayOf(15, 17, 18, 19, 20, 21, 23, 24)[functionIndex - 4]
+            "\u001b[${parameter};${modifier}~"
+        }
+        return sequence.encodeToByteArray()
+    }
     val direct = when (keyCode) {
         AndroidKeyEvent.KEYCODE_ENTER -> byteArrayOf('\r'.code.toByte())
         AndroidKeyEvent.KEYCODE_DEL -> byteArrayOf(0x7f.toByte())

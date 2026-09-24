@@ -8,6 +8,58 @@ import org.junit.Test
 
 class TerminalInputDispatchTest {
     @Test
+    fun altButtonCyclesThroughAltAndPersistentFn() {
+        assertEquals(AltButtonMode.Alt, AltButtonMode.Off.next())
+        assertEquals(AltButtonMode.Fn, AltButtonMode.Alt.next())
+        assertEquals(AltButtonMode.Off, AltButtonMode.Fn.next())
+    }
+
+    @Test
+    fun fnCommandsAreCaseInsensitiveAndOtherKeysStayLiteral() {
+        assertEquals(FnInput.ToggleSelection, dispatchFnKey('s'))
+        assertEquals(FnInput.ToggleSelection, dispatchFnKey('S'))
+        assertEquals(FnInput.Copy, dispatchFnKey('c'))
+        assertEquals(FnInput.Copy, dispatchFnKey('C'))
+        assertEquals(FnInput.Paste, dispatchFnKey('p'))
+        assertEquals(FnInput.Paste, dispatchFnKey('P'))
+        assertEquals(FnInput.Literal("x"), dispatchFnKey('x'))
+        assertArrayEquals("\u001bOP".encodeToByteArray(), (dispatchFnKey('1') as FnInput.FunctionKey).bytes)
+    }
+
+    @Test
+    fun fnNumberAndSymbolKeysEncodeAllTwelveFunctionKeys() {
+        val keys = "1234567890@#"
+        val expected = listOf(
+            "\u001bOP", "\u001bOQ", "\u001bOR", "\u001bOS",
+            "\u001b[15~", "\u001b[17~", "\u001b[18~", "\u001b[19~",
+            "\u001b[20~", "\u001b[21~", "\u001b[23~", "\u001b[24~",
+        )
+        keys.forEachIndexed { index, key ->
+            assertArrayEquals(expected[index].encodeToByteArray(), fnFunctionKeyBytes(key))
+        }
+        assertNull(fnFunctionKeyBytes('x'))
+    }
+
+    @Test
+    fun physicalFunctionKeysPreserveCtrlAltChords() {
+        assertArrayEquals("\u001bOP".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_F1))
+        assertArrayEquals("\u001b[1;7P".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_F1, ctrlActive = true, altActive = true))
+        assertArrayEquals("\u001b[24;7~".encodeToByteArray(), hardwareKeyBytes(AndroidKeyEvent.KEYCODE_F12, ctrlActive = true, altActive = true))
+    }
+
+    @Test
+    fun allTouchArrowChordsUseCsiModifierEncoding() {
+        val arrows = mapOf('A' to "\u001b[A", 'B' to "\u001b[B", 'C' to "\u001b[C", 'D' to "\u001b[D")
+        val chords = listOf(Triple(true, false, 5), Triple(false, true, 3), Triple(true, true, 7))
+        arrows.forEach { (final, sequence) ->
+            chords.forEach { (ctrl, alt, modifier) ->
+                val out = dispatchSoftInput(sequence, ctrlActive = ctrl, altActive = alt)
+                assertArrayEquals("\u001b[1;${modifier}${final}".encodeToByteArray(), out.bytes)
+            }
+        }
+    }
+
+    @Test
     fun dispatchWithoutModifiersSendsPlainText() {
         val out = dispatchSoftInput(payload = "hello", ctrlActive = false, altActive = false)
 

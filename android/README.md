@@ -13,6 +13,20 @@ Android app does not embed that renderer; it
 shares Lingon protocol/session semantics but keeps its own Android-native UI
 rendering pipeline.
 
+## Terminal keyboard and selection
+
+- Tap **ALT** once for the next Alt chord. Tap it again to enter **FN** mode;
+  tap **FN** to return to ALT off. FN stays on after a key. CTRL turns off when
+  FN is entered.
+- In FN mode, `1`–`9` send F1–F9, `0` sends F10, `@` sends F11, and `#`
+  sends F12. Physical F1–F12 keys also work, including Ctrl+Alt chords.
+- FN+S toggles text selection. Drag one finger over terminal cells to select;
+  selected cells have a white background. Drag two fingers to pan or pinch to
+  zoom while selection is active. Tap the terminal to show the keyboard again.
+- FN+C copies the selected text to Android's clipboard. FN+P pastes the current
+  Android clipboard contents into the active terminal, including after switching
+  sessions.
+
 ## Prereqs
 - Java 21+
 - Linux amd64 (SDK installer script is Linux-only at this time)
@@ -105,6 +119,12 @@ make integration-test PRESET=pixel7
 ```
 
 Artifacts (screenshots + debug info) are pulled to `android/test-artifacts/`.
+The integration runner keeps its AVD, emulator settings, adb key, and snapshots
+under the ignored `android/build/integration-emulator/` directory. It sets an
+isolated Android user home and adb server port so the run does not read or
+change the normal `~/.android` profile. The SDK installation and existing
+Gradle/Go dependency caches remain shared. The runner chooses a free isolated
+adb server port; set `LINGON_IT_ADB_SERVER_PORT` to choose one explicitly.
 
 By default the integration runner stops any emulator it started and resets app
 state between individual test cases. Override with:
@@ -118,6 +138,7 @@ Run a single instrumentation test with:
 
 ```bash
 LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification make integration-test
+LINGON_IT_CLASS=systems.pkt.lingon.terminal.TerminalGridViewInstrumentedTest#selectionDragCopiesCellsWithWhiteHighlightAndTwoFingerPanPreservesSelection make integration-test
 ```
 
 ## Emulator presets

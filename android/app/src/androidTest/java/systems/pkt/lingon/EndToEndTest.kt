@@ -3,6 +3,8 @@ package systems.pkt.lingon
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.service.notification.StatusBarNotification
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -375,6 +377,118 @@ class EndToEndTest {
                 "ECHO_${sessionId} 1b",
                 "ECHO_${sessionId} 04",
             )
+        }
+    }
+
+    @Test
+    fun touch_modifiers_forward_all_arrows_and_fn_keys_stay_active() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+
+        val arrows = listOf("↑" to "41", "↓" to "42", "→" to "43", "←" to "44")
+        for ((label, finalHex) in arrows) {
+            for ((ctrl, alt, modifierHex) in listOf(Triple(false, true, "33"), Triple(true, false, "35"), Triple(true, true, "37"))) {
+                if (ctrl) composeRule.onNodeWithText("CTRL").performClick()
+                if (alt) composeRule.onNodeWithText("ALT").performClick()
+                composeRule.onNodeWithText(label).performClick()
+                waitUntilNoError(10_000L) {
+                    snapshotContainsSequence(
+                        "ECHO_${sessionId} 1b", "ECHO_${sessionId} 5b", "ECHO_${sessionId} 31",
+                        "ECHO_${sessionId} 3b", "ECHO_${sessionId} $modifierHex", "ECHO_${sessionId} $finalHex",
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        waitUntilNoError(10_000L) { hasTextNode("FN") }
+        val functionKeys = listOf(
+            KeyEvent.KEYCODE_1 to listOf("1b", "4f", "50"),
+            KeyEvent.KEYCODE_2 to listOf("1b", "4f", "51"),
+            KeyEvent.KEYCODE_0 to listOf("1b", "5b", "32", "31", "7e"),
+        )
+        for ((keyCode, encoded) in functionKeys) {
+            sendKeyStroke(keyCode)
+            waitUntilNoError(10_000L) { snapshotContainsSequence(*encoded.map { "ECHO_${sessionId} $it" }.toTypedArray()) }
+            assertTrue("FN was reset by a function key", hasTextNode("FN"))
+        }
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_2, shift = true)
+        waitUntilNoError(10_000L) {
+            snapshotContainsSequence(*listOf("1b", "5b", "32", "33", "7e").map { "ECHO_${sessionId} $it" }.toTypedArray())
+        }
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_3, shift = true)
+        waitUntilNoError(10_000L) {
+            snapshotContainsSequence(*listOf("1b", "5b", "32", "34", "7e").map { "ECHO_${sessionId} $it" }.toTypedArray())
+        }
+        composeRule.onNodeWithText("FN").performClick()
+        waitUntilNoError(10_000L) { hasTextNode("ALT") && !hasTextNode("FN") }
+    }
+
+    @Test
+    fun fn_selection_copies_visible_cells_and_pastes_current_clipboard_in_another_session() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sourceSession = activeSessionId()
+        val destinationSession = testConfig.primaryUser().sessions.firstOrNull { it != sourceSession }
+            ?: throw AssertionError("selection paste test needs a second host session")
+        val clipboard = composeRule.activity.getSystemService(ClipboardManager::class.java)
+        val previousClip = clipboard.primaryClip
+        try {
+            sendTerminalInput("a")
+            waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sourceSession} 61") }
+            composeRule.onNodeWithText("ALT").performClick()
+            composeRule.onNodeWithText("ALT").performClick()
+            sendKeyStroke(KeyEvent.KEYCODE_S)
+            assertTrue(hasTextNode("FN"))
+
+            composeRule.runOnIdle {
+                val view = findTerminalView() as? TerminalGridView ?: throw AssertionError("missing terminal grid")
+                val snapshot = stateForTest().activeSnapshot ?: throw AssertionError("missing terminal snapshot")
+                val row = (view.getVisibleStartRow() until view.getVisibleEndRowExclusive())
+                    .lastOrNull { snapshotRow(snapshot, it).contains("ECHO_${sourceSession} 61") }
+                    ?: throw AssertionError("echo line is not visible for selection")
+                val col = snapshotRow(snapshot, row).indexOf("ECHO_${sourceSession} 61")
+                val cellWidth = view.getScaledCellWidthForTesting()
+                val cellHeight = view.getScaledCellHeightForTesting()
+                val x1 = (col + 0.5f) * cellWidth - view.getCameraOffsetXForTesting()
+                val x2 = (col + 3.5f) * cellWidth - view.getCameraOffsetXForTesting()
+                val y = (row + 0.5f) * cellHeight - view.getCameraOffsetYForTesting()
+                val time = SystemClock.uptimeMillis()
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, x1, y, 0))
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time + 16, MotionEvent.ACTION_MOVE, x2, y, 0))
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time + 32, MotionEvent.ACTION_UP, x2, y, 0))
+                assertEquals("ECHO", view.selectedText())
+            }
+            sendKeyStroke(KeyEvent.KEYCODE_C)
+            waitUntilNoError(10_000L) {
+                clipboard.primaryClip?.getItemAt(0)?.coerceToText(composeRule.activity)?.toString() == "ECHO"
+            }
+            assertTrue("FN was reset after copy", hasTextNode("FN"))
+
+            selectSessionTab(destinationSession, timeoutMs = 10_000L)
+            focusTerminalInput()
+            assertTrue("FN was reset on session switch", hasTextNode("FN"))
+            sendKeyStroke(KeyEvent.KEYCODE_P)
+            waitUntilNoError(10_000L) {
+                snapshotContainsSequence(*listOf("45", "43", "48", "4f").map { "ECHO_${destinationSession} $it" }.toTypedArray())
+            }
+
+            clipboard.setPrimaryClip(ClipData.newPlainText("external", "NOW"))
+            sendKeyStroke(KeyEvent.KEYCODE_P)
+            waitUntilNoError(10_000L) {
+                snapshotContainsSequence(*listOf("4e", "4f", "57").map { "ECHO_${destinationSession} $it" }.toTypedArray())
+            }
+        } finally {
+            if (previousClip != null) clipboard.setPrimaryClip(previousClip) else clipboard.clearPrimaryClip()
         }
     }
 
@@ -4310,6 +4424,9 @@ class EndToEndTest {
         shift: Boolean = false,
     ) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val metaState = (if (ctrl) KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON else 0) or
+            (if (alt) KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON else 0) or
+            (if (shift) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0)
         if (ctrl) {
             instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT))
         }
@@ -4319,8 +4436,9 @@ class EndToEndTest {
         if (shift) {
             instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SHIFT_LEFT))
         }
-        instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-        instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        val downTime = SystemClock.uptimeMillis()
+        instrumentation.sendKeySync(KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN, keyCode, 0, metaState))
+        instrumentation.sendKeySync(KeyEvent(downTime, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, 0, metaState))
         if (shift) {
             instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SHIFT_LEFT))
         }

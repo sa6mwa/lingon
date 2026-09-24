@@ -108,10 +108,11 @@ local-properties:
 	@printf "sdk.dir=%s\n" "$(ANDROID_SDK_ROOT)" > local.properties
 
 avd:
-	@if [ -d "$(HOME)/.android/avd/$(AVD_NAME).avd" ]; then \
+	@AVD_HOME="$${ANDROID_AVD_HOME:-$${ANDROID_USER_HOME:-$(HOME)/.android}/avd}"; \
+	if [ -d "$$AVD_HOME/$(AVD_NAME).avd" ]; then \
 		echo "AVD $(AVD_NAME) already exists."; \
 	else \
-		mkdir -p "$(HOME)/.android/avd"; \
+		mkdir -p "$$AVD_HOME"; \
 		echo "no" | $(AVDMANAGER) create avd -n "$(AVD_NAME)" -k "$(SYSTEM_IMAGE)" -d "$(DEVICE_PROFILE)"; \
 	fi
 	@AVD_NAME=$(AVD_NAME) AVD_RAM_MB="$${AVD_RAM_MB:-}" ./scripts/configure-avd.sh

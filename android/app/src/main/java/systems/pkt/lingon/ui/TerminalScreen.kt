@@ -42,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
@@ -58,6 +59,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -120,7 +123,11 @@ fun TerminalScreen(
     viewportCacheIdentity: String?,
 ) {
     var ctrlActive by remember { mutableStateOf(false) }
-    var altActive by remember { mutableStateOf(false) }
+    var altMode by remember { mutableStateOf(AltButtonMode.Off) }
+    var selectionMode by remember { mutableStateOf(false) }
+    var activeGridView by remember { mutableStateOf<TerminalGridView?>(null) }
+    val context = LocalContext.current
+    val clipboard = remember(context) { context.getSystemService(ClipboardManager::class.java) }
     var requestInputFocus by remember { mutableStateOf<(() -> Unit)?>(null) }
     var requestInputBlur by remember { mutableStateOf<(() -> Unit)?>(null) }
     var inputReadyNonce by remember { mutableStateOf(0) }
@@ -187,6 +194,10 @@ fun TerminalScreen(
         userImeDismissInProgress = true
         viewModel.recordTerminalImeVisibilityForLifecycle(false)
     }
+    LaunchedEffect(state.activeSessionId) {
+        selectionMode = false
+        activeGridView = null
+    }
     LaunchedEffect(state.activeSessionId, inputReadyNonce) { focusInputIfImeRestoreAllowed() }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -242,11 +253,42 @@ fun TerminalScreen(
     }
 
     val handleSelectSession: (String) -> Unit = { nextSessionId ->
+        selectionMode = false
+        activeGridView = null
         viewModel.selectSession(nextSessionId)
     }
 
     fun sendTextFromSoftInput(payload: String) {
-        val dispatch = dispatchSoftInput(payload, ctrlActive = ctrlActive, altActive = altActive)
+        if (altMode == AltButtonMode.Fn) {
+            if (payload.startsWith("\u001b[")) {
+                viewModel.sendRawBytes(payload.encodeToByteArray())
+                return
+            }
+            payload.forEach { key ->
+                when (val fnInput = dispatchFnKey(key)) {
+                    FnInput.ToggleSelection -> {
+                        selectionMode = !selectionMode
+                        activeGridView?.setSelectionMode(selectionMode)
+                    }
+                    FnInput.Copy -> {
+                        activeGridView?.selectedText()?.takeIf { it.isNotEmpty() }?.let { copied ->
+                            clipboard?.setPrimaryClip(ClipData.newPlainText("Lingon terminal", copied))
+                        }
+                    }
+                    FnInput.Paste -> {
+                        val pasted = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }
+                            ?.getItemAt(0)?.coerceToText(context)?.toString()
+                        if (!pasted.isNullOrEmpty()) {
+                            viewModel.sendRawInput(pasted)
+                        }
+                    }
+                    is FnInput.FunctionKey -> viewModel.sendRawBytes(fnInput.bytes)
+                    is FnInput.Literal -> viewModel.sendRawInput(fnInput.text)
+                }
+            }
+            return
+        }
+        val dispatch = dispatchSoftInput(payload, ctrlActive = ctrlActive, altActive = altMode == AltButtonMode.Alt)
         dispatch.text?.let { text ->
             viewModel.sendRawInput(text)
         }
@@ -254,15 +296,15 @@ fun TerminalScreen(
             viewModel.sendRawBytes(bytes)
         }
         ctrlActive = dispatch.nextCtrlActive
-        altActive = dispatch.nextAltActive
+        if (altMode == AltButtonMode.Alt && !dispatch.nextAltActive) altMode = AltButtonMode.Off
     }
 
     fun sendBytesFromSoftInput(bytes: ByteArray) {
         if (bytes.isEmpty()) return
         viewModel.sendRawBytes(bytes)
-        if (ctrlActive || altActive) {
+        if (ctrlActive || altMode == AltButtonMode.Alt) {
             ctrlActive = false
-            altActive = false
+            if (altMode == AltButtonMode.Alt) altMode = AltButtonMode.Off
         }
     }
 
@@ -272,16 +314,24 @@ fun TerminalScreen(
 
         val ctrlActiveNative = native.metaState and AndroidKeyEvent.META_CTRL_ON != 0
         val altActiveNative = native.metaState and AndroidKeyEvent.META_ALT_ON != 0
+        val effectiveCtrl = ctrlActiveNative || ctrlActive
+        val effectiveAlt = altActiveNative || altMode == AltButtonMode.Alt
+
+        fun consumeOnScreenModifiers() {
+            ctrlActive = false
+            if (altMode == AltButtonMode.Alt) altMode = AltButtonMode.Off
+        }
 
         val shiftActiveNative = native.metaState and AndroidKeyEvent.META_SHIFT_ON != 0
         val directBytes = hardwareKeyBytes(
             keyCode = native.keyCode,
-            ctrlActive = ctrlActiveNative,
-            altActive = altActiveNative,
+            ctrlActive = effectiveCtrl,
+            altActive = effectiveAlt,
             shiftActive = shiftActiveNative,
         )
         if (directBytes != null) {
             viewModel.sendRawBytes(directBytes)
+            consumeOnScreenModifiers()
             return true
         }
 
@@ -289,22 +339,26 @@ fun TerminalScreen(
         if (unicode != 0) {
             val text = String(Character.toChars(unicode))
             if (ctrlActiveNative || altActiveNative) {
-                val bytes = buildModifiedBytes(text, ctrlActiveNative, altActiveNative)
+                val bytes = buildModifiedBytes(text, effectiveCtrl, effectiveAlt)
                 if (bytes.isNotEmpty()) {
                     viewModel.sendRawBytes(bytes)
                 }
+                consumeOnScreenModifiers()
             } else {
-                viewModel.sendRawInput(text)
+                sendTextFromSoftInput(text)
             }
             return true
         }
 
-        if (ctrlActiveNative || altActiveNative) {
+        if (effectiveCtrl || effectiveAlt || altMode == AltButtonMode.Fn) {
             val mapped = keyCodeToAscii(native.keyCode)
             if (mapped != null) {
-                val bytes = buildModifiedBytes(mapped.toString(), ctrlActiveNative, altActiveNative)
-                if (bytes.isNotEmpty()) {
-                    viewModel.sendRawBytes(bytes)
+                if (altMode == AltButtonMode.Fn && !effectiveCtrl && !effectiveAlt) {
+                    sendTextFromSoftInput(mapped.toString())
+                } else {
+                    val bytes = buildModifiedBytes(mapped.toString(), effectiveCtrl, effectiveAlt)
+                    if (bytes.isNotEmpty()) viewModel.sendRawBytes(bytes)
+                    consumeOnScreenModifiers()
                 }
                 return true
             }
@@ -367,9 +421,14 @@ fun TerminalScreen(
                     waitForImeInsetBeforeTerminalLayout = waitingForRestoredImeInset,
                     onHardwareKey = ::handleHardwareKey,
                     ctrlActive = ctrlActive,
-                    altActive = altActive,
-                    onToggleCtrl = { ctrlActive = !ctrlActive },
-                    onToggleAlt = { altActive = !altActive },
+                    altMode = altMode,
+                    selectionMode = selectionMode,
+                    onGridViewReady = { activeGridView = it },
+                    onToggleCtrl = { if (altMode != AltButtonMode.Fn) ctrlActive = !ctrlActive },
+                    onToggleAlt = {
+                        altMode = altMode.next()
+                        if (altMode == AltButtonMode.Fn) ctrlActive = false
+                    },
                     onSendKey = ::sendTextFromSoftInput,
                     onSendBytes = ::sendBytesFromSoftInput,
                     onUserDismissIme = handleUserDismissIme,
@@ -437,9 +496,14 @@ fun TerminalScreen(
                     waitForImeInsetBeforeTerminalLayout = waitingForRestoredImeInset,
                     onHardwareKey = ::handleHardwareKey,
                     ctrlActive = ctrlActive,
-                    altActive = altActive,
-                    onToggleCtrl = { ctrlActive = !ctrlActive },
-                    onToggleAlt = { altActive = !altActive },
+                    altMode = altMode,
+                    selectionMode = selectionMode,
+                    onGridViewReady = { activeGridView = it },
+                    onToggleCtrl = { if (altMode != AltButtonMode.Fn) ctrlActive = !ctrlActive },
+                    onToggleAlt = {
+                        altMode = altMode.next()
+                        if (altMode == AltButtonMode.Fn) ctrlActive = false
+                    },
                     onSendKey = ::sendTextFromSoftInput,
                     onSendBytes = ::sendBytesFromSoftInput,
                     onUserDismissIme = handleUserDismissIme,
@@ -606,7 +670,9 @@ private fun TerminalPanel(
     waitForImeInsetBeforeTerminalLayout: Boolean,
     onHardwareKey: (AndroidKeyEvent) -> Boolean,
     ctrlActive: Boolean,
-    altActive: Boolean,
+    altMode: AltButtonMode,
+    selectionMode: Boolean,
+    onGridViewReady: (TerminalGridView) -> Unit,
     onToggleCtrl: () -> Unit,
     onToggleAlt: () -> Unit,
     onSendKey: (String) -> Unit,
@@ -691,6 +757,8 @@ private fun TerminalPanel(
                     },
                     update = { view ->
                         keyedTerminalGridView = view
+                        onGridViewReady(view)
+                        view.setSelectionMode(selectionMode)
                         viewportCacheKey?.let { activeViewportKey ->
                             val alreadyRestored =
                                 restoredSessionId == activeViewportKey &&
@@ -844,7 +912,7 @@ private fun TerminalPanel(
                     dense = isLandscape,
                     singleRow = isLandscape,
                     ctrlActive = ctrlActive,
-                    altActive = altActive,
+                    altMode = altMode,
                     onToggleCtrl = onToggleCtrl,
                     onToggleAlt = onToggleAlt,
                     onSendKey = { key ->
@@ -867,7 +935,7 @@ private fun QuickKeysRow(
     dense: Boolean,
     singleRow: Boolean,
     ctrlActive: Boolean,
-    altActive: Boolean,
+    altMode: AltButtonMode,
     onToggleCtrl: () -> Unit,
     onToggleAlt: () -> Unit,
     onSendKey: (String) -> Unit,
@@ -905,8 +973,8 @@ private fun QuickKeysRow(
                 keys = listOf(
                     QuickKeySpec("ESC") { onSendBytes(byteArrayOf(0x1b)) },
                     QuickKeySpec("TAB") { onSendKey("\t") },
-                    QuickKeySpec("CTRL", active = ctrlActive) { onToggleCtrl() },
-                    QuickKeySpec("ALT", active = altActive) { onToggleAlt() },
+                    QuickKeySpec("CTRL", active = ctrlActive, enabled = altMode != AltButtonMode.Fn) { onToggleCtrl() },
+                    QuickKeySpec(if (altMode == AltButtonMode.Fn) "FN" else "ALT", active = altMode != AltButtonMode.Off) { onToggleAlt() },
                     QuickKeySpec("←") { onSendKey("\u001b[D") },
                     QuickKeySpec("↓") { onSendKey("\u001b[B") },
                     QuickKeySpec("↑") { onSendKey("\u001b[A") },
@@ -936,8 +1004,8 @@ private fun QuickKeysRow(
             QuickKeyRow(
                 keys = listOf(
                     QuickKeySpec("TAB") { onSendKey("\t") },
-                    QuickKeySpec("CTRL", active = ctrlActive) { onToggleCtrl() },
-                    QuickKeySpec("ALT", active = altActive) { onToggleAlt() },
+                    QuickKeySpec("CTRL", active = ctrlActive, enabled = altMode != AltButtonMode.Fn) { onToggleCtrl() },
+                    QuickKeySpec(if (altMode == AltButtonMode.Fn) "FN" else "ALT", active = altMode != AltButtonMode.Off) { onToggleAlt() },
                     QuickKeySpec("←") { onSendKey("\u001b[D") },
                     QuickKeySpec("↓") { onSendKey("\u001b[B") },
                     QuickKeySpec("→") { onSendKey("\u001b[C") },
@@ -969,6 +1037,7 @@ private fun QuickKeyRow(
             QuickKey(
                 label = key.label,
                 active = key.active,
+                enabled = key.enabled,
                 height = height,
                 padding = padding,
                 textStyle = textStyle,
@@ -983,6 +1052,7 @@ private fun QuickKeyRow(
 private fun QuickKey(
     label: String,
     active: Boolean,
+    enabled: Boolean,
     height: androidx.compose.ui.unit.Dp,
     padding: androidx.compose.ui.unit.Dp,
     textStyle: TextStyle,
@@ -1004,7 +1074,7 @@ private fun QuickKey(
     Surface(
         modifier = modifier
             .height(height)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         shape = shape,
         color = containerColor,
         border = BorderStroke(1.dp, borderColor),
@@ -1014,7 +1084,7 @@ private fun QuickKey(
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = label, style = textStyle, maxLines = 1)
+            Text(text = label, style = textStyle, color = if (enabled) Color.Unspecified else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f), maxLines = 1)
         }
     }
 }
@@ -1035,6 +1105,7 @@ private fun rememberTerminalPalette(): TerminalPalette {
 private data class QuickKeySpec(
     val label: String,
     val active: Boolean = false,
+    val enabled: Boolean = true,
     val onClick: () -> Unit,
 )
 
