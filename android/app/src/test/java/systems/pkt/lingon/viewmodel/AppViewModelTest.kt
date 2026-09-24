@@ -72,7 +72,7 @@ class AppViewModelTest {
     fun handleSharedTokenUpdatesState() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
-        val viewModel = AppViewModel(repository, wsClient)
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
 
         viewModel.handleSharedToken("token", "https://example")
 
@@ -108,7 +108,7 @@ class AppViewModelTest {
     fun selectSessionOnActiveTabKeepsVisibleSnapshot() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
-        val viewModel = AppViewModel(repository, wsClient)
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
 
         viewModel.handleSharedToken("token", "https://example")
         advanceUntilIdle()
@@ -290,7 +290,7 @@ class AppViewModelTest {
             listener.onOpen(socket)
         }
         wsClient.shareSession = RelayShareSession(sessionId = "real-session", name = "Shared real", scope = "view")
-        val viewModel = AppViewModel(repository, wsClient)
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
 
         viewModel.handleSharedToken("token", "https://example")
         advanceUntilIdle()
@@ -317,9 +317,11 @@ class AppViewModelTest {
             listener.onOpen(socket)
         }
         wsClient.shareSession = RelayShareSession(sessionId = "real-session", name = "Shared real", scope = "view")
-        val viewModel = AppViewModel(repository, wsClient)
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
 
         viewModel.handleSharedToken("token", "https://example")
+        advanceUntilIdle()
+        wsClient.fireConnect()
         advanceUntilIdle()
 
         assertEquals("real-session", viewModel.state.value.activeSessionId)
@@ -347,7 +349,7 @@ class AppViewModelTest {
             }
             RelayShareSession(sessionId = "new-session", name = "New shared", scope = "view")
         }
-        viewModel = AppViewModel(repository, wsClient)
+        viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
 
         viewModel.handleSharedToken("old-token", "https://example")
         advanceUntilIdle()
@@ -1722,7 +1724,7 @@ class AppViewModelTest {
             listener.onFrame(socket, welcomeFrame())
         }
         val recordingNotifier = RecordingWallNotifier()
-        val wallStore = testWallWorkStateStore()
+        val wallStore = testWallWorkStateStore(backgroundScope)
         val viewModel = AppViewModel(
             repository = repository,
             wsClient = wsClient,
@@ -2252,7 +2254,8 @@ private class FakeRepository(
 ) : LingonClient {
     private val backgroundWallEnabledState = MutableStateFlow(backgroundWallEnabled)
     private val followOnReadEnabledState = MutableStateFlow(followOnReadEnabled)
-    override val endpointFlow: Flow<String> = MutableStateFlow("https://localhost:12843/v1")
+    private val endpointState = MutableStateFlow("https://localhost:12843/v1")
+    override val endpointFlow: Flow<String> = endpointState
     override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
     override val resizeHostFlow: Flow<Boolean> = MutableStateFlow(false)
     override val backgroundWallEnabledFlow: Flow<Boolean> =
@@ -2269,7 +2272,7 @@ private class FakeRepository(
     val savedZooms = initialSessionZooms.toMutableMap()
 
     override fun setEndpoint(value: String) {
-        // no-op
+        endpointState.value = value
     }
 
     override fun setFontSize(value: Int) {
@@ -2374,15 +2377,19 @@ private class FakeWsClient(
     var closeCount: Int = 0
     var shareSession: RelayShareSession = RelayShareSession(sessionId = "shared-real", name = "Shared session", scope = "view")
     var onAuthenticateShareSession: ((okhttp3.HttpUrl, String) -> RelayShareSession)? = null
-    private var pendingConnect: ((WebSocket) -> Unit)? = null
-    val fakeSocket: WebSocket = object : WebSocket {
+    private var pendingConnect: (() -> Unit)? = null
+    private val listeners = mutableMapOf<WebSocket, Listener>()
+    var fakeSocket: WebSocket = newSocket()
+        private set
+
+    private fun newSocket(): WebSocket = object : WebSocket {
         override fun request(): okhttp3.Request = okhttp3.Request.Builder().url("https://localhost/").build()
         override fun queueSize(): Long = 0
         override fun send(text: String): Boolean = true
         override fun send(bytes: okio.ByteString): Boolean = true
         override fun close(code: Int, reason: String?): Boolean {
             closeCount += 1
-            lastListener?.onClosed(this, code, reason)
+            listeners[this]?.onClosed(this, code, reason)
             return true
         }
         override fun cancel() {}
@@ -2390,10 +2397,13 @@ private class FakeWsClient(
     private var lastListener: RelayWebSocketClient.Listener? = null
 
     override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
+        if (connectCount > 0) fakeSocket = newSocket()
         connectCount += 1
         lastConnectOptions = options
         lastListener = listener
-        pendingConnect = { socket -> onConnect(options, listener, socket) }
+        val socket = fakeSocket
+        listeners[socket] = listener
+        pendingConnect = { onConnect(options, listener, socket) }
         return fakeSocket
     }
 
@@ -2405,7 +2415,7 @@ private class FakeWsClient(
     fun fireConnect() {
         val callback = pendingConnect ?: return
         pendingConnect = null
-        callback(fakeSocket)
+        callback()
     }
 
     fun fireFrame(frame: Frame) {
@@ -2627,9 +2637,9 @@ private fun testHttpClientProvider(): HttpClientProvider {
     return HttpClientProvider(certStore, CookieJar.NO_COOKIES)
 }
 
-private fun testWallWorkStateStore(): WallWorkStateStore {
+private fun testWallWorkStateStore(scope: CoroutineScope): WallWorkStateStore {
     val dataStore = PreferenceDataStoreFactory.create(
-        scope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
+        scope = scope,
         produceFile = { Files.createTempFile("lingon-wall", ".preferences_pb").toFile() },
     )
     return WallWorkStateStore(dataStore)

@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -28,11 +29,12 @@ import systems.pkt.lingon.data.certs.CertificateState
 import systems.pkt.lingon.data.certs.CertificateStore
 import systems.pkt.lingon.data.certs.StoredCert
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class HttpClientProviderTest {
     @Test
     fun clearPreventsQueuedCookiePersistenceFromRestoringAuth() = runTest {
         val dataStore = PreferenceDataStoreFactory.create(
-            scope = backgroundScope,
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
             produceFile = {
                 Files.createTempFile("lingon-cookie-clear", ".preferences_pb").toFile()
             },
@@ -59,7 +61,7 @@ class HttpClientProviderTest {
     @Test
     fun sessionCookiesAreNotPersistedAcrossJarReload() = runTest {
         val dataStore = PreferenceDataStoreFactory.create(
-            scope = backgroundScope,
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
             produceFile = {
                 Files.createTempFile("lingon-session-cookie", ".preferences_pb").toFile()
             },
@@ -85,7 +87,7 @@ class HttpClientProviderTest {
     @Test
     fun legacyPersistedSessionCookiesAreSkippedOnLoad() = runTest {
         val dataStore = PreferenceDataStoreFactory.create(
-            scope = backgroundScope,
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
             produceFile = {
                 Files.createTempFile("lingon-legacy-session-cookie", ".preferences_pb").toFile()
             },

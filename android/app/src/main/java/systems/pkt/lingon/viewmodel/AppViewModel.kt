@@ -3,6 +3,7 @@ package systems.pkt.lingon.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,6 +59,7 @@ class AppViewModel(
     private val wallDeliveryCoordinator: WallDeliveryCoordinator = NoopWallDeliveryCoordinator,
     private val wallWorkScheduler: WallWorkScheduler = NoopWallWorkScheduler,
     private val backgroundWallServiceController: BackgroundWallServiceController = NoopBackgroundWallServiceController,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -1228,7 +1230,7 @@ class AppViewModel(
         viewModelScope.launch {
             val shareSession: RelayShareSession
             try {
-                shareSession = withContext(Dispatchers.IO) {
+                shareSession = withContext(ioDispatcher) {
                     wsClient.authenticateShareSession(baseUrl, shareToken)
                 }
             } catch (err: Exception) {
