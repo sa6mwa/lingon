@@ -13,6 +13,20 @@ internal enum class AltButtonMode {
     }
 }
 
+internal enum class FnModifierMode(val label: String, val ctrlActive: Boolean, val altActive: Boolean) {
+    Off("CTRL", false, false),
+    Ctrl("CTRL", true, false),
+    Alt("ALT", false, true),
+    CtrlAlt("C+A", true, true);
+
+    fun next(): FnModifierMode = when (this) {
+        Off -> Ctrl
+        Ctrl -> Alt
+        Alt -> CtrlAlt
+        CtrlAlt -> Off
+    }
+}
+
 internal fun functionKeyBytes(
     index: Int,
     ctrlActive: Boolean = false,
@@ -31,9 +45,14 @@ internal fun functionKeyBytes(
     return sequence.encodeToByteArray()
 }
 
-internal fun fnFunctionKeyBytes(key: Char, shiftActive: Boolean = false): ByteArray? {
+internal fun fnFunctionKeyBytes(
+    key: Char,
+    shiftActive: Boolean = false,
+    ctrlActive: Boolean = false,
+    altActive: Boolean = false,
+): ByteArray? {
     val index = "1234567890".indexOf(key)
-    return functionKeyBytes(index, shiftActive = shiftActive)
+    return functionKeyBytes(index, ctrlActive = ctrlActive, altActive = altActive, shiftActive = shiftActive)
 }
 
 internal sealed interface FnInput {
@@ -44,11 +63,16 @@ internal sealed interface FnInput {
     data class Literal(val text: String) : FnInput
 }
 
-internal fun dispatchFnKey(key: Char, shiftActive: Boolean = false): FnInput = when (key.lowercaseChar()) {
+internal fun dispatchFnKey(
+    key: Char,
+    shiftActive: Boolean = false,
+    ctrlActive: Boolean = false,
+    altActive: Boolean = false,
+): FnInput = when (key.lowercaseChar()) {
     's' -> FnInput.ToggleSelection
     'c' -> FnInput.Copy
     'p' -> FnInput.Paste
-    else -> fnFunctionKeyBytes(key, shiftActive)?.let(FnInput::FunctionKey) ?: FnInput.Literal(key.toString())
+    else -> fnFunctionKeyBytes(key, shiftActive, ctrlActive, altActive)?.let(FnInput::FunctionKey) ?: FnInput.Literal(key.toString())
 }
 
 internal data class SoftInputDispatch(

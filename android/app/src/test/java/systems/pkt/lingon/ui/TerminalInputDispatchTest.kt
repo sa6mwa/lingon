@@ -43,6 +43,39 @@ class TerminalInputDispatchTest {
     }
 
     @Test
+    fun fnModifierButtonCyclesThroughCtrlAltAndBoth() {
+        assertEquals(FnModifierMode.Ctrl, FnModifierMode.Off.next())
+        assertEquals(FnModifierMode.Alt, FnModifierMode.Ctrl.next())
+        assertEquals(FnModifierMode.CtrlAlt, FnModifierMode.Alt.next())
+        assertEquals(FnModifierMode.Off, FnModifierMode.CtrlAlt.next())
+        assertEquals(false, FnModifierMode.Off.ctrlActive)
+        assertEquals(false, FnModifierMode.Off.altActive)
+        assertEquals(true, FnModifierMode.Ctrl.ctrlActive)
+        assertEquals(false, FnModifierMode.Ctrl.altActive)
+        assertEquals(false, FnModifierMode.Alt.ctrlActive)
+        assertEquals(true, FnModifierMode.Alt.altActive)
+        assertEquals(true, FnModifierMode.CtrlAlt.ctrlActive)
+        assertEquals(true, FnModifierMode.CtrlAlt.altActive)
+    }
+
+    @Test
+    fun fnFunctionKeysCombinePersistentModifierAndShiftStates() {
+        val chords = listOf(
+            Triple(true, false, 5), Triple(false, true, 3), Triple(true, true, 7),
+        )
+        for ((ctrl, alt, modifier) in chords) {
+            assertArrayEquals("\u001b[1;${modifier}P".encodeToByteArray(), fnFunctionKeyBytes('1', ctrlActive = ctrl, altActive = alt))
+            assertArrayEquals("\u001b[21;${modifier}~".encodeToByteArray(), fnFunctionKeyBytes('0', ctrlActive = ctrl, altActive = alt))
+            assertArrayEquals("\u001b[24;${modifier}~".encodeToByteArray(), functionKeyBytes(11, ctrlActive = ctrl, altActive = alt))
+        }
+        assertArrayEquals("\u001b[1;8P".encodeToByteArray(), fnFunctionKeyBytes('1', ctrlActive = true, altActive = true, shiftActive = true))
+        assertArrayEquals("\u001b[23;8~".encodeToByteArray(), functionKeyBytes(10, ctrlActive = true, altActive = true, shiftActive = true))
+        assertEquals(FnInput.ToggleSelection, dispatchFnKey('s', ctrlActive = true, altActive = true))
+        assertEquals(FnInput.Copy, dispatchFnKey('c', ctrlActive = true, altActive = true))
+        assertEquals(FnInput.Paste, dispatchFnKey('p', ctrlActive = true, altActive = true))
+    }
+
+    @Test
     fun fnCommandsAreCaseInsensitiveAndOtherKeysStayLiteral() {
         assertEquals(FnInput.ToggleSelection, dispatchFnKey('s'))
         assertEquals(FnInput.ToggleSelection, dispatchFnKey('S'))

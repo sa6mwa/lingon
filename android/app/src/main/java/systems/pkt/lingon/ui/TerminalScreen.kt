@@ -134,6 +134,7 @@ fun TerminalScreen(
     var ctrlActive by remember { mutableStateOf(false) }
     var altMode by remember { mutableStateOf(AltButtonMode.Off) }
     var fnShiftActive by remember { mutableStateOf(false) }
+    var fnModifierMode by remember { mutableStateOf(FnModifierMode.Off) }
     var selectionMode by remember { mutableStateOf(false) }
     var activeGridView by remember { mutableStateOf<TerminalGridView?>(null) }
     val context = LocalContext.current
@@ -275,7 +276,12 @@ fun TerminalScreen(
                 return
             }
             payload.forEach { key ->
-                when (val fnInput = dispatchFnKey(key, shiftActive = fnShiftActive)) {
+                when (val fnInput = dispatchFnKey(
+                    key,
+                    shiftActive = fnShiftActive,
+                    ctrlActive = fnModifierMode.ctrlActive,
+                    altActive = fnModifierMode.altActive,
+                )) {
                     FnInput.ToggleSelection -> {
                         selectionMode = !selectionMode
                         activeGridView?.setSelectionMode(selectionMode)
@@ -329,7 +335,12 @@ fun TerminalScreen(
     }
 
     fun sendFnFunctionKey(index: Int) {
-        functionKeyBytes(index, shiftActive = fnShiftActive)?.let(viewModel::sendRawBytes)
+        functionKeyBytes(
+            index,
+            ctrlActive = fnModifierMode.ctrlActive,
+            altActive = fnModifierMode.altActive,
+            shiftActive = fnShiftActive,
+        )?.let(viewModel::sendRawBytes)
     }
 
     fun handleHardwareKey(native: AndroidKeyEvent): Boolean {
@@ -447,11 +458,16 @@ fun TerminalScreen(
                     ctrlActive = ctrlActive,
                     altMode = altMode,
                     fnShiftActive = fnShiftActive,
+                    fnModifierMode = fnModifierMode,
                     selectionMode = selectionMode,
                     onGridViewReady = { activeGridView = it },
-                    onToggleCtrl = { if (altMode != AltButtonMode.Fn) ctrlActive = !ctrlActive },
+                    onToggleCtrl = {
+                        if (altMode == AltButtonMode.Fn) fnModifierMode = fnModifierMode.next()
+                        else ctrlActive = !ctrlActive
+                    },
                     onToggleAlt = {
                         altMode = altMode.next()
+                        fnModifierMode = FnModifierMode.Off
                         if (altMode == AltButtonMode.Fn) ctrlActive = false
                         else fnShiftActive = false
                     },
@@ -527,11 +543,16 @@ fun TerminalScreen(
                     ctrlActive = ctrlActive,
                     altMode = altMode,
                     fnShiftActive = fnShiftActive,
+                    fnModifierMode = fnModifierMode,
                     selectionMode = selectionMode,
                     onGridViewReady = { activeGridView = it },
-                    onToggleCtrl = { if (altMode != AltButtonMode.Fn) ctrlActive = !ctrlActive },
+                    onToggleCtrl = {
+                        if (altMode == AltButtonMode.Fn) fnModifierMode = fnModifierMode.next()
+                        else ctrlActive = !ctrlActive
+                    },
                     onToggleAlt = {
                         altMode = altMode.next()
+                        fnModifierMode = FnModifierMode.Off
                         if (altMode == AltButtonMode.Fn) ctrlActive = false
                         else fnShiftActive = false
                     },
@@ -706,6 +727,7 @@ private fun TerminalPanel(
     ctrlActive: Boolean,
     altMode: AltButtonMode,
     fnShiftActive: Boolean,
+    fnModifierMode: FnModifierMode,
     selectionMode: Boolean,
     onGridViewReady: (TerminalGridView) -> Unit,
     onToggleCtrl: () -> Unit,
@@ -952,6 +974,7 @@ private fun TerminalPanel(
                     ctrlActive = ctrlActive,
                     altMode = altMode,
                     fnShiftActive = fnShiftActive,
+                    fnModifierMode = fnModifierMode,
                     onToggleCtrl = onToggleCtrl,
                     onToggleAlt = onToggleAlt,
                     onToggleFnShift = onToggleFnShift,
@@ -985,6 +1008,7 @@ private fun QuickKeysRow(
     ctrlActive: Boolean,
     altMode: AltButtonMode,
     fnShiftActive: Boolean,
+    fnModifierMode: FnModifierMode,
     onToggleCtrl: () -> Unit,
     onToggleAlt: () -> Unit,
     onToggleFnShift: () -> Unit,
@@ -1020,6 +1044,11 @@ private fun QuickKeysRow(
         onLongClick = { onSendShiftedKey(sequence) },
         onClick = { onSendKey(sequence) },
     )
+    fun ctrlKey() = if (altMode == AltButtonMode.Fn) {
+        QuickKeySpec(fnModifierMode.label, active = fnModifierMode != FnModifierMode.Off) { onToggleCtrl() }
+    } else {
+        QuickKeySpec("CTRL", active = ctrlActive) { onToggleCtrl() }
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -1030,7 +1059,7 @@ private fun QuickKeysRow(
                 keys = listOf(
                     QuickKeySpec("ESC") { onSendBytes(byteArrayOf(0x1b)) },
                     QuickKeySpec("TAB") { onSendKey("\t") },
-                    QuickKeySpec("CTRL", active = ctrlActive, enabled = altMode != AltButtonMode.Fn) { onToggleCtrl() },
+                    ctrlKey(),
                     QuickKeySpec(if (altMode == AltButtonMode.Fn) "FN" else "ALT", active = altMode != AltButtonMode.Off) { onToggleAlt() },
                     navigationKey("←", "\u001b[D"),
                     navigationKey("↓", "\u001b[B"),
@@ -1063,7 +1092,7 @@ private fun QuickKeysRow(
             QuickKeyRow(
                 keys = listOf(
                     QuickKeySpec("TAB") { onSendKey("\t") },
-                    QuickKeySpec("CTRL", active = ctrlActive, enabled = altMode != AltButtonMode.Fn) { onToggleCtrl() },
+                    ctrlKey(),
                     QuickKeySpec(if (altMode == AltButtonMode.Fn) "FN" else "ALT", active = altMode != AltButtonMode.Off) { onToggleAlt() },
                     navigationKey("←", "\u001b[D"),
                     navigationKey("↓", "\u001b[B"),

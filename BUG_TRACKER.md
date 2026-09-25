@@ -29,6 +29,18 @@ Required status values:
 
 ## Active Items
 
+### B-119 Soft FN mode cannot send CTRL or ALT function keys
+
+- Status: `resolved`
+- Area: `android`, `terminal-input`
+- Report: CTRL is disabled while FN is active, so the soft keyboard cannot send CTRL+F1; FN also occupies the ALT button, leaving ALT+F1 unavailable.
+- Repro: In the Android terminal, tap ALT twice to enter FN, then try CTRL followed by 1. CTRL is disabled and F1 is sent without CTRL. There is no ALT+F1 path through the on-screen controls.
+- Intended behavior: While FN is active, the existing CTRL button cycles off → CTRL → ALT → C+A → off. The selected modifier stays active across function keys until changed or FN is turned off. SHFT remains independent, and FN+S/C/P keep their selection and clipboard meanings.
+- Fix: In FN mode the existing CTRL key cycles off → CTRL → ALT → C+A → off; its state persists across F-key sends and resets when FN is turned off. SHFT still combines with each modifier state. Outside FN, CTRL and ALT retain their existing behavior.
+- Regression coverage: `TerminalInputDispatchTest.fnModifierButtonCyclesThroughCtrlAltAndBoth` covers the state cycle; `fnFunctionKeysCombinePersistentModifierAndShiftStates` covers function-key encodings and FN+S/C/P commands. `EndToEndTest.fn_modifier_button_cycles_ctrl_alt_and_both_without_consuming_them` drives the on-screen keys and checks the host receives CTRL+F1/F2, ALT+F1/F2, C+A+F10, SHFT+C+A+F11, SHFT+F12, and plain F1 after resetting FN. The unit regression failed to compile before implementation, and the connected regression failed on the disabled FN CTRL key before implementation; both pass after the fix.
+- Verification: `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed. The new connected test plus the existing FN layout and cross-session selection/clipboard connected tests passed in the isolated emulator harness. `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed. The changed UI and dispatch paths were reviewed.
+- Remaining gap: The full Android integration sweep remains the release gate under repository policy.
+
 ### B-118 Root Makefile lacked a release APK install target for phones
 
 - Status: `resolved`

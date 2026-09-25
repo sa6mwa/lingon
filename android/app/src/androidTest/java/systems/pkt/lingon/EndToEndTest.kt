@@ -533,6 +533,59 @@ class EndToEndTest {
     }
 
     @Test
+    fun fn_modifier_button_cycles_ctrl_alt_and_both_without_consuming_them() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("FN"))
+        composeRule.onNodeWithText("CTRL").assertIsEnabled()
+
+        fun expectFunctionKey(keyCode: Int, vararg bytes: String) {
+            sendKeyStroke(keyCode)
+            waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(bytes.size) == bytes.toList() }
+            assertTrue("FN was reset by a function key", hasTextNode("FN"))
+        }
+
+        composeRule.onNodeWithText("CTRL").performClick()
+        expectFunctionKey(KeyEvent.KEYCODE_1, "1b", "5b", "31", "3b", "35", "50")
+        expectFunctionKey(KeyEvent.KEYCODE_2, "1b", "5b", "31", "3b", "35", "51")
+
+        composeRule.onNodeWithText("CTRL").performClick()
+        assertTrue(hasTextNode("ALT"))
+        expectFunctionKey(KeyEvent.KEYCODE_1, "1b", "5b", "31", "3b", "33", "50")
+        expectFunctionKey(KeyEvent.KEYCODE_2, "1b", "5b", "31", "3b", "33", "51")
+
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("C+A"))
+        expectFunctionKey(KeyEvent.KEYCODE_0, "1b", "5b", "32", "31", "3b", "37", "7e")
+        composeRule.onNodeWithText("SHFT").performClick()
+        composeRule.onNodeWithText("F11").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(7) == listOf("1b", "5b", "32", "33", "3b", "38", "7e")
+        }
+
+        composeRule.onNodeWithText("C+A").performClick()
+        assertTrue(hasTextNode("CTRL"))
+        composeRule.onNodeWithText("F12").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(7) == listOf("1b", "5b", "32", "34", "3b", "32", "7e")
+        }
+
+        composeRule.onNodeWithText("CTRL").performClick()
+        composeRule.onNodeWithText("FN").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("CTRL"))
+        expectFunctionKey(KeyEvent.KEYCODE_1, "1b", "4f", "50")
+    }
+
+    @Test
     fun fn_selection_copies_visible_cells_and_pastes_current_clipboard_in_another_session() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
