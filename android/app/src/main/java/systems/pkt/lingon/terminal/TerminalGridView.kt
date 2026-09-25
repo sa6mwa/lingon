@@ -370,6 +370,10 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun getCameraOffsetYForTesting(): Float = cameraOffsetYPx
 
+    fun getCameraDiagnosticsForTesting(): String =
+        "mode=$cameraMode return=$cursorFollowReturnMode frame=$frameSeq " +
+            "restored=$restoredViewportState suppress=$suppressLiveAutoFollowFrameSeq"
+
     fun getScaledCellWidthForTesting(): Float = scaledCellWidth
 
     fun getScaledCellHeightForTesting(): Float = scaledCellHeight
@@ -540,10 +544,6 @@ class TerminalGridView @JvmOverloads constructor(
                 lastTouchX = event.x
                 lastTouchY = event.y
                 panActive = shouldUseTouchPan()
-                if (panActive) {
-                    cameraMode = TerminalViewportMode.Manual
-                    cursorFollowReturnMode = TerminalViewportMode.Manual
-                }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (panActive && !scaleDetector.isInProgress) {

@@ -29,6 +29,51 @@ Required status values:
 
 ## Active Items
 
+### B-128 Android integration fixtures interfere across test cases
+
+- Status: `resolved`
+- Area: `android`, `verification`
+- Repro: In the full release sweep, accumulated harness hosts and notifications make later tests see extra tabs or stale notifications; a transient wall-status assertion can also miss its 250 ms display window. Headless tests attempt to click tabs that a lazy row has not composed.
+- Fix: Track and stop hosts started by each test, wait for wall notifications to clear, observe the transient status as it is emitted, select headless fixtures directly, and wait for the terminal echo before dragging to select it.
+- Regression coverage: The affected end-to-end cases failed in the full sweep before these fixture corrections and passed in the completed sweep afterward.
+- Verification: `LINGON_IT_MEMORY_MAX=9G LINGON_IT_CPU_QUOTA_PERCENT=400 ./android/scripts/run-integration-tests.sh` passed with zero failures (one existing permission-dependent skip). `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` and all Go quality gates passed.
+
+### B-127 Repeated wall notifications trigger Android auto-group summary
+
+- Status: `resolved`
+- Area: `android`, `notifications`
+- Repro: Repeated identical wall messages arrive with different event IDs; the app posts separate notifications, and Android creates a `ranker_group` summary that breaks the notification end-to-end assertion.
+- Fix: Derive the notification identity from endpoint, sender, source session, and message content so repeated identical alerts update one entry while distinct content retains distinct entries.
+- Regression coverage: `AndroidWallNotifierTest` assertions for repeated and distinct content failed before the identity change and passed afterward. The wall notification end-to-end cases passed in the full sweep.
+- Verification: Android unit tests, androidTest Kotlin compilation, and the full Android integration sweep passed.
+
+### B-126 Portrait status banner shifts the terminal viewport
+
+- Status: `resolved`
+- Area: `android`, `layout`
+- Repro: Run `EndToEndTest.loaded_tall_session_uses_system_visible_bottom_before_and_after_keyboard_toggle` in the release integration sweep. The terminal top moves from y=323 to y=418 while its bottom stays fixed after a status banner appears.
+- Regression coverage: The existing connected test fails before the fix and checks terminal and quick-key bounds through keyboard show/hide.
+- Fix: Render the portrait status banner over the terminal panel so showing it does not consume layout height.
+- Verification: The connected regression and full Android integration sweep passed; Android unit tests and androidTest Kotlin compilation passed.
+
+### B-125 Zoomed pan test stops before the scrollback boundary
+
+- Status: `resolved`
+- Area: `android`, `terminal-pan`, `verification`
+- Repro: Run `EndToEndTest.keyboard_visible_zoomed_pan_across_scrollback_boundary_is_continuous`. With a 35-row live top, the test caps 0.35-row drags at 60, traversing only 21 rows, so it never reaches scrollback.
+- Regression coverage: The existing connected test fails before the correction and checks both boundary directions plus per-move continuity.
+- Fix: Compute drag distance from the actual live-top row and keep enough movement samples to cross the boundary in both directions.
+- Verification: The corrected connected regression and full Android integration sweep passed.
+
+### B-124 Focused lifecycle resume jumps a cursor-followed camera to live bottom
+
+- Status: `resolved`
+- Area: `android`, `terminal-camera`, `lifecycle`
+- Repro: Run `EndToEndTest.focused_background_resume_preserves_live_camera_when_cursor_still_fits`. Input places the cursor and camera at row 0 in a tall terminal, then background/resume restores the visible start at row 39.
+- Fix: Enter manual camera mode only after an actual pan, preserve a top-aligned camera during viewport changes, and capture viewport state when the activity pauses so a later disposal cannot overwrite it. The connected fixture now explicitly positions a manual top camera.
+- Regression coverage: The connected lifecycle test and the new `TerminalViewportPolicyTest` top-alignment case failed before the fix and passed afterward. Both assert camera position across viewport changes.
+- Verification: Android unit tests, androidTest Kotlin compilation, the connected regression, and the full Android integration sweep passed.
+
 ### B-123 FN selection starts automatically and paste uses V
 
 - Status: `resolved`
@@ -38,8 +83,8 @@ Required status values:
 - Intended behavior: FN enables terminal selection immediately, keeps it active across terminal switches, and disables it when FN is turned off. FN+C copies the selected text and FN+V pastes the current Android clipboard. S and P become literal keys in FN mode.
 - Fix: Selection mode now derives from the persistent FN button state and follows it across session changes. FN+C retains copy; FN+V reads the current Android clipboard; FN+S and FN+P send literal keys. The Android keyboard guide documents the new controls.
 - Regression coverage: `TerminalInputDispatchTest` asserts V/paste and literal S/P mappings; `EndToEndTest.fn_selection_copies_visible_cells_and_pastes_current_clipboard_in_another_session` selects without S, copies, confirms FN-off clears selection, re-enters FN, switches terminals, pastes both copied and externally updated clipboard text with V, and selects/copies again in the destination terminal. The unit and connected regressions failed before the fix and passed afterward.
-- Verification: The targeted connected Android test passed in the isolated emulator harness; `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`, `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed. The full Android release sweep remains open due unrelated lifecycle/pan/layout failures.
-- Remaining gap: Release installation awaits a clean full Android sweep under repository policy.
+- Verification: The targeted connected Android test and full Android release sweep passed in the isolated emulator harness; `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`, `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed.
+- Remaining gap: None for this repro.
 
 ### B-122 Android sends input after control is lost
 
@@ -87,7 +132,7 @@ Required status values:
 - Fix: In FN mode the existing CTRL key cycles off → CTRL → ALT → C+A → off; its state persists across F-key sends and resets when FN is turned off. SHFT still combines with each modifier state. Outside FN, CTRL and ALT retain their existing behavior.
 - Regression coverage: `TerminalInputDispatchTest.fnModifierButtonCyclesThroughCtrlAltAndBoth` covers the state cycle; `fnFunctionKeysCombinePersistentModifierAndShiftStates` covers function-key encodings and FN+S/C/P commands. `EndToEndTest.fn_modifier_button_cycles_ctrl_alt_and_both_without_consuming_them` drives the on-screen keys and checks the host receives CTRL+F1/F2, ALT+F1/F2, C+A+F10, SHFT+C+A+F11, SHFT+F12, and plain F1 after resetting FN. The unit regression failed to compile before implementation, and the connected regression failed on the disabled FN CTRL key before implementation; both pass after the fix.
 - Verification: `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed. The new connected test plus the existing FN layout and cross-session selection/clipboard connected tests passed in the isolated emulator harness. `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed. The changed UI and dispatch paths were reviewed.
-- Remaining gap: The full Android integration sweep remains the release gate under repository policy.
+- Remaining gap: None for this repro; the full Android integration sweep passed.
 
 ### B-118 Root Makefile lacked a release APK install target for phones
 

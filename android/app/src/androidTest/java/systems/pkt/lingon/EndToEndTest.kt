@@ -68,9 +68,16 @@ import java.io.InputStreamReader
 import systems.pkt.lingon.viewmodel.ConnectionState
 import java.io.FileOutputStream
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.collect
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -107,6 +114,7 @@ class EndToEndTest {
     private val testConfig = TestConfig.fromArgs()
     private val screenshotRunId = UUID.randomUUID().toString().take(8)
     private val startedHeadlessSessions = linkedSetOf<String>()
+    private val startedHostSessions = linkedSetOf<String>()
 
     @Before
     fun ensureBackendReachable() {
@@ -122,6 +130,7 @@ class EndToEndTest {
         runCatching { restoreSoftInputAdjustResize() }
         runCatching { resumeActivity() }
         runCatching { detachStartedHeadlessSessions() }
+        runCatching { stopHostsViaHarness(startedHostSessions.toList()) }
         runCatching {
             composeRule.runOnUiThread {
                 appViewModel().setBackgroundWallEnabled(false)
@@ -643,12 +652,30 @@ class EndToEndTest {
         val clipboard = composeRule.activity.getSystemService(ClipboardManager::class.java)
         val previousClip = clipboard.primaryClip
         fun selectEchoPrefix(sessionId: String) {
+            waitUntilNoError(10_000L) {
+                var visible = false
+                composeRule.runOnIdle {
+                    val view = findTerminalView() as? TerminalGridView
+                    val snapshot = stateForTest().activeSnapshot
+                    if (view != null && snapshot != null) {
+                        visible = (view.getVisibleStartRow() until view.getVisibleEndRowExclusive()).any { row ->
+                            snapshotRow(snapshot, row).contains("ECHO_${sessionId} 61")
+                        }
+                    }
+                }
+                visible
+            }
             composeRule.runOnIdle {
                 val view = findTerminalView() as? TerminalGridView ?: throw AssertionError("missing terminal grid")
                 val snapshot = stateForTest().activeSnapshot ?: throw AssertionError("missing terminal snapshot")
                 val row = (view.getVisibleStartRow() until view.getVisibleEndRowExclusive())
                     .lastOrNull { snapshotRow(snapshot, it).contains("ECHO_${sessionId} 61") }
-                    ?: throw AssertionError("echo line is not visible for selection")
+                    ?: throw AssertionError(
+                        "echo line is not visible for selection: session=$sessionId " +
+                            "visible=${view.getVisibleStartRow()}-${view.getVisibleEndRowExclusive()} " +
+                            "camera=${view.getCameraOffsetYForTesting()} " +
+                            "matchingRows=${(0 until snapshot.rows).filter { snapshotRow(snapshot, it).contains("ECHO_${sessionId} 61") }}",
+                    )
                 val col = snapshotRow(snapshot, row).indexOf("ECHO_${sessionId} 61")
                 val cellWidth = view.getScaledCellWidthForTesting()
                 val cellHeight = view.getScaledCellHeightForTesting()
@@ -931,6 +958,7 @@ class EndToEndTest {
                     viewportHeightPx = view.height,
                     scaledCellHeightPx = cellHeight,
                     totalRows = 30,
+                    mode = systems.pkt.lingon.terminal.TerminalViewportMode.LiveBottom,
                 ),
             )
             assertEquals(0f, view.getCameraOffsetYForTesting(), 0.01f)
@@ -2950,12 +2978,25 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureAllWallInactivityOff()
 
-        clickSettingsWallInactivity()
-        waitUntilNoError(5_000L) {
-            readStatusBanner()?.message == "wall 250ms"
+        val observedBanner = AtomicBoolean(false)
+        lateinit var observer: Job
+        composeRule.runOnUiThread {
+            observer = CoroutineScope(Dispatchers.Main.immediate).launch(start = CoroutineStart.UNDISPATCHED) {
+                appViewModel().state.collect { current ->
+                    if (current.transientStatus?.message == "wall 250ms") observedBanner.set(true)
+                }
+            }
         }
-        waitUntilNoError(6_000L) {
-            readStatusBanner() == null
+        try {
+            openSettings()
+            composeRule.onAllNodesWithTag(TestTags.WallInactivityButton, useUnmergedTree = true)
+                .onFirst()
+                .performClick()
+            waitUntilNoError(5_000L) { observedBanner.get() }
+            closeSettingsIfOpen()
+            waitUntilNoError(6_000L) { readStatusBanner() == null }
+        } finally {
+            observer.cancel()
         }
     }
 
@@ -3305,7 +3346,7 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         val headlessId = startHeadlessViaHarness(rows = 240)
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
-        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        selectSessionForFixture(headlessId)
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
         composeRule.runOnIdle {
             appViewModel().resetZoomAndPan()
@@ -3323,6 +3364,16 @@ class EndToEndTest {
         val outputRows = (visibleRows - 3).coerceAtLeast(1)
         sendTerminalInput("clear; seq 1 $outputRows")
         sendTerminalEnter()
+        waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > beforeLoad.lastFrameSeq && info.hash != beforeLoad.hash
+        } ?: throw AssertionError("terminal fixture did not render before positioning the camera")
+        composeRule.runOnIdle {
+            val view = findTerminalView() as? TerminalGridView ?: throw AssertionError("missing terminal grid")
+            view.restoreViewportState(view.captureViewportState().copy(
+                cameraOffsetYPx = 0f,
+                mode = systems.pkt.lingon.terminal.TerminalViewportMode.Manual,
+            ))
+        }
         val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
             info.lastFrameSeq > beforeLoad.lastFrameSeq &&
                 info.hash != beforeLoad.hash &&
@@ -3335,6 +3386,10 @@ class EndToEndTest {
             loaded.cameraOffsetYPx,
             0.01f,
         )
+        var beforeViewport: systems.pkt.lingon.terminal.TerminalViewportState? = null
+        composeRule.runOnIdle {
+            beforeViewport = (findTerminalView() as? TerminalGridView)?.captureViewportState()
+        }
 
         backgroundAndResumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
@@ -3343,7 +3398,15 @@ class EndToEndTest {
                 info.viewRows > 0 &&
                 !stateForTest().sessionSyncing
         } ?: throw AssertionError("focused lifecycle refocus moved the live camera without new terminal output")
-        assertEquals("focused lifecycle refocus changed visible start row", loaded.visibleStartRow, resumed.visibleStartRow)
+        var afterViewport: systems.pkt.lingon.terminal.TerminalViewportState? = null
+        composeRule.runOnIdle {
+            afterViewport = (findTerminalView() as? TerminalGridView)?.captureViewportState()
+        }
+        assertEquals(
+            "focused lifecycle refocus changed visible start row (before=$beforeViewport after=$afterViewport)",
+            loaded.visibleStartRow,
+            resumed.visibleStartRow,
+        )
         assertEquals(
             "focused lifecycle refocus moved camera without new terminal output",
             loaded.cameraOffsetYPx,
@@ -3383,11 +3446,11 @@ class EndToEndTest {
                 info.visibleEndRowExclusive > info.visibleStartRow
         } ?: throw AssertionError("zoomed keyboard-visible terminal debug info did not settle")
 
-        val stepRows = 0.35f
+        val stepRows = maxOf(0.35f, (zoomed.liveTopRows() + 3f) / 55f)
         val stepPx = (zoomed.scaledCellHeightPx * stepRows).coerceAtLeast(8f)
         val olderMoveCount = kotlin.math.ceil((zoomed.liveTopRows() + 3f) / stepRows)
             .toInt()
-            .coerceIn(20, 60)
+            .coerceAtLeast(20)
         val moves = List(olderMoveCount) { stepPx } + List(olderMoveCount + 8) { -stepPx }
         val samples = dispatchTerminalDragPulses(moves)
         assertTrue(
@@ -3607,7 +3670,7 @@ class EndToEndTest {
 
         val headlessId = startHeadlessViaHarness()
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
-        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        selectSessionForFixture(headlessId)
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
 
         openSettings()
@@ -3625,7 +3688,7 @@ class EndToEndTest {
 
         val headlessId = startHeadlessViaHarness()
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
-        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        selectSessionForFixture(headlessId)
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
         waitUntilNoError(10_000L) {
             val info = readTerminalDebugInfo()
@@ -3657,7 +3720,7 @@ class EndToEndTest {
 
         val headlessId = startHeadlessViaHarness()
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
-        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        selectSessionForFixture(headlessId)
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
 
         detachHeadlessViaHarness(headlessId)
@@ -4242,6 +4305,9 @@ class EndToEndTest {
 
     private fun clearAppNotifications() {
         notificationManager()?.cancelAll()
+        waitUntilDeviceCondition(5_000L, "wall notifications cleared") {
+            activeNotifications().none { it.notification.channelId == "lingon_wall" }
+        }
     }
 
     private fun clearWallNotifications() {
@@ -4494,7 +4560,10 @@ class EndToEndTest {
                 ?.toString()
                 ?.trim()
                 .orEmpty()
-            throw AssertionError("unexpected lingon_wall auto-group summary title=$title text=$text")
+            val notifications = activeNotifications()
+                .filter { it.notification.channelId == "lingon_wall" }
+                .joinToString { "${it.tag}:${it.id}:${wallNotificationFullText(it)}" }
+            throw AssertionError("unexpected lingon_wall auto-group summary title=$title text=$text active=$notifications")
         }
     }
 
@@ -4822,9 +4891,16 @@ class EndToEndTest {
     private fun assertLiveBottomAnchored(label: String) {
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info for $label")
+        var viewport: TerminalViewportState? = null
+        var diagnostics: String? = null
+        composeRule.runOnIdle {
+            val view = findTerminalView() as? TerminalGridView
+            viewport = view?.captureViewportState()
+            diagnostics = view?.getCameraDiagnosticsForTesting()
+        }
         assertTrue(
             "$label should align live bottom: visible=${info.visibleStartRow}-${info.visibleEndRowExclusive} rows=${info.rows} " +
-                "camera=${info.cameraOffsetYPx} viewport=${info.viewportHeightPx} cell=${info.scaledCellHeightPx}",
+                "camera=${info.cameraOffsetYPx} viewport=${info.viewportHeightPx} cell=${info.scaledCellHeightPx} saved=$viewport $diagnostics",
             info.isLiveBottomAnchored(),
         )
     }
@@ -5917,7 +5993,7 @@ class EndToEndTest {
             }
             val body = InputStreamReader(connection.inputStream).use { it.readText() }
             val ids = org.json.JSONObject(body).getJSONArray("ids")
-            return List(ids.length()) { index -> ids.getString(index) }
+            return List(ids.length()) { index -> ids.getString(index) }.also { startedHostSessions.addAll(it) }
         } finally {
             connection.disconnect()
         }

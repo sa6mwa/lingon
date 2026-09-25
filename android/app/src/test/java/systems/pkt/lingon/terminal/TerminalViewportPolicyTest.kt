@@ -325,6 +325,35 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
+    fun `top aligned manual camera stays at top as keyboard changes viewport height`() {
+        assertEquals(
+            0f,
+            TerminalViewportPolicy.preserveBottomAnchorOnViewportChange(
+                cameraOffsetYPx = 0f,
+                previousViewportHeightPx = 1698,
+                previousScaledCellHeightPx = 20f,
+                nextViewportHeightPx = 923,
+                nextScaledCellHeightPx = 20f,
+                totalRows = 240,
+            ),
+            0.001f,
+        )
+        assertEquals(
+            0f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 0f,
+                savedViewportHeightPx = 1698,
+                savedScaledCellHeightPx = 20f,
+                savedTotalRows = 240,
+                nextViewportHeightPx = 923,
+                nextScaledCellHeightPx = 20f,
+                nextTotalRows = 240,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
     fun `restore preserves live bottom when row count advanced after capture`() {
         assertEquals(
             410f,

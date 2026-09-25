@@ -523,7 +523,6 @@ fun TerminalScreen(
                         onSelect = handleSelectSession,
                         compact = isCompact,
                     )
-                    StatusBanner(status = state.bannerStatus)
                 }
                 TerminalPanel(
                     state = state,
@@ -568,7 +567,7 @@ fun TerminalScreen(
                         requestInputBlur = requestBlur
                     },
                     focusInput = focusInput,
-                    showStatusOverlay = false,
+                    showStatusOverlay = true,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
@@ -777,7 +776,7 @@ private fun TerminalPanel(
                         val activeViewportKey = viewportCacheKey ?: return@LifecycleEventObserver
                         val view = keyedTerminalGridView
                         when (event) {
-                            Lifecycle.Event.ON_STOP -> {
+                            Lifecycle.Event.ON_PAUSE -> {
                                 if (view != null) {
                                     viewportCache[activeViewportKey] = view.captureViewportState()
                                 }
@@ -790,7 +789,11 @@ private fun TerminalPanel(
                     }
                     lifecycleOwner.lifecycle.addObserver(observer)
                     onDispose {
-                        if (!disposableViewportKey.isNullOrBlank() && disposableView != null) {
+                        if (
+                            !disposableViewportKey.isNullOrBlank() &&
+                            disposableView != null &&
+                            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                        ) {
                             viewportCache[disposableViewportKey] = disposableView.captureViewportState()
                         }
                         lifecycleOwner.lifecycle.removeObserver(observer)
@@ -861,10 +864,6 @@ private fun TerminalPanel(
                         .clipToBounds()
                         .testTag(TestTags.TerminalList),
                 )
-            }
-            LaunchedEffect(viewportCacheKey) {
-                restoredSessionId = null
-                restoredView = null
             }
             if (showStatusOverlay) {
                 StatusBanner(
