@@ -1,5 +1,5 @@
 .PHONY: help generate build test test-short test-webui test-last-fail test-android lint fmt vet golangci-lint install release clean container push-container \
-	android-clean android-sdk android-avd android-emulator android-build android-release android-install android-integration-test
+	android-clean android-sdk android-avd android-emulator android-build android-release android-install android-install-release android-integration-test
 
 GO ?= go
 CGO_ENABLED ?= 0
@@ -50,7 +50,8 @@ help:
 	@echo "  make android-emulator"
 	@echo "  make android-build"
 	@echo "  make android-release"
-	@echo "  make android-install"
+	@echo "  make android-install          # install debug APK on a device/emulator"
+	@echo "  make android-install-release  # install release APK on a connected phone"
 	@echo "  make android-integration-test"
 	@echo ""
 	@echo "Variables:"
@@ -184,6 +185,9 @@ android-release:
 
 android-install:
 	$(MAKE) -C $(ANDROID_DIR) install
+
+android-install-release:
+	$(MAKE) -C $(ANDROID_DIR) install-release
 
 android-integration-test:
 	$(MAKE) -C $(ANDROID_DIR) integration-test

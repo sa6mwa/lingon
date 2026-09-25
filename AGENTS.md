@@ -140,7 +140,7 @@ instrumentation or end-to-end verification for that exact behavior.
 
 - `android/app/build.gradle.kts` contains Android app release/version metadata.
 - The engineer may intentionally update this file by running `make release`
-  manually before `make adb-install` to the phone that runs Lingon.
+  manually before `make install-release` to the phone that runs Lingon.
 - If this file appears dirty while investigating unrelated work, treat it as
   expected local release/install metadata churn. Do not revert or normalize it.
 - Include this file in commits like any other tracked source file when it is

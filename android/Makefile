@@ -42,7 +42,7 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-install adb-push integration-test
+.PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install install-release run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-push integration-test
 VERSION_CMD := cd .. && go run -buildvcs=true ./cmd/lingon version --version
 
 help:
@@ -57,7 +57,7 @@ help:
 	@echo "  make build        - assemble debug APK"
 	@echo "  make release      - assemble release APK (auto-generates a local dev keystore if needed)"
 	@echo "  make install      - install debug APK"
-	@echo "  make adb-install  - install release APK via adb (uses APK=... and ADB_SERIAL=... overrides)"
+	@echo "  make install-release - install release APK on a connected phone (APK=... ADB_SERIAL=...)"
 	@echo "  make adb-push     - push FILE to emulator Downloads (defaults to $$HOME/.lingon/tls/ca.pem)"
 	@echo "  make integration-test - run Android integration tests (harness + emulator, PRESET=medium)"
 	@echo "  make run          - launch the app on a device/emulator"
@@ -76,7 +76,7 @@ help:
 	@echo "Overrides:"
 	@echo "  make avd AVD_NAME=... DEVICE_PROFILE=... SYSTEM_IMAGE=..."
 	@echo "  make emulator PRESET=medium AVD_RAM_MB=2048   - lower emulator RAM when needed"
-	@echo "  make adb-install ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
+	@echo "  make install-release ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
 	@echo "  make integration-test LINGON_IT_CPU_QUOTA_PERCENT=400 LINGON_IT_MEMORY_MAX=6G"
 	@echo "                      (default: systemd cgroup, CPUQuota=min(half of online CPUs, 200%), MemoryMax=7G, fresh managed emulator)"
 	@echo "                      set LINGON_IT_REUSE_DEVICE=1 only when deliberately using an existing device/emulator"
@@ -169,7 +169,7 @@ release: local-properties
 install: local-properties
 	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:installDebug
 
-adb-install:
+install-release:
 	@set -e; \
 	ADB_BIN="$(ADB)"; \
 	if [ ! -x "$$ADB_BIN" ]; then \
@@ -203,7 +203,7 @@ adb-install:
 		DEVICE_COUNT="$$(printf '%s\n' "$$DEVICES" | sed '/^$$/d' | wc -l | tr -d ' ')"; \
 		if [ "$$DEVICE_COUNT" -gt 1 ]; then \
 			echo "Error: multiple devices detected. Set ADB_SERIAL=<device-serial>." >&2; \
-			echo "Example: make adb-install ADB_SERIAL=$$(printf '%s\n' "$$DEVICES" | head -n 1)" >&2; \
+			echo "Example: make install-release ADB_SERIAL=$$(printf '%s\n' "$$DEVICES" | head -n 1)" >&2; \
 			exit 1; \
 		fi; \
 		TARGET_SERIAL="$$(printf '%s\n' "$$DEVICES" | head -n 1)"; \

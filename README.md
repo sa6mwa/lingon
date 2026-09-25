@@ -313,6 +313,18 @@ make android-build
 make android-install
 ```
 
+`make android-install` installs a debug build. To install the release build on
+a connected phone, run:
+
+```bash
+make android-release
+make android-install-release
+```
+
+If more than one device is connected, pass `ADB_SERIAL=<device-serial>` to
+`android-install-release`. Use `APK=/path/to/app-release.apk` to install a
+specific release APK.
+
 Or, directly from `android/`:
 
 ```bash

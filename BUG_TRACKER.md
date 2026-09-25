@@ -29,6 +29,18 @@ Required status values:
 
 ## Active Items
 
+### B-118 Root Makefile lacked a release APK install target for phones
+
+- Status: `resolved`
+- Area: `android`, `build`, `installation`
+- Report: Running `make android-install` does not install the app on the phone.
+- Repro: From the repository root, `make android-install` delegates to Gradle `:app:installDebug`, while there was no root target to install the release-signed APK on the phone. `go test ./internal/buildscripts -run '^TestRootAndroidInstallReleaseUsesSelectedPhoneAndReleaseAPK$' -count=1` failed before the fix with `No rule to make target 'android-install-release'`.
+- Intended behavior: Keep `android-install` for debug installs; provide `install-release` under `android/` and `android-install-release` at the root so a release APK can be installed on a phone, with `APK` and `ADB_SERIAL` overrides. Remove the transport-named `adb-install` alias.
+- Fix: The root target delegates to the Android `install-release` target, which installs the prebuilt release APK on one selected device. The debug target still uses Gradle `:app:installDebug`. Help and README use the canonical names; the old `adb-install` alias was removed.
+- Regression coverage: `TestRootAndroidInstallReleaseUsesSelectedPhoneAndReleaseAPK` runs the root target against a fake adb with two connected devices and checks that `ADB_SERIAL` selects the phone and `APK` selects the release file. It failed before the new target and passes afterward.
+- Verification: The focused test and `go test ./...`, `go vet ./...`, `golint ./...`, `golangci-lint run ./...`, `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`, and `git diff --check` pass. `make -n android-install` still resolves to `:app:installDebug`. The existing release APK's signer matches `android/lingon-release-cert.pem`. The root `make android-install-release ADB_SERIAL=<phone>` completed with `Performing Streamed Install` and `Success` on the connected Motorola phone; `adb shell pm path systems.pkt.lingon` confirmed the installed package. The temporary isolated adb server was stopped; the preexisting server was left running.
+- Remaining gap: None for this repro.
+
 ### B-117 Android soft-keyboard Shift navigation gesture
 
 - Status: `resolved`
