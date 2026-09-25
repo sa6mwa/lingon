@@ -13,23 +13,27 @@ internal enum class AltButtonMode {
     }
 }
 
-internal fun fnFunctionKeyBytes(key: Char): ByteArray? {
-    val sequence = when (key) {
-        '1' -> "\u001bOP"
-        '2' -> "\u001bOQ"
-        '3' -> "\u001bOR"
-        '4' -> "\u001bOS"
-        '5' -> "\u001b[15~"
-        '6' -> "\u001b[17~"
-        '7' -> "\u001b[18~"
-        '8' -> "\u001b[19~"
-        '9' -> "\u001b[20~"
-        '0' -> "\u001b[21~"
-        '@' -> "\u001b[23~"
-        '#' -> "\u001b[24~"
-        else -> return null
+internal fun functionKeyBytes(
+    index: Int,
+    ctrlActive: Boolean = false,
+    altActive: Boolean = false,
+    shiftActive: Boolean = false,
+): ByteArray? {
+    if (index !in 0..11) return null
+    val modifier = cursorModifierParameter(ctrlActive, altActive, shiftActive)
+    val sequence = if (index < 4) {
+        val final = "PQRS"[index]
+        if (modifier == 1) "\u001bO$final" else "\u001b[1;${modifier}$final"
+    } else {
+        val parameter = intArrayOf(15, 17, 18, 19, 20, 21, 23, 24)[index - 4]
+        if (modifier == 1) "\u001b[${parameter}~" else "\u001b[${parameter};${modifier}~"
     }
     return sequence.encodeToByteArray()
+}
+
+internal fun fnFunctionKeyBytes(key: Char, shiftActive: Boolean = false): ByteArray? {
+    val index = "1234567890".indexOf(key)
+    return functionKeyBytes(index, shiftActive = shiftActive)
 }
 
 internal sealed interface FnInput {
@@ -40,11 +44,11 @@ internal sealed interface FnInput {
     data class Literal(val text: String) : FnInput
 }
 
-internal fun dispatchFnKey(key: Char): FnInput = when (key.lowercaseChar()) {
+internal fun dispatchFnKey(key: Char, shiftActive: Boolean = false): FnInput = when (key.lowercaseChar()) {
     's' -> FnInput.ToggleSelection
     'c' -> FnInput.Copy
     'p' -> FnInput.Paste
-    else -> fnFunctionKeyBytes(key)?.let(FnInput::FunctionKey) ?: FnInput.Literal(key.toString())
+    else -> fnFunctionKeyBytes(key, shiftActive)?.let(FnInput::FunctionKey) ?: FnInput.Literal(key.toString())
 }
 
 internal data class SoftInputDispatch(
@@ -85,28 +89,23 @@ internal fun dispatchSoftInput(
 
 internal const val SNAPSHOT_MODE_APP_CURSOR = 1 shl 4
 
-internal fun modifiedCursorKeyBytes(
+internal fun modifiedNavigationKeyBytes(
     input: ByteArray,
     ctrlActive: Boolean,
     altActive: Boolean,
     shiftActive: Boolean = false,
 ): ByteArray? {
-    if (
-        input.size != 3 ||
-        input[0] != 0x1b.toByte() ||
-        input[1] != '['.code.toByte()
-    ) {
-        return null
-    }
-    val final = input[2].toInt().toChar()
-    if (final !in charArrayOf('A', 'B', 'C', 'D', 'F', 'H')) {
-        return null
-    }
+    if (input.size !in 3..4 || input[0] != 0x1b.toByte() || input[1] != '['.code.toByte()) return null
+    val final = input.last().toInt().toChar()
+    val pageKey = input.size == 4 && input[2].toInt().toChar() in charArrayOf('5', '6') && final == '~'
+    val cursorKey = input.size == 3 && final in charArrayOf('A', 'B', 'C', 'D', 'F', 'H')
+    if (!pageKey && !cursorKey) return null
     val modifier = cursorModifierParameter(ctrlActive, altActive, shiftActive)
     if (modifier == 1) {
         return input
     }
-    return "\u001b[1;${modifier}${final}".encodeToByteArray()
+    val keyParameter = if (pageKey) input[2].toInt().toChar() else '1'
+    return "\u001b[$keyParameter;${modifier}${final}".encodeToByteArray()
 }
 
 private fun cursorModifierParameter(
@@ -122,7 +121,7 @@ private fun cursorModifierParameter(
 }
 
 internal fun buildModifiedBytes(input: String, ctrlActive: Boolean, altActive: Boolean): ByteArray {
-    modifiedCursorKeyBytes(input.encodeToByteArray(), ctrlActive, altActive)?.let { return it }
+    modifiedNavigationKeyBytes(input.encodeToByteArray(), ctrlActive, altActive)?.let { return it }
     val out = ByteArrayOutputStream()
     for (ch in input) {
         if (ch == '\n' || ch == '\r') {
@@ -189,15 +188,7 @@ internal fun hardwareKeyBytes(
 ): ByteArray? {
     val functionIndex = keyCode - AndroidKeyEvent.KEYCODE_F1
     if (functionIndex in 0..11) {
-        val modifier = cursorModifierParameter(ctrlActive, altActive, shiftActive)
-        if (modifier == 1) return fnFunctionKeyBytes("1234567890@#"[functionIndex])
-        val sequence = if (functionIndex < 4) {
-            "\u001b[1;${modifier}${"PQRS"[functionIndex]}"
-        } else {
-            val parameter = intArrayOf(15, 17, 18, 19, 20, 21, 23, 24)[functionIndex - 4]
-            "\u001b[${parameter};${modifier}~"
-        }
-        return sequence.encodeToByteArray()
+        return functionKeyBytes(functionIndex, ctrlActive, altActive, shiftActive)
     }
     val direct = when (keyCode) {
         AndroidKeyEvent.KEYCODE_ENTER -> byteArrayOf('\r'.code.toByte())
@@ -213,7 +204,7 @@ internal fun hardwareKeyBytes(
         else -> null
     }
     direct ?: return null
-    modifiedCursorKeyBytes(direct, ctrlActive, altActive, shiftActive)?.let { return it }
+    modifiedNavigationKeyBytes(direct, ctrlActive, altActive, shiftActive)?.let { return it }
     if (altActive) {
         return byteArrayOf(0x1b) + direct
     }

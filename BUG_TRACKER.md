@@ -29,6 +29,22 @@ Required status values:
 
 ## Active Items
 
+### B-117 Android soft-keyboard Shift navigation gesture
+
+- Status: `resolved`
+- Area: `android`, `terminal-input`
+- Report: The soft keyboard's Shift state is not available when tapping Lingon's separate navigation keys. Use a two-second hold on arrows, Home, End, PgUp, and PgDn to send Shift plus the key, combined with active ALT/CTRL. A short tap retains the current behavior. No extra Shift button is wanted.
+- Repro: Open the Android terminal and soft keyboard, hold ↑ for two seconds, and inspect the bytes received by the host; current behavior sends an unshifted arrow. Repeat with ALT, CTRL, and PgUp/PgDn.
+- Intended behavior: Short taps send the current key with active modifiers; holding a navigation key for two seconds sends its Shift-modified terminal sequence exactly once. FN mode supplies its own persistent SHFT toggle for function keys.
+- Follow-up: While FN is active, the portrait quick-key PGUP and PGDN positions show F11 and F12 and send those function keys on tap. The `/` position becomes a persistent SHFT toggle for FN+1–0 and F11/F12. FN+@/# are literal again. Leaving FN restores `/`, PGUP, and PGDN and clears SHFT.
+- Regression coverage:
+  - `TerminalInputDispatchTest.quickNavigationKeysEncodeShiftAndActiveModifiers` checks all arrows, Home, End, PgUp, and PgDn with Shift and ALT/CTRL combinations. It failed to compile before the encoder was added and passes after the change.
+  - `TerminalInputDispatchTest.fnNumberKeysEncodeF1ThroughF10AndFnShiftEncodesModifiedFunctionKeys` checks F1–F10, shifted F1/F10/F11/F12, and literal FN+@/#. It failed to compile before shifted function-key support and passes after the change.
+  - `EndToEndTest.touch_navigation_long_press_sends_shift_with_active_modifiers` checks the actual on-screen gesture below and above the two-second threshold, host bytes, ALT/CTRL combinations, Home/End/PgUp/PgDn, and single-send behavior.
+  - `EndToEndTest.fn_mode_replaces_page_keys_with_f11_and_f12` checks the actual FN layout, F11/F12 host bytes, persistent SHFT, shifted F1/F11, SHFT toggle off, and reset on leaving FN. It failed on the missing F11 key before the UI change and passes after it.
+- Verification: `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed; the two new targeted Android tests and existing `touch_modifiers_forward_all_arrows_and_fn_keys_stay_active` passed in the isolated emulator harness. The initial batch revealed that counting echo lines was unreliable when the fixed terminal viewport scrolled; assertions now check the newest echoed bytes in order, and the focused rerun passed. `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed.
+- Remaining gap: The compact landscape quick-key layout does not expose the `/` or PGUP/PGDN positions, so its FN UI does not expose SHFT/F11/F12. Shift+FN numbers in that layout require a separate UI decision.
+
 ### B-116 Android FN input, terminal selection, and clipboard
 
 - Status: `resolved`

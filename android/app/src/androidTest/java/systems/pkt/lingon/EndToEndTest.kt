@@ -419,15 +419,117 @@ class EndToEndTest {
             assertTrue("FN was reset by a function key", hasTextNode("FN"))
         }
         sendModifiedKeyStroke(KeyEvent.KEYCODE_2, shift = true)
-        waitUntilNoError(10_000L) {
-            snapshotContainsSequence(*listOf("1b", "5b", "32", "33", "7e").map { "ECHO_${sessionId} $it" }.toTypedArray())
-        }
+        waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sessionId} 40") }
         sendModifiedKeyStroke(KeyEvent.KEYCODE_3, shift = true)
-        waitUntilNoError(10_000L) {
-            snapshotContainsSequence(*listOf("1b", "5b", "32", "34", "7e").map { "ECHO_${sessionId} $it" }.toTypedArray())
-        }
+        waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sessionId} 23") }
         composeRule.onNodeWithText("FN").performClick()
         waitUntilNoError(10_000L) { hasTextNode("ALT") && !hasTextNode("FN") }
+    }
+
+    @Test
+    fun touch_navigation_long_press_sends_shift_with_active_modifiers() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+
+        val beforeShortHold = terminalEchoTail(sessionId)
+        val upNode = composeRule.onNodeWithText("↑")
+        upNode.performTouchInput { down(center) }
+        composeRule.mainClock.advanceTimeBy(1_900L)
+        upNode.performTouchInput { up() }
+        waitUntilNoError(10_000L) {
+            val tail = terminalEchoTail(sessionId)
+            tail != beforeShortHold && tail.takeLast(3) == listOf("1b", "5b", "41")
+        }
+
+        fun holdAndAssert(label: String, modifier: Int, finalHex: String, keyParameter: String = "31") {
+            val expected = listOf("1b", "5b", keyParameter, "3b", (0x30 + modifier).toString(16), finalHex)
+            val node = composeRule.onNodeWithText(label)
+            node.performTouchInput { down(center) }
+            composeRule.mainClock.advanceTimeBy(2_100L)
+            node.performTouchInput { up() }
+            waitUntilNoError(10_000L) {
+                terminalEchoTail(sessionId).takeLast(expected.size) == expected
+            }
+            assertFalse("$label hold sent more than one key", terminalEchoTail(sessionId).takeLast(expected.size * 2) == expected + expected)
+        }
+
+        holdAndAssert("↑", 2, "41")
+        composeRule.onNodeWithText("ALT").performClick()
+        holdAndAssert("←", 4, "44")
+        composeRule.onNodeWithText("CTRL").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        holdAndAssert("↓", 8, "42")
+        holdAndAssert("HOME", 2, "48")
+        holdAndAssert("END", 2, "46")
+        holdAndAssert("PGUP", 2, "7e", "35")
+        holdAndAssert("PGDN", 2, "7e", "36")
+    }
+
+    @Test
+    fun fn_mode_replaces_page_keys_with_f11_and_f12() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+
+        assertTrue(hasTextNode("PGUP"))
+        assertTrue(hasTextNode("PGDN"))
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("FN"))
+        assertTrue(hasTextNode("F11"))
+        assertTrue(hasTextNode("F12"))
+        assertTrue(hasTextNode("SHFT"))
+        assertFalse(hasTextNode("/"))
+        assertFalse(hasTextNode("PGUP"))
+        assertFalse(hasTextNode("PGDN"))
+
+        composeRule.onNodeWithText("F11").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(5) == listOf("1b", "5b", "32", "33", "7e")
+        }
+        assertTrue(hasTextNode("FN"))
+        composeRule.onNodeWithText("F12").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(5) == listOf("1b", "5b", "32", "34", "7e")
+        }
+        assertTrue(hasTextNode("FN"))
+
+        composeRule.onNodeWithText("SHFT").performClick()
+        sendKeyStroke(KeyEvent.KEYCODE_1)
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(6) == listOf("1b", "5b", "31", "3b", "32", "50")
+        }
+        composeRule.onNodeWithText("F11").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(7) == listOf("1b", "5b", "32", "33", "3b", "32", "7e")
+        }
+        composeRule.onNodeWithText("SHFT").performClick()
+        sendKeyStroke(KeyEvent.KEYCODE_2)
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(3) == listOf("1b", "4f", "51")
+        }
+        composeRule.onNodeWithText("SHFT").performClick()
+        composeRule.onNodeWithText("FN").performClick()
+        assertTrue(hasTextNode("/"))
+        assertFalse(hasTextNode("SHFT"))
+        assertTrue(hasTextNode("PGUP"))
+        assertTrue(hasTextNode("PGDN"))
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("SHFT"))
+        sendKeyStroke(KeyEvent.KEYCODE_1)
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(3) == listOf("1b", "4f", "50")
+        }
     }
 
     @Test
@@ -5011,6 +5113,18 @@ class EndToEndTest {
             }
         }
         return count
+    }
+
+    private fun terminalEchoTail(sessionId: String): List<String> {
+        var tail = emptyList<String>()
+        composeRule.runOnIdle {
+            val snap = appViewModel().state.value.activeSnapshot ?: return@runOnIdle
+            val echo = Regex("ECHO_${Regex.escape(sessionId)} ([0-9a-f]{2})")
+            tail = (0 until snap.rows).flatMap { row ->
+                echo.findAll(snapshotRow(snap, row)).map { it.groupValues[1] }.toList()
+            }
+        }
+        return tail
     }
 
     private fun snapshotContainsSequence(vararg tokens: String): Boolean {

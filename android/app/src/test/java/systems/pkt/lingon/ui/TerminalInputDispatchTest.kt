@@ -8,6 +8,34 @@ import org.junit.Test
 
 class TerminalInputDispatchTest {
     @Test
+    fun quickNavigationKeysEncodeShiftAndActiveModifiers() {
+        val keys = mapOf(
+            "\u001b[A" to "\u001b[1;2A",
+            "\u001b[B" to "\u001b[1;2B",
+            "\u001b[C" to "\u001b[1;2C",
+            "\u001b[D" to "\u001b[1;2D",
+            "\u001b[H" to "\u001b[1;2H",
+            "\u001b[F" to "\u001b[1;2F",
+            "\u001b[5~" to "\u001b[5;2~",
+            "\u001b[6~" to "\u001b[6;2~",
+        )
+        for ((key, shifted) in keys) {
+            assertArrayEquals(key.encodeToByteArray(), modifiedNavigationKeyBytes(key.encodeToByteArray(), false, false, false))
+            assertArrayEquals(shifted.encodeToByteArray(), modifiedNavigationKeyBytes(key.encodeToByteArray(), false, false, true))
+            for ((ctrl, alt, modifier) in listOf(
+                Triple(false, true, 4), Triple(true, false, 6), Triple(true, true, 8),
+            )) {
+                val expected = if (key.endsWith('~')) {
+                    key.dropLast(1) + ";$modifier~"
+                } else {
+                    "\u001b[1;$modifier${key.last()}"
+                }
+                assertArrayEquals(expected.encodeToByteArray(), modifiedNavigationKeyBytes(key.encodeToByteArray(), ctrl, alt, true))
+            }
+        }
+    }
+
+    @Test
     fun altButtonCyclesThroughAltAndPersistentFn() {
         assertEquals(AltButtonMode.Alt, AltButtonMode.Off.next())
         assertEquals(AltButtonMode.Fn, AltButtonMode.Alt.next())
@@ -27,17 +55,25 @@ class TerminalInputDispatchTest {
     }
 
     @Test
-    fun fnNumberAndSymbolKeysEncodeAllTwelveFunctionKeys() {
-        val keys = "1234567890@#"
+    fun fnNumberKeysEncodeF1ThroughF10AndFnShiftEncodesModifiedFunctionKeys() {
+        val keys = "1234567890"
         val expected = listOf(
             "\u001bOP", "\u001bOQ", "\u001bOR", "\u001bOS",
             "\u001b[15~", "\u001b[17~", "\u001b[18~", "\u001b[19~",
-            "\u001b[20~", "\u001b[21~", "\u001b[23~", "\u001b[24~",
+            "\u001b[20~", "\u001b[21~",
         )
         keys.forEachIndexed { index, key ->
             assertArrayEquals(expected[index].encodeToByteArray(), fnFunctionKeyBytes(key))
         }
         assertNull(fnFunctionKeyBytes('x'))
+        assertNull(fnFunctionKeyBytes('@'))
+        assertNull(fnFunctionKeyBytes('#'))
+        assertEquals(FnInput.Literal("@"), dispatchFnKey('@'))
+        assertEquals(FnInput.Literal("#"), dispatchFnKey('#'))
+        assertArrayEquals("\u001b[1;2P".encodeToByteArray(), fnFunctionKeyBytes('1', shiftActive = true))
+        assertArrayEquals("\u001b[21;2~".encodeToByteArray(), fnFunctionKeyBytes('0', shiftActive = true))
+        assertArrayEquals("\u001b[23;2~".encodeToByteArray(), functionKeyBytes(10, shiftActive = true))
+        assertArrayEquals("\u001b[24;2~".encodeToByteArray(), functionKeyBytes(11, shiftActive = true))
     }
 
     @Test

@@ -2,6 +2,9 @@ package systems.pkt.lingon.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +49,11 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -124,6 +133,7 @@ fun TerminalScreen(
 ) {
     var ctrlActive by remember { mutableStateOf(false) }
     var altMode by remember { mutableStateOf(AltButtonMode.Off) }
+    var fnShiftActive by remember { mutableStateOf(false) }
     var selectionMode by remember { mutableStateOf(false) }
     var activeGridView by remember { mutableStateOf<TerminalGridView?>(null) }
     val context = LocalContext.current
@@ -265,7 +275,7 @@ fun TerminalScreen(
                 return
             }
             payload.forEach { key ->
-                when (val fnInput = dispatchFnKey(key)) {
+                when (val fnInput = dispatchFnKey(key, shiftActive = fnShiftActive)) {
                     FnInput.ToggleSelection -> {
                         selectionMode = !selectionMode
                         activeGridView?.setSelectionMode(selectionMode)
@@ -306,6 +316,20 @@ fun TerminalScreen(
             ctrlActive = false
             if (altMode == AltButtonMode.Alt) altMode = AltButtonMode.Off
         }
+    }
+
+    fun sendShiftedNavigationKey(sequence: String) {
+        val bytes = modifiedNavigationKeyBytes(
+            sequence.encodeToByteArray(),
+            ctrlActive = ctrlActive,
+            altActive = altMode == AltButtonMode.Alt,
+            shiftActive = true,
+        ) ?: return
+        sendBytesFromSoftInput(bytes)
+    }
+
+    fun sendFnFunctionKey(index: Int) {
+        functionKeyBytes(index, shiftActive = fnShiftActive)?.let(viewModel::sendRawBytes)
     }
 
     fun handleHardwareKey(native: AndroidKeyEvent): Boolean {
@@ -422,14 +446,19 @@ fun TerminalScreen(
                     onHardwareKey = ::handleHardwareKey,
                     ctrlActive = ctrlActive,
                     altMode = altMode,
+                    fnShiftActive = fnShiftActive,
                     selectionMode = selectionMode,
                     onGridViewReady = { activeGridView = it },
                     onToggleCtrl = { if (altMode != AltButtonMode.Fn) ctrlActive = !ctrlActive },
                     onToggleAlt = {
                         altMode = altMode.next()
                         if (altMode == AltButtonMode.Fn) ctrlActive = false
+                        else fnShiftActive = false
                     },
+                    onToggleFnShift = { fnShiftActive = !fnShiftActive },
                     onSendKey = ::sendTextFromSoftInput,
+                    onSendShiftedKey = ::sendShiftedNavigationKey,
+                    onSendFunctionKey = ::sendFnFunctionKey,
                     onSendBytes = ::sendBytesFromSoftInput,
                     onUserDismissIme = handleUserDismissIme,
                     onInputReady = { requestFocus ->
@@ -497,14 +526,19 @@ fun TerminalScreen(
                     onHardwareKey = ::handleHardwareKey,
                     ctrlActive = ctrlActive,
                     altMode = altMode,
+                    fnShiftActive = fnShiftActive,
                     selectionMode = selectionMode,
                     onGridViewReady = { activeGridView = it },
                     onToggleCtrl = { if (altMode != AltButtonMode.Fn) ctrlActive = !ctrlActive },
                     onToggleAlt = {
                         altMode = altMode.next()
                         if (altMode == AltButtonMode.Fn) ctrlActive = false
+                        else fnShiftActive = false
                     },
+                    onToggleFnShift = { fnShiftActive = !fnShiftActive },
                     onSendKey = ::sendTextFromSoftInput,
+                    onSendShiftedKey = ::sendShiftedNavigationKey,
+                    onSendFunctionKey = ::sendFnFunctionKey,
                     onSendBytes = ::sendBytesFromSoftInput,
                     onUserDismissIme = handleUserDismissIme,
                     onInputReady = { requestFocus ->
@@ -671,11 +705,15 @@ private fun TerminalPanel(
     onHardwareKey: (AndroidKeyEvent) -> Boolean,
     ctrlActive: Boolean,
     altMode: AltButtonMode,
+    fnShiftActive: Boolean,
     selectionMode: Boolean,
     onGridViewReady: (TerminalGridView) -> Unit,
     onToggleCtrl: () -> Unit,
     onToggleAlt: () -> Unit,
+    onToggleFnShift: () -> Unit,
     onSendKey: (String) -> Unit,
+    onSendShiftedKey: (String) -> Unit,
+    onSendFunctionKey: (Int) -> Unit,
     onSendBytes: (ByteArray) -> Unit,
     onUserDismissIme: () -> Unit,
     onInputReady: ((() -> Unit) -> Unit),
@@ -913,11 +951,21 @@ private fun TerminalPanel(
                     singleRow = isLandscape,
                     ctrlActive = ctrlActive,
                     altMode = altMode,
+                    fnShiftActive = fnShiftActive,
                     onToggleCtrl = onToggleCtrl,
                     onToggleAlt = onToggleAlt,
+                    onToggleFnShift = onToggleFnShift,
                     onSendKey = { key ->
                         focusInput()
                         onSendKey(key)
+                    },
+                    onSendShiftedKey = { key ->
+                        focusInput()
+                        onSendShiftedKey(key)
+                    },
+                    onSendFunctionKey = { index ->
+                        focusInput()
+                        onSendFunctionKey(index)
                     },
                     onSendBytes = { bytes ->
                         focusInput()
@@ -936,9 +984,13 @@ private fun QuickKeysRow(
     singleRow: Boolean,
     ctrlActive: Boolean,
     altMode: AltButtonMode,
+    fnShiftActive: Boolean,
     onToggleCtrl: () -> Unit,
     onToggleAlt: () -> Unit,
+    onToggleFnShift: () -> Unit,
     onSendKey: (String) -> Unit,
+    onSendShiftedKey: (String) -> Unit,
+    onSendFunctionKey: (Int) -> Unit,
     onSendBytes: (ByteArray) -> Unit,
 ) {
     val keyHeight = when {
@@ -963,6 +1015,11 @@ private fun QuickKeysRow(
         compact -> 4.dp
         else -> 6.dp
     }
+    fun navigationKey(label: String, sequence: String) = QuickKeySpec(
+        label = label,
+        onLongClick = { onSendShiftedKey(sequence) },
+        onClick = { onSendKey(sequence) },
+    )
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -975,10 +1032,10 @@ private fun QuickKeysRow(
                     QuickKeySpec("TAB") { onSendKey("\t") },
                     QuickKeySpec("CTRL", active = ctrlActive, enabled = altMode != AltButtonMode.Fn) { onToggleCtrl() },
                     QuickKeySpec(if (altMode == AltButtonMode.Fn) "FN" else "ALT", active = altMode != AltButtonMode.Off) { onToggleAlt() },
-                    QuickKeySpec("←") { onSendKey("\u001b[D") },
-                    QuickKeySpec("↓") { onSendKey("\u001b[B") },
-                    QuickKeySpec("↑") { onSendKey("\u001b[A") },
-                    QuickKeySpec("→") { onSendKey("\u001b[C") },
+                    navigationKey("←", "\u001b[D"),
+                    navigationKey("↓", "\u001b[B"),
+                    navigationKey("↑", "\u001b[A"),
+                    navigationKey("→", "\u001b[C"),
                 ),
                 height = keyHeight,
                 padding = keyPadding,
@@ -989,12 +1046,14 @@ private fun QuickKeysRow(
             QuickKeyRow(
                 keys = listOf(
                     QuickKeySpec("ESC") { onSendBytes(byteArrayOf(0x1b)) },
-                    QuickKeySpec("/") { onSendKey("/") },
+                    if (altMode == AltButtonMode.Fn) QuickKeySpec("SHFT", active = fnShiftActive) { onToggleFnShift() }
+                    else QuickKeySpec("/") { onSendKey("/") },
                     QuickKeySpec("-") { onSendKey("-") },
-                    QuickKeySpec("HOME") { onSendKey("\u001b[H") },
-                    QuickKeySpec("↑") { onSendKey("\u001b[A") },
-                    QuickKeySpec("END") { onSendKey("\u001b[F") },
-                    QuickKeySpec("PGUP") { onSendKey("\u001b[5~") },
+                    navigationKey("HOME", "\u001b[H"),
+                    navigationKey("↑", "\u001b[A"),
+                    navigationKey("END", "\u001b[F"),
+                    if (altMode == AltButtonMode.Fn) QuickKeySpec("F11") { onSendFunctionKey(10) }
+                    else navigationKey("PGUP", "\u001b[5~"),
                 ),
                 height = keyHeight,
                 padding = keyPadding,
@@ -1006,10 +1065,11 @@ private fun QuickKeysRow(
                     QuickKeySpec("TAB") { onSendKey("\t") },
                     QuickKeySpec("CTRL", active = ctrlActive, enabled = altMode != AltButtonMode.Fn) { onToggleCtrl() },
                     QuickKeySpec(if (altMode == AltButtonMode.Fn) "FN" else "ALT", active = altMode != AltButtonMode.Off) { onToggleAlt() },
-                    QuickKeySpec("←") { onSendKey("\u001b[D") },
-                    QuickKeySpec("↓") { onSendKey("\u001b[B") },
-                    QuickKeySpec("→") { onSendKey("\u001b[C") },
-                    QuickKeySpec("PGDN") { onSendKey("\u001b[6~") },
+                    navigationKey("←", "\u001b[D"),
+                    navigationKey("↓", "\u001b[B"),
+                    navigationKey("→", "\u001b[C"),
+                    if (altMode == AltButtonMode.Fn) QuickKeySpec("F12") { onSendFunctionKey(11) }
+                    else navigationKey("PGDN", "\u001b[6~"),
                 ),
                 height = keyHeight,
                 padding = keyPadding,
@@ -1043,6 +1103,7 @@ private fun QuickKeyRow(
                 textStyle = textStyle,
                 modifier = Modifier.weight(1f),
                 onClick = key.onClick,
+                onLongClick = key.onLongClick,
             )
         }
     }
@@ -1058,7 +1119,10 @@ private fun QuickKey(
     textStyle: TextStyle,
     modifier: Modifier,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
 ) {
+    val currentOnClick by rememberUpdatedState(onClick)
+    val currentOnLongClick by rememberUpdatedState(onLongClick)
     val shape = RoundedCornerShape(4.dp)
     val borderColor = if (active) {
         MaterialTheme.colorScheme.primary
@@ -1071,10 +1135,37 @@ private fun QuickKey(
         MaterialTheme.colorScheme.surfaceVariant
     }
 
+    val interactionModifier = if (onLongClick == null) {
+        Modifier.clickable(enabled = enabled, onClick = onClick)
+    } else {
+        Modifier
+            .semantics {
+                role = Role.Button
+                onClick { onClick(); true }
+                onLongClick { onLongClick(); true }
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                awaitEachGesture {
+                    awaitFirstDown()
+                    val completed = withTimeoutOrNull(2_000L) {
+                        Pair(waitForUpOrCancellation(), true)
+                    }
+                    when {
+                        completed == null -> {
+                            currentOnLongClick?.invoke()
+                            waitForUpOrCancellation()
+                        }
+                        completed.first != null -> currentOnClick()
+                    }
+                }
+            }
+    }
+
     Surface(
         modifier = modifier
             .height(height)
-            .clickable(enabled = enabled, onClick = onClick),
+            .then(interactionModifier),
         shape = shape,
         color = containerColor,
         border = BorderStroke(1.dp, borderColor),
@@ -1106,6 +1197,7 @@ private data class QuickKeySpec(
     val label: String,
     val active: Boolean = false,
     val enabled: Boolean = true,
+    val onLongClick: (() -> Unit)? = null,
     val onClick: () -> Unit,
 )
 
