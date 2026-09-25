@@ -135,7 +135,7 @@ fun TerminalScreen(
     var altMode by remember { mutableStateOf(AltButtonMode.Off) }
     var fnShiftActive by remember { mutableStateOf(false) }
     var fnModifierMode by remember { mutableStateOf(FnModifierMode.Off) }
-    var selectionMode by remember { mutableStateOf(false) }
+    val selectionMode = altMode == AltButtonMode.Fn
     var activeGridView by remember { mutableStateOf<TerminalGridView?>(null) }
     val context = LocalContext.current
     val clipboard = remember(context) { context.getSystemService(ClipboardManager::class.java) }
@@ -206,7 +206,6 @@ fun TerminalScreen(
         viewModel.recordTerminalImeVisibilityForLifecycle(false)
     }
     LaunchedEffect(state.activeSessionId) {
-        selectionMode = false
         activeGridView = null
     }
     LaunchedEffect(state.activeSessionId, inputReadyNonce) { focusInputIfImeRestoreAllowed() }
@@ -264,13 +263,16 @@ fun TerminalScreen(
     }
 
     val handleSelectSession: (String) -> Unit = { nextSessionId ->
-        selectionMode = false
         activeGridView = null
         viewModel.selectSession(nextSessionId)
     }
 
     fun sendTextFromSoftInput(payload: String) {
         if (altMode == AltButtonMode.Fn) {
+            if (payload == "\r" || payload == "\n") {
+                viewModel.sendRawBytes(byteArrayOf('\r'.code.toByte()))
+                return
+            }
             if (payload.startsWith("\u001b[")) {
                 viewModel.sendRawBytes(payload.encodeToByteArray())
                 return
@@ -282,10 +284,6 @@ fun TerminalScreen(
                     ctrlActive = fnModifierMode.ctrlActive,
                     altActive = fnModifierMode.altActive,
                 )) {
-                    FnInput.ToggleSelection -> {
-                        selectionMode = !selectionMode
-                        activeGridView?.setSelectionMode(selectionMode)
-                    }
                     FnInput.Copy -> {
                         activeGridView?.selectedText()?.takeIf { it.isNotEmpty() }?.let { copied ->
                             clipboard?.setPrimaryClip(ClipData.newPlainText("Lingon terminal", copied))
@@ -922,7 +920,7 @@ private fun TerminalPanel(
                             }
                         }
                         setOnEnter {
-                            onSendBytes(byteArrayOf('\r'.code.toByte()))
+                            onSendKey("\r")
                         }
                         setOnHardwareKey(onHardwareKey)
                         setOnClickListener {
@@ -946,7 +944,7 @@ private fun TerminalPanel(
                         }
                     }
                     view.setOnEnter {
-                        onSendBytes(byteArrayOf('\r'.code.toByte()))
+                        onSendKey("\r")
                     }
                     view.setOnHardwareKey(onHardwareKey)
                     view.setOnUserDismissIme(onUserDismissIme)

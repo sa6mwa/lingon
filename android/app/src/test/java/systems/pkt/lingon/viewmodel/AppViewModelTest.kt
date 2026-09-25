@@ -1393,6 +1393,7 @@ class AppViewModelTest {
             viewModel.state.value.copy(
                 connectionState = ConnectionState.Connected,
                 activeSnapshot = liveSnapshot,
+                hasControl = true,
             ),
         )
         setWebSocketForTest(viewModel, wsClient.fakeSocket)
@@ -1400,6 +1401,24 @@ class AppViewModelTest {
         viewModel.sendRawBytes("\u001b[B".encodeToByteArray())
 
         assertArrayEquals("\u001bOB".encodeToByteArray(), wsClient.lastSentBytes)
+    }
+
+    @Test
+    fun inputIsBlockedWithoutControlForTextAndRawBytes() = runTest {
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(FakeRepository(), wsClient)
+        advanceUntilIdle()
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(connectionState = ConnectionState.Connected, hasControl = false),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+
+        viewModel.sendRawInput("z")
+        assertNull(wsClient.lastSentBytes)
+        viewModel.sendRawBytes(byteArrayOf(0x1b, 0x0d))
+        assertNull(wsClient.lastSentBytes)
+        assertEquals("control unavailable", viewModel.state.value.status?.message)
     }
 
     @Test

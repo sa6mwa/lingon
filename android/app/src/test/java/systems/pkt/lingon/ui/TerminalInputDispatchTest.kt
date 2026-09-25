@@ -70,19 +70,20 @@ class TerminalInputDispatchTest {
         }
         assertArrayEquals("\u001b[1;8P".encodeToByteArray(), fnFunctionKeyBytes('1', ctrlActive = true, altActive = true, shiftActive = true))
         assertArrayEquals("\u001b[23;8~".encodeToByteArray(), functionKeyBytes(10, ctrlActive = true, altActive = true, shiftActive = true))
-        assertEquals(FnInput.ToggleSelection, dispatchFnKey('s', ctrlActive = true, altActive = true))
+        assertEquals(FnInput.Literal("s"), dispatchFnKey('s', ctrlActive = true, altActive = true))
         assertEquals(FnInput.Copy, dispatchFnKey('c', ctrlActive = true, altActive = true))
-        assertEquals(FnInput.Paste, dispatchFnKey('p', ctrlActive = true, altActive = true))
+        assertEquals(FnInput.Paste, dispatchFnKey('v', ctrlActive = true, altActive = true))
     }
 
     @Test
     fun fnCommandsAreCaseInsensitiveAndOtherKeysStayLiteral() {
-        assertEquals(FnInput.ToggleSelection, dispatchFnKey('s'))
-        assertEquals(FnInput.ToggleSelection, dispatchFnKey('S'))
+        assertEquals(FnInput.Literal("s"), dispatchFnKey('s'))
+        assertEquals(FnInput.Literal("S"), dispatchFnKey('S'))
         assertEquals(FnInput.Copy, dispatchFnKey('c'))
         assertEquals(FnInput.Copy, dispatchFnKey('C'))
-        assertEquals(FnInput.Paste, dispatchFnKey('p'))
-        assertEquals(FnInput.Paste, dispatchFnKey('P'))
+        assertEquals(FnInput.Paste, dispatchFnKey('v'))
+        assertEquals(FnInput.Paste, dispatchFnKey('V'))
+        assertEquals(FnInput.Literal("p"), dispatchFnKey('p'))
         assertEquals(FnInput.Literal("x"), dispatchFnKey('x'))
         assertArrayEquals("\u001bOP".encodeToByteArray(), (dispatchFnKey('1') as FnInput.FunctionKey).bytes)
     }
@@ -199,21 +200,39 @@ class TerminalInputDispatchTest {
     }
 
     @Test
-    fun dispatchEnterWithAltSendsPlainCarriageReturn() {
+    fun dispatchEnterWithAltSendsEscapePrefixedCarriageReturn() {
         val out = dispatchSoftInput(payload = "\n", ctrlActive = false, altActive = true)
 
         assertNull(out.text)
-        assertArrayEquals(byteArrayOf('\r'.code.toByte()), out.bytes)
+        assertArrayEquals(byteArrayOf(0x1b, '\r'.code.toByte()), out.bytes)
         assertEquals(false, out.nextCtrlActive)
         assertEquals(false, out.nextAltActive)
     }
 
     @Test
-    fun dispatchCarriageReturnWithAltSendsPlainCarriageReturn() {
+    fun dispatchCarriageReturnWithAltSendsEscapePrefixedCarriageReturn() {
         val out = dispatchSoftInput(payload = "\r", ctrlActive = false, altActive = true)
 
         assertNull(out.text)
-        assertArrayEquals(byteArrayOf('\r'.code.toByte()), out.bytes)
+        assertArrayEquals(byteArrayOf(0x1b, '\r'.code.toByte()), out.bytes)
+        assertEquals(false, out.nextCtrlActive)
+        assertEquals(false, out.nextAltActive)
+    }
+
+    @Test
+    fun dispatchEnterWithoutAltStaysCarriageReturn() {
+        for (ctrl in listOf(false, true)) {
+            val out = dispatchSoftInput(payload = "\n", ctrlActive = ctrl, altActive = false)
+            assertArrayEquals(byteArrayOf('\r'.code.toByte()), out.bytes)
+            assertEquals(false, out.nextCtrlActive)
+        }
+    }
+
+    @Test
+    fun dispatchEnterWithCtrlAndAltSendsEscapePrefixedCarriageReturn() {
+        val out = dispatchSoftInput(payload = "\n", ctrlActive = true, altActive = true)
+
+        assertArrayEquals(byteArrayOf(0x1b, '\r'.code.toByte()), out.bytes)
         assertEquals(false, out.nextCtrlActive)
         assertEquals(false, out.nextAltActive)
     }

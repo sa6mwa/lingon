@@ -56,7 +56,6 @@ internal fun fnFunctionKeyBytes(
 }
 
 internal sealed interface FnInput {
-    data object ToggleSelection : FnInput
     data object Copy : FnInput
     data object Paste : FnInput
     data class FunctionKey(val bytes: ByteArray) : FnInput
@@ -69,9 +68,8 @@ internal fun dispatchFnKey(
     ctrlActive: Boolean = false,
     altActive: Boolean = false,
 ): FnInput = when (key.lowercaseChar()) {
-    's' -> FnInput.ToggleSelection
     'c' -> FnInput.Copy
-    'p' -> FnInput.Paste
+    'v' -> FnInput.Paste
     else -> fnFunctionKeyBytes(key, shiftActive, ctrlActive, altActive)?.let(FnInput::FunctionKey) ?: FnInput.Literal(key.toString())
 }
 
@@ -149,7 +147,7 @@ internal fun buildModifiedBytes(input: String, ctrlActive: Boolean, altActive: B
     val out = ByteArrayOutputStream()
     for (ch in input) {
         if (ch == '\n' || ch == '\r') {
-            // Always emit a plain terminal carriage return for Enter.
+            if (altActive) out.write(0x1b)
             out.write('\r'.code)
             continue
         }

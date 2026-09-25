@@ -48,11 +48,13 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.FrameLayout
 import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import java.net.HttpURLConnection
@@ -427,6 +429,49 @@ class EndToEndTest {
     }
 
     @Test
+    fun soft_ime_enter_respects_alt_modifier() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+
+        fun sendImeEnter(asKeyEvent: Boolean) {
+            composeRule.runOnUiThread {
+                fun findInput(view: View): View? {
+                    if (view.javaClass.simpleName == "TerminalInputView") return view
+                    if (view is ViewGroup) {
+                        for (index in 0 until view.childCount) {
+                            findInput(view.getChildAt(index))?.let { return it }
+                        }
+                    }
+                    return null
+                }
+                val input = checkNotNull(findInput(composeRule.activity.window.decorView))
+                val connection = input.onCreateInputConnection(EditorInfo())
+                assertTrue(if (asKeyEvent) {
+                    connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                } else {
+                    connection.commitText("\n", 1)
+                })
+            }
+        }
+
+        composeRule.onNodeWithText("ALT").performClick()
+        sendImeEnter(asKeyEvent = true)
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(2) == listOf("1b", "0d") }
+
+        composeRule.onNodeWithText("ALT").performClick()
+        sendImeEnter(asKeyEvent = false)
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(4) == listOf("1b", "0d", "1b", "0d") }
+
+        sendImeEnter(asKeyEvent = true)
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(3) == listOf("1b", "0d", "0d") }
+    }
+
+    @Test
     fun touch_navigation_long_press_sends_shift_with_active_modifiers() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -597,21 +642,14 @@ class EndToEndTest {
             ?: throw AssertionError("selection paste test needs a second host session")
         val clipboard = composeRule.activity.getSystemService(ClipboardManager::class.java)
         val previousClip = clipboard.primaryClip
-        try {
-            sendTerminalInput("a")
-            waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sourceSession} 61") }
-            composeRule.onNodeWithText("ALT").performClick()
-            composeRule.onNodeWithText("ALT").performClick()
-            sendKeyStroke(KeyEvent.KEYCODE_S)
-            assertTrue(hasTextNode("FN"))
-
+        fun selectEchoPrefix(sessionId: String) {
             composeRule.runOnIdle {
                 val view = findTerminalView() as? TerminalGridView ?: throw AssertionError("missing terminal grid")
                 val snapshot = stateForTest().activeSnapshot ?: throw AssertionError("missing terminal snapshot")
                 val row = (view.getVisibleStartRow() until view.getVisibleEndRowExclusive())
-                    .lastOrNull { snapshotRow(snapshot, it).contains("ECHO_${sourceSession} 61") }
+                    .lastOrNull { snapshotRow(snapshot, it).contains("ECHO_${sessionId} 61") }
                     ?: throw AssertionError("echo line is not visible for selection")
-                val col = snapshotRow(snapshot, row).indexOf("ECHO_${sourceSession} 61")
+                val col = snapshotRow(snapshot, row).indexOf("ECHO_${sessionId} 61")
                 val cellWidth = view.getScaledCellWidthForTesting()
                 val cellHeight = view.getScaledCellHeightForTesting()
                 val x1 = (col + 0.5f) * cellWidth - view.getCameraOffsetXForTesting()
@@ -623,24 +661,48 @@ class EndToEndTest {
                 view.dispatchTouchEvent(MotionEvent.obtain(time, time + 32, MotionEvent.ACTION_UP, x2, y, 0))
                 assertEquals("ECHO", view.selectedText())
             }
+        }
+        try {
+            sendTerminalInput("a")
+            waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sourceSession} 61") }
+            composeRule.onNodeWithText("ALT").performClick()
+            composeRule.onNodeWithText("ALT").performClick()
+            assertTrue(hasTextNode("FN"))
+
+            selectEchoPrefix(sourceSession)
             sendKeyStroke(KeyEvent.KEYCODE_C)
             waitUntilNoError(10_000L) {
                 clipboard.primaryClip?.getItemAt(0)?.coerceToText(composeRule.activity)?.toString() == "ECHO"
             }
             assertTrue("FN was reset after copy", hasTextNode("FN"))
 
+            composeRule.onNodeWithText("FN").performClick()
+            composeRule.runOnIdle {
+                assertNull((findTerminalView() as TerminalGridView).selectedText())
+            }
+            composeRule.onNodeWithText("ALT").performClick()
+            composeRule.onNodeWithText("ALT").performClick()
+
             selectSessionTab(destinationSession, timeoutMs = 10_000L)
             focusTerminalInput()
             assertTrue("FN was reset on session switch", hasTextNode("FN"))
-            sendKeyStroke(KeyEvent.KEYCODE_P)
+            sendKeyStroke(KeyEvent.KEYCODE_V)
             waitUntilNoError(10_000L) {
                 snapshotContainsSequence(*listOf("45", "43", "48", "4f").map { "ECHO_${destinationSession} $it" }.toTypedArray())
             }
 
             clipboard.setPrimaryClip(ClipData.newPlainText("external", "NOW"))
-            sendKeyStroke(KeyEvent.KEYCODE_P)
+            sendKeyStroke(KeyEvent.KEYCODE_V)
             waitUntilNoError(10_000L) {
                 snapshotContainsSequence(*listOf("4e", "4f", "57").map { "ECHO_${destinationSession} $it" }.toTypedArray())
+            }
+
+            sendKeyStroke(KeyEvent.KEYCODE_A)
+            waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${destinationSession} 61") }
+            selectEchoPrefix(destinationSession)
+            sendKeyStroke(KeyEvent.KEYCODE_C)
+            waitUntilNoError(10_000L) {
+                clipboard.primaryClip?.getItemAt(0)?.coerceToText(composeRule.activity)?.toString() == "ECHO"
             }
         } finally {
             if (previousClip != null) clipboard.setPrimaryClip(previousClip) else clipboard.clearPrimaryClip()
@@ -2767,6 +2829,7 @@ class EndToEndTest {
         composeRule.runOnIdle {
             appViewModel().setHasControlForTesting(false)
         }
+        closeSettingsIfOpen()
         assertTerminalInputBlocked()
     }
 
@@ -2813,6 +2876,7 @@ class EndToEndTest {
             ?: throw AssertionError("missing terminal debug info")
         assertTrue("view cols=${info.viewCols}", info.viewCols > 0)
         assertTrue("view rows=${info.viewRows}", info.viewRows > 0)
+        closeSettingsIfOpen()
         assertTerminalInputBlocked()
     }
 
@@ -4152,9 +4216,10 @@ class EndToEndTest {
                     "shareErr=${state.shareTokenError.orEmpty()} " +
                     "status=${state.status?.message.orEmpty()} " +
                     "rows=${info?.rows ?: 0} cols=${info?.cols ?: 0} " +
-                    "active=${info?.activeSessionId.orEmpty()}",
+                "active=${info?.activeSessionId.orEmpty()}",
             )
         }
+        closeSettingsIfOpen()
     }
 
     private fun setEndpoint(endpoint: String) {
@@ -4627,6 +4692,7 @@ class EndToEndTest {
         composeRule.onNodeWithTag(TestTags.EndpointInput).performTextReplacement(endpoint)
         composeRule.onNodeWithTag(TestTags.EndpointSave).performClick()
         waitForTagToDisappear(TestTags.EndpointInput)
+        closeSettingsIfOpen()
     }
 
     private fun configureEndpointAndCerts() {
@@ -5499,6 +5565,7 @@ class EndToEndTest {
     private fun resetZoomPan() {
         openSettings()
         composeRule.onNodeWithTag(TestTags.ZoomResetButton).performClick()
+        closeSettingsIfOpen()
     }
 
     private fun setZoomFactor(value: Float) {

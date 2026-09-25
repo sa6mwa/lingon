@@ -958,8 +958,8 @@ class AppViewModel(
             setStatus("not connected", StatusLevel.Warn)
             return
         }
-        if (state.shareToken != null && !state.hasControl) {
-            setStatus("view-only session", StatusLevel.Warn)
+        if (!state.hasControl) {
+            setStatus(if (state.shareToken != null) "view-only session" else "control unavailable", StatusLevel.Warn)
             return
         }
         sendProcessedInput(data.toByteArray())
@@ -977,8 +977,8 @@ class AppViewModel(
             setStatus("not connected", StatusLevel.Warn)
             return
         }
-        if (state.shareToken != null && !state.hasControl) {
-            setStatus("view-only session", StatusLevel.Warn)
+        if (!state.hasControl) {
+            setStatus(if (state.shareToken != null) "view-only session" else "control unavailable", StatusLevel.Warn)
             return
         }
         sendProcessedInput(bytes)

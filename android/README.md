@@ -16,14 +16,17 @@ rendering pipeline.
 ## Terminal keyboard and selection
 
 - Tap **ALT** once for the next Alt chord. Tap it again to enter **FN** mode;
-  tap **FN** to return to ALT off. FN stays on after a key. CTRL turns off when
-  FN is entered.
-- In FN mode, `1`–`9` send F1–F9, `0` sends F10, `@` sends F11, and `#`
-  sends F12. Physical F1–F12 keys also work, including Ctrl+Alt chords.
-- FN+S toggles text selection. Drag one finger over terminal cells to select;
-  selected cells have a white background. Drag two fingers to pan or pinch to
+  tap **FN** to return to ALT off. FN stays on after a key. In FN mode, the
+  existing CTRL button cycles off → CTRL → ALT → C+A → off for function-key
+  modifiers. The portrait quick-key `/` button becomes a persistent SHFT toggle.
+- In FN mode, `1`–`9` send F1–F9 and `0` sends F10. The portrait quick-key
+  PGUP and PGDN positions send F11 and F12. Physical F1–F12 keys also work,
+  including Ctrl+Alt chords.
+- Entering FN also enables text selection. Drag one finger over terminal cells
+  to select; selected cells have a white background. Drag two fingers to pan or pinch to
   zoom while selection is active. Tap the terminal to show the keyboard again.
-- FN+C copies the selected text to Android's clipboard. FN+P pastes the current
+  Leaving FN clears the selection.
+- FN+C copies the selected text to Android's clipboard. FN+V pastes the current
   Android clipboard contents into the active terminal, including after switching
   sessions.
 

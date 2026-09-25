@@ -29,6 +29,42 @@ Required status values:
 
 ## Active Items
 
+### B-123 FN selection starts automatically and paste uses V
+
+- Status: `resolved`
+- Area: `android`, `terminal-input`, `terminal-selection`
+- Report: FN+S is an extra step to select text, and FN+P is less familiar than paste with V.
+- Repro: Enable FN with two ALT taps and drag over terminal text without pressing S; no selection is made. FN+V sends a literal V while FN+P pastes.
+- Intended behavior: FN enables terminal selection immediately, keeps it active across terminal switches, and disables it when FN is turned off. FN+C copies the selected text and FN+V pastes the current Android clipboard. S and P become literal keys in FN mode.
+- Fix: Selection mode now derives from the persistent FN button state and follows it across session changes. FN+C retains copy; FN+V reads the current Android clipboard; FN+S and FN+P send literal keys. The Android keyboard guide documents the new controls.
+- Regression coverage: `TerminalInputDispatchTest` asserts V/paste and literal S/P mappings; `EndToEndTest.fn_selection_copies_visible_cells_and_pastes_current_clipboard_in_another_session` selects without S, copies, confirms FN-off clears selection, re-enters FN, switches terminals, pastes both copied and externally updated clipboard text with V, and selects/copies again in the destination terminal. The unit and connected regressions failed before the fix and passed afterward.
+- Verification: The targeted connected Android test passed in the isolated emulator harness; `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`, `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed. The full Android release sweep remains open due unrelated lifecycle/pan/layout failures.
+- Remaining gap: Release installation awaits a clean full Android sweep under repository policy.
+
+### B-122 Android sends input after control is lost
+
+- Status: `resolved`
+- Area: `android`, `terminal-input`, `session-control`
+- Report: The full release instrumentation sweep exposed a case where a connected session has no control but the Android app still sends typed input to the host.
+- Repro: Connect normally, set `hasControl=false` through the test seam, then type a character. The host echoes it because `sendRawInput` and `sendRawBytes` only gate view-only share tokens.
+- Intended behavior: Both text and raw-byte input are blocked whenever the active session lacks control.
+- Regression coverage: `EndToEndTest.headless_resize_action_disabled_and_input_remains_blocked_without_control` fails before the fix once the test closes Settings before sending input.
+- Fix: `sendRawInput` and `sendRawBytes` now reject input whenever `hasControl` is false and report whether the cause is a view-only token or unavailable control.
+- Verification: The Android connected regression passed after the fix; `AppViewModelTest.inputIsBlockedWithoutControlForTextAndRawBytes` covers both ViewModel entry points. The full Android unit suite passed.
+- Remaining gap: None for this repro.
+
+### B-121 Android soft keyboard drops ALT on Enter
+
+- Status: `resolved`
+- Area: `android`, `terminal-input`
+- Report: Tapping the on-screen ALT control and then the soft keyboard Return key sends ordinary Enter.
+- Repro: Focus the Android terminal input, tap ALT, then press Return through the IME. The host receives `0d` instead of the expected `1b 0d`.
+- Intended behavior: ALT+Return sends ESC CR. Plain Return remains CR; the on-screen ALT modifier is consumed after Enter.
+- Fix: IME Enter callbacks now use the modifier-aware text dispatch. That dispatch prefixes terminal CR with ESC when ALT is active; FN mode continues to send plain CR without consuming FN.
+- Regression coverage: `TerminalInputDispatchTest` checks LF and CR with ALT, plain and CTRL Enter, and CTRL+ALT+Enter. `EndToEndTest.soft_ime_enter_respects_alt_modifier` drives both IME `sendKeyEvent(ENTER)` and `commitText("\n")`, checks `1b 0d` on the host, and confirms plain Enter after ALT is consumed. Both unit Enter regressions and the connected Android regression failed before the fix and passed afterward.
+- Verification: `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`, the targeted connected Android test in the isolated emulator harness, `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed. The IME callback, dispatch, and hardware Enter paths were reviewed.
+- Remaining gap: None for this repro.
+
 ### B-120 Release install reused an older Android APK
 
 - Status: `resolved`
