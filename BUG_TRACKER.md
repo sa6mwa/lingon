@@ -29,6 +29,18 @@ Required status values:
 
 ## Active Items
 
+### B-120 Release install reused an older Android APK
+
+- Status: `resolved`
+- Area: `android`, `build`, `installation`
+- Report: After installing the release, the phone does not show the new FN CTRL/ALT controls.
+- Repro: Commit `68bb607` contains the FN controls, but `android/app/build/outputs/apk/release/output-metadata.json` still names `664dbf6`; `make android-install-release` installs that existing APK without building the current release.
+- Intended behavior: A default release install builds the current release before installing it. An explicit `APK=` path installs that file without rebuilding.
+- Fix: `android/Makefile` builds the release before a default `install-release`; `APK=` bypasses the build for an explicitly selected file. Root target and usage documentation reflect that behavior.
+- Regression coverage: `TestRootAndroidInstallReleaseBuildsCurrentAPKByDefault` checks the build precedes install and verifies the explicit `APK=` path skips it. The default case failed before the fix and passes after. The existing selected-device/custom-APK regression still passes.
+- Verification: `make android-install-release ADB_SERIAL=ZY22KSWBW2` assembled and signer-verified the release APK, then installed it successfully on the connected Motorola phone. Android package metadata reports `versionName=v0.5.0-alpha.1.0.20260925075645-68bb607e883b`, matching the FN controls commit. `./gradlew :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin`, `go test ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed.
+- Remaining gap: None for the stale APK repro.
+
 ### B-119 Soft FN mode cannot send CTRL or ALT function keys
 
 - Status: `resolved`

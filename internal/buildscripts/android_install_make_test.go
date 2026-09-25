@@ -57,3 +57,40 @@ func TestRootAndroidInstallReleaseUsesSelectedPhoneAndReleaseAPK(t *testing.T) {
 		t.Fatalf("release install did not use the selected device and APK:\n%s", log)
 	}
 }
+
+func TestRootAndroidInstallReleaseBuildsCurrentAPKByDefault(t *testing.T) {
+	root := repoRoot(t)
+	for _, tc := range []struct {
+		name      string
+		apk       string
+		wantBuild bool
+	}{
+		{name: "default APK", wantBuild: true},
+		{name: "explicit APK", apk: "APK=/tmp/custom-release.apk"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"-n", "android-install-release"}
+			if tc.apk != "" {
+				args = append(args, tc.apk)
+			}
+			cmd := exec.Command("make", args...)
+			cmd.Dir = root
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("release install dry run failed: %v\n%s", err, output)
+			}
+			plan := string(output)
+			buildAt := strings.Index(plan, "./gradlew :app:assembleRelease")
+			installAt := strings.Index(plan, "install -r")
+			if installAt < 0 {
+				t.Fatalf("release install missing from plan:\n%s", plan)
+			}
+			if tc.wantBuild && (buildAt < 0 || buildAt > installAt) {
+				t.Fatalf("current release must be built before installation:\n%s", plan)
+			}
+			if !tc.wantBuild && buildAt >= 0 {
+				t.Fatalf("explicit APK should install without rebuilding:\n%s", plan)
+			}
+		})
+	}
+}

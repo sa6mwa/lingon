@@ -51,7 +51,7 @@ help:
 	@echo "  make android-build"
 	@echo "  make android-release"
 	@echo "  make android-install          # install debug APK on a device/emulator"
-	@echo "  make android-install-release  # install release APK on a connected phone"
+	@echo "  make android-install-release  # build and install release APK on a connected phone"
 	@echo "  make android-integration-test"
 	@echo ""
 	@echo "Variables:"

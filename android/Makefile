@@ -57,7 +57,7 @@ help:
 	@echo "  make build        - assemble debug APK"
 	@echo "  make release      - assemble release APK (auto-generates a local dev keystore if needed)"
 	@echo "  make install      - install debug APK"
-	@echo "  make install-release - install release APK on a connected phone (APK=... ADB_SERIAL=...)"
+	@echo "  make install-release - build and install release APK on a connected phone (APK=... skips build)"
 	@echo "  make adb-push     - push FILE to emulator Downloads (defaults to $$HOME/.lingon/tls/ca.pem)"
 	@echo "  make integration-test - run Android integration tests (harness + emulator, PRESET=medium)"
 	@echo "  make run          - launch the app on a device/emulator"
@@ -169,6 +169,9 @@ release: local-properties
 install: local-properties
 	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:installDebug
 
+ifeq ($(strip $(APK)),)
+install-release: release
+endif
 install-release:
 	@set -e; \
 	ADB_BIN="$(ADB)"; \
