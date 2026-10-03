@@ -163,6 +163,10 @@ make list-presets
 - The installer fetches the Android 15 AOSP system image (API 35) plus the API 36 platform for compileSdk.
 - The app default endpoint is `https://localhost:12843/v1` and can be changed in-app.
 - HTTPS is required; endpoints must start with `https://`.
+- Shared-session authentication retries network errors and HTTP 408, 429, and
+  5xx responses automatically, using reconnect backoff and the server's
+  Retry-After interval. Invalid-token responses remain errors requiring a valid
+  token.
 - `make emulator` configures `adb reverse tcp:12843` so `localhost` hits the host backend.
 - Manage certificates in-app via the top-right menu. Certificates are stored per endpoint.
 - Zoom is stored per endpoint/session and terminal panning remains pixel-based

@@ -20,6 +20,14 @@ const wsWriteTimeout = 5 * time.Second
 
 var errSendQueueFull = errors.New("connection send queue full")
 
+// A replay occupies one FIFO slot. Its immutable frames are already bounded by
+// the hub's history budget. A connection retains at most one active replay and
+// one queued replay, including when a peer sends another hello during delivery.
+type outboundFrames struct {
+	frame  *protocolpb.Frame
+	replay []*protocolpb.Frame
+}
+
 type wsConn struct {
 	id         string
 	role       Role
@@ -31,7 +39,8 @@ type wsConn struct {
 
 	sendMu       sync.Mutex
 	lastActivity atomic.Int64
-	sendCh       chan *protocolpb.Frame
+	sendCh       chan outboundFrames
+	replayQueued atomic.Bool
 	done         chan struct{}
 	closed       sync.Once
 }
@@ -47,7 +56,7 @@ func newWSConn(id string, role Role, sessionID string, scope ShareScope, conn *w
 		scope:     scope,
 		conn:      conn,
 		logger:    logger,
-		sendCh:    make(chan *protocolpb.Frame, 128),
+		sendCh:    make(chan outboundFrames, 128),
 		done:      make(chan struct{}),
 	}
 	ws.touchActivity()
@@ -65,7 +74,24 @@ func (c *wsConn) Send(ctx context.Context, frame *protocolpb.Frame) error {
 	if frame == nil {
 		return nil
 	}
-	return c.enqueue(ctx, c.sendCh, frame)
+	return c.enqueue(ctx, outboundFrames{frame: frame})
+}
+
+// SendReplay transfers a bounded, immutable history slice to the FIFO writer.
+// Admission never waits for transport I/O while the hub holds its replay lock.
+func (c *wsConn) SendReplay(ctx context.Context, frames []*protocolpb.Frame) error {
+	if len(frames) == 0 {
+		return nil
+	}
+	if !c.replayQueued.CompareAndSwap(false, true) {
+		c.closeNow()
+		return errSendQueueFull
+	}
+	if err := c.enqueue(ctx, outboundFrames{replay: frames}); err != nil {
+		c.replayQueued.Store(false)
+		return err
+	}
+	return nil
 }
 
 func (c *wsConn) SendImmediate(ctx context.Context, frame *protocolpb.Frame) error {
@@ -144,13 +170,24 @@ func (c *wsConn) idleFor() time.Duration {
 	return 0
 }
 
-func (c *wsConn) enqueue(ctx context.Context, ch chan *protocolpb.Frame, frame *protocolpb.Frame) error {
+func (c *wsConn) enqueue(ctx context.Context, frames outboundFrames) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Prefer cancellation over accepting more output on a closed connection.
 	select {
 	case <-c.done:
 		return fmt.Errorf("connection closed")
 	case <-ctx.Done():
 		return ctx.Err()
-	case ch <- frame:
+	default:
+	}
+	select {
+	case <-c.done:
+		return fmt.Errorf("connection closed")
+	case <-ctx.Done():
+		return ctx.Err()
+	case c.sendCh <- frames:
 		return nil
 	default:
 		c.closeNow()
@@ -172,15 +209,33 @@ func (c *wsConn) writeLoop() {
 		select {
 		case <-c.done:
 			return
-		case frame := <-c.sendCh:
-			if frame != nil {
-				if err := c.writeFrame(frame); err != nil {
-					_ = c.Close(context.Background(), "write failed")
-					return
-				}
+		case frames := <-c.sendCh:
+			if frames.replay != nil {
+				c.replayQueued.Store(false)
+			}
+			if err := c.writeFrames(frames); err != nil {
+				c.closeNow()
+				return
 			}
 		}
 	}
+}
+
+func (c *wsConn) writeFrames(frames outboundFrames) error {
+	if frames.frame != nil {
+		return c.writeFrame(frames.frame)
+	}
+	for _, frame := range frames.replay {
+		select {
+		case <-c.done:
+			return fmt.Errorf("connection closed")
+		default:
+		}
+		if err := c.writeFrame(frame); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *wsConn) writeFrame(frame *protocolpb.Frame) error {

@@ -59,6 +59,7 @@ type HTTPServer struct {
 	Hub                     *Hub
 	WebUI                   webui.Options
 	sessions                *sessionNotifier
+	sessionLists            sessionListConnections
 	ConnectLimiter          *ConnectLimiter
 	WallTimeout             time.Duration
 	WallInactiveAfterLevels []time.Duration
@@ -411,7 +412,7 @@ func (s *HTTPServer) handleListSessions(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, sessions)
 }
 
-func (s *HTTPServer) streamSessionsWS(ctx context.Context, ws *wsConn, username string) {
+func (s *HTTPServer) streamSessionsWS(ctx context.Context, ws *wsConn, username string, r *http.Request) {
 	if username == "" || s.sessions == nil || s.Store == nil {
 		return
 	}
@@ -419,6 +420,13 @@ func (s *HTTPServer) streamSessionsWS(ctx context.Context, ws *wsConn, username 
 	defer unsubscribe()
 
 	writeSessions := func() error {
+		if ws.SessionID() == "" {
+			access, err := s.accessTokenFromRequest(r)
+			if err != nil || access.Username != username {
+				ws.closeNow()
+				return ErrInvalidCredentials
+			}
+		}
 		sessions, changed := s.listActiveSessions(username, time.Now().UTC())
 		if changed {
 			s.persistIfPossible()
@@ -436,6 +444,8 @@ func (s *HTTPServer) streamSessionsWS(ctx context.Context, ws *wsConn, username 
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-ws.done:
 			return
 		case <-ch:
 			if err := writeSessions(); err != nil {
@@ -549,7 +559,7 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to persist state")
 				return
 			}
-			s.disconnectUserAuth(shareTokens, sessionIDs, "user deleted")
+			s.disconnectUserAuth(user.Username, shareTokens, sessionIDs, "user deleted")
 		} else {
 			if err := s.persistUsers(); err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to persist state")
@@ -585,7 +595,7 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to persist state")
 				return
 			}
-			s.disconnectUserAuth(shareTokens, sessionIDs, "credentials changed")
+			s.disconnectUserAuth(result.User.Username, shareTokens, sessionIDs, "credentials changed")
 			writeJSON(w, http.StatusOK, userTOTPResponse{TOTPSecret: result.TOTPSecret, TOTPURL: result.TOTPURL})
 			return
 		case "password":
@@ -616,7 +626,7 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to persist state")
 				return
 			}
-			s.disconnectUserAuth(shareTokens, sessionIDs, "credentials changed")
+			s.disconnectUserAuth(result.User.Username, shareTokens, sessionIDs, "credentials changed")
 			writeJSON(w, http.StatusOK, userPasswordResponse{Password: result.Password})
 			return
 		}
@@ -1124,7 +1134,7 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 	s.notifySessions(username)
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
-	go s.streamSessionsWS(streamCtx, ws, username)
+	go s.streamSessionsWS(streamCtx, ws, username, r)
 
 	<-readDone
 	cancelStream()
@@ -1250,8 +1260,14 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	}
 	if sessionID == "" {
 		if !shareAuthenticated && username != "" {
+			unregister, err := s.registerSessionList(ws, username, r)
+			if err != nil {
+				ws.closeNow()
+				return
+			}
+			defer unregister()
 			streamCtx, cancelStream := context.WithCancel(ctx)
-			go s.streamSessionsWS(streamCtx, ws, username)
+			go s.streamSessionsWS(streamCtx, ws, username, r)
 			s.serveWSLoop(ctx, ws)
 			cancelStream()
 			return
@@ -1283,7 +1299,7 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	logger.Info("relay.client.connect.done", "session", sessionID, "client", clientID, "reconnected", reconnected, "ip", remoteIP)
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
-	go s.streamSessionsWS(streamCtx, ws, username)
+	go s.streamSessionsWS(streamCtx, ws, username, r)
 
 	s.serveWSLoop(ctx, ws)
 	cancelStream()
@@ -1821,7 +1837,8 @@ func (s *HTTPServer) invalidateUserAuth(username string, now time.Time) ([]strin
 	return shareTokens, sessionIDs
 }
 
-func (s *HTTPServer) disconnectUserAuth(shareTokens, sessionIDs []string, reason string) {
+func (s *HTTPServer) disconnectUserAuth(username string, shareTokens, sessionIDs []string, reason string) {
+	s.disconnectSessionLists(username)
 	for _, token := range shareTokens {
 		s.disconnectShareToken(token)
 	}
@@ -1859,7 +1876,7 @@ func (s *HTTPServer) InvalidateReloadedUsers(usernames []string, now time.Time) 
 		}
 	}
 	for _, plan := range plans {
-		s.disconnectUserAuth(plan.shareTokens, plan.sessionIDs, "credentials changed")
+		s.disconnectUserAuth(plan.username, plan.shareTokens, plan.sessionIDs, "credentials changed")
 		if s.sessions != nil {
 			s.notifySessions(plan.username)
 		}

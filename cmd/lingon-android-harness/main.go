@@ -294,7 +294,8 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			clientDelay = time.Duration(ms) * time.Millisecond
 		}
 	}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	faults := &shareAuthFaults{}
+	handler := faults.wrap(ensureBasePath(opts.basePath), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case controlPath:
 			if r.Method != http.MethodPost {
@@ -459,7 +460,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			relayHandler.ServeHTTP(w, r)
 			return
 		}
-	})
+	}))
 
 	srv := httptest.NewUnstartedServer(handler)
 	srv.TLS = &tls.Config{

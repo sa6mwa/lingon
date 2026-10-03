@@ -15,6 +15,7 @@ import okhttp3.WebSocketListener
 import okio.ByteString as OkioByteString
 import okio.ByteString.Companion.toByteString
 import systems.pkt.lingon.data.HttpClientProvider
+import systems.pkt.lingon.data.ApiException
 import systems.pkt.lingon.data.LingonJson
 import systems.pkt.lingon.protocol.Frame
 import systems.pkt.lingon.protocol.Hello
@@ -142,7 +143,11 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("share authentication failed: HTTP ${response.code}")
+                throw ApiException(
+                    "share authentication failed: HTTP ${response.code}",
+                    statusCode = response.code,
+                    retryAfterSeconds = response.header("Retry-After")?.toIntOrNull(),
+                )
             }
             val raw = response.body?.string().orEmpty()
             val shareSession = LingonJson.decodeFromString<RelayShareSession>(raw)

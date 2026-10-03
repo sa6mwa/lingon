@@ -4078,6 +4078,46 @@ class EndToEndTest {
     }
 
     @Test
+    fun share_authentication_recovers_after_two_transient_failures() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        assertEquals(2, shareAuthFailuresViaHarness(2))
+        try {
+            // This is the only attach request. Subsequent authentication must
+            // come from automatic reconnect, without foreground/manual recovery.
+            attachViaShareToken(token)
+            waitForSessionTick(session)
+            assertEquals(0, shareAuthFailuresViaHarness())
+            assertNull(appViewModel().state.value.shareTokenError)
+            assertEquals(ConnectionState.Connected, appViewModel().state.value.connectionState)
+        } finally {
+            shareAuthFailuresViaHarness(0)
+        }
+    }
+
+    private fun shareAuthFailuresViaHarness(count: Int? = null): Int {
+        val query = count?.let { "?count=$it" }.orEmpty()
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/share-auth-failures$query")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = if (count == null) "GET" else "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            connection.sslSocketFactory = trustContextFor(testConfig.caPem).socketFactory
+        }
+        try {
+            assertEquals(HttpURLConnection.HTTP_OK, connection.responseCode)
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            return org.json.JSONObject(body).getInt("remaining")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    @Test
     fun multi_user_sessions_are_isolated() {
         val secondary = testConfig.secondaryUser() ?: return
         val primarySession = testConfig.primaryUser().sessions.firstOrNull() ?: return

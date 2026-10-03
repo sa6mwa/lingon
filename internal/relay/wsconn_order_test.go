@@ -97,10 +97,10 @@ func TestWSConnSendPreservesFIFOOrder(t *testing.T) {
 
 func TestWSConnSendClosesWhenQueueFull(t *testing.T) {
 	conn := &wsConn{
-		sendCh: make(chan *protocolpb.Frame, 1),
+		sendCh: make(chan outboundFrames, 1),
 		done:   make(chan struct{}),
 	}
-	conn.sendCh <- &protocolpb.Frame{Seq: 1}
+	conn.sendCh <- outboundFrames{frame: &protocolpb.Frame{Seq: 1}}
 
 	err := conn.Send(context.Background(), &protocolpb.Frame{Seq: 2})
 	if err != errSendQueueFull {
@@ -110,5 +110,43 @@ func TestWSConnSendClosesWhenQueueFull(t *testing.T) {
 	case <-conn.done:
 	default:
 		t.Fatalf("connection was not closed after send queue overflow")
+	}
+}
+
+func TestWSConnQueuedReplayBudgetClosesFloodingPeer(t *testing.T) {
+	conn := &wsConn{sendCh: make(chan outboundFrames, 128), done: make(chan struct{})}
+	frames := []*protocolpb.Frame{{Seq: 1}, {Seq: 2}}
+	if err := conn.SendReplay(context.Background(), frames); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SendReplay(context.Background(), frames); err != errSendQueueFull {
+		t.Fatalf("second queued replay: %v", err)
+	}
+	select {
+	case <-conn.done:
+	default:
+		t.Fatal("unbounded replay admission was not stopped")
+	}
+}
+
+func TestWSConnRejectsOutputAfterCloseOrCancellation(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		conn := &wsConn{sendCh: make(chan outboundFrames, 128), done: make(chan struct{})}
+		ctx, cancel := context.WithCancel(context.Background())
+		if closed {
+			conn.closeNow()
+		} else {
+			cancel()
+		}
+		if err := conn.Send(ctx, &protocolpb.Frame{Seq: 1}); err == nil {
+			t.Fatal("accepted live output after closure/cancellation")
+		}
+		if err := conn.SendReplay(ctx, []*protocolpb.Frame{{Seq: 2}}); err == nil {
+			t.Fatal("accepted replay after closure/cancellation")
+		}
+		cancel()
+		if len(conn.sendCh) != 0 {
+			t.Fatal("rejected output was retained")
+		}
 	}
 }

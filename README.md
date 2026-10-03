@@ -285,6 +285,16 @@ Common flags:
 - `--wall-timeout`, `--wall-inactive-after` wall banner behavior
 - `-n, --no-banner` remove login-page branding from served Web UI assets
 
+Reconnect replay is delivered in order by each connection's writer. Large
+replays do not consume one live queue slot per frame or hold the session replay
+lock during network delivery. Each connection admits at most one queued replay
+in addition to the replay being written; a saturated live queue still disconnects
+the slow receiver.
+
+Credential changes and user deletion revoke account session-list WebSockets as
+well as session participants. Session-list updates also check that the original
+account authority remains valid before publishing.
+
 **Reverse proxy note:** WebSocket endpoints (`.../ws/...`) must be proxied to
 the relay over HTTP/1.1. If your reverse proxy negotiates HTTP/2 to the
 upstream, force HTTP/1.1 for the WebSocket routes (or disable h2 to the relay).

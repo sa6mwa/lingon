@@ -49,6 +49,7 @@ import systems.pkt.lingon.work.NoopBackgroundWallServiceController
 import systems.pkt.lingon.work.WallWorkScheduler
 import java.util.LinkedHashMap
 import java.util.UUID
+import java.io.IOException
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -1233,9 +1234,17 @@ class AppViewModel(
                 shareSession = withContext(ioDispatcher) {
                     wsClient.authenticateShareSession(baseUrl, shareToken)
                 }
+            } catch (err: CancellationException) {
+                throw err
             } catch (err: Exception) {
                 val current = _state.value
                 if (current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl) {
+                    return@launch
+                }
+                val statusCode = (err as? ApiException)?.statusCode
+                if (err is IOException || statusCode == 408 || statusCode == 429 || statusCode in 500..599) {
+                    _state.update { it.copy(shareTokenError = null) }
+                    scheduleReconnect(err.message, retryAfterSeconds = (err as? ApiException)?.retryAfterSeconds)
                     return@launch
                 }
                 _state.update {
@@ -1263,6 +1272,7 @@ class AppViewModel(
                 it.copy(
                     sessions = listOf(authenticatedSession),
                     activeSessionId = authenticatedSessionID,
+                    shareTokenError = null,
                 )
             }
             openWebSocket(baseUrl, authenticatedSessionID, shareToken, _state.value)
@@ -1809,6 +1819,7 @@ class AppViewModel(
                 delay(1000)
                 remaining -= 1
             }
+            reconnectJob = null
             refreshSessionsAndReconnect()
         }
     }
@@ -2011,9 +2022,9 @@ class AppViewModel(
     }
 
     private fun nextBackoffMs(attempt: Int, retryAfterSeconds: Int?): Int {
-        val backoffMs = min(15000, 1000 * (1 shl (attempt - 1)))
+        val backoffMs = min(15000, 1000 * (1 shl (attempt.coerceIn(1, 5) - 1)))
         return if (retryAfterSeconds != null && retryAfterSeconds > 0) {
-            max(backoffMs, retryAfterSeconds * 1000)
+            max(backoffMs.toLong(), retryAfterSeconds.toLong() * 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         } else {
             backoffMs
         }

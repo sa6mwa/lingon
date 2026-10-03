@@ -69,6 +69,112 @@ class AppViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
+    fun shareAuthenticationRetriesNetworkAndServerFailuresWithBackoff() = runTest {
+        val wsClient = FakeWsClient()
+        var attempts = 0
+        wsClient.onAuthenticateShareSession = { _, _ ->
+            attempts += 1
+            when (attempts) {
+                1 -> throw java.io.IOException("offline")
+                2 -> throw ApiException("relay restarting", statusCode = 503)
+                else -> wsClient.shareSession
+            }
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        assertEquals(1, attempts)
+        assertTrue(viewModel.state.value.sessionSyncing)
+        assertNull(viewModel.state.value.shareTokenError)
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(1, attempts)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, attempts)
+        advanceTimeBy(1999)
+        runCurrent()
+        assertEquals(2, attempts)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(3, attempts)
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("shared-real", wsClient.lastConnectOptions?.sessionId)
+        assertNull(viewModel.state.value.shareTokenError)
+    }
+
+    @Test
+    fun shareAuthenticationHonorsRetryAfterAndDoesNotRetryInvalidTokens() = runTest {
+        val wsClient = FakeWsClient()
+        var attempts = 0
+        wsClient.onAuthenticateShareSession = { _, _ ->
+            attempts += 1
+            if (attempts == 1) throw ApiException("limited", statusCode = 429, retryAfterSeconds = 5)
+            throw ApiException("invalid share token", statusCode = 401)
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        advanceTimeBy(4999)
+        runCurrent()
+        assertEquals(1, attempts)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, attempts)
+        assertEquals("invalid share token", viewModel.state.value.shareTokenError)
+        assertFalse(viewModel.state.value.sessionSyncing)
+        advanceTimeBy(30000)
+        runCurrent()
+        assertEquals(2, attempts)
+        assertEquals(0, wsClient.connectCount)
+    }
+
+    @Test
+    fun changingShareTokenCancelsRetryOfTheOldToken() = runTest {
+        val wsClient = FakeWsClient()
+        val tokens = mutableListOf<String>()
+        wsClient.onAuthenticateShareSession = { _, token ->
+            tokens += token
+            if (token == "old") throw java.io.IOException("offline")
+            wsClient.shareSession
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("old", "https://example")
+        runCurrent()
+        viewModel.handleSharedToken("new", "https://example")
+        runCurrent()
+        advanceTimeBy(30000)
+        runCurrent()
+        assertEquals(listOf("old", "new"), tokens)
+        assertEquals("new", wsClient.lastConnectOptions?.shareToken)
+        assertEquals(1, wsClient.connectCount)
+    }
+
+    @Test
+    fun prolongedShareOutageKeepsBackoffBoundedWithoutOverflow() = runTest {
+        val wsClient = FakeWsClient()
+        var attempts = 0
+        wsClient.onAuthenticateShareSession = { _, _ ->
+            attempts += 1
+            if (attempts < 40) throw java.io.IOException("offline")
+            wsClient.shareSession
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        for (attempt in 1 until 40) {
+            val delayMs = minOf(15000, 1000 * (1 shl (minOf(attempt, 5) - 1)))
+            advanceTimeBy(delayMs.toLong() - 1)
+            runCurrent()
+            assertEquals(attempt, attempts)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(attempt + 1, attempts)
+        }
+        assertEquals(1, wsClient.connectCount)
+    }
+
+    @Test
     fun handleSharedTokenUpdatesState() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()

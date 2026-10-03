@@ -43,6 +43,10 @@ type shareTokenConnection interface {
 	ShareToken() string
 }
 
+type replayConnection interface {
+	SendReplay(context.Context, []*protocolpb.Frame) error
+}
+
 // Hub routes messages between host and clients.
 type Hub struct {
 	mu                 sync.Mutex
@@ -568,13 +572,11 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 			}
 			h.mu.Unlock()
 			defer state.replayMu.Unlock()
-			for _, replayFrame := range replay {
-				if err := conn.Send(ctx, replayFrame); err != nil {
-					if !isExpectedSendError(err) {
-						h.logger.Debug("relay.client.replay.failed", "err", err)
-					}
-					return nil
+			if err := sendReplay(ctx, conn, replay); err != nil {
+				if !isExpectedSendError(err) {
+					h.logger.Debug("relay.client.replay.failed", "err", err)
 				}
+				return nil
 			}
 			if canResizeHost && host != nil {
 				cols := hello.GetCols()
@@ -645,6 +647,18 @@ func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *pro
 
 	h.logger.Trace("relay.hub.client.frame", "session", conn.SessionID(), "conn", conn.ID())
 	return host.Send(ctx, frame)
+}
+
+func sendReplay(ctx context.Context, conn connection, frames []*protocolpb.Frame) error {
+	if writer, ok := conn.(replayConnection); ok {
+		return writer.SendReplay(ctx, frames)
+	}
+	for _, frame := range frames {
+		if err := conn.Send(ctx, frame); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *Hub) session(sessionID string) *sessionState {

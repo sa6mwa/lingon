@@ -29,6 +29,44 @@ Required status values:
 
 ## Active Items
 
+### B-129 Review: replay admission, session-list revocation, and share recovery
+
+- Status: `resolved`
+- Area: `relay`, `android`, `performance`
+- Repro: Reconnect with more than 128 retained frames while the websocket writer cannot drain; revoke credentials while an account session-list websocket remains open; fail Android `/auth/share` transiently and restore connectivity.
+- Findings: Healthy replay overflows the live-frame queue; sessionless list connections escape hub revocation; share authentication returns without retrying transient failures.
+- Fix: FIFO writer-owned replay with at most one active and one queued replay per connection, without network delivery under the session replay lock. Live queue overflow still disconnects slow consumers. Sessionless account sockets are tracked for immediate credential revocation; registration revalidates authority to fence a revoked handshake, and each session-list update checks authority. Android retries network/408/429/5xx failures, preserves HTTP status and Retry-After, stops on invalid tokens, cancels obsolete token retries, and bounds exponential backoff during long outages.
+- Regression evidence:
+  - `TestWSReplayLargeBurstPreservesWelcomeReplayLiveOrder` failed before the fix with a healthy client closed before its blocked writer could drain. It now verifies welcome/replay/live FIFO order and delivery to another client while that writer is blocked.
+  - `TestSessionListStopsPublishingAfterAuthorityRevocation` failed before the fix for credential reset, logout, and user deletion. `TestSessionListRevocationClosesOnlyTheRevokedUserAndFencesRegistration` checks immediate closure, unrelated users, late revoked handshakes, and cleanup after fresh authentication.
+  - Android unit regressions failed before the fix for retry/backoff, Retry-After, and HTTP error metadata. Virtual-time tests also cover invalid tokens, obsolete token retries, and 40 attempts without backoff overflow.
+  - `share_authentication_recovers_after_two_transient_failures` failed on the unfixed app with `conn=Disconnected` and HTTP 503 after the only attach request. It passes after the fix, consumes both injected failures, and receives actual terminal output without manual recovery.
+- Performance evidence (local Linux amd64, `GOMAXPROCS=2`, five one-second samples):
+  - `BenchmarkWSReplay/short`: median 0.932 ms before, 0.798 ms after (14.4% lower); both 2,017 allocations and approximately 136.6 KB per delivered replay.
+  - `BenchmarkWSReplay/burst`: 299 small diff frames delivered in median 3.240 ms, 9,569 allocations, approximately 649.9 KB. The old implementation disconnects this burst instead of delivering it.
+  - The FIFO envelope adds approximately 3 KiB of fixed queue storage per connection; it does not allocate a wrapper per live frame or concatenate replay into a serialized buffer. Replay remains capped by the existing retained-history policy, including its single oversized-frame allowance.
+  - Existing 100-host reconnect gate passed before (0.423 s suite) and after (0.42 s case). The new concurrent 100-client check delivered all 29,900 replay frames in order in 97 ms. These are local delivery/capacity results, not a production soak.
+- Validation commands completed:
+  - `GOMAXPROCS=2 go test ./internal/relay -run '^TestWSReplayLargeBurstPreservesWelcomeReplayLiveOrder$' -count=1` (expected pre-fix failure).
+  - `GOMAXPROCS=2 go test ./internal/relay -run 'TestWSReplayLargeBurst|TestWSConnSend|TestHub.*Replay' -count=1` and `-run 'TestWSReplay|TestWSConn'` passed.
+  - `GOMAXPROCS=2 go test ./internal/relay -run '^TestSessionListStopsPublishingAfterAuthorityRevocation$' -count=1` (three expected pre-fix failures); `-run 'TestSessionListStops|TestWSClientAccountSessionList|Test.*Reload|Test.*User.*'` passed after the fix.
+  - `GOMAXPROCS=2 go test ./internal/relay -run '^$' -bench '^BenchmarkWSReplay/short$' -benchmem -benchtime=1s -count=5` (baseline); `-bench '^BenchmarkWSReplay$'` passed after the fix. An initial post-change measurement exposed overlapping replay admission; separating the active and queued bounds corrected it before the successful measurement.
+  - `LINGON_RELAY_CAPACITY_TEST=1 GOMAXPROCS=2 go test ./internal/relay -run '^TestRelayHundredHostReconnectBurst$' -count=1` (baseline); `-run '^TestRelayHundred(HostReconnect|ClientReplay)Burst$' -count=1 -v` passed after the fix.
+  - `GOMAXPROCS=2 go test ./cmd/lingon-android-harness -run '^TestShareAuthFaultsAreFiniteAndIsolated$' -count=1` passed.
+  - `GOMAXPROCS=2 go test -race ./internal/relay -run 'TestWSReplay|TestWSConn|TestSessionList|TestSessionNotifier' -count=1` passed.
+  - Android commands used Java 21, `--no-daemon --max-workers=2 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process -Dorg.gradle.jvmargs='-Xmx1536m -Dfile.encoding=UTF-8'`. `:app:testDebugUnitTest --tests 'systems.pkt.lingon.viewmodel.AppViewModelTest.shareAuthentication*' --tests 'systems.pkt.lingon.data.relay.RelayWebSocketClientTest.shareAuthentication*'` failed before the fix; full `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed afterward.
+  - Isolated connected runner: `GOMAXPROCS=2 GOFLAGS=-p=1 AVD_CPU_CORES=2 LINGON_IT_ONLY=share_authentication_recovers_after_two_transient_failures setsid --wait ./android/scripts/run-integration-tests.sh </dev/null` failed before the fix; the same runner with `LINGON_IT_ONLY=share_authentication_recovers_after_two_transient_failures,share_tokens_are_isolated,share_token_dialog_rejects_invalid_token,background_foreground_resumes_input` passed afterward (four tests). Owned emulator, adb server, harness, and single-use Gradle daemon were cleaned up.
+  - Full gates, serialized with `GOMAXPROCS=2 GOFLAGS=-p=1`: `setsid --wait go test ./... </dev/null`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed; golangci-lint reported zero issues. `gofmt -l` on changed Go sources and `git diff --check` were clean. The initial full test run uncovered B-130, which was corrected before the passing run.
+- Remaining gap: None for these repros. A production soak is outside the local performance evidence above.
+
+### B-130 Relay-restart auth fixture blocks attach shutdown on undrained output
+
+- Status: `resolved`
+- Area: `verification`, `session`
+- Repro: Run `GOMAXPROCS=2 GOFLAGS=-p=1 go test ./...`; `TestNo401OnExpiredAuthAfterRelayRestart` fails because attach does not exit after cancellation. A focused five-run check reproduced the failure three times before the fixture correction.
+- Fix: Drain both fixture-owned output pipes into `io.Discard` and close/join the drain goroutines in cleanup. No inherited terminal is involved. The no-401 and shutdown assertions are unchanged.
+- Verification: `GOMAXPROCS=2 GOFLAGS=-p=1 setsid --wait go test ./internal/session -run '^TestNo401OnExpiredAuthAfterRelayRestart$' -count=5 </dev/null` passed all five runs after the change. Full Go tests, vet, golint, and golangci-lint passed.
+
 ### B-128 Android integration fixtures interfere across test cases
 
 - Status: `resolved`

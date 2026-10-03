@@ -116,6 +116,20 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		_ = outR.Close()
 		_ = outW.Close()
 	})
+	// These are fixture-owned output pipes, not screen assertions. Drain them
+	// so rendering cannot block reconnect or cancellation on a full pipe.
+	drainOutput := func(reader *os.File) {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = io.Copy(io.Discard, reader)
+		}()
+		t.Cleanup(func() {
+			_ = reader.Close()
+			<-done
+		})
+	}
+	drainOutput(outR)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -161,6 +175,7 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		_ = attachOutR.Close()
 		_ = attachOutW.Close()
 	})
+	drainOutput(attachOutR)
 
 	size := func() (int, int) { return 80, 24 }
 	multi := &attach.MultiClient{

@@ -9,11 +9,31 @@ import okhttp3.CookieJar
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import systems.pkt.lingon.data.ApiException
 import org.junit.Test
 import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.data.certs.CertificateStore
 
 class RelayWebSocketClientTest {
+    @Test
+    fun shareAuthenticationPreservesHttpStatusAndRetryAfter() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(429).addHeader("Retry-After", "5"))
+        server.start()
+        try {
+            val client = RelayWebSocketClient(testHttpClientProvider())
+            val err = assertThrows(ApiException::class.java) {
+                client.authenticateShareSession(server.url("/v1"), "token")
+            }
+            assertEquals(429, err.statusCode)
+            assertEquals(5, err.retryAfterSeconds)
+        } finally {
+            server.shutdown()
+        }
+    }
     @Test
     fun cleartextShareTokenWebsocketRequestCarriesTokenFallback() {
         val client = RelayWebSocketClient(testHttpClientProvider())

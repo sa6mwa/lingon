@@ -146,3 +146,78 @@ func TestRelayHundredHostReconnectBurst(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestRelayHundredClientReplayBurst(t *testing.T) {
+	if os.Getenv("LINGON_RELAY_CAPACITY_TEST") != "1" {
+		t.Skip("opt-in 100-client replay capacity check")
+	}
+	const clients, frames = 100, 300
+	hub, _ := replayTestHub(t, frames)
+	store, users := NewStore(), NewUserStore()
+	user, err := SeedTestUser(users)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, err := store.CreateAccessToken(user.Username, DefaultAccessTokenTTL, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.CreateSession(Session{ID: "replay", Username: user.Username, Status: "active"})
+	srv := NewHTTPServer(store, users, NewAuthenticator(users), nil, hub)
+	ts := newTestServer(t, srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	results := make(chan error, clients)
+	var wg sync.WaitGroup
+	for i := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, _, err := websocket.Dial(ctx, wsURL(ts.URL, "/ws/client"), &websocket.DialOptions{
+				HTTPHeader: http.Header{"Authorization": {"Bearer " + access.Token}},
+			})
+			if err != nil {
+				results <- err
+				return
+			}
+			defer conn.CloseNow()
+			data, _ := proto.Marshal(&protocolpb.Frame{SessionId: "replay", Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+				ClientId: fmt.Sprintf("replay-client-%d", i), LastSeq: 1,
+			}}})
+			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
+				results <- err
+				return
+			}
+			welcome := false
+			for next := uint64(2); next <= frames; {
+				frame, err := readFrame(ctx, conn, wsReadLimit)
+				if err != nil {
+					results <- fmt.Errorf("client %d replay at %d: %w", i, next, err)
+					return
+				}
+				if frame.GetWelcome() != nil {
+					welcome = true
+					continue
+				}
+				if frame.Seq == 0 {
+					continue
+				}
+				if !welcome || frame.Seq != next {
+					results <- fmt.Errorf("client %d: welcome=%v seq=%d, want %d", i, welcome, frame.Seq, next)
+					return
+				}
+				next++
+			}
+			results <- nil
+		}()
+	}
+	for range clients {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
+	}
+	wg.Wait()
+	t.Logf("delivered %d replay frames to %d clients in %s", (frames-1)*clients, clients, time.Since(start))
+}
