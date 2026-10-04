@@ -133,6 +133,137 @@ class AppViewModelTest {
     }
 
     @Test
+    fun managementSessionFetchIsIgnoredAfterEndpointChange() = runTest {
+        assertSupersededManagementFetch(logout = false)
+    }
+
+    @Test
+    fun managementSessionFetchIsIgnoredAfterLogout() = runTest {
+        assertSupersededManagementFetch(logout = true)
+    }
+
+    @Test
+    fun bootstrapSessionFetchIsIgnoredAfterEndpointChange() = runTest {
+        assertSupersededBootstrapFetch(logout = false)
+    }
+
+    @Test
+    fun bootstrapSessionFetchIsIgnoredAfterLogout() = runTest {
+        assertSupersededBootstrapFetch(logout = true)
+    }
+
+    @Test
+    fun staleBootstrapAuthenticationFailureDoesNotClearNewAccount() = runTest {
+        val repository = FakeRepository(refreshAuthResult = false)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        repository.onListSessions = {
+            fetches += 1
+            if (fetches == 1) release.await()
+            throw ApiException("expired old account", 401)
+        }
+        val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        viewModel.updateEndpoint("https://new.example/v1")
+        runCurrent()
+        val newSessions = listOf(RelaySession(id = "new-host", name = "New account", status = "active"))
+        setUiStateForTest(viewModel, viewModel.state.value.copy(
+            loggedIn = true, username = "new-owner", activeSessionId = "new-host", sessions = newSessions,
+            status = StatusMessage("new context"), connectionState = ConnectionState.Connected,
+        ))
+        release.complete(Unit)
+        runCurrent()
+        assertTrue(viewModel.state.value.loggedIn)
+        assertEquals("new-owner", viewModel.state.value.username)
+        assertEquals(newSessions, viewModel.state.value.sessions)
+        assertEquals("new-host", viewModel.state.value.activeSessionId)
+        assertEquals("new context", viewModel.state.value.status?.message)
+    }
+
+    @Test
+    fun pendingSessionPreferenceCannotRestoreOldActiveSessionAfterEndpointChange() = runTest {
+        val repository = FakeRepository()
+        val waiting = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        repository.onListSessions = {
+            fetches += 1
+            if (fetches > 1) throw ApiException("new context is unauthenticated", 401)
+            listOf(RelaySession(id = "old-host", name = "Old account", status = "active"))
+        }
+        repository.onLoadLastActiveSession = {
+            waiting.complete(Unit)
+            release.await()
+            "old-host"
+        }
+        val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        assertTrue(waiting.isCompleted)
+        viewModel.updateEndpoint("https://new.example/v1")
+        runCurrent()
+        release.complete(Unit)
+        runCurrent()
+        assertTrue(viewModel.state.value.sessions.isEmpty())
+        assertNull(viewModel.state.value.activeSessionId)
+        assertFalse(viewModel.state.value.loggedIn)
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.assertSupersededBootstrapFetch(logout: Boolean) {
+        val repository = FakeRepository()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        repository.onListSessions = {
+            fetches += 1
+            if (fetches > 1) throw ApiException("new context is unauthenticated", 401)
+            release.await()
+            listOf(RelaySession(id = "old-account-host", name = "Old account", status = "active"))
+        }
+        val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        assertEquals(1, fetches)
+        if (logout) viewModel.logout() else viewModel.updateEndpoint("https://new.example/v1")
+        runCurrent()
+        release.complete(Unit)
+        runCurrent()
+        assertTrue(viewModel.state.value.sessions.isEmpty())
+        assertNull(viewModel.state.value.activeSessionId)
+        assertFalse(viewModel.state.value.loggedIn)
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.assertSupersededManagementFetch(logout: Boolean) {
+        for (kind in listOf("create", "rename")) {
+            val repository = FakeRepository()
+            val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+            runCurrent()
+            val fetched = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+            var fetches = 0
+            repository.onListSessions = {
+                fetches += 1
+                if (fetches > 1) throw ApiException("new context is unauthenticated", 401)
+                fetched.complete(Unit)
+                release.await()
+                listOf(RelaySession(id = "old-host", name = "Old renamed host", status = "active"))
+            }
+            setUiStateForTest(viewModel, viewModel.state.value.copy(
+                loggedIn = true, activeSessionId = "old-host", connectionState = ConnectionState.Connected,
+            ))
+            if (kind == "create") viewModel.createTerminal() else viewModel.renameSession("Old renamed host")
+            runCurrent()
+            assertTrue(fetched.isCompleted)
+            if (logout) viewModel.logout() else viewModel.updateEndpoint("https://new.example/v1")
+            runCurrent()
+            release.complete(Unit)
+            runCurrent()
+            assertTrue(viewModel.state.value.sessions.isEmpty())
+            assertNull(viewModel.state.value.activeSessionId)
+            assertFalse(viewModel.state.value.loggedIn)
+            assertFalse(viewModel.state.value.sessionManagementBusy)
+            assertFalse(viewModel.state.value.status?.message in listOf("Session renamed", "Terminal created"))
+        }
+    }
+
+    @Test
     fun shareAuthenticationHonorsRetryAfterAndDoesNotRetryInvalidTokens() = runTest {
         val wsClient = FakeWsClient()
         var attempts = 0
@@ -2492,6 +2623,8 @@ private class FakeRepository(
     private val lastActiveSessionByEndpoint = initialLastActiveSessionByEndpoint.toMutableMap()
     val managementRequests = mutableListOf<systems.pkt.lingon.data.relay.SessionManagementRequest>()
     var onManage: (suspend () -> Unit)? = null
+    var onListSessions: (suspend () -> List<RelaySession>)? = null
+    var onLoadLastActiveSession: (suspend () -> String?)? = null
     var refreshAuthCalls: Int = 0
     var saveZoomCalls: Int = 0
     var onSetBackgroundWallEnabled: ((Boolean) -> Unit)? = null
@@ -2564,6 +2697,7 @@ private class FakeRepository(
     }
 
     override suspend fun loadLastActiveSessionId(endpoint: String): String? {
+        onLoadLastActiveSession?.let { return it() }
         val cleanedEndpoint = endpoint.trim()
         if (cleanedEndpoint.isBlank()) return null
         return lastActiveSessionByEndpoint[cleanedEndpoint]
@@ -2576,6 +2710,7 @@ private class FakeRepository(
     }
 
     override suspend fun listSessions(): List<RelaySession> {
+        onListSessions?.let { return it() }
         if (failListSessions) {
             throw ApiException("invalid session", 401)
         }

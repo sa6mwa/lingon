@@ -66,7 +66,7 @@ class AppViewModel(
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var createdSessionId: String? = null
-    private var sessionManagementGeneration = 0L
+    private var sessionContextGeneration = 0L
     private var ws: WebSocket? = null
     private var socketOpen = false
     private var reconnectJob: Job? = null
@@ -280,23 +280,29 @@ class AppViewModel(
             setStatus("session management requires a connected owner account", StatusLevel.Warn)
             return
         }
-        val generation = sessionManagementGeneration
+        val generation = sessionContextGeneration
+        fun isCurrent(): Boolean {
+            return isCurrentSessionContext(before, generation) && _state.value.loggedIn
+        }
         _state.update { it.copy(sessionManagementBusy = true) }
         viewModelScope.launch {
             try {
                 val result = repository.manageSession(systems.pkt.lingon.data.relay.SessionManagementRequest(
                     requestId = UUID.randomUUID().toString(), sessionId = before.activeSessionId!!, kind = kind, name = name,
                 ))
-                if (generation != sessionManagementGeneration || _state.value.endpoint != before.endpoint || _state.value.shareToken != null) return@launch
+                if (!isCurrent()) return@launch
+                val sessions = repository.listSessions()
+                if (!isCurrent()) return@launch
                 if (kind == "create") createdSessionId = result.sessionId
-                updateSessions(repository.listSessions())
+                updateSessions(sessions)
+                if (!isCurrent()) return@launch
                 setStatus(if (kind == "create") "Terminal created" else "Session renamed", StatusLevel.Info)
             } catch (err: CancellationException) {
                 throw err
             } catch (err: Exception) {
-                if (generation == sessionManagementGeneration) setStatus(err.message ?: "Session operation outcome unknown; refresh sessions before trying again", StatusLevel.Error)
+                if (isCurrent()) setStatus(err.message ?: "Session operation outcome unknown; refresh sessions before trying again", StatusLevel.Error)
             } finally {
-                if (generation == sessionManagementGeneration) _state.update { it.copy(sessionManagementBusy = false) }
+                if (generation == sessionContextGeneration) _state.update { it.copy(sessionManagementBusy = false) }
             }
         }
     }
@@ -747,7 +753,7 @@ class AppViewModel(
     }
 
     private fun clearSessionCaches() {
-        sessionManagementGeneration++
+        sessionContextGeneration++
         createdSessionId = null
         _state.update { it.copy(sessionManagementBusy = false) }
         sessionCaches.clear()
@@ -1044,23 +1050,34 @@ class AppViewModel(
         _state.update { it.copy(localInputNonce = it.localInputNonce + 1) }
     }
 
+    private fun isCurrentSessionContext(before: UiState, generation: Long): Boolean {
+        val current = _state.value
+        return generation == sessionContextGeneration && current.endpoint == before.endpoint &&
+            current.username == before.username && current.shareToken == before.shareToken
+    }
+
     private suspend fun bootstrapSessions() {
-        if (_state.value.requiresAppUnlock) {
+        val before = _state.value
+        val generation = sessionContextGeneration
+        if (before.requiresAppUnlock) {
             return
         }
-        if (_state.value.shareToken != null) {
+        if (before.shareToken != null) {
             return
         }
         try {
             val sessions = listSessionsWithRecovery()
+            if (!isCurrentSessionContext(before, generation)) return
             _state.update { it.copy(loggedIn = true) }
             updateSessions(sessions)
+            if (!isCurrentSessionContext(before, generation)) return
             syncWallPollingSchedule()
             if (sessions.isEmpty()) {
                 scheduleSessionPoll()
             }
             // Sessions updates are delivered via the active WebSocket connection.
         } catch (err: ApiException) {
+            if (!isCurrentSessionContext(before, generation)) return
             if (err.statusCode == 401) {
                 handleUnauthorizedResponse()
                 return
@@ -1074,6 +1091,7 @@ class AppViewModel(
         } catch (err: CancellationException) {
             throw err
         } catch (err: Exception) {
+            if (!isCurrentSessionContext(before, generation)) return
             _state.update {
                 it.copy(
                     status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error),
@@ -1159,7 +1177,9 @@ class AppViewModel(
     }
 
     private suspend fun ensureActiveSession(sessions: List<RelaySession>): Boolean {
-        val current = _state.value.activeSessionId
+        val before = _state.value
+        val generation = sessionContextGeneration
+        val current = before.activeSessionId
         val hasCurrent = current != null && sessions.any { it.id == current }
         if (hasCurrent) {
             if (ws == null || _state.value.connectionState != ConnectionState.Connected) {
@@ -1169,9 +1189,11 @@ class AppViewModel(
             return false
         }
         val endpoint = resolveEndpointForPersistence()
+        if (!isCurrentSessionContext(before, generation)) return false
         val preferredSessionId = withTimeoutOrNull(1500) {
             repository.loadLastActiveSessionId(endpoint)
         }
+        if (!isCurrentSessionContext(before, generation)) return false
         val next = when {
             !preferredSessionId.isNullOrBlank() && sessions.any { it.id == preferredSessionId } -> preferredSessionId
             else -> sessions.firstOrNull()?.id

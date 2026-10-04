@@ -349,6 +349,71 @@ class EndToEndTest {
     }
 
     @Test
+    fun management_session_fetch_does_not_restore_old_endpoint_sessions() {
+        assertSessionFetchDiscardedAfterEndpointChange(management = true)
+    }
+
+    @Test
+    fun bootstrap_session_fetch_does_not_restore_old_endpoint_sessions() {
+        assertSessionFetchDiscardedAfterEndpointChange(management = false)
+    }
+
+    private fun assertSessionFetchDiscardedAfterEndpointChange(management: Boolean) {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val viewModel = appViewModel()
+        val application = composeRule.activity.application as LingonApplication
+        val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val finished = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        val gated = object : systems.pkt.lingon.data.LingonClient by application.repository {
+            override suspend fun listSessions(): List<systems.pkt.lingon.data.relay.RelaySession> {
+                fetches += 1
+                if (fetches > 1) throw systems.pkt.lingon.data.ApiException("new context is unauthenticated", 401)
+                val sessions = application.repository.listSessions()
+                ready.complete(Unit)
+                release.await()
+                finished.complete(Unit)
+                return sessions
+            }
+        }
+        val field = AppViewModel::class.java.getDeclaredField("repository").apply { isAccessible = true }
+        composeRule.runOnIdle { field.set(viewModel, gated) }
+        try {
+            if (management) {
+                openSettings()
+                composeRule.onNodeWithTag(TestTags.RenameSessionButton).performClick()
+                waitForTag(TestTags.RenameSessionInput)
+                composeRule.onNodeWithTag(TestTags.RenameSessionInput).performTextReplacement("Superseded rename")
+                composeRule.onNodeWithTag(TestTags.RenameSessionSave).performClick()
+            } else {
+                composeRule.runOnIdle { viewModel.updateEndpoint(testConfig.endpoint) }
+            }
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { ready.isCompleted }
+            composeRule.runOnIdle { viewModel.updateEndpoint("https://new.example/v1") }
+            release.complete(Unit)
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { finished.isCompleted }
+            composeRule.runOnIdle {
+                val state = viewModel.state.value
+                assertEquals("https://new.example/v1", state.endpoint)
+                assertTrue(state.sessions.isEmpty())
+                assertNull(state.activeSessionId)
+                assertFalse(state.loggedIn)
+                assertFalse(state.sessionManagementBusy)
+                assertFalse(state.status?.message == "Session renamed")
+            }
+            closeSettingsIfOpen()
+            waitForTagNoError(TestTags.LoginUsername)
+        } finally {
+            release.complete(Unit)
+            composeRule.runOnIdle { field.set(viewModel, application.repository) }
+        }
+    }
+
+    @Test
     fun terminal_updates_live() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
