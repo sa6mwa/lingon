@@ -51,11 +51,12 @@ type harnessConfig struct {
 }
 
 type harnessUser struct {
-	Username   string   `json:"username"`
-	Password   string   `json:"password"`
-	TOTPSecret string   `json:"totp_secret"`
-	Sessions   []string `json:"sessions"`
-	ViewToken  string   `json:"view_token"`
+	Username     string   `json:"username"`
+	Password     string   `json:"password"`
+	TOTPSecret   string   `json:"totp_secret"`
+	Sessions     []string `json:"sessions"`
+	ViewToken    string   `json:"view_token"`
+	ControlToken string   `json:"control_token"`
 }
 
 type harness struct {
@@ -515,6 +516,12 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			return nil, err
 		}
 		user1.ViewToken = share.Token
+		controlShare, err := store.CreateShareToken(user1.Sessions[0], relay.ShareScopeControl, 24*time.Hour, time.Now().UTC())
+		if err != nil {
+			h.stop()
+			return nil, err
+		}
+		user1.ControlToken = controlShare.Token
 	}
 	if len(user2.Sessions) > 0 {
 		share, err := store.CreateShareToken(user2.Sessions[0], relay.ShareScopeView, 24*time.Hour, time.Now().UTC())

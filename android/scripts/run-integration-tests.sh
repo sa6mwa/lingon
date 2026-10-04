@@ -671,6 +671,7 @@ set +e
       -Plingon.it.ca_pem_b64="${CA_PEM_B64}" \
       -Plingon.it.sessions="${SESSIONS}" \
       -Plingon.it.view_token="${VIEW_TOKEN}" \
+      -Plingon.it.control_token="${CONTROL_TOKEN}" \
       -Plingon.it.username2="${USERNAME2}" \
       -Plingon.it.password2="${PASSWORD2}" \
       -Plingon.it.totp_secret2="${TOTP_SECRET2}" \

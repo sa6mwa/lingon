@@ -26,11 +26,12 @@ type harnessConfig struct {
 }
 
 type harnessUser struct {
-	Username   string   `json:"username"`
-	Password   string   `json:"password"`
-	TOTPSecret string   `json:"totp_secret"`
-	Sessions   []string `json:"sessions"`
-	ViewToken  string   `json:"view_token"`
+	Username     string   `json:"username"`
+	Password     string   `json:"password"`
+	TOTPSecret   string   `json:"totp_secret"`
+	Sessions     []string `json:"sessions"`
+	ViewToken    string   `json:"view_token"`
+	ControlToken string   `json:"control_token"`
 }
 
 func main() {
@@ -107,6 +108,7 @@ func runConfigEnv(args []string) int {
 	writeEnv(&buf, "CA_PEM_B64", base64.StdEncoding.EncodeToString(caPem))
 	writeEnv(&buf, "SESSIONS", strings.Join(userFieldList(cfg.Users, 0, func(u harnessUser) []string { return u.Sessions }), ","))
 	writeEnv(&buf, "VIEW_TOKEN", userField(cfg.Users, 0, func(u harnessUser) string { return u.ViewToken }))
+	writeEnv(&buf, "CONTROL_TOKEN", userField(cfg.Users, 0, func(u harnessUser) string { return u.ControlToken }))
 	writeEnv(&buf, "USERNAME2", userField(cfg.Users, 1, func(u harnessUser) string { return u.Username }))
 	writeEnv(&buf, "PASSWORD2", userField(cfg.Users, 1, func(u harnessUser) string { return u.Password }))
 	writeEnv(&buf, "TOTP_SECRET2", userField(cfg.Users, 1, func(u harnessUser) string { return u.TOTPSecret }))

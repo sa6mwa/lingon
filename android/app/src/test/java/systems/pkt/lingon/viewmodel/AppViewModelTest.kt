@@ -1528,6 +1528,7 @@ class AppViewModelTest {
             viewModel.state.value.copy(
                 connectionState = ConnectionState.Connected,
                 activeSnapshot = liveSnapshot,
+                loggedIn = true,
                 hasControl = true,
             ),
         )
@@ -1539,21 +1540,91 @@ class AppViewModelTest {
     }
 
     @Test
-    fun inputIsBlockedWithoutControlForTextAndRawBytes() = runTest {
+    fun ownerInputReclaimsControlWithoutDroppingOrRepeatingFirstPayload() = runTest {
         val wsClient = FakeWsClient()
         val viewModel = AppViewModel(FakeRepository(), wsClient)
         advanceUntilIdle()
         setUiStateForTest(
             viewModel,
-            viewModel.state.value.copy(connectionState = ConnectionState.Connected, hasControl = false),
+            viewModel.state.value.copy(loggedIn = true, connectionState = ConnectionState.Connected, hasControl = false),
         )
         setWebSocketForTest(viewModel, wsClient.fakeSocket)
 
         viewModel.sendRawInput("z")
-        assertNull(wsClient.lastSentBytes)
+        assertArrayEquals("z".encodeToByteArray(), wsClient.lastSentBytes)
+        assertEquals(1L, viewModel.state.value.localInputNonce)
         viewModel.sendRawBytes(byteArrayOf(0x1b, 0x0d))
-        assertNull(wsClient.lastSentBytes)
-        assertEquals("control unavailable", viewModel.state.value.status?.message)
+        assertArrayEquals(byteArrayOf(0x1b, 0x0d), wsClient.lastSentBytes)
+        assertEquals(2, wsClient.sentInputs.size)
+        assertEquals(2L, viewModel.state.value.localInputNonce)
+        assertFalse(viewModel.state.value.hasControl)
+        assertEquals(0, wsClient.connectCount)
+    }
+
+    @Test
+    fun authenticatedShareScopeGatesTypingIndependentlyOfLeaseOwnership() = runTest {
+        val wsClient = FakeWsClient { _, listener, socket -> listener.onOpen(socket) }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        for (scope in listOf("control", "view", "", "unknown")) {
+            wsClient.shareSession = RelayShareSession(sessionId = "real-session", scope = scope)
+            viewModel.handleSharedToken("token-$scope", "https://example")
+            advanceUntilIdle()
+            wsClient.fireConnect()
+            advanceUntilIdle()
+            setUiStateForTest(viewModel, viewModel.state.value.copy(
+                connectionState = ConnectionState.Connected, hasControl = scope != "control",
+            ))
+            val sentBefore = wsClient.sentInputs.size
+            val nonceBefore = viewModel.state.value.localInputNonce
+            viewModel.sendRawInput("q")
+            viewModel.sendRawBytes(byteArrayOf(0x1b, 0x0d))
+            if (scope == "control") {
+                assertEquals(sentBefore + 2, wsClient.sentInputs.size)
+                assertArrayEquals("q".encodeToByteArray(), wsClient.sentInputs[sentBefore])
+                assertArrayEquals(byteArrayOf(0x1b, 0x0d), wsClient.sentInputs[sentBefore + 1])
+                assertEquals(nonceBefore + 2, viewModel.state.value.localInputNonce)
+                assertFalse(viewModel.state.value.hasControl)
+            } else {
+                assertEquals(sentBefore, wsClient.sentInputs.size)
+                assertEquals(nonceBefore, viewModel.state.value.localInputNonce)
+                assertEquals("view-only session", viewModel.state.value.status?.message)
+            }
+        }
+    }
+
+    @Test
+    fun inputRemainsBlockedWhileLockedDisconnectedOrUnauthenticated() = runTest {
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(FakeRepository(), wsClient)
+        advanceUntilIdle()
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        val owner = viewModel.state.value.copy(loggedIn = true, connectionState = ConnectionState.Connected, hasControl = false)
+        for (state in listOf(owner.copy(requiresAppUnlock = true), owner.copy(connectionState = ConnectionState.Disconnected), owner.copy(loggedIn = false, hasControl = true))) {
+            setUiStateForTest(viewModel, state)
+            viewModel.sendRawInput("z")
+            viewModel.sendRawBytes(byteArrayOf(0x0d))
+            assertTrue(wsClient.sentInputs.isEmpty())
+            assertEquals(0L, viewModel.state.value.localInputNonce)
+        }
+    }
+
+    @Test
+    fun sharePermissionIsClearedWhenTokenChangesBeforeAuthentication() = runTest {
+        val wsClient = FakeWsClient { _, listener, socket -> listener.onOpen(socket) }
+        wsClient.shareSession = RelayShareSession(sessionId = "real-session", scope = "control")
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("control", "https://example")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.canSendInput)
+        viewModel.handleSharedToken("view", "https://example")
+        assertFalse(viewModel.state.value.canSendInput)
+        assertFalse(viewModel.state.value.shareCanControl)
+        advanceUntilIdle()
+        viewModel.showShareToken(false)
+        assertFalse(viewModel.state.value.canSendInput)
+        assertFalse(viewModel.state.value.shareCanControl)
     }
 
     @Test
@@ -2534,6 +2605,7 @@ private class FakeWsClient(
     var connectCount: Int = 0
     var lastConnectOptions: ConnectOptions? = null
     var lastSentBytes: ByteArray? = null
+    val sentInputs = mutableListOf<ByteArray>()
     var lastSentCommand: CommandKind? = null
     var resizeCount: Int = 0
     var closeCount: Int = 0
@@ -2596,6 +2668,7 @@ private class FakeWsClient(
 
     override fun sendInput(webSocket: WebSocket, data: ByteArray) {
         lastSentBytes = data.copyOf()
+        sentInputs.add(data.copyOf())
     }
 
     override fun sendInput(webSocket: WebSocket, text: String) {

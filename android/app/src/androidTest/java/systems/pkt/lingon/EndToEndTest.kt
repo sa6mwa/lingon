@@ -66,6 +66,10 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.InputStreamReader
 import systems.pkt.lingon.viewmodel.ConnectionState
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.WebSocket
+import systems.pkt.lingon.data.relay.RelayWebSocketClient
+import systems.pkt.lingon.protocol.Frame
 import java.io.FileOutputStream
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -2929,7 +2933,7 @@ class EndToEndTest {
     }
 
     @Test
-    fun headless_resize_action_disabled_and_input_remains_blocked_without_control() {
+    fun owner_typing_reclaims_control_after_real_handoff() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         setResizeHostEnabled(false)
@@ -2937,11 +2941,51 @@ class EndToEndTest {
         loginWithConfiguredUser()
         openSettings()
         composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
-        composeRule.runOnIdle {
-            appViewModel().setHasControlForTesting(false)
-        }
         closeSettingsIfOpen()
-        assertTerminalInputBlocked()
+        assertFirstInputReclaimsControl()
+    }
+
+    @Test
+    fun control_share_typing_reclaims_control_after_real_handoff() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        val token = testConfig.controlToken ?: throw AssertionError("missing control share token")
+        attachViaShareToken(token)
+        assertFirstInputReclaimsControl()
+    }
+
+    private fun assertFirstInputReclaimsControl() {
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { appViewModel().state.value.hasControl }
+        val application = composeRule.activity.application as LingonApplication
+        val sessionId = activeSessionId()
+        val epoch = appViewModel().state.value.terminalConnectionEpoch
+        val peer = application.wsClient.connect(
+            RelayWebSocketClient.ConnectOptions(
+                baseUrl = testConfig.endpoint.toHttpUrl(), sessionId = sessionId,
+                shareToken = appViewModel().state.value.shareToken,
+                clientId = "handoff-${UUID.randomUUID()}", cols = 0, rows = 0, wantsControl = true,
+            ),
+            object : RelayWebSocketClient.Listener {
+                override fun onFrame(webSocket: WebSocket, frame: Frame) {}
+            },
+        )
+        try {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { !appViewModel().state.value.hasControl }
+            val echo = "ECHO_${sessionId} 71"
+            val before = snapshotTokenCount(echo)
+            val inputNonce = appViewModel().state.value.localInputNonce
+            // One actual hardware key, without the retry helper: this very key must reach the host.
+            sendTerminalInput("q")
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+                appViewModel().state.value.hasControl && snapshotTokenCount(echo) == before + 1
+            }
+            assertEquals(epoch, appViewModel().state.value.terminalConnectionEpoch)
+            assertEquals(inputNonce + 1, appViewModel().state.value.localInputNonce)
+            assertEquals(before + 1, snapshotTokenCount(echo))
+        } finally {
+            peer.close(1000, "handoff test finished")
+        }
     }
 
     @Test
@@ -4745,22 +4789,15 @@ class EndToEndTest {
     }
 
     private fun assertTerminalInputBlocked() {
-        val echoChar = "Z"
-        val echoHex = echoChar[0].code.toString(16).padStart(2, '0')
+        val nonce = appViewModel().state.value.localInputNonce
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
-        sendTerminalInput(echoChar)
+        sendTerminalInput("Z")
         sendTerminalEnter()
-        val deadline = System.currentTimeMillis() + 1_000
-        while (System.currentTimeMillis() < deadline) {
-            val info = readTerminalDebugInfo()
-            if (info != null) {
-                val lines = listOf(info.row0, info.prevLine, info.tail, info.cursorLine)
-                if (lines.any { it.contains("ECHO_") && it.contains(echoHex) }) {
-                    throw AssertionError("unexpected terminal echo while input is disabled")
-                }
-            }
-            composeRule.waitForIdle()
-            Thread.sleep(POLL_INTERVAL_MS)
+        composeRule.runOnIdle {
+            val state = appViewModel().state.value
+            assertEquals(nonce, state.localInputNonce)
+            assertFalse(state.hasControl)
+            assertEquals("view-only session", state.status?.message)
         }
     }
 
@@ -6391,6 +6428,7 @@ class EndToEndTest {
         val sessions: List<String>,
         val viewToken: String?,
         val hostCols: Int,
+        val controlToken: String?,
         val hostRows: Int,
         val username2: String?,
         val password2: String?,
@@ -6452,6 +6490,7 @@ class EndToEndTest {
                     caPem = caPem,
                     sessions = sessions,
                     viewToken = viewToken,
+                    controlToken = args.getString("control_token")?.trim()?.takeIf { it.isNotBlank() },
                     hostCols = hostCols,
                     hostRows = hostRows,
                     username2 = username2,

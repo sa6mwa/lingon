@@ -50,6 +50,7 @@ data class UiState(
     val wallInactivityEnabled: Boolean = false,
     val wallInactivityLabel: String? = null,
     val shareToken: String? = null,
+    val shareCanControl: Boolean = false,
     val shareTokenError: String? = null,
     val certificateError: String? = null,
     val savedEndpoints: List<String> = emptyList(),
@@ -80,6 +81,10 @@ data class UiState(
 
     val canAttach: Boolean
         get() = loggedIn || !shareToken.isNullOrBlank()
+
+    // Authorization survives a lease handoff; hasControl describes only the current holder.
+    val canSendInput: Boolean
+        get() = if (shareToken == null) loggedIn else shareCanControl
 
     val showsSyncingIndicator: Boolean
         get() = sessionSyncing ||

@@ -19,6 +19,7 @@ private val integrationRunnerArgProperties = mapOf(
     "ca_pem_b64" to "lingon.it.ca_pem_b64",
     "sessions" to "lingon.it.sessions",
     "view_token" to "lingon.it.view_token",
+    "control_token" to "lingon.it.control_token",
     "username2" to "lingon.it.username2",
     "password2" to "lingon.it.password2",
     "totp_secret2" to "lingon.it.totp_secret2",

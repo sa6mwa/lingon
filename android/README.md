@@ -15,6 +15,9 @@ rendering pipeline.
 
 ## Terminal keyboard and selection
 
+- Typing reclaims terminal control automatically for account sessions and
+  control-enabled shares, preserving the first key. View-only shares cannot
+  send input or take control. No separate control button is needed.
 - Tap **ALT** once for the next Alt chord. Tap it again to enter **FN** mode;
   tap **FN** to return to ALT off. FN stays on after a key. In FN mode, the
   existing CTRL button cycles off → CTRL → ALT → C+A → off for function-key

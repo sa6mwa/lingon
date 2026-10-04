@@ -93,7 +93,8 @@ func TestRunConfigEnv(t *testing.T) {
       "password": "secret",
       "totp_secret": "totp1",
       "sessions": ["session-a", "session-b"],
-      "view_token": "view1"
+      "view_token": "view1",
+      "control_token": "control1"
     },
     {
       "username": "bob",
@@ -138,6 +139,7 @@ func TestRunConfigEnv(t *testing.T) {
 		"CA_PEM_B64='",
 		"SESSIONS='session-a,session-b'",
 		"VIEW_TOKEN='view1'",
+		"CONTROL_TOKEN='control1'",
 		"USERNAME2='bob'",
 		"PASSWORD2='secret2'",
 		"TOTP_SECRET2='totp2'",

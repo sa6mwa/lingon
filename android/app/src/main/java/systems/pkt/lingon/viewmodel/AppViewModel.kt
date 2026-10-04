@@ -205,7 +205,14 @@ class AppViewModel(
     }
 
     fun showShareToken(show: Boolean, token: String? = null) {
-        _state.update { it.copy(showShareToken = show, shareToken = token, shareTokenError = null) }
+        _state.update {
+            it.copy(
+                showShareToken = show,
+                shareToken = token,
+                shareTokenError = null,
+                shareCanControl = token != null && token == it.shareToken && it.shareCanControl,
+            )
+        }
     }
 
     fun setResizeHostEnabled(enabled: Boolean) {
@@ -409,6 +416,7 @@ class AppViewModel(
                 sessions = emptyList(),
                 activeSessionId = null,
                 shareToken = null,
+                shareCanControl = false,
                 shareTokenError = null,
                 wallInactivityEnabled = false,
                 wallInactivityLabel = null,
@@ -508,6 +516,7 @@ class AppViewModel(
                         username = username,
                         loginError = null,
                         shareToken = null,
+                        shareCanControl = false,
                         shareTokenError = null,
                         status = null,
                         transientStatus = null,
@@ -562,6 +571,7 @@ class AppViewModel(
                         activeSessionId = null,
                         activeSnapshot = null,
                         shareToken = null,
+                        shareCanControl = false,
                         shareTokenError = null,
                         wallInactivityEnabled = false,
                         wallInactivityLabel = null,
@@ -601,6 +611,7 @@ class AppViewModel(
                 loggedIn = false,
                 username = null,
                 shareToken = token,
+                shareCanControl = false,
                 shareTokenError = null,
                 sessions = listOf(sharedSession()),
                 activeSessionId = sharedSessionId,
@@ -995,7 +1006,7 @@ class AppViewModel(
             setStatus("not connected", StatusLevel.Warn)
             return
         }
-        if (!state.hasControl) {
+        if (!state.canSendInput) {
             setStatus(if (state.shareToken != null) "view-only session" else "control unavailable", StatusLevel.Warn)
             return
         }
@@ -1014,7 +1025,7 @@ class AppViewModel(
             setStatus("not connected", StatusLevel.Warn)
             return
         }
-        if (!state.hasControl) {
+        if (!state.canSendInput) {
             setStatus(if (state.shareToken != null) "view-only session" else "control unavailable", StatusLevel.Warn)
             return
         }
@@ -1292,6 +1303,7 @@ class AppViewModel(
                 _state.update {
                     it.copy(
                         shareTokenError = err.message ?: "share authentication failed",
+                        shareCanControl = false,
                         sessionSyncing = false,
                         connectionState = ConnectionState.Disconnected,
                     )
@@ -1314,6 +1326,7 @@ class AppViewModel(
                 it.copy(
                     sessions = listOf(authenticatedSession),
                     activeSessionId = authenticatedSessionID,
+                    shareCanControl = shareSession.scope == "control",
                     shareTokenError = null,
                 )
             }
@@ -1788,6 +1801,7 @@ class AppViewModel(
                 activeSessionId = null,
                 activeSnapshot = null,
                 shareToken = null,
+                shareCanControl = false,
                 wallInactivityEnabled = false,
                 wallInactivityLabel = null,
                 scrollbackOffsetRows = 0,
@@ -2044,6 +2058,7 @@ class AppViewModel(
                 activeSessionId = null,
                 activeSnapshot = null,
                 shareToken = null,
+                shareCanControl = false,
                 wallInactivityEnabled = false,
                 wallInactivityLabel = null,
                 scrollbackOffsetRows = 0,
