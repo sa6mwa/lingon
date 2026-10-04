@@ -4362,6 +4362,21 @@ class EndToEndTest {
         }
     }
 
+    @Test
+    fun cleartext_share_authentication_uses_token_fallback() {
+        org.junit.Assume.assumeTrue("requires LINGON_IT_CLEARTEXT=1", testConfig.endpoint.startsWith("http://"))
+        val token = testConfig.viewToken ?: throw AssertionError("missing view token")
+        val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing shared host")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        attachViaShareToken(token)
+        waitForSessionTick(session)
+        assertEquals(ConnectionState.Connected, appViewModel().state.value.connectionState)
+        assertEquals(session, appViewModel().state.value.activeSessionId)
+        assertNull(appViewModel().state.value.shareTokenError)
+        assertFalse(appViewModel().state.value.shareCanControl)
+    }
+
     private fun selectSessionTab(sessionId: String, timeoutMs: Long = 6_000L) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {

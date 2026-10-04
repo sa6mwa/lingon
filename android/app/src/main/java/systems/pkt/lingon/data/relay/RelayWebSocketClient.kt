@@ -162,7 +162,9 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
             if (shareSession.sessionId.isBlank()) {
                 throw IllegalStateException("share authentication failed: missing session")
             }
-            if (cookies.loadForRequest(buildWsUrl(baseUrl, shareToken)).isEmpty()) {
+            // Debug/local HTTP uses the existing token-query handshake because
+            // the relay's Secure grant cannot be sent over cleartext.
+            if (baseUrl.isHttps && cookies.loadForRequest(buildWsUrl(baseUrl, shareToken)).isEmpty()) {
                 throw IllegalStateException("share authentication failed: missing cookie")
             }
             return AuthenticatedShareSession(shareSession, baseUrl, shareToken, client)

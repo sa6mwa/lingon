@@ -108,6 +108,7 @@ func main() {
 	var (
 		sessionCount = flag.Int("sessions", 2, "number of host sessions to start")
 		port         = flag.Int("port", 0, "port to bind (0 for random)")
+		cleartext    = flag.Bool("cleartext", false, "use HTTP for debug-only share fallback verification")
 		basePath     = flag.String("base-path", "/v1", "API base path")
 		user         = flag.String("user", "test", "login username")
 		pass         = flag.String("pass", "pass", "login password")
@@ -130,6 +131,7 @@ func main() {
 	h, err := startHarness(ctx, harnessOptions{
 		sessionCount: *sessionCount,
 		port:         *port,
+		cleartext:    *cleartext,
 		basePath:     *basePath,
 		username:     *user,
 		password:     *pass,
@@ -154,6 +156,7 @@ func main() {
 type harnessOptions struct {
 	sessionCount int
 	port         int
+	cleartext    bool
 	basePath     string
 	username     string
 	password     string
@@ -245,7 +248,11 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	endpoint := "https://127.0.0.1:" + portStr + ensureBasePath(opts.basePath)
+	scheme := "https"
+	if opts.cleartext {
+		scheme = "http"
+	}
+	endpoint := scheme + "://127.0.0.1:" + portStr + ensureBasePath(opts.basePath)
 
 	hub := relay.NewHub(nil)
 	auth := relay.NewAuthenticator(users)
@@ -469,7 +476,11 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 		Certificates: []tls.Certificate{cert},
 	}
 	srv.Listener = listener
-	srv.StartTLS()
+	if opts.cleartext {
+		srv.Start()
+	} else {
+		srv.StartTLS()
+	}
 	h.server = srv
 
 	user1 := harnessUser{

@@ -17,6 +17,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.security.KeyStore
+import java.util.Base64
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
+import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -77,15 +82,66 @@ class RelayWebSocketClientTest {
     @Test
     fun successfulShareResponseWithoutHandshakeCookieIsRejected() {
         val server = MockWebServer()
+        val keys = KeyStore.getInstance("PKCS12").apply {
+            load(RelayWebSocketClientTest::class.java.getResourceAsStream("/share-auth-server.p12"), "test-only".toCharArray())
+        }
+        val managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
+            init(keys, "test-only".toCharArray())
+        }
+        val tls = SSLContext.getInstance("TLS").apply { init(managers.keyManagers, null, null) }
+        server.useHttps(tls.socketFactory, false)
         server.enqueue(MockResponse().setBody("{\"session_id\":\"shared-real\",\"scope\":\"view\"}"))
         server.start()
         try {
-            val client = RelayWebSocketClient(testHttpClientProvider())
+            val pem = "-----BEGIN CERTIFICATE-----\n" +
+                Base64.getMimeEncoder(64, "\n".toByteArray()).encodeToString(keys.getCertificate("share-test").encoded) +
+                "\n-----END CERTIFICATE-----\n"
+            val client = RelayWebSocketClient(testHttpClientProvider(trustedEndpoint = server.url("/v1").toString(), trustedPem = pem))
             val err = assertThrows(IllegalStateException::class.java) {
                 client.authenticateShareSession(server.url("/v1"), "token")
             }
             assertEquals("share authentication failed: missing cookie", err.message)
         } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun cleartextShareAuthenticationWithSecureCookieReachesTokenHandshake() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("{\"session_id\":\"shared-real\",\"scope\":\"view\"}")
+            .addHeader("Set-Cookie", "bifrons_share_session=secure-grant; Path=/v1; HttpOnly; Secure; SameSite=Lax"))
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        server.start()
+        val baseUrl = server.url("/v1")
+        val provider = testHttpClientProvider()
+        val client = RelayWebSocketClient(provider)
+        var socket: WebSocket? = null
+        try {
+            val authentication = client.authenticateShareSession(baseUrl, "local-share-token")
+            val opened = CountDownLatch(1)
+            val failure = AtomicReference<Throwable?>()
+            socket = client.connect(connectOptions(baseUrl, "local-share-token").copy(shareAuthentication = authentication),
+                object : RelayWebSocketClient.Listener {
+                    override fun onOpen(webSocket: WebSocket) { opened.countDown() }
+                    override fun onFrame(webSocket: WebSocket, frame: systems.pkt.lingon.protocol.Frame) {}
+                    override fun onFailure(webSocket: WebSocket, t: Throwable?, response: Response?) {
+                        failure.set(t ?: AssertionError("handshake failed")); opened.countDown()
+                    }
+                })
+            assertTrue("handshake did not complete", opened.await(10, TimeUnit.SECONDS))
+            assertNull(failure.get())
+            val authRequest = server.takeRequest(10, TimeUnit.SECONDS) ?: throw AssertionError("missing authentication")
+            val handshake = server.takeRequest(10, TimeUnit.SECONDS) ?: throw AssertionError("missing handshake")
+            assertEquals("/v1/auth/share", authRequest.path)
+            assertEquals("/v1/ws/client?token=local-share-token", handshake.path)
+            assertEquals("1", handshake.getHeader("X-Lingon-Share-Session"))
+            assertNull(handshake.getHeader("Cookie"))
+            assertEquals(2, server.requestCount)
+        } finally {
+            socket?.cancel()
+            provider.clientFor(baseUrl).connectionPool.evictAll()
+            provider.clientFor(baseUrl).dispatcher.executorService.shutdownNow()
             server.shutdown()
         }
     }
@@ -254,11 +310,13 @@ class RelayWebSocketClientTest {
         return if (query.isNullOrBlank()) encodedPath else "$encodedPath?$query"
     }
 
-    private fun testHttpClientProvider(cookieJar: CookieJar = CookieJar.NO_COOKIES): HttpClientProvider {
+    private fun testHttpClientProvider(cookieJar: CookieJar = CookieJar.NO_COOKIES, trustedEndpoint: String? = null, trustedPem: String? = null): HttpClientProvider {
         val dataStore = PreferenceDataStoreFactory.create(
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
             produceFile = { Files.createTempFile("lingon-ws-client", ".preferences_pb").toFile() },
         )
-        return HttpClientProvider(CertificateStore(dataStore), cookieJar)
+        val certificates = CertificateStore(dataStore)
+        if (trustedEndpoint != null && trustedPem != null) runBlocking { certificates.addCertificates(trustedEndpoint, trustedPem) }
+        return HttpClientProvider(certificates, cookieJar)
     }
 }

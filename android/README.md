@@ -148,6 +148,15 @@ LINGON_IT_ONLY=foreground_manual_wall_delivery_does_not_post_system_notification
 LINGON_IT_CLASS=systems.pkt.lingon.terminal.TerminalGridViewInstrumentedTest#selectionDragCopiesCellsWithWhiteHighlightAndTwoFingerPanPreservesSelection make integration-test
 ```
 
+Verify the debug/local HTTP share fallback with an isolated cleartext relay:
+
+```bash
+LINGON_IT_CLEARTEXT=1 LINGON_IT_ONLY=cleartext_share_authentication_uses_token_fallback make integration-test
+```
+
+The harness uses HTTPS by default. This HTTP-specific case is skipped in the
+default HTTPS sweep and must run with the explicit cleartext setting.
+
 ## Emulator presets
 Use `PRESET` to select a device profile:
 ```bash

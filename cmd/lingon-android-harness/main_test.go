@@ -3,12 +3,42 @@ package main
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestHarnessTransportModes(t *testing.T) {
+	for _, cleartext := range []bool{false, true} {
+		scheme := "https"
+		if cleartext {
+			scheme = "http"
+		}
+		t.Run(scheme, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			h, err := startHarness(ctx, harnessOptions{cleartext: cleartext, basePath: "/v1", username: "transport-test", password: "test-only", cols: 80, rows: 24})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.stop()
+			if !strings.HasPrefix(h.config.Endpoint, scheme+"://") {
+				t.Fatalf("wrong endpoint: %s", h.config.Endpoint)
+			}
+			response, err := h.server.Client().Get(h.config.Endpoint + "/sessions")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("unexpected anonymous status: %d", response.StatusCode)
+			}
+		})
+	}
+}
 
 func TestBuildHostSessionOptionsDisablesDesktopNotifications(t *testing.T) {
 	t.Parallel()

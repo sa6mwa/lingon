@@ -432,6 +432,9 @@ if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" && "${KEEP_EMULATOR}" == "1" ]]; t
 fi
 
 HARNESS_ARGS=()
+if [[ "${LINGON_IT_CLEARTEXT:-0}" == "1" ]]; then
+  HARNESS_ARGS+=("-cleartext")
+fi
 SPECIAL_TEST="refreshes_sessions_when_host_starts_late"
 QUIET_HOST_TEST="tab_switch_does_not_rearm_wall_inactivity_without_terminal_input"
 if [[ -z "${HOST_COLS_OVERRIDE}" ]]; then
@@ -538,7 +541,7 @@ start_harness() {
   if [[ -n "${HARNESS_ROOT}" ]]; then
     HARNESS_ROOTS+=("${HARNESS_ROOT}")
   fi
-  DEVICE_ENDPOINT="https://localhost:${PORT}/v1"
+  DEVICE_ENDPOINT="${ENDPOINT%%://*}://localhost:${PORT}/v1"
   echo "Harness endpoint: ${ENDPOINT}"
   echo "Device endpoint: ${DEVICE_ENDPOINT}"
   echo "Sessions: ${SESSIONS}"
