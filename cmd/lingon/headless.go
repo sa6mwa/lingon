@@ -105,6 +105,15 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 			_ = startupReporter.Failed(retErr)
 		}
 	}()
+	launchToken, err := headless.ReadLaunchTokenFromEnv()
+	if err != nil {
+		return err
+	}
+	if launchToken != "" {
+		if err := cmd.Flags().Set("token", launchToken); err != nil {
+			return err
+		}
+	}
 	insecure, err := cmd.Flags().GetBool("insecure")
 	if err != nil {
 		return err

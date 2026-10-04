@@ -21,6 +21,12 @@ not the selected shell's current directory. Embedded hosts can specify
 `InteractiveOptions.HeadlessExecutable` when their own executable is not the
 Lingon CLI; `ConfigDir` and `ConfigFile` select the child configuration.
 
+Child creation reuses the host's selected auth file. Token-only hosts pass the
+current credential through a private inherited pipe; the child consumes and
+closes it before starting the terminal. Generated child arguments and environment
+contain no access token. Explicit user-supplied CLI token flags retain their
+existing semantics.
+
 Ordinary headful `lingon` retains its in-process `Ctrl+l c` tabs. Attached clients
 create detached sessions with `Ctrl+l c`. CLI rename is `Ctrl+l e`; Android puts
 both actions in Settings, and the Web UI puts them in its session menu. Only the

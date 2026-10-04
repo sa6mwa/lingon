@@ -114,6 +114,10 @@ func TestSessionManagementLocalCLI(t *testing.T) {
 }
 
 func startManagementHostCLI(t *testing.T, h *ptytest.Harness, home string) *ptytest.PTYSession {
+	return startManagementHostCLIWithAuthFile(t, h, home, "")
+}
+
+func startManagementHostCLIWithAuthFile(t *testing.T, h *ptytest.Harness, home, authFile string) *ptytest.PTYSession {
 	t.Helper()
 	master, slave := ptytest.OpenPTY(t, 100, 24)
 	resizeFD, err := syscall.Dup(int(slave.Fd()))
@@ -123,7 +127,13 @@ func startManagementHostCLI(t *testing.T, h *ptytest.Harness, home string) *ptyt
 	resize := os.NewFile(uintptr(resizeFD), "management-host-resize")
 	terminal := ptytest.NewPTYSession(t, master, resize, 100, 24)
 	t.Cleanup(terminal.Close)
-	cmd := exec.Command(buildLingonAttachBinary(t), "--session", "management-host", "--endpoint", h.Endpoint(), "--token", h.AccessToken(), "--insecure", "--shell", fixedPromptEmitRowsBash(t))
+	args := []string{"--session", "management-host", "--endpoint", h.Endpoint(), "--insecure", "--shell", fixedPromptEmitRowsBash(t)}
+	if authFile != "" {
+		args = append(args, "--auth-file", authFile)
+	} else {
+		args = append(args, "--token", h.AccessToken())
+	}
+	cmd := exec.Command(buildLingonAttachBinary(t), args...)
 	cmd.Env = testAttachCLIEnv(home)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}

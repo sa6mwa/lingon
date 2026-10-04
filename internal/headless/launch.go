@@ -7,12 +7,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // StartupStatusEnv identifies the child-owned startup readiness pipe.
 const StartupStatusEnv = "__LINGON__HEADLESS_STARTUP_STATUS_FD"
+
+// LaunchTokenEnv identifies a private inherited credential pipe, never a token.
+const LaunchTokenEnv = "__LINGON__HEADLESS_LAUNCH_TOKEN_FD"
 
 // LaunchRequest configures a detached copy of the current Lingon executable.
 // Args are constructed by the host; remote clients never supply executable arguments.
@@ -23,6 +27,8 @@ type LaunchRequest struct {
 	Args       []string
 	// Env overrides host-selected child configuration. It is never supplied by remote clients.
 	Env []string
+	// Token is transferred through a private pipe, not process arguments or environment.
+	Token string
 }
 
 // Launched identifies a ready, independently running terminal.
@@ -69,18 +75,40 @@ func Launch(ctx context.Context, req LaunchRequest) (Launched, error) {
 	detach(child)
 	child.Stdin, child.Stdout, child.Stderr = null, null, null
 	child.ExtraFiles = []*os.File{w}
-	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, EnvForeground+"=") && !strings.HasPrefix(entry, StartupStatusEnv+"=") {
-			child.Env = append(child.Env, entry)
+	var tokenWriter *os.File
+	if req.Token != "" {
+		tokenReader, writer, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			return Launched{}, pipeErr
+		}
+		defer tokenReader.Close()
+		defer writer.Close()
+		tokenWriter = writer
+		child.ExtraFiles = append(child.ExtraFiles, tokenReader)
+	}
+	for _, entries := range [][]string{os.Environ(), req.Env} {
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry, EnvForeground+"=") && !strings.HasPrefix(entry, StartupStatusEnv+"=") && !strings.HasPrefix(entry, LaunchTokenEnv+"=") {
+				child.Env = append(child.Env, entry)
+			}
 		}
 	}
-	child.Env = append(child.Env, req.Env...)
 	child.Env = append(child.Env, EnvForeground+"="+ForegroundValue, StartupStatusEnv+"=3")
+	if tokenWriter != nil {
+		child.Env = append(child.Env, LaunchTokenEnv+"=4")
+	}
 	if err := child.Start(); err != nil {
 		return Launched{}, err
 	}
 	_ = w.Close()
 	go func() { _ = child.Wait() }()
+	if tokenWriter != nil {
+		// A child that fails before reading must not block cancellation or readiness.
+		go func() {
+			_, _ = io.WriteString(tokenWriter, req.Token)
+			_ = tokenWriter.Close()
+		}()
+	}
 	startupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	status, err := ReadStartupStatus(startupCtx, r)
@@ -97,6 +125,30 @@ func Launch(ctx context.Context, req LaunchRequest) (Launched, error) {
 		return Launched{}, fmt.Errorf("headless startup identity mismatch")
 	}
 	return Launched{req.SessionID, socket, child.Process.Pid}, nil
+}
+
+// ReadLaunchTokenFromEnv consumes and closes the child-owned credential pipe.
+// It clears the descriptor marker before any terminal subprocess can inherit it.
+func ReadLaunchTokenFromEnv() (string, error) {
+	raw, present := os.LookupEnv(LaunchTokenEnv)
+	if !present {
+		return "", nil
+	}
+	_ = os.Unsetenv(LaunchTokenEnv)
+	fd, err := strconv.Atoi(raw)
+	if err != nil || fd < 3 {
+		return "", fmt.Errorf("invalid headless credential pipe")
+	}
+	pipe := os.NewFile(uintptr(fd), "headless-launch-token")
+	defer pipe.Close()
+	token, err := io.ReadAll(pipe)
+	if err != nil {
+		return "", fmt.Errorf("read headless credential pipe: %w", err)
+	}
+	if len(token) == 0 {
+		return "", fmt.Errorf("empty headless launch credential")
+	}
+	return string(token), nil
 }
 
 // StartupStatus is the bounded readiness response written to a child-owned pipe.

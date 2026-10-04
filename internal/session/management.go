@@ -59,17 +59,16 @@ func (r *Runner) Manage(ctx context.Context, req sessionmanage.Request) sessionm
 		if r.opts.Shell != "" {
 			args = append(args, "--shell", r.opts.Shell)
 		}
+		var launchToken string
 		if r.opts.Endpoint != "" && r.opts.Publish {
 			args = append(args, "--endpoint", r.opts.Endpoint)
 			if r.opts.AuthFile != "" {
 				args = append(args, "--auth-file", r.opts.AuthFile)
-			}
-			token := r.opts.Token
-			if local.publisher != nil {
-				token = local.publisher.AccessToken()
-			}
-			if token != "" {
-				args = append(args, "--token", token)
+			} else {
+				launchToken = r.opts.Token
+				if local.publisher != nil {
+					launchToken = local.publisher.AccessToken()
+				}
 			}
 			if r.opts.Insecure {
 				args = append(args, "--insecure")
@@ -81,7 +80,7 @@ func (r *Runner) Manage(ctx context.Context, req sessionmanage.Request) sessionm
 		if r.opts.TLSDir != "" {
 			env = append(env, "LINGON_SERVER_TLS_DIR="+r.opts.TLSDir)
 		}
-		_, err = headless.Launch(ctx, headless.LaunchRequest{Executable: r.opts.HeadlessExecutable, ConfigDir: cfg, SessionID: id, Args: args, Env: env})
+		_, err = headless.Launch(ctx, headless.LaunchRequest{Executable: r.opts.HeadlessExecutable, ConfigDir: cfg, SessionID: id, Args: args, Env: env, Token: launchToken})
 		if err != nil {
 			return sessionmanage.Result{Error: err.Error()}
 		}
