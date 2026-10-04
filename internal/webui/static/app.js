@@ -3020,14 +3020,20 @@ async function manageSession(kind, sessionId, name = "") {
   managementBusy = true;
   updateManagementActions();
   try {
-    // No automatic mutation retries: a lost response has an uncertain outcome.
+    // A lost response has an uncertain outcome. Only an explicit authentication
+    // rejection may be retried, once, using the same operation identity.
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     const requestId = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
-    const response = await fetch("sessions/manage", {
+    const options = {
       method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ request_id: requestId, session_id: sessionId, kind, name }),
-    });
+    };
+    let response = await fetch("sessions/manage", options);
+    if (response.status === 401 && await attemptRefresh()) {
+      if (getActiveView() !== view || view.shareSession || terminalView.classList.contains("hidden")) return;
+      response = await fetch("sessions/manage", options);
+    }
     const result = await response.json();
     if (!response.ok || result.error) throw new Error(result.error || "Session operation failed");
     if (getActiveView()?.shareSession || terminalView.classList.contains("hidden")) return;

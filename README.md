@@ -252,6 +252,9 @@ persist locally and are advertised again on relay reconnect. Interactive names
 last for that host process's lifetime. If a request's response is lost, refresh
 the session list before trying again; clients do not automatically repeat
 uncertain operations. See [session management design and verification](SESSION_MANAGEMENT.md).
+The Web UI recovers an explicit 401 with one credential refresh and one retry
+using the same request ID. Attach bounds credential refresh and the operation
+together to 15 seconds; a timeout leaves the terminal available for further input.
 
 Attach options (selection):
 

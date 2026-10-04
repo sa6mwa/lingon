@@ -15,6 +15,11 @@ func (c *Client) Manage(ctx context.Context, req sessionmanage.Request) (session
 	if c.ShareToken != "" {
 		return sessionmanage.Result{}, fmt.Errorf("session management requires the owner account")
 	}
+	// Refresh and mutation share one budget, driven by the same clock as attach.
+	callCtx, cancel := context.WithCancelCause(ctx)
+	timer := c.clock().AfterFunc(15*time.Second, func() { cancel(context.DeadlineExceeded) })
+	defer timer.Stop()
+	defer cancel(context.Canceled)
 	endpoint := "http://unix"
 	transport := &http.Transport{DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
@@ -34,13 +39,21 @@ func (c *Client) Manage(ctx context.Context, req sessionmanage.Request) (session
 			return sessionmanage.Result{}, err
 		}
 		if c.TokenRefresher != nil {
-			token, err = c.TokenRefresher(ctx)
+			token, err = c.TokenRefresher(callCtx)
 			if err != nil {
+				if callCtx.Err() != nil {
+					return sessionmanage.Result{}, context.Cause(callCtx)
+				}
 				return sessionmanage.Result{}, err
 			}
 		}
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	return sessionmanage.Call(callCtx, &http.Client{Transport: transport}, endpoint, token, req)
+	if callCtx.Err() != nil {
+		return sessionmanage.Result{}, context.Cause(callCtx)
+	}
+	result, err := sessionmanage.Call(callCtx, &http.Client{Transport: transport}, endpoint, token, req)
+	if err != nil && callCtx.Err() != nil {
+		return result, fmt.Errorf("%w: %w", err, context.Cause(callCtx))
+	}
+	return result, err
 }

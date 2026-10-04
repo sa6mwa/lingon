@@ -29,6 +29,44 @@ Required status values:
 
 ## Active Items
 
+### B-143 Browser session management does not recover expired owner credentials
+
+- Status: `resolved`
+- Report: Review `codex-review.normal-trunk.Ew2AtP.log` found that a live browser terminal cannot create/rename after its access cookie expires, even with a valid refresh cookie.
+- Scope: Recover only an explicit pre-execution HTTP 401, retry once with the same request ID, and retain no-retry behavior for uncertain outcomes.
+- Repro/coverage: `TestWebUIManagementAuthRecovery` uses a live browser terminal, an expired access cookie and valid refresh cookie, and real HTTPS relay/host operations. It verifies rename and create each produce exactly 401 → refresh 200 → mutation 200, with identical request body/ID, one created terminal, persisted source name and unchanged socket identity. Periodic listing uses fixture snapshots so it cannot recover the deliberately expired cookie first; each successful mutation refreshes from the real relay.
+- Before/after: The corrected HTTPS baseline with the original JavaScript failed on a single 401 (`review-management-browser-tls-before.log`). The final fresh/expired tests and six error-policy subcases passed (`review-management-browser-final.log`). Fresh credentials make one mutation request; lost response, malformed JSON, 403, 500, failed refresh and repeated 401 remain bounded as specified.
+- Fixture corrections: The initial browser baseline used a module-scoped function unavailable from page evaluation (`review-management-browser-before.log`); the next baseline reproduced the 401 (`review-management-browser-corrected-before.log`). Subsequent runs exposed a zero-status fallback in the network-loss stub and a test-owned Unix socket path exceeding the platform limit (`review-management-browser-after.log`, `review-management-browser-tls-after.log`, `review-management-browser-diagnostic.log`, `review-management-browser-phases.log`). The final fixture uses HTTPS, a shorter path, and validates result errors explicitly. Setup failures are not accepted as regression evidence.
+
+### B-144 Attach management refresh can block indefinitely
+
+- Status: `resolved`
+- Report: Review `codex-review.normal-trunk.Ew2AtP.log` found that refresh receives the long-lived attach context before the existing mutation deadline is established.
+- Scope: One 15-second operation budget for refresh and mutation; use the client's existing injected clock and prove that timeout releases management availability through a test-owned PTY.
+- Fix/coverage: The operation establishes a clock-driven cancellation context before refresh, preserves the timeout cause, and passes that context to the mutation. `TestManagementBudgetIncludesStalledRefresh` and `TestManagementMutationUsesRemainingRefreshBudget` explicitly advance mock time and verify refresh timeout and the single remaining second after a fourteen-second refresh. Both failed before (`review-management-timeout-corrected-before.log`) and passed after with the race detector (`review-management-timeout-after.log`). Parent attach context stays alive.
+- PTY proof: `TestAttachManagementRefreshTimeoutAllowsNextRename` drives actual Ctrl+L e, stalls authentication, advances the owned clock by fifteen seconds, observes the deadline error, then performs a successful rename and executes a shell expression whose result differs from the entered command. The corrected baseline failed at the missing timeout (`review-management-timeout-pty-corrected-before.log`); final race run passed (`review-management-timeout-pty-final.log`). It owns every terminal and never touches inherited stdio.
+- Fixture corrections: The first unit baseline stalled in server cleanup because its request body was not drained. Only that test-owned process was stopped; `review-management-timeout-before.log` is not accepted as evidence. The server now drains the body and has an explicit cleanup release. Initial PTY readiness used hidden chrome, and an initial post-fix assertion expected an auto-hidden label (`review-management-timeout-pty-before.log`, `review-management-timeout-pty-after.log`); readiness now uses the received snapshot and successful rename is asserted through relay metadata.
+
+### B-145 Attach startup races tab-switch output selection
+
+- Status: `resolved`
+- Report/repro: The broader race gate reported `Client.run` reassigning `c.stdout` concurrently with `SetStdout` during `TestAttachNoFullRedrawAfterTabSwitchWithLocalPTYs` (`review-management-lifecycle-no-flicker.log`).
+- Fix: Remove the redundant startup assignment. The writer getter already resolves explicit selection, configured stdout, and the default output; tab selection remains protected by the existing render mutex. No additional render-path lock or alternate writer implementation was added.
+- Verification: The existing permanent PTY regression failed with the race detector before this removal and passed five times after (`review-management-writer-race-after.log`). It was not edited or weakened. The broader final lifecycle/no-flicker and standard gates are recorded below.
+
+#### Shared verification for B-143–B-145
+
+- Explicit code-path review: Relay 401 precedes host dispatch. Browser recovery reuses the serialized operation and permits only one retry; a changed active authentication view blocks that retry. Uncertain outcomes remain non-retriable. Attach uses one clock timer across refresh and HTTP, stops it on completion, preserves parent cancellation, and leaves the terminal context alive. Startup no longer republishes a writer selected by the tab owner. No public API, wire, storage, compatibility shim or supported-platform policy changed.
+- Performance: The existing five-alternating-start gate passed before and after: routed medians 35.757/33.180 ms; direct medians 27.748/29.296 ms (`review-management-startup-before.log`, `review-management-startup-after.log`). This one pair does not establish a speedup or universal latency guarantee. Fresh browser credentials add no refresh request. No relevant browser-authentication timing/allocation gate exists; the focused HTTPS request-count gates are correctness evidence.
+- Final verification: After the supporting writer correction, the same startup gate passed again with routed/direct medians 30.672/25.030 ms (`review-management-startup-final.log`). The full targeted lifecycle/no-flicker race gate passed (`review-management-lifecycle-final.log`), then the standard Go suite (`review-management-go-test.log`), vet, golint and golangci-lint passed. Formatting, documentation readback and diff whitespace checks passed. No permanent no-flicker test was changed.
+- Validation commands (serialized, `GOMAXPROCS=2 GOFLAGS=-p=1`, detached with `/dev/null` input):
+  - `go test -p 1 ./internal/attach -run '^TestManagement(Budget|Mutation)' -count=1 -timeout=30s` produced the corrected failing baseline. The same focused tests with `-race -timeout=45s` passed after.
+  - `go test -p 1 -tags integration ./integration/webui -run '^TestWebUIManagementAuthRecovery$' -count=1 -timeout=90s` failed with original JavaScript; the fixed source was restored immediately by the command's cleanup trap. `go test -p 1 -tags integration ./integration/webui -run '^TestWebUI(SessionManagement|ManagementAuthRecovery)$' -count=1 -timeout=120s` passed finally, including six error-policy subcases.
+  - `go test -p 1 -tags integration ./integration/pty/attach -run '^TestAttachManagementRefreshTimeoutAllowsNextRename$' -count=1 -timeout=45s` failed before; the final fixture passed with `-race`. `go test -p 1 -race -tags integration ./integration/pty/attach -run '^TestAttachNoFullRedrawAfterTabSwitchWithLocalPTYs$' -count=5 -timeout=90s` passed after removing the startup race.
+  - `go test -p 1 -tags integration ./integration/pty/attach -run '^TestSessionManagementStartupPerformance$' -count=1 -v -timeout=90s` passed before and after with the same executable and credential routing.
+  - `go test -p 1 -race -tags integration ./integration/pty/attach ./integration/pty/session -run 'TestAttachManagementRefreshTimeoutAllowsNextRename|TestSessionManagement(LocalCLI|RelayAndHeadfulCLI)$|TestHost.*(WrapAroundTabSwitch|RepaintBaseTopRowBeforeOverlay)|TestAttachNoFullRedraw.*TabSwitch' -count=1 -timeout=180s` exposed B-145 first and passed after its fix. `go test -p 1 ./...`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed finally, with zero lint issues. `gofmt -l` on changed Go files and `git diff --check` reported no problems.
+  - Earlier browser diagnostic runs used `-run '^TestWebUISessionManagementExpiredAccess$'`, then `-run '^TestWebUISessionManagement'`, as classified above; the final short-name fixture is authoritative. All tests, build subprocesses, browser instances and harnesses ran serially and cleaned up owned resources.
+
 ### B-142 Android bootstrap applies sessions from a superseded context
 
 - Status: `resolved`

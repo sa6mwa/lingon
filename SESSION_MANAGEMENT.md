@@ -48,6 +48,11 @@ the source session and request ID and checks existing live headless records.
 This is bounded deduplication, not an indefinitely durable transaction journal.
 Clients never automatically retry an uncertain mutation. A missing response
 requires refreshing session discovery before another user action.
+An explicit HTTP 401 precedes execution: the Web UI may refresh owner credentials
+and retry once with the same request ID and payload. Failed refresh, a second
+401, other HTTP errors, and missing or malformed responses do not retry mutations.
+Attach gives refresh and mutation one 15-second budget using its injected clock;
+operation timeout does not cancel the terminal session.
 
 Management messages use a host-only protocol envelope and never enter terminal
 replay history. Historical rename receipts acknowledge the old request without
