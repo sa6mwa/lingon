@@ -60,7 +60,7 @@ internal fun LingonAppContent(
         "Lingon"
     }
     var settingsOpen by remember { mutableStateOf(false) }
-    var renameTarget by remember { mutableStateOf<String?>(null) }
+    var renameTarget by remember(state.requiresAppUnlock) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(viewportCacheIdentity, state.terminalConnectionEpoch) {
         viewportCache.clear()
@@ -148,7 +148,7 @@ internal fun LingonAppContent(
             }
         }
 
-        if (renameTarget != null) {
+        if (!state.requiresAppUnlock && renameTarget != null) {
             RenameSessionDialog(
                 currentName = state.sessions.firstOrNull { it.id == renameTarget }?.name.orEmpty(),
                 onDismiss = { renameTarget = null },

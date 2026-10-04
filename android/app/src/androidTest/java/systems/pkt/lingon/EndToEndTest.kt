@@ -319,6 +319,58 @@ class EndToEndTest {
     }
 
     @Test
+    fun rename_dialog_lock_hides_and_discards_private_draft() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val viewModel = appViewModel()
+        val initial = viewModel.state.value
+        val sessionId = initial.activeSessionId ?: throw AssertionError("missing active session")
+        val originalName = initial.sessions.first { it.id == sessionId }.name.orEmpty()
+        val draft = "Private draft before lock"
+        val displayed = mutableStateOf(initial)
+        val viewportCache = mutableStateMapOf<String, TerminalViewportState>()
+        fun assertRenameText(expected: String) {
+            val input = composeRule.onNodeWithTag(TestTags.RenameSessionInput).fetchSemanticsNode()
+            assertEquals(expected, input.config[SemanticsProperties.EditableText].text)
+        }
+        composeRule.runOnUiThread {
+            composeRule.activity.setContent {
+                LingonAppContent(state = displayed.value, viewModel = viewModel, viewportCache = viewportCache)
+            }
+        }
+        composeRule.waitForIdle()
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.RenameSessionButton).performClick()
+        waitForTag(TestTags.RenameSessionInput)
+        assertRenameText(originalName)
+        composeRule.onNodeWithTag(TestTags.RenameSessionInput).performTextReplacement(draft)
+        assertRenameText(draft)
+
+        // This is the state after timeout and cancellation of credential unlock.
+        // Exercise the real composition without depending on device credentials
+        // or sleeping through a wall-clock lock timeout.
+        composeRule.runOnIdle {
+            displayed.value = displayed.value.copy(requiresAppUnlock = true, unlockPromptPending = false)
+        }
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionInput).assertCountEquals(0)
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionSave).assertCountEquals(0)
+        composeRule.onAllNodesWithText(draft).assertCountEquals(0)
+        composeRule.onAllNodesWithText("App locked").assertCountEquals(1)
+
+        composeRule.runOnIdle { displayed.value = displayed.value.copy(requiresAppUnlock = false) }
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionInput).assertCountEquals(0)
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionSave).assertCountEquals(0)
+        composeRule.onAllNodesWithText(draft).assertCountEquals(0)
+        composeRule.onNodeWithTag(TestTags.RenameSessionButton).performClick()
+        waitForTag(TestTags.RenameSessionInput)
+        assertRenameText(originalName)
+    }
+
+    @Test
     fun settings_create_terminal_and_rename_session() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
