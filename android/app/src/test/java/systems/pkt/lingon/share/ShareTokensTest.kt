@@ -20,6 +20,7 @@ class ShareTokensTest {
         assertEquals(ShareTokens.Kind.Embedded, parsed?.kind)
         assertArrayEquals(random, parsed?.random)
         assertEquals(endpoint, parsed?.endpoint)
+        assertEquals(endpoint, ShareTokens.findInText("Join: $encoded")?.endpoint)
     }
 
     @Test
@@ -28,6 +29,33 @@ class ShareTokensTest {
 
         assertNull(ShareTokens.parse(oversized))
         assertNull(ShareTokens.findInText("share this $oversized"))
+    }
+
+    @Test
+    fun discoveryUsesPayloadLengthAndPreservesWrappedFormatValidation() {
+        val random = ByteArray(20) { (it * 13).toByte() }
+        for (endpointLength in (10..18).toList() + 2048) {
+            val endpoint = "https://r/" + "a".repeat(endpointLength - 10)
+            val token = requireNotNull(ShareTokens.encodeEmbedded(random, endpoint))
+            val parsed = ShareTokens.findInText("Join: " + token.lowercase().chunked(17).joinToString("\r\n\t") + " trailing words")
+            assertEquals(endpoint, parsed?.endpoint)
+            assertArrayEquals(random, parsed?.random)
+            assertNull(ShareTokens.findInText(token.dropLast(2)))
+            val corrupt = token.take(8) + (if (token[8] == 'A') 'B' else 'A') + token.drop(9)
+            assertNull(ShareTokens.findInText(corrupt))
+        }
+        val valid = requireNotNull(ShareTokens.encodeBare(random))
+        assertNull(ShareTokens.findInText("LGBZZ" + "0".repeat(35))) // Wrong decoded version.
+        assertArrayEquals(random, ShareTokens.findInText("LGE04" + "0".repeat(35) + "\n" + valid)?.random) // Zero endpoint length.
+    }
+
+    @Test
+    fun findInTextHandlesRepeatedMalformedPrefixesAndStillFindsValidToken() {
+        val malformed = "LGE".repeat(1000)
+        val random = ByteArray(20) { it.toByte() }
+        val encoded = requireNotNull(ShareTokens.encodeEmbedded(random, "https://relay.example/v1"))
+        assertNull(ShareTokens.findInText(malformed))
+        assertArrayEquals(random, ShareTokens.findInText(malformed + "\n" + encoded)?.random)
     }
 
     @Test

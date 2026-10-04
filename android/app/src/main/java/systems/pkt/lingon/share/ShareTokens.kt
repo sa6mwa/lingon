@@ -14,7 +14,7 @@ object ShareTokens {
     private const val maxBareBodyChars = 37
     private const val maxEmbeddedBodyChars = 3317
     private const val maxCandidateChars = 3 + maxEmbeddedBodyChars * 2
-    private val candidatePattern = Regex("(LGB|LGE)[0-9A-Za-z\\-\\s]{1,${maxCandidateChars - 3}}", RegexOption.IGNORE_CASE)
+    private val candidatePattern = Regex("LGB|LGE", RegexOption.IGNORE_CASE)
     private const val alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     private val decodeTable = IntArray(128) { -1 }.apply {
         for (i in alphabet.indices) {
@@ -48,13 +48,8 @@ object ShareTokens {
     }
 
     fun findInText(text: String): Parsed? {
-        var searchStart = 0
-        while (searchStart < text.length) {
-            val match = candidatePattern.find(text, searchStart) ?: return null
-            parseCandidate(match.value)?.let { return it }
-            // Wrapped tokens can share a whitespace-delimited match with an
-            // invalid candidate. Keep searching inside that failed match.
-            searchStart = match.range.first + 3
+        for (match in candidatePattern.findAll(text)) {
+            parseCandidate(text, match.range.first)?.let { return it }
         }
         return null
     }
@@ -122,13 +117,40 @@ object ShareTokens {
         return Parsed(kind = Kind.Embedded, version = version, random = random, endpoint = endpoint)
     }
 
-    private fun parseCandidate(candidate: String): Parsed? {
-        val bounded = candidate.take(maxCandidateChars)
-        for (end in bounded.length downTo 4) {
-            if (!bounded[end - 1].isLetterOrDigit()) {
-                continue
+    private fun parseCandidate(text: String, start: Int): Parsed? {
+        val embedded = text.regionMatches(start, prefixEmbedded, 0, 3, ignoreCase = true)
+        val headerSize = 1 + randomSize + 2
+        val header = ByteArray(headerSize)
+        var decodedBytes = 0
+        var cleanedChars = 0
+        var expectedChars = if (embedded) 0 else maxBareBodyChars
+        var buffer = 0
+        var bitsLeft = 0
+        val limit = start + minOf(text.length - start, maxCandidateChars)
+        for (index in start + 3 until limit) {
+            val cleaned = cleanCrockfordChar(text[index]) ?: continue
+            if (cleaned.code >= decodeTable.size) return null
+            val value = decodeTable[cleaned.code]
+            if (value < 0) return null
+            cleanedChars++
+            buffer = (buffer shl 5) or value
+            bitsLeft += 5
+            while (bitsLeft >= 8) {
+                bitsLeft -= 8
+                if (decodedBytes < headerSize) header[decodedBytes] = (buffer shr bitsLeft).toByte()
+                decodedBytes++
+                if (decodedBytes == 1 && header[0] != versionByte) return null
+                if (embedded && decodedBytes == headerSize) {
+                    val endpointLength = ((header[randomSize + 1].toInt() and 0xff) shl 8) or
+                        (header[randomSize + 2].toInt() and 0xff)
+                    if (endpointLength !in 1..maxEndpointLen) return null
+                    expectedChars = ((headerSize + endpointLength + 2) * 8 + 4) / 5
+                }
             }
-            parse(bounded.substring(0, end))?.let { return it }
+            if (expectedChars > 0 && cleanedChars == expectedChars) {
+                // Decode and validate exactly one complete payload, including CRC.
+                return parse(text.substring(start, index + 1))
+            }
         }
         return null
     }

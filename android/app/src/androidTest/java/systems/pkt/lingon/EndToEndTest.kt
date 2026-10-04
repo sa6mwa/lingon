@@ -4340,6 +4340,15 @@ class EndToEndTest {
 
     @Test
     fun shared_text_finds_wrapped_valid_token_after_invalid_candidate() {
+        assertSharedTextOpensWrappedToken("LGBinvalid\n")
+    }
+
+    @Test
+    fun shared_text_with_many_invalid_prefixes_opens_wrapped_token() {
+        assertSharedTextOpensWrappedToken("LGE".repeat(1000) + "\n")
+    }
+
+    private fun assertSharedTextOpensWrappedToken(prefix: String) {
         val token = testConfig.viewToken ?: throw AssertionError("missing share token")
         val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
         val parsed = systems.pkt.lingon.share.ShareTokens.parse(token) ?: throw AssertionError("invalid harness token")
@@ -4349,7 +4358,7 @@ class EndToEndTest {
         val intent = android.content.Intent(composeRule.activity, ShareReceiverActivity::class.java).apply {
             action = android.content.Intent.ACTION_SEND
             type = "text/plain"
-            putExtra(android.content.Intent.EXTRA_TEXT, "LGBinvalid\n" + embedded.chunked(17).joinToString("\n") + "\nShared from chat")
+            putExtra(android.content.Intent.EXTRA_TEXT, prefix + embedded.chunked(17).joinToString("\n") + "\nShared from chat")
         }
         composeRule.runOnIdle { composeRule.activity.startActivity(intent) }
         waitForSessionTick(session)
