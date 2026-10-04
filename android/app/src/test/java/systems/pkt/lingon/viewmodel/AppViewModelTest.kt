@@ -4,6 +4,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.joinAll
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -96,6 +99,77 @@ class AppViewModelTest {
         release.complete(Unit)
         runCurrent()
         assertFalse(viewModel.state.value.sessionManagementBusy)
+    }
+
+    @Test
+    fun obsoleteTransientShareAuthenticationDoesNotDropNewSocket() = runTest {
+        assertObsoleteShareAuthenticationIgnored(java.io.IOException("obsolete network failure"))
+    }
+
+    @Test
+    fun obsoletePermanentShareAuthenticationDoesNotClearNewPermission() = runTest {
+        assertObsoleteShareAuthenticationIgnored(ApiException("obsolete denial", 403))
+    }
+
+    @Test
+    fun obsoleteSuccessfulShareAuthenticationDoesNotReplaceNewMetadata() = runTest {
+        assertObsoleteShareAuthenticationIgnored(null)
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.assertObsoleteShareAuthenticationIgnored(oldFailure: Exception?) {
+        val dispatcher = java.util.concurrent.Executors.newFixedThreadPool(2).asCoroutineDispatcher()
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val wsClient = FakeWsClient { _, listener, socket -> listener.onOpen(socket) }
+        wsClient.onAuthenticateShareSession = { _, _ ->
+            if (attempts.incrementAndGet() == 1) {
+                entered.complete(Unit)
+                kotlinx.coroutines.runBlocking { release.await() }
+                if (oldFailure != null) throw oldFailure
+                RelayShareSession(sessionId = "shared-real", name = "Obsolete metadata", scope = "view")
+            } else {
+                RelayShareSession(sessionId = "shared-real", name = "Current metadata", scope = "control")
+            }
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = dispatcher)
+        try {
+            runCurrent()
+            val originalJobs = viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.children.toSet()
+            viewModel.handleSharedToken("token", "https://example")
+            runCurrent()
+            entered.await()
+            val beforeRecoveryJobs = viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.children.toSet()
+            val oldJobs = beforeRecoveryJobs.filter { it !in originalJobs }
+            viewModel.onAppForegroundAt(5_000L)
+            runCurrent()
+            viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.children.filter { it !in beforeRecoveryJobs }.toList().joinAll()
+            wsClient.fireConnect()
+            wsClient.fireFrame(welcomeFrame())
+            runCurrent()
+            assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+            val epoch = viewModel.state.value.terminalConnectionEpoch
+            release.complete(Unit)
+            oldJobs.joinAll()
+            runCurrent()
+            assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+            assertEquals(epoch, viewModel.state.value.terminalConnectionEpoch)
+            assertNull(viewModel.state.value.shareTokenError)
+            assertTrue(viewModel.state.value.shareCanControl)
+            assertEquals("Current metadata", viewModel.state.value.sessions.single().name)
+            wsClient.fireFrame(Frame.newBuilder().setSeq(9).setSnapshot(Snapshot.newBuilder().setCols(1).setRows(1).addRunes('X'.code)).build())
+            runCurrent()
+            assertEquals('X'.code, viewModel.state.value.activeSnapshot?.runes?.first())
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals(2, attempts.get())
+            assertEquals(1, wsClient.connectCount)
+            assertEquals(0, wsClient.closeCount)
+        } finally {
+            release.complete(Unit)
+            invokeOnClearedForTest(viewModel)
+            dispatcher.close()
+        }
     }
 
     @Test

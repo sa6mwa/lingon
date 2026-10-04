@@ -14,6 +14,7 @@ object ShareTokens {
     private const val maxBareBodyChars = 37
     private const val maxEmbeddedBodyChars = 3317
     private const val maxCandidateChars = 3 + maxEmbeddedBodyChars * 2
+    private val candidatePattern = Regex("(LGB|LGE)[0-9A-Za-z\\-\\s]{1,${maxCandidateChars - 3}}", RegexOption.IGNORE_CASE)
     private const val alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     private val decodeTable = IntArray(128) { -1 }.apply {
         for (i in alphabet.indices) {
@@ -47,9 +48,13 @@ object ShareTokens {
     }
 
     fun findInText(text: String): Parsed? {
-        val regex = Regex("(LGB|LGE)[0-9A-Za-z\\-\\s]+", RegexOption.IGNORE_CASE)
-        for (match in regex.findAll(text)) {
+        var searchStart = 0
+        while (searchStart < text.length) {
+            val match = candidatePattern.find(text, searchStart) ?: return null
             parseCandidate(match.value)?.let { return it }
+            // Wrapped tokens can share a whitespace-delimited match with an
+            // invalid candidate. Keep searching inside that failed match.
+            searchStart = match.range.first + 3
         }
         return null
     }

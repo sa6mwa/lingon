@@ -36,6 +36,8 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.joinAll
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
@@ -4271,6 +4273,89 @@ class EndToEndTest {
         waitForTag(TestTags.ShareTokenError)
         composeRule.onNodeWithText("Cancel").performClick()
         waitForTagToDisappear(TestTags.ShareTokenInput)
+    }
+
+    @Test
+    fun obsolete_share_authentication_failure_preserves_new_connection_frames() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        val viewModel = appViewModel()
+        val application = composeRule.activity.application as LingonApplication
+        val original = application.wsClient
+        val providerField = RelayWebSocketClient::class.java.getDeclaredField("httpClientProvider").apply { isAccessible = true }
+        val provider = providerField.get(original) as systems.pkt.lingon.data.HttpClientProvider
+        val field = AppViewModel::class.java.getDeclaredField("wsClient").apply { isAccessible = true }
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val connects = java.util.concurrent.atomic.AtomicInteger()
+        val gated = object : RelayWebSocketClient(provider) {
+            override fun authenticateShareSession(baseUrl: okhttp3.HttpUrl, shareToken: String): systems.pkt.lingon.data.relay.AuthenticatedShareSession {
+                if (attempts.incrementAndGet() == 1) {
+                    entered.complete(Unit)
+                    runBlocking { release.await() }
+                    throw java.io.IOException("obsolete authentication failure")
+                }
+                return original.authenticateShareSession(baseUrl, shareToken)
+            }
+            override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
+                connects.incrementAndGet()
+                return original.connect(options, listener)
+            }
+        }
+        lateinit var initialJobs: Set<Job>
+        lateinit var oldJobs: List<Job>
+        composeRule.runOnIdle {
+            initialJobs = viewModel.viewModelScope.coroutineContext[Job]!!.children.toSet()
+            field.set(viewModel, gated)
+            viewModel.handleSharedToken(token, endpointOverride = null)
+        }
+        try {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { entered.isCompleted }
+            composeRule.runOnIdle {
+                oldJobs = viewModel.viewModelScope.coroutineContext[Job]!!.children.filter { it !in initialJobs }.toList()
+                viewModel.onAppForeground()
+            }
+            waitForSessionTick(session)
+            val epoch = viewModel.state.value.terminalConnectionEpoch
+            release.complete(Unit)
+            runBlocking { kotlinx.coroutines.withTimeout(15_000) { oldJobs.joinAll() } }
+            composeRule.runOnIdle {
+                assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+                assertEquals(epoch, viewModel.state.value.terminalConnectionEpoch)
+                assertNull(viewModel.state.value.shareTokenError)
+                assertEquals(2, attempts.get())
+                assertEquals(1, connects.get())
+            }
+            val previousSeq = viewModel.state.value.lastFrameSeq
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { viewModel.state.value.lastFrameSeq > previousSeq }
+            assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+        } finally {
+            release.complete(Unit)
+            composeRule.runOnIdle { field.set(viewModel, original) }
+        }
+    }
+
+    @Test
+    fun shared_text_finds_wrapped_valid_token_after_invalid_candidate() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
+        val parsed = systems.pkt.lingon.share.ShareTokens.parse(token) ?: throw AssertionError("invalid harness token")
+        val embedded = systems.pkt.lingon.share.ShareTokens.encodeEmbedded(parsed.random, testConfig.endpoint) ?: throw AssertionError("cannot encode fixture")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        val intent = android.content.Intent(composeRule.activity, ShareReceiverActivity::class.java).apply {
+            action = android.content.Intent.ACTION_SEND
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_TEXT, "LGBinvalid\n" + embedded.chunked(17).joinToString("\n") + "\nShared from chat")
+        }
+        composeRule.runOnIdle { composeRule.activity.startActivity(intent) }
+        waitForSessionTick(session)
+        assertEquals(token, appViewModel().state.value.shareToken)
+        assertEquals(session, appViewModel().state.value.activeSessionId)
+        assertEquals(ConnectionState.Connected, appViewModel().state.value.connectionState)
     }
 
     @Test

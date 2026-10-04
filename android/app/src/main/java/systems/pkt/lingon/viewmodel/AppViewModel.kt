@@ -67,6 +67,7 @@ class AppViewModel(
 
     private var createdSessionId: String? = null
     private var sessionContextGeneration = 0L
+    private var shareAuthenticationGeneration = 0L
     private var ws: WebSocket? = null
     private var socketOpen = false
     private var reconnectJob: Job? = null
@@ -1303,6 +1304,7 @@ class AppViewModel(
             }
             return
         }
+        val authenticationGeneration = ++shareAuthenticationGeneration
         viewModelScope.launch {
             val shareAuthentication: AuthenticatedShareSession
             try {
@@ -1313,7 +1315,9 @@ class AppViewModel(
                 throw err
             } catch (err: Exception) {
                 val current = _state.value
-                if (current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl) {
+                if (authenticationGeneration != shareAuthenticationGeneration ||
+                    current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl
+                ) {
                     return@launch
                 }
                 val statusCode = (err as? ApiException)?.statusCode
@@ -1335,7 +1339,9 @@ class AppViewModel(
                 return@launch
             }
             val current = _state.value
-            if (current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl) {
+            if (authenticationGeneration != shareAuthenticationGeneration ||
+                current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl
+            ) {
                 return@launch
             }
             val shareSession = shareAuthentication.session
@@ -1848,6 +1854,7 @@ class AppViewModel(
     }
 
     private fun closeWebSocket(reason: String) {
+        shareAuthenticationGeneration++
         val current = ws
         ws = null
         socketOpen = false

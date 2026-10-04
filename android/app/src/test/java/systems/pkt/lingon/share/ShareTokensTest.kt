@@ -31,6 +31,20 @@ class ShareTokensTest {
     }
 
     @Test
+    fun findInTextContinuesAfterInvalidAndOversizedCandidates() {
+        val random = ByteArray(20) { (it * 7).toByte() }
+        val endpoint = "https://relay.example/v1"
+        for (encoded in listOf(requireNotNull(ShareTokens.encodeBare(random)), requireNotNull(ShareTokens.encodeEmbedded(random, endpoint)))) {
+            for (prefix in listOf("LGBinvalid\n", "LGEbad LGBinvalid\t", "LGE" + "A".repeat(7000) + "\n")) {
+                val parsed = ShareTokens.findInText(prefix + encoded.chunked(17).joinToString("\n") + "\nShared from chat")
+                assertNotNull("valid token after ${prefix.take(25)}", parsed)
+                assertArrayEquals(random, parsed?.random)
+                assertEquals(if (encoded.startsWith("LGE")) endpoint else null, parsed?.endpoint)
+            }
+        }
+    }
+
+    @Test
     fun findInTextAcceptsWrappedEmbeddedToken() {
         val random = ByteArray(20) { (it * 3).toByte() }
         val endpoint = "https://relay.example/v1/share/session/abcdef"
