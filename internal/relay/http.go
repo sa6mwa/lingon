@@ -1587,8 +1587,9 @@ func (s *HTTPServer) notifySessions(username string) {
 	s.sessions.Notify(username)
 }
 
-// Close disconnects active websocket sessions.
+// Close disconnects active session and account session-list websockets.
 func (s *HTTPServer) Close(reason string) {
+	s.closeSessionLists()
 	s.wallMu.Lock()
 	if s.wallSvc != nil {
 		s.wallSvc.close()

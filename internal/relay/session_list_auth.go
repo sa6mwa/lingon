@@ -1,21 +1,27 @@
 package relay
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 )
 
 // sessionListConnections covers account sockets without a hub session. Token
-// validation under this lock fences registration against credential revocation.
+// validation under this lock fences registration against credential revocation
+// and shutdown.
 type sessionListConnections struct {
-	mu    sync.Mutex
-	users map[string]map[*wsConn]struct{}
+	mu     sync.Mutex
+	users  map[string]map[*wsConn]struct{}
+	closed bool
 }
 
 func (s *HTTPServer) registerSessionList(ws *wsConn, username string, r *http.Request) (func(), error) {
 	lists := &s.sessionLists
 	lists.mu.Lock()
 	defer lists.mu.Unlock()
+	if lists.closed {
+		return nil, errors.New("session-list registry is closed")
+	}
 	access, err := s.accessTokenFromRequest(r)
 	if err != nil {
 		return nil, err
@@ -38,6 +44,23 @@ func (s *HTTPServer) registerSessionList(ws *wsConn, username string, r *http.Re
 			delete(lists.users, username)
 		}
 	}, nil
+}
+
+func (s *HTTPServer) closeSessionLists() {
+	lists := &s.sessionLists
+	lists.mu.Lock()
+	lists.closed = true
+	var conns []*wsConn
+	for _, user := range lists.users {
+		for ws := range user {
+			conns = append(conns, ws)
+		}
+	}
+	lists.users = nil
+	lists.mu.Unlock()
+	for _, ws := range conns {
+		ws.closeNow()
+	}
 }
 
 func (s *HTTPServer) disconnectSessionLists(username string) {
