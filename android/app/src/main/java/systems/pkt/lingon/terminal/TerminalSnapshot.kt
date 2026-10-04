@@ -23,6 +23,17 @@ class TerminalSnapshot(
     var mode: Int,
     var title: String,
 ) {
+    internal fun isWideContinuation(row: Int, col: Int): Boolean {
+        if (row !in 0 until rows || col !in 1 until cols) return false
+        val index = row * cols + col
+        val previous = index - 1
+        // The host stores a wide single-code-point glyph as a rune with an
+        // empty grapheme. Its second cell has rune zero and matching attributes.
+        return runes[index] == 0 && graphemes?.getOrNull(index).isNullOrEmpty() &&
+            (runes[previous] != 0 || graphemes?.getOrNull(previous)?.isNotEmpty() == true) &&
+            modes[index] == modes[previous] && fg[index] == fg[previous] && bg[index] == bg[previous]
+    }
+
     companion object {
         fun fromProto(snapshot: Snapshot): TerminalSnapshot {
             val cols = snapshot.cols

@@ -635,12 +635,7 @@ class TerminalGridView @JvmOverloads constructor(
         val row = floor((cameraOffsetYPx + y.coerceIn(0f, effectiveViewportHeightPx().toFloat() - 1f)) / scaledCellHeight)
             .toInt().coerceIn(0, snap.rows - 1)
         if (col > 0) {
-            val index = row * snap.cols + col
-            val previous = index - 1
-            val previousAttr = CellAttr(snap.modes[previous], snap.fg[previous], snap.bg[previous])
-            if (snap.graphemes?.getOrNull(previous)?.isNotEmpty() == true &&
-                isContinuationCell(snap, index, previousAttr)
-            ) {
+            if (snap.isWideContinuation(row, col)) {
                 col -= 1
             }
         }

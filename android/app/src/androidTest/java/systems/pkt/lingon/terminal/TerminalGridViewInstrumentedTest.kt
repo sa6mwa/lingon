@@ -18,6 +18,39 @@ import systems.pkt.lingon.DefaultTerminalZoom
 @RunWith(AndroidJUnit4::class)
 class TerminalGridViewInstrumentedTest {
     @Test
+    fun wideRuneSelectionCopiesOriginalTextAndAnchorsContinuationTouches() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val snapshot = terminalSnapshot(listOf("日\u0000本\u0000 \u0000\u0000 ok"), 10)
+            snapshot.runes[5] = 0x1f642
+            val view = TerminalGridView(instrumentation.targetContext).apply {
+                measure(exactlyMeasureSpec(720), exactlyMeasureSpec(240))
+                layout(0, 0, 720, 240)
+                update(snapshot = snapshot, fontSizeSp = 14, minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1, hostCols = 10, hostRows = 1, fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom, panResetNonce = 0, scrollbackOffsetRows = 0,
+                    imeVisible = false, isLoading = false)
+                setSelectionMode(true)
+            }
+            fun select(firstCol: Int, lastCol: Int) {
+                val cellWidth = view.getScaledCellWidthForTesting()
+                val y = view.getScaledCellHeightForTesting() * 0.5f
+                val time = SystemClock.uptimeMillis()
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, cellWidth * (firstCol + 0.5f), y, 0))
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time + 16, MotionEvent.ACTION_MOVE, cellWidth * (lastCol + 0.5f), y, 0))
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time + 32, MotionEvent.ACTION_UP, cellWidth * (lastCol + 0.5f), y, 0))
+            }
+            select(0, 9)
+            assertEquals("日本 🙂 ok", view.selectedText())
+            select(3, 6)
+            assertEquals("本 🙂", view.selectedText())
+            select(6, 3)
+            assertEquals("本 🙂", view.selectedText())
+        }
+    }
+
+    @Test
     fun selectionDragCopiesCellsWithWhiteHighlightAndTwoFingerPanPreservesSelection() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.runOnMainSync {

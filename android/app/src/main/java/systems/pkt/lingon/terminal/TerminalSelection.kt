@@ -26,21 +26,11 @@ internal data class TerminalSelection(val anchor: TerminalCell, val focus: Termi
                         append(grapheme)
                     } else if (rune != 0) {
                         appendCodePoint(rune)
-                    } else if (!isWideContinuation(snapshot, row, col)) {
+                    } else if (!snapshot.isWideContinuation(row, col)) {
                         append(' ')
                     }
                 }
             }.trimEnd(' ')
         }
-    }
-
-    private fun isWideContinuation(snapshot: TerminalSnapshot, row: Int, col: Int): Boolean {
-        if (col == 0) return false
-        val index = row * snapshot.cols + col
-        val previous = index - 1
-        return snapshot.graphemes?.getOrNull(previous)?.isNotEmpty() == true &&
-            snapshot.modes[index] == snapshot.modes[previous] &&
-            snapshot.fg[index] == snapshot.fg[previous] &&
-            snapshot.bg[index] == snapshot.bg[previous]
     }
 }
