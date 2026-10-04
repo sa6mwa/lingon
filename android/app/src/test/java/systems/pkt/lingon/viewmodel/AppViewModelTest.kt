@@ -208,6 +208,88 @@ class AppViewModelTest {
     }
 
     @Test
+    fun reconnectSessionFetchIsIgnoredAfterEndpointChange() = runTest {
+        assertSupersededReconnectFetch(logout = false)
+    }
+
+    @Test
+    fun reconnectSessionFetchIsIgnoredAfterLogout() = runTest {
+        assertSupersededReconnectFetch(logout = true)
+    }
+
+    @Test
+    fun staleReconnectAuthenticationFailureDoesNotClearNewAccount() = runTest {
+        assertSupersededReconnectFetch(logout = false, failure = ApiException("expired old owner", 401))
+    }
+
+    @Test
+    fun staleReconnectNetworkFailureDoesNotSetNewContextError() = runTest {
+        assertSupersededReconnectFetch(logout = false, failure = java.io.IOException("obsolete network failure"))
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.assertSupersededReconnectFetch(logout: Boolean, failure: Exception? = null) {
+        val oldSessions = listOf(RelaySession(id = "old-host", name = "Old account", status = "active"))
+        val repository = FakeRepository(sessions = oldSessions, failListSessions = false, refreshAuthResult = false)
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, snapshotFrame(7, "old snapshot"))
+        }
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        setUiStateForTest(viewModel, viewModel.state.value.copy(
+            loggedIn = true, username = "old-owner", activeSessionId = "old-host", sessions = oldSessions,
+            endpoint = "https://localhost:12843/v1", connectionState = ConnectionState.Disconnected,
+        ))
+        viewModel.selectSession("old-host")
+        runCurrent()
+        wsClient.fireConnect()
+        runCurrent()
+        assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+        val fetched = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        repository.onListSessions = {
+            fetches += 1
+            if (fetches > 1) throw ApiException("new endpoint unauthenticated", 401)
+            fetched.complete(Unit)
+            release.await()
+            if (failure != null) throw failure
+            oldSessions
+        }
+        wsClient.fakeSocket.close(1000, "trigger reconnect")
+        runCurrent()
+        advanceTimeBy(2000)
+        runCurrent()
+        assertTrue("reconnect must be awaiting its old session response", fetched.isCompleted)
+        if (logout) viewModel.logout() else viewModel.updateEndpoint("https://new.example/v1")
+        runCurrent()
+        if (failure != null) {
+            setUiStateForTest(viewModel, viewModel.state.value.copy(
+                loggedIn = true, username = "new-owner", activeSessionId = "new-host",
+                sessions = listOf(RelaySession(id = "new-host", name = "New account", status = "active")),
+                status = StatusMessage("new context"), connectionState = ConnectionState.Connected,
+            ))
+        }
+        val expected = viewModel.state.value
+        val connects = wsClient.connectCount
+        val refreshes = repository.refreshAuthCalls
+        release.complete(Unit)
+        runCurrent()
+        assertEquals(expected.sessions, viewModel.state.value.sessions)
+        assertEquals(expected.activeSessionId, viewModel.state.value.activeSessionId)
+        assertEquals(expected.loggedIn, viewModel.state.value.loggedIn)
+        assertEquals(expected.username, viewModel.state.value.username)
+        assertEquals(expected.status, viewModel.state.value.status)
+        assertEquals(refreshes, repository.refreshAuthCalls)
+        assertEquals(connects, wsClient.connectCount)
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertEquals(connects, wsClient.connectCount)
+        assertEquals(expected.sessions, viewModel.state.value.sessions)
+    }
+
+    @Test
     fun managementSessionFetchIsIgnoredAfterEndpointChange() = runTest {
         assertSupersededManagementFetch(logout = false)
     }

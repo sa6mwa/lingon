@@ -113,6 +113,62 @@ func TestSessionManagementLocalCLI(t *testing.T) {
 	})
 }
 
+func TestSessionManagementOfflineCredentialsStayOfflineUntilExplicitToggle(t *testing.T) {
+	h := newHarness(t, ptytest.WithClock(clock.NewMock()))
+	home := shortHomeDir(t)
+	cfg := filepath.Join(home, lingon.DefaultConfigDirName)
+	cleanupManagedTerminals(t, cfg)
+	source := "offline-management-source"
+	cmd := exec.Command(buildLingonAttachBinary(t), "-x", "--offline", "--session", source, "--shell", fixedPromptEmitRowsBash(t), "--endpoint", h.Endpoint(), "--token", h.AccessToken(), "--insecure")
+	cmd.Env = testAttachCLIEnv(home)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("start offline authenticated host: %v %s", err, output)
+	}
+	terminal := startLingonAttachHeadlessCLI(t, home, source, 100, 24)
+	t.Cleanup(terminal.Cancel)
+	waitForPromptVisible(t, terminal, 8*time.Second)
+	terminal.Send("\x0cc")
+	var child string
+	terminal.Eventually(8*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		records, err := headless.NewStore(cfg).Reconcile()
+		if err != nil {
+			return err
+		}
+		if len(records) != 2 {
+			return fmt.Errorf("have %d terminals, want parent and child", len(records))
+		}
+		for _, record := range records {
+			if !record.Offline {
+				return fmt.Errorf("offline startup default lost for %s", record.SessionID)
+			}
+			if h.HasHost(record.SessionID) {
+				return fmt.Errorf("offline terminal %s unexpectedly published", record.SessionID)
+			}
+			if record.SessionID != source {
+				child = record.SessionID
+			}
+		}
+		if !screen.Contains("PROMPT>") {
+			return fmt.Errorf("child prompt missing")
+		}
+		return nil
+	})
+	terminal.Send("\x0co")
+	terminal.Eventually(8*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !h.HasHost(child) {
+			return fmt.Errorf("child did not publish after explicit online toggle")
+		}
+		state, err := headless.NewStore(cfg).Load()
+		if err != nil {
+			return err
+		}
+		if state.Sessions[child].Offline || !state.Sessions[source].Offline {
+			return fmt.Errorf("online toggle did not affect only child")
+		}
+		return nil
+	})
+}
+
 func startManagementHostCLI(t *testing.T, h *ptytest.Harness, home string) *ptytest.PTYSession {
 	return startManagementHostCLIWithAuthFile(t, h, home, "")
 }

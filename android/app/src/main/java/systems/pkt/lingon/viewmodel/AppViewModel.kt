@@ -1946,19 +1946,23 @@ class AppViewModel(
     }
 
     private suspend fun refreshSessionsAndReconnect() {
-        if (_state.value.requiresAppUnlock) {
+        val before = _state.value
+        val generation = sessionContextGeneration
+        if (before.requiresAppUnlock) {
             return
         }
-        if (_state.value.shareToken != null) {
+        if (before.shareToken != null) {
             connectActiveSession()
             return
         }
-        if (!_state.value.loggedIn) {
+        if (!before.loggedIn) {
             return
         }
         try {
             val sessions = listSessionsWithRecovery()
+            if (!isCurrentSessionContext(before, generation)) return
             val connectionHandled = updateSessions(sessions)
+            if (!isCurrentSessionContext(before, generation)) return
             if (sessions.isEmpty()) {
                 scheduleSessionPoll()
                 return
@@ -1967,6 +1971,7 @@ class AppViewModel(
                 return
             }
         } catch (err: ApiException) {
+            if (!isCurrentSessionContext(before, generation)) return
             if (err.statusCode == 401) {
                 handleUnauthorizedResponse()
                 return
@@ -1980,6 +1985,7 @@ class AppViewModel(
         } catch (err: CancellationException) {
             throw err
         } catch (err: Exception) {
+            if (!isCurrentSessionContext(before, generation)) return
             _state.update {
                 it.copy(
                     status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error),
@@ -1987,18 +1993,20 @@ class AppViewModel(
                 )
             }
         }
-        connectActiveSession()
+        if (isCurrentSessionContext(before, generation)) connectActiveSession()
     }
 
     private suspend fun listSessionsWithRecovery(): List<RelaySession> {
+        val before = _state.value
+        val generation = sessionContextGeneration
         return try {
             repository.listSessions()
         } catch (err: ApiException) {
-            if (err.statusCode != 401 || !_state.value.loggedIn) {
+            if (err.statusCode != 401 || !_state.value.loggedIn || !isCurrentSessionContext(before, generation)) {
                 throw err
             }
             val refreshed = runCatching { repository.refreshAuth() }.getOrDefault(false)
-            if (!refreshed) {
+            if (!refreshed || !isCurrentSessionContext(before, generation)) {
                 throw err
             }
             repository.listSessions()

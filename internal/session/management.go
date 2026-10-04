@@ -78,7 +78,8 @@ func (r *Runner) Manage(ctx context.Context, req sessionmanage.Request) sessionm
 			if r.opts.Insecure {
 				args = append(args, "--insecure")
 			}
-		} else {
+		}
+		if r.opts.Offline || r.opts.Endpoint == "" || !r.opts.Publish {
 			args = append(args, "--offline")
 		}
 		var env []string

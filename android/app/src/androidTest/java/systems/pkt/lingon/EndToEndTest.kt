@@ -403,6 +403,87 @@ class EndToEndTest {
     }
 
     @Test
+    fun reconnect_session_fetch_does_not_restore_old_endpoint_sessions() {
+        assertSupersededReconnectResult(unauthorized = false)
+    }
+
+    @Test
+    fun stale_reconnect_authentication_failure_preserves_new_account_frames() {
+        assertSupersededReconnectResult(unauthorized = true)
+    }
+
+    private fun assertSupersededReconnectResult(unauthorized: Boolean) {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val viewModel = appViewModel()
+        val application = composeRule.activity.application as LingonApplication
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        val gated = object : systems.pkt.lingon.data.LingonClient by application.repository {
+            override suspend fun listSessions(): List<systems.pkt.lingon.data.relay.RelaySession> {
+                fetches += 1
+                if (fetches > 1) return application.repository.listSessions()
+                val sessions = application.repository.listSessions()
+                entered.complete(Unit)
+                release.await()
+                if (unauthorized) throw systems.pkt.lingon.data.ApiException("obsolete owner expired", 401)
+                return sessions
+            }
+            override suspend fun refreshAuth(): Boolean = false
+        }
+        val repositoryField = AppViewModel::class.java.getDeclaredField("repository").apply { isAccessible = true }
+        val refreshField = AppViewModel::class.java.getDeclaredField("refreshJob").apply { isAccessible = true }
+        lateinit var oldJob: Job
+        composeRule.runOnIdle {
+            repositoryField.set(viewModel, gated)
+            // Manual recovery shares the exact refresh path used by timed reconnects;
+            // the unit regression drives their backoff through mock time.
+            viewModel.manualRefresh()
+            oldJob = refreshField.get(viewModel) as Job
+        }
+        try {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { entered.isCompleted }
+            val expectedSessions: List<systems.pkt.lingon.data.relay.RelaySession>
+            val expectedSession: String?
+            if (unauthorized) {
+                val secondary = testConfig.secondaryUser() ?: throw AssertionError("missing second account")
+                ensureLoggedOut()
+                loginWithUser(secondary)
+                waitForSessionTick(secondary.sessions.first())
+                expectedSessions = viewModel.state.value.sessions
+                expectedSession = viewModel.state.value.activeSessionId
+                assertEquals(secondary.username, viewModel.state.value.username)
+            } else {
+                composeRule.runOnIdle { viewModel.updateEndpoint("https://new.example/v1") }
+                waitForTagNoError(TestTags.LoginUsername)
+                expectedSessions = emptyList()
+                expectedSession = null
+            }
+            release.complete(Unit)
+            runBlocking { kotlinx.coroutines.withTimeout(15_000) { oldJob.join() } }
+            composeRule.runOnIdle {
+                assertEquals(expectedSessions, viewModel.state.value.sessions)
+                assertEquals(expectedSession, viewModel.state.value.activeSessionId)
+                assertEquals(unauthorized, viewModel.state.value.loggedIn)
+            }
+            if (unauthorized) {
+                assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+                waitForTagNoError(TestTags.TerminalInput)
+                val seq = viewModel.state.value.lastFrameSeq
+                waitUntilNoError(SHORT_UI_TIMEOUT_MS) { viewModel.state.value.lastFrameSeq > seq }
+            } else {
+                waitForTagNoError(TestTags.LoginUsername)
+            }
+        } finally {
+            release.complete(Unit)
+            composeRule.runOnIdle { repositoryField.set(viewModel, application.repository) }
+        }
+    }
+
+    @Test
     fun management_session_fetch_does_not_restore_old_endpoint_sessions() {
         assertSessionFetchDiscardedAfterEndpointChange(management = true)
     }
