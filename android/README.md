@@ -21,7 +21,8 @@ rendering pipeline.
   modifiers. The portrait quick-key `/` button becomes a persistent SHFT toggle.
 - In FN mode, `1`–`9` send F1–F9 and `0` sends F10. The portrait quick-key
   PGUP and PGDN positions send F11 and F12. Physical F1–F12 keys also work,
-  including Ctrl+Alt chords.
+  including Ctrl+Alt chords. Other IME text retains its Unicode characters,
+  including emoji and supplementary characters, while FN remains enabled.
 - Entering FN also enables text selection. Drag one finger over terminal cells
   to select; selected cells have a white background. Drag two fingers to pan or pinch to
   zoom while selection is active. Tap the terminal to show the keyboard again.

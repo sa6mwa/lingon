@@ -8,6 +8,29 @@ import org.junit.Test
 
 class TerminalInputDispatchTest {
     @Test
+    fun fnLiteralRunsPreserveUnicodeAndShortcutOrder() {
+        val actions = dispatchFnInput("😀𠮷e\u0301C1åV🌍", shiftActive = true, ctrlActive = true, altActive = true)
+        assertEquals(6, actions.size)
+        assertEquals(FnInput.Literal("😀𠮷e\u0301"), actions[0])
+        assertEquals(FnInput.Copy, actions[1])
+        assertArrayEquals("\u001b[1;8P".encodeToByteArray(), (actions[2] as FnInput.FunctionKey).bytes)
+        assertEquals(FnInput.Literal("å"), actions[3])
+        assertEquals(FnInput.Paste, actions[4])
+        assertEquals(FnInput.Literal("🌍"), actions[5])
+        assertEquals(emptyList<FnInput>(), dispatchFnInput(""))
+        assertEquals(listOf(FnInput.Literal("a".repeat(4096))), dispatchFnInput("a".repeat(4096)))
+    }
+
+    @Test
+    fun softModifiersPreserveSupplementaryCodePoints() {
+        val text = "😀𠮷"
+        assertArrayEquals(text.encodeToByteArray(), buildModifiedBytes(text, ctrlActive = true, altActive = false))
+        val withAlt = "\u001b😀\u001b𠮷".encodeToByteArray()
+        assertArrayEquals(withAlt, buildModifiedBytes(text, ctrlActive = false, altActive = true))
+        assertArrayEquals(withAlt, buildModifiedBytes(text, ctrlActive = true, altActive = true))
+    }
+
+    @Test
     fun quickNavigationKeysEncodeShiftAndActiveModifiers() {
         val keys = mapOf(
             "\u001b[A" to "\u001b[1;2A",

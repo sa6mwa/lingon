@@ -438,6 +438,46 @@ class EndToEndTest {
     }
 
     @Test
+    fun soft_ime_preserves_supplementary_unicode_in_fn_and_modifier_modes() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("FN"))
+        fun commitImeText(text: String) = composeRule.runOnUiThread {
+            fun findInput(view: View): View? {
+                if (view.javaClass.simpleName == "TerminalInputView") return view
+                if (view is ViewGroup) {
+                    for (index in 0 until view.childCount) {
+                        findInput(view.getChildAt(index))?.let { return it }
+                    }
+                }
+                return null
+            }
+            val input = checkNotNull(findInput(composeRule.activity.window.decorView))
+            assertTrue(input.onCreateInputConnection(EditorInfo()).commitText(text, 1))
+        }
+        commitImeText("😀𠮷e\u0301")
+        val expected = "😀𠮷e\u0301".encodeToByteArray().map { "%02x".format(it.toInt() and 0xff) }
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(expected.size) == expected }
+        assertTrue("FN was reset by literal input", hasTextNode("FN"))
+        composeRule.onNodeWithText("FN").performClick()
+        composeRule.onNodeWithText("CTRL").performClick()
+        commitImeText("🌍𠮷")
+        val ctrlExpected = "🌍𠮷".encodeToByteArray().map { "%02x".format(it.toInt() and 0xff) }
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(ctrlExpected.size) == ctrlExpected }
+        composeRule.onNodeWithText("ALT").performClick()
+        commitImeText("😀𠮷")
+        val altExpected = "\u001b😀\u001b𠮷".encodeToByteArray().map { "%02x".format(it.toInt() and 0xff) }
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(altExpected.size) == altExpected }
+    }
+
+    @Test
     fun soft_ime_enter_respects_alt_modifier() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()

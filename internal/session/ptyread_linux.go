@@ -16,26 +16,44 @@ func readPTY(ctx context.Context, file *os.File, buf []byte) (int, error) {
 	if file == nil {
 		return 0, io.EOF
 	}
-	fd := int(file.Fd())
-	pollfds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	raw, err := file.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	pollfds := []unix.PollFd{{Events: unix.POLLIN}}
 	for {
 		if ctx != nil && ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
-		_, err := unix.Poll(pollfds, int(50*time.Millisecond/time.Millisecond))
-		if err != nil {
-			if err == syscall.EINTR {
-				continue
+		var n int
+		var ready bool
+		var readErr error
+		// Protect the descriptor throughout each bounded poll/read attempt.
+		// Return after the poll even without input so cancellation and closure
+		// are observed without retaining a possibly reused numeric descriptor.
+		err := raw.Read(func(fd uintptr) bool {
+			pollfds[0].Fd = int32(fd)
+			_, readErr = unix.Poll(pollfds, int(50*time.Millisecond/time.Millisecond))
+			if readErr == nil && pollfds[0].Revents&(unix.POLLIN|unix.POLLERR|unix.POLLHUP) != 0 {
+				ready = true
+				n, readErr = unix.Read(int(fd), buf)
 			}
+			return true
+		})
+		if err != nil {
 			return 0, err
 		}
-		revents := pollfds[0].Revents
-		if revents&(unix.POLLERR|unix.POLLHUP) != 0 {
-			return file.Read(buf)
-		}
-		if revents&unix.POLLIN == 0 {
+		if readErr == syscall.EINTR {
 			continue
 		}
-		return file.Read(buf)
+		if readErr != nil {
+			return 0, readErr
+		}
+		if ready {
+			if n == 0 {
+				return 0, io.EOF
+			}
+			return n, nil
+		}
 	}
 }

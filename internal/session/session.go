@@ -884,7 +884,9 @@ func (r *Runner) makeRaw(file *os.File) error {
 func (r *Runner) restoreTerminal(file *os.File) {
 	state := loadTerminalState()
 	if state != nil {
-		_ = term.Restore(int(file.Fd()), state)
+		_ = terminal.WithFileDescriptor(file, func(fd uintptr) {
+			_ = term.Restore(int(fd), state)
+		})
 	}
 }
 
@@ -1370,7 +1372,14 @@ func termSize(file *os.File) (int, int) {
 	if file == nil {
 		return 0, 0
 	}
-	cols, rows, err := term.GetSize(int(file.Fd()))
+	var cols, rows int
+	err := terminal.WithFileDescriptor(file, func(fd uintptr) {
+		var sizeErr error
+		cols, rows, sizeErr = term.GetSize(int(fd))
+		if sizeErr != nil {
+			cols, rows = 0, 0
+		}
+	})
 	if err != nil {
 		return 0, 0
 	}
@@ -1381,7 +1390,12 @@ func setNonblock(file *os.File, on bool) error {
 	if file == nil {
 		return nil
 	}
-	return syscall.SetNonblock(int(file.Fd()), on)
+	var setErr error
+	err := terminal.WithFileDescriptor(file, func(fd uintptr) { setErr = syscall.SetNonblock(int(fd), on) })
+	if err != nil {
+		return err
+	}
+	return setErr
 }
 
 func waitProcess(cmd *exec.Cmd) <-chan struct{} {

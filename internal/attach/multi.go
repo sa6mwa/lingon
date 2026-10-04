@@ -718,7 +718,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			if client.HasSnapshot() {
 				client.RenderCurrent()
 			} else {
-				client.RenderCurrentClear()
+				client.renderLoading()
 			}
 		} else {
 			renderActiveCurrent()
@@ -808,6 +808,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			tokenRefresher = m.refreshToken
 		}
 		client := &Client{
+			// Clear inherited screen contents only when presenting the first local
+			// view. Loading a different tab must preserve the display baseline.
+			forceClear:                  visible && localSessionMode && len(views) == 0,
 			Endpoint:                    m.Endpoint,
 			SessionID:                   session.ID,
 			UnixSocket:                  unixSocket,
@@ -836,6 +839,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		if prev != nil && prev.client != nil {
 			client.SeedFrom(prev.client)
+			if visible && localSessionMode && !client.HasSnapshot() {
+				client.seedLoadingRender(prev.client)
+			}
 		}
 		client.OnSessionClosed = func(_ string) {
 			var cancelView context.CancelFunc
@@ -1320,6 +1326,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					activeView.visible = false
 					activeView.hiddenAt = m.Clock.Now()
 					if activeView.client != nil {
+						if localSessionMode && !view.client.HasSnapshot() {
+							view.client.seedLoadingRender(activeView.client)
+						}
 						activeView.client.SetStdout(io.Discard)
 					}
 				}
@@ -1764,7 +1773,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			return err
 		}
 		defer func() {
-			_ = term.Restore(int(stdinFile.Fd()), stdinState)
+			_ = terminal.WithFileDescriptor(stdinFile, func(fd uintptr) {
+				_ = term.Restore(int(fd), stdinState)
+			})
 		}()
 	}
 

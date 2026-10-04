@@ -29,6 +29,43 @@ Required status values:
 
 ## Active Items
 
+### B-133 PTY shutdown races descriptor inspection against closure
+
+- Status: `resolved`
+- Area: `attach`, `session`, `verification`
+- Repro: The first expanded attach race check exposed races in multi-attach raw-state restoration, host terminal-size lookup, and Linux PTY reader descriptor lookup while owned PTYs close. See `tab-loading-race.log`.
+- Fix: Use `SyscallConn.Control` for terminal control and `SyscallConn.Read` for each bounded Linux poll/read attempt. Descriptors stay protected against concurrent closure throughout their use; raw restoration cannot act on a stale numeric descriptor. The existing 50 ms poll bound and cancellation checks remain.
+- Coverage: `TestWithFileDescriptorFencesConcurrentClose` checks control during concurrent closure and rejects closed/nil files. The previously failing loading and remote-tab cases pass with the race detector, alongside PTY reader shutdown/cancellation checks. These fixtures own their PTYs or pipes.
+- Verification: The shared validation commands below passed. Final Android rerun rebuilt the host harness with this change and passed all four selected cases.
+
+### B-131 Loading an uncached local headless tab clears the terminal
+
+- Status: `resolved`
+- Area: `attach`, `terminal`
+- Repro: Attach to two local headless sockets that have not sent snapshots; press Ctrl+L then n. The loading path emits a full-screen clear on the tab switch.
+- Fix: Clear inherited contents only when presenting the first local view. Transfer the displayed framebuffer baseline when switching to a pending view and compose its loading banner without clearing the screen. This baseline does not become the new session's snapshot or sequence. Its first real snapshot replaces the retained contents and loading banner. Loading-frame selection/rendering shares the render lock so it cannot paint an obsolete placeholder after the first snapshot.
+- Regression: `TestMultiAttachLocalHeadlessLoadingTabSwitchDoesNotClear` failed before the fix with `ESC[2J` and now checks repeated switches between new and existing pending views, including row-1 base/overlay phases. `TestMultiAttachLocalHeadlessPendingTabPreservesDisplayedFrame` checks a populated framebuffer, uses the existing permanent no-flicker assertion unchanged, and explicitly gates the first new snapshot to prove the eventual replacement. Existing startup-clear and first-snapshot tests remain unchanged and pass.
+- Performance scope: No existing timing/allocation gate covers this loading path. Its PTY correctness gate forbids full-screen redraw and confirms that unchanged displayed contents survive while only the loading chrome changes; no latency improvement is claimed.
+
+### B-132 FN soft input corrupts supplementary Unicode
+
+- Status: `resolved`
+- Area: `android`, `terminal-input`
+- Repro: Enable FN mode and commit an emoji through the IME. UTF-16 halves are encoded separately, so the host receives replacement bytes. Soft CTRL/ALT input had the same problem.
+- Fix: Dispatch consecutive FN literals as one string and flush them before shortcuts; preserve shortcut order and modifiers. Soft modifier encoding iterates complete code points, adding one Alt prefix per code point.
+- Regression: The initial connected case `fn_soft_ime_preserves_supplementary_unicode` failed before the fix, and `softModifiersPreserveSupplementaryCodePoints` failed its pre-fix unit check. The expanded connected case `soft_ime_preserves_supplementary_unicode_in_fn_and_modifier_modes` passes and verifies actual host-received UTF-8 bytes for emoji, supplementary CJK, and combining text in FN, plus supplementary text under CTRL and ALT. Unit coverage also checks mixed literals/commands, modifier encoding, empty input, and one action for 4,096 consecutive literals.
+- Performance scope: No existing timing/allocation gate covers FN input. The literal-run assertion proves that a 4,096-character input no longer creates 4,096 terminal send actions; no measured latency claim is made.
+
+Validation for B-131 through B-133 (commands serialized):
+
+- `GOMAXPROCS=2 GOFLAGS=-p=1 setsid --wait go test ./internal/attach -run '^TestMultiAttachLocalHeadlessLoadingTabSwitchDoesNotClear$' -count=1 </dev/null` failed before the fix (`tab-loading-before.log`).
+- The same command with `-run 'TestMultiAttachLocalHeadless(LoadingTabSwitchDoesNotClear|ShowsLoadingWhileWaitingForSnapshot|ClearsLoadingAfterFirstSnapshot)$'` passed after the fix. The expanded selection `-run 'TestMultiAttachLocalHeadless|TestAttachRemoteTabSwitchRendersWithoutExtraInput'` passed (`tab-loading-after.log`). An initial populated-frame fixture had a nil cursor, which was corrected before its successful run.
+- `GOMAXPROCS=2 GOFLAGS=-p=1 setsid --wait go test -race ./internal/attach -run 'TestMultiAttachLocalHeadless|TestAttachRemoteTabSwitchRendersWithoutExtraInput' -count=1 </dev/null` exposed B-133. After the descriptor fix, the same selection including `./internal/terminal -run 'TestWithFileDescriptor|TestMultiAttachLocalHeadless|TestAttachRemoteTabSwitchRendersWithoutExtraInput'` passed. The final expanded command `GOMAXPROCS=2 GOFLAGS=-p=1 setsid --wait go test -race ./internal/terminal ./internal/attach ./internal/session -run 'TestWithFileDescriptor|TestMultiAttachLocalHeadless|TestAttachRemoteTabSwitchRendersWithoutExtraInput|TestShutdownPTYReader|TestLocalSessionCancelWaitsForPTYReaderBeforeClose' -count=1 </dev/null` passed (`tab-loading-race-after.log`).
+- Android Gradle commands used Java 21 and `--no-daemon --max-workers=2 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process -Dorg.gradle.jvmargs='-Xmx1536m -Dfile.encoding=UTF-8'`. `:app:testDebugUnitTest --tests 'systems.pkt.lingon.ui.TerminalInputDispatchTest.softModifiersPreserveSupplementaryCodePoints'` failed before the fix (`unicode-unit-before.log`). Full `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed (`android-quality-second.log`).
+- Connected runner: `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 PATH=/usr/lib/jvm/java-21-openjdk-amd64/bin:$PATH GOMAXPROCS=2 GOFLAGS=-p=1 AVD_CPU_CORES=2 LINGON_IT_ONLY=fn_soft_ime_preserves_supplementary_unicode setsid --wait ./android/scripts/run-integration-tests.sh </dev/null` failed before the fix (`unicode-connected-before.log`). Afterward, `LINGON_IT_ONLY=soft_ime_preserves_supplementary_unicode_in_fn_and_modifier_modes,soft_ime_enter_respects_alt_modifier,fn_selection_copies_visible_cells_and_pastes_current_clipboard_in_another_session` passed all three (`unicode-connected-after.log`). The final rerun added `share_authentication_recovers_after_two_transient_failures` and passed all four after rebuilding the host harness (`unicode-connected-final.log`). Owned emulators, adb servers, harnesses, and single-use Gradle daemons were cleaned up.
+- Full gates with `GOMAXPROCS=2 GOFLAGS=-p=1`: `setsid --wait go test ./... </dev/null`, `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` passed (`go-quality-second.log`, `go-vet-second.log`, `golint-second.log`, `golangci-lint-second.log`); golangci-lint reported zero issues. Changed Go files passed `gofmt -l`; `git diff --check` was clean.
+- Explicit changed-code-path review confirmed snapshot/sequence state is independent from the retained loading framebuffer, literals remain whole at UTF-8 conversion, and terminal controls run only while their file descriptor is live.
+
 ### B-129 Review: replay admission, session-list revocation, and share recovery
 
 - Status: `resolved`

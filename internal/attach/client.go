@@ -267,7 +267,9 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 				}
 			} else {
 				defer func() {
-					_ = term.Restore(int(stdinFile.Fd()), stdinState)
+					_ = terminal.WithFileDescriptor(stdinFile, func(fd uintptr) {
+						_ = term.Restore(int(fd), stdinState)
+					})
 				}()
 			}
 		}
@@ -386,7 +388,9 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 				return err
 			}
 			defer func() {
-				_ = term.Restore(int(stdinFile.Fd()), stdinState)
+				_ = terminal.WithFileDescriptor(stdinFile, func(fd uintptr) {
+					_ = term.Restore(int(fd), stdinState)
+				})
 			}()
 		}
 	}
@@ -716,6 +720,38 @@ func (c *Client) SeedFrom(prev *Client) {
 	c.renderMu.Lock()
 	c.renderCache = renderCache
 	c.renderMu.Unlock()
+}
+
+// seedLoadingRender transfers only the displayed framebuffer, never another
+// session's snapshot or sequence. Keep the old display under the loading banner
+// until this view receives its first snapshot.
+func (c *Client) seedLoadingRender(prev *Client) {
+	if prev == nil || prev == c {
+		return
+	}
+	prev.renderMu.Lock()
+	cache := prev.renderCache
+	cache.PrevSnapshot = cloneSnapshot(cache.PrevSnapshot)
+	prev.renderMu.Unlock()
+	c.renderMu.Lock()
+	c.renderCache = cache
+	c.renderMu.Unlock()
+}
+
+func (c *Client) renderLoading() {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
+	// A snapshot may arrive while the loading action is being processed.
+	// Select and render under the same lock so a stale placeholder cannot
+	// overwrite the first real frame.
+	snap := c.Snapshot()
+	if snap == nil {
+		snap = c.renderCache.PrevSnapshot
+	}
+	if snap == nil {
+		snap = c.snapshotOrBlank()
+	}
+	c.renderSnapshotLocked(snap)
 }
 
 // SendInput forwards input bytes to the server.
@@ -1253,6 +1289,10 @@ func (c *Client) applyDiff(diff *protocolpb.Diff) *protocolpb.Snapshot {
 func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 	c.renderMu.Lock()
 	defer c.renderMu.Unlock()
+	c.renderSnapshotLocked(snap)
+}
+
+func (c *Client) renderSnapshotLocked(snap *protocolpb.Snapshot) {
 	forceFull := c.forceClear
 	c.forceClear = false
 	cols, rows := c.terminalSize()

@@ -277,13 +277,13 @@ fun TerminalScreen(
                 viewModel.sendRawBytes(payload.encodeToByteArray())
                 return
             }
-            payload.forEach { key ->
-                when (val fnInput = dispatchFnKey(
-                    key,
-                    shiftActive = fnShiftActive,
-                    ctrlActive = fnModifierMode.ctrlActive,
-                    altActive = fnModifierMode.altActive,
-                )) {
+            dispatchFnInput(
+                payload,
+                shiftActive = fnShiftActive,
+                ctrlActive = fnModifierMode.ctrlActive,
+                altActive = fnModifierMode.altActive,
+            ).forEach { fnInput ->
+                when (fnInput) {
                     FnInput.Copy -> {
                         activeGridView?.selectedText()?.takeIf { it.isNotEmpty() }?.let { copied ->
                             clipboard?.setPrimaryClip(ClipData.newPlainText("Lingon terminal", copied))

@@ -224,6 +224,10 @@ If the share token embeds an endpoint, attach uses it automatically unless you
 also pass `--endpoint`. Bare share tokens do not infer from `auth.json`; they
 use `--endpoint`, configured `client.endpoint`, or the built-in default.
 
+When switching local headless tabs, a session awaiting its first snapshot keeps
+the displayed contents under a loading banner. Its first snapshot replaces the
+contents; tab switching does not clear the screen.
+
 Attach options (selection):
 
 - `-e, --endpoint` relay endpoint (https/wss base URL; assumes `https://` if omitted)

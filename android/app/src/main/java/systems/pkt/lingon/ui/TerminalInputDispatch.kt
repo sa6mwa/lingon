@@ -73,6 +73,32 @@ internal fun dispatchFnKey(
     else -> fnFunctionKeyBytes(key, shiftActive, ctrlActive, altActive)?.let(FnInput::FunctionKey) ?: FnInput.Literal(key.toString())
 }
 
+// Keep literal runs together so UTF-16 surrogate pairs are encoded as one value.
+// Flush before each shortcut to preserve its position relative to terminal input.
+internal fun dispatchFnInput(
+    payload: String,
+    shiftActive: Boolean = false,
+    ctrlActive: Boolean = false,
+    altActive: Boolean = false,
+): List<FnInput> = buildList {
+    val literal = StringBuilder()
+    fun flushLiteral() {
+        if (literal.isNotEmpty()) {
+            add(FnInput.Literal(literal.toString()))
+            literal.setLength(0)
+        }
+    }
+    for (key in payload) {
+        if (key.lowercaseChar() in "cv" || key in '0'..'9') {
+            flushLiteral()
+            add(dispatchFnKey(key, shiftActive, ctrlActive, altActive))
+        } else {
+            literal.append(key)
+        }
+    }
+    flushLiteral()
+}
+
 internal data class SoftInputDispatch(
     val text: String? = null,
     val bytes: ByteArray? = null,
@@ -145,13 +171,19 @@ private fun cursorModifierParameter(
 internal fun buildModifiedBytes(input: String, ctrlActive: Boolean, altActive: Boolean): ByteArray {
     modifiedNavigationKeyBytes(input.encodeToByteArray(), ctrlActive, altActive)?.let { return it }
     val out = ByteArrayOutputStream()
-    for (ch in input) {
+    var index = 0
+    while (index < input.length) {
+        val codePoint = input.codePointAt(index)
+        val length = Character.charCount(codePoint)
+        val text = input.substring(index, index + length)
+        index += length
+        val ch = if (length == 1) text[0] else null
         if (ch == '\n' || ch == '\r') {
             if (altActive) out.write(0x1b)
             out.write('\r'.code)
             continue
         }
-        if (ctrlActive) {
+        if (ctrlActive && ch != null) {
             val lower = ch.lowercaseChar()
             val ctrlByte = when {
                 lower in 'a'..'z' -> lower.code - 'a'.code + 1
@@ -169,7 +201,7 @@ internal fun buildModifiedBytes(input: String, ctrlActive: Boolean, altActive: B
         if (altActive) {
             out.write(0x1b)
         }
-        out.write(ch.toString().toByteArray(Charsets.UTF_8))
+        out.write(text.toByteArray(Charsets.UTF_8))
     }
     return out.toByteArray()
 }
