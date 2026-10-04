@@ -33,6 +33,11 @@ func (r *Runner) Manage(ctx context.Context, req sessionmanage.Request) sessionm
 				local.publisher.SetSessionName(req.Name)
 				local.publisher.SendManagement(&protocolpb.SessionManagement{Kind: "rename", Name: req.Name, ResultSessionId: local.ID(), Completed: true})
 			}
+			if r.remoteSessions != nil {
+				r.updateTabs(r.remoteSessions.Sessions())
+			} else {
+				r.updateTabs(nil)
+			}
 			r.refreshTabBar(r.stdout())
 			return sessionmanage.Result{SessionID: local.ID(), Name: req.Name}
 		}
