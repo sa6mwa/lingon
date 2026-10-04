@@ -937,9 +937,9 @@ func (e *Emulator) cursorPositionWithReason(row, col int, reason string) {
 	y := row - 1
 	if e.originMode {
 		y += e.scr.scrollTop
-	}
-	if y > e.scr.scrollBottom {
-		y = e.scr.scrollBottom
+		if y > e.scr.scrollBottom {
+			y = e.scr.scrollBottom
+		}
 	}
 	x := col - 1
 	if x >= e.cols {

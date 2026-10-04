@@ -436,11 +436,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 
 	r.localSessions = make(map[string]*localSession)
 	r.localClosed = make(map[string]bool)
-	if err := r.startInitialLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput); err != nil {
-		return err
-	}
-	reportInitialSessionReady(nil)
-
+	// Initialize the manager before local publishers can invoke OnSessions.
 	if r.opts.Publish && !r.opts.DisableRemoteSessions {
 		r.remoteSessions = newRemoteManager(remoteOptions{
 			Endpoint:                    r.opts.Endpoint,
@@ -502,6 +498,13 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				r.remoteSessions.Render(activeID)
 			},
 		})
+	}
+	if err := r.startInitialLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput); err != nil {
+		return err
+	}
+	reportInitialSessionReady(nil)
+
+	if r.remoteSessions != nil {
 		r.remoteSessions.Start(sigCtx)
 		r.handleSessionListUpdate(r.remoteSessions.Sessions(), stdout, stdin)
 	}

@@ -26,6 +26,7 @@ import (
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/session"
+	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/terminal/emu"
 	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/lingon/internal/tlsmgr"
@@ -689,7 +690,9 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 
 	sess.cleanup = func() {
 		if stdinState != nil {
-			_ = term.Restore(int(slave.Fd()), stdinState)
+			_ = terminal.WithFileDescriptor(slave, func(fd uintptr) {
+				_ = term.Restore(int(fd), stdinState)
+			})
 		}
 		_ = master.Close()
 		_ = slave.Close()

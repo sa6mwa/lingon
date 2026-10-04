@@ -395,6 +395,8 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		}
 	}
 
+	// Closing stdin must not change whether input shutdown needs a bounded wait.
+	inputIsTerminal := c.shouldWaitForSignals()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -439,16 +441,16 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	})
 	defer readyTimer.Stop()
 
-	if opts.input && c.shouldWaitForSignals() {
+	if opts.input && inputIsTerminal {
 		waitForSignals(ctx, cancel)
 	} else {
 		<-ctx.Done()
 	}
-	if c.stdinCloser != nil && (ownsStdin || !c.shouldWaitForSignals()) {
+	if c.stdinCloser != nil && (ownsStdin || !inputIsTerminal) {
 		_ = c.stdinCloser.Close()
 	}
 	<-wsDone
-	if opts.input && c.shouldWaitForSignals() {
+	if opts.input && inputIsTerminal {
 		select {
 		case <-inputDone:
 		case <-c.clock().After(200 * time.Millisecond):
@@ -2653,8 +2655,12 @@ func (c *Client) terminalSize() (int, int) {
 }
 
 func (c *Client) shouldWaitForSignals() bool {
-	if inFile, ok := c.stdinReader().(*os.File); ok && term.IsTerminal(int(inFile.Fd())) {
-		return true
+	if inFile, ok := c.stdinReader().(*os.File); ok {
+		var isTerminal bool
+		_ = terminal.WithFileDescriptor(inFile, func(fd uintptr) {
+			isTerminal = term.IsTerminal(int(fd))
+		})
+		return isTerminal
 	}
 	return false
 }

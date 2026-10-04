@@ -29,6 +29,37 @@ Required status values:
 
 ## Active Items
 
+### B-136 Absolute cursor positioning clamps to scrolling margins with origin mode off
+
+- Status: `resolved`
+- Area: `terminal`, `vt-emulator`
+- Report: `stash/cupbug.md` describes a bottom-anchored chat feed overwriting earlier lines and being unable to address reserved prompt rows.
+- Repro: On a 40-column, 8-row screen, write `ESC[?6l ESC[1;6r ESC[8;1H` (without spaces). CUP incorrectly stops at row 6; oversized row 65535 and HVP have the same failure. Repeated bottom anchors followed by CUU overwrite the first feed row. VPA shares the affected positioning path.
+- Fix: Apply the bottom scrolling-margin clamp only with DECOM on. CUP/HVP/VPA use physical screen bounds with DECOM off; origin-relative positioning, inline offsets, column bounds, cursor tracing, and pending-wrap cancellation remain intact.
+- Regression: `cursor_position_scroll_region_test.go` covers CUP/HVP origin modes, origin reset, oversized/zero coordinates, VPA column preservation, successive feed rows, both reserved prompt rows, inline offsets, and pending wrap. Before the fix, CUP/HVP/VPA stopped at row 6 instead of 8, the second feed chunk overwrote `one` with `two`, and both prompt-row assertions failed. `TestHostAndAttachBottomAnchoredFeedOutsideScrollRegion` also failed before the fix (feed row 2 empty instead of `one`); it now drives real attach input through the relay and asserts all accumulated feed rows and reserved rows on both rendered terminals. Every terminal control is confined to `ptytest`-owned sub-PTYs; checks use the injected mock clock.
+- Verification: The commands below passed, including the full emulator race suite, three consecutive host/attach race runs, existing permanent no-flicker checks unchanged, and all standard Go gates. Explicit code-path review confirmed only DECOM-on positioning sees the margin clamp and all three absolute-position handlers share the corrected path.
+- Performance: `BenchmarkAbsoluteCursorPositionScrollRegion` feeds CUP/CUU/HVP/VPA through the real parser with partial margins. Five 1-second samples before/after the clamp change measured median DECOM-off 238.3/237.9 ns per batch and DECOM-on 234.9/236.0 ns per batch. Every sample retained 16 B and 3 allocations per batch. Timing changes are within observed variation; no latency improvement is claimed. Baseline ranges were 235.5–271.0 ns (off), 234.5–238.7 ns (on); fixed ranges were 237.3–239.4 ns (off), 234.7–239.1 ns (on).
+- Scope: Reproduced the report's byte stream and a controlled host/attach application fixture; the external Softline application itself was not run. No Android or web UI code changed.
+
+### B-137 Host/attach regression exposes startup and teardown races
+
+- Status: `resolved`
+- Area: `session`, `attach`, `verification`
+- Repro: Run `TestHostAndAttachBottomAnchoredFeedOutsideScrollRegion` under `-race`. The new owned-PTY fixture exposed raw-state restoration and attach signal-wait checks calling `File.Fd` during descriptor closure, plus publisher `OnSessions` reading the remote-manager pointer while host startup assigns it.
+- Fix: Protect terminal control with the existing `terminal.WithFileDescriptor` helper and classify attach stdin before starting its reader. Retain that classification through closure so terminal shutdown keeps its bounded input wait. Construct the remote manager before starting local publishers; keep its background refresh startup after initial local-session readiness.
+- Regression: The new host/attach fixture failed with actual race reports in raw restoration, signal-wait terminal inspection, and remote-manager initialization. It now passes three consecutive runs under `-race`. Existing `TestAttachFailsWithoutHost` and `TestAttachExitsWhenHostDisconnects` caught an intermediate post-close classification mistake; both pass three consecutive race runs after retaining the initial classification. Full attach/session suites and permanent host/attach no-flicker checks also pass.
+- Review: Descriptor callbacks cannot observe or act on a closed/reused descriptor; publisher callbacks see a fully constructed, stable remote-manager pointer. No new lock, timer, or protocol behavior was introduced.
+
+Validation for B-136 and B-137 (commands serialized, `GOMAXPROCS=2`):
+
+- Before the emulator fix: `setsid --wait go test -p 1 ./internal/terminal/emu -run 'Test(AbsoluteCursorPosition|VPAScrollRegion|BottomAnchoredFeed)' -count=1 </dev/null` failed with the row, overwrite, prompt, inline-offset, and pending-wrap failures above. The new host/attach integration test also failed before the fix using the command below without `-race`, `-count=1`.
+- `setsid --wait go test -p 1 -race ./internal/terminal/emu -count=1 </dev/null` passed the full emulator suite.
+- `setsid --wait go test -p 1 -race -tags integration ./integration/pty/session -run '^TestHostAndAttachBottomAnchoredFeedOutsideScrollRegion$' -count=3 </dev/null` passed after the final runtime repairs.
+- `setsid --wait go test -p 1 -race ./internal/attach -run '^TestAttach(FailsWithoutHost|ExitsWhenHostDisconnects)$' -count=3 </dev/null` passed.
+- `setsid --wait go test -p 1 -tags integration ./integration/pty/session ./integration/pty/attach -run 'TestHost.*(WrapAroundTabSwitch|RepaintBaseTopRowBeforeOverlay)|TestAttachNoFullRedraw.*TabSwitch' -count=1 </dev/null` passed (`cupbug-no-flicker.log`). No existing no-flicker test was modified.
+- `setsid --wait go test -p 1 ./internal/terminal/emu -run '^$' -bench '^BenchmarkAbsoluteCursorPositionScrollRegion$' -benchmem -benchtime=1s -count=5 </dev/null` passed for both the original and fixed clamp, with all other code and the benchmark held constant. The fixed clamp was restored before the final gates.
+- Final standard gates: `setsid --wait go test -p 1 ./... </dev/null` passed (`cupbug-go-test.log`); `go vet -p 1 ./...`, `GOFLAGS=-p=1 golint ./...`, and `GOFLAGS=-p=1 golangci-lint run ./...` passed, with zero golangci-lint issues. The first full test attempt found the intermediate attach shutdown failures; they were fixed before this final passing run. Changed Go files pass `gofmt -l`, and `git diff --check` is clean.
+
 ### B-134 Android cannot reclaim control after a handoff
 
 - Status: `open`
