@@ -371,3 +371,16 @@ func shareTokenStatus(token ShareToken, now time.Time) (valid, revoked, expired 
 	expired = isExpired && !isRevoked
 	return valid, revoked, expired
 }
+
+// SetSessionName updates only a session's display metadata.
+func (s *Store) SetSessionName(id, name string) (Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.Sessions[id]
+	if !ok {
+		return Session{}, false
+	}
+	session.Name = name
+	s.Sessions[id] = session
+	return session, true
+}

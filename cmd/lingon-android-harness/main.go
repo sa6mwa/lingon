@@ -609,6 +609,11 @@ func harnessWallLevels() []time.Duration {
 }
 
 func (h *harness) stop() {
+	if records, err := headless.NewStore(h.configDir).Reconcile(); err == nil {
+		for _, record := range records {
+			_ = headless.DetachSession(context.Background(), h.configDir, record.SessionID)
+		}
+	}
 	h.sessionsMu.Lock()
 	for _, sess := range h.sessions {
 		if sess.stop != nil {
@@ -679,17 +684,18 @@ func (h *harness) startHeadless(cols int, rows int) (string, error) {
 		}
 	}()
 	daemon := headlessd.New(headlessd.Options{
-		ConfigDir:      h.configDir,
-		Endpoint:       h.endpoint,
-		Token:          h.access,
-		AuthFile:       h.authPath,
-		SessionID:      id,
-		Cols:           cols,
-		Rows:           rows,
-		Shell:          defaultHeadlessShell(),
-		Publish:        true,
-		PublishControl: true,
-		Logger:         pslog.NoopLogger(),
+		ConfigDir:          h.configDir,
+		HeadlessExecutable: filepath.Join(filepath.Dir(h.selfPath), "lingon"),
+		Endpoint:           h.endpoint,
+		Token:              h.access,
+		AuthFile:           h.authPath,
+		SessionID:          id,
+		Cols:               cols,
+		Rows:               rows,
+		Shell:              defaultHeadlessShell(),
+		Publish:            true,
+		PublishControl:     true,
+		Logger:             pslog.NoopLogger(),
 	})
 	runErr := make(chan error, 1)
 	go func() {
@@ -850,6 +856,8 @@ func startHostSession(ctx context.Context, endpoint, token, id, scriptPath strin
 
 func buildHostSessionOptions(endpoint, token, id, scriptPath string, cols, rows int, tlsDir string, stdinFile, stdoutFile *os.File, ptyDebug bool, ptyMu *sync.Mutex, ptyBuf *bytes.Buffer) session.Options {
 	return session.Options{
+		ConfigDir:                   filepath.Dir(tlsDir),
+		HeadlessExecutable:          filepath.Join(filepath.Dir(os.Args[0]), "lingon"),
 		Endpoint:                    endpoint,
 		Token:                       token,
 		TLSDir:                      tlsDir,

@@ -63,3 +63,18 @@ data class RelayWallEventsPage(
     @SerialName("has_more")
     val hasMore: Boolean = false,
 )
+
+@Serializable
+data class SessionManagementRequest(
+ @SerialName("request_id") val requestId: String,
+ @SerialName("session_id") val sessionId: String,
+ val kind: String,
+ val name: String = "",
+)
+
+@Serializable
+data class SessionManagementResult(
+ @SerialName("session_id") val sessionId: String = "",
+ val name: String = "",
+ val error: String = "",
+)

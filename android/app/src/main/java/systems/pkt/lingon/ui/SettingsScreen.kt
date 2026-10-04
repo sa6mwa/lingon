@@ -80,6 +80,9 @@ fun SettingsScreen(
     onLogout: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    sessionManagementAvailable: Boolean = false,
+    onCreateTerminal: () -> Unit = {},
+    onRenameSession: () -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
 
@@ -113,6 +116,9 @@ fun SettingsScreen(
             onLogout = onLogout,
             onBack = onBack,
             modifier = modifier,
+            sessionManagementAvailable = sessionManagementAvailable,
+            onCreateTerminal = onCreateTerminal,
+            onRenameSession = onRenameSession,
         )
     }
 }
@@ -142,6 +148,9 @@ private fun SettingsScreenContent(
     onResetZoomPan: () -> Unit,
     onLogout: () -> Unit,
     onBack: () -> Unit,
+    sessionManagementAvailable: Boolean,
+    onCreateTerminal: () -> Unit,
+    onRenameSession: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -231,6 +240,12 @@ private fun SettingsScreenContent(
                 item {
                     SettingsSectionTitle("Terminal")
                     SettingsGroup {
+                        if (sessionManagementAvailable) {
+                            SettingsActionRow(title = "New terminal", summary = "Start a background terminal on this session's machine", icon = Icons.Filled.Terminal, onClick = onCreateTerminal, modifier = Modifier.testTag(TestTags.NewTerminalButton))
+                            SettingsInsetDivider()
+                            SettingsActionRow(title = "Rename session", summary = "Change the current session's display name", icon = Icons.Filled.Terminal, onClick = onRenameSession, modifier = Modifier.testTag(TestTags.RenameSessionButton))
+                            SettingsInsetDivider()
+                        }
                         SettingsSwitchRow(
                             title = "Follow on read",
                             summary = if (followOnReadEnabled) {

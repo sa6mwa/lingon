@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,18 +19,9 @@ import (
 	"pkt.systems/pslog"
 )
 
-const (
-	headlessStartupStatusEnv     = "__LINGON__HEADLESS_STARTUP_STATUS_FD"
-	headlessStartupStatusFD      = 3
-	headlessStartupStatusTimeout = 10 * time.Second
-)
+const headlessStartupStatusEnv = headless.StartupStatusEnv
 
-type headlessStartupStatus struct {
-	Status  string `json:"status"`
-	Error   string `json:"error,omitempty"`
-	Session string `json:"session,omitempty"`
-	Socket  string `json:"socket,omitempty"`
-}
+type headlessStartupStatus = headless.StartupStatus
 
 type headlessStartupReporter struct {
 	file *os.File
@@ -55,15 +43,18 @@ func configDirForLoader(loader *lingon.Loader) string {
 	return filepath.Dir(used)
 }
 
+func existingConfigFileForLoader(loader *lingon.Loader) string {
+	path := loader.ConfigFileUsed()
+	// Viper also reports an optional default path that was never read.
+	// Passing that path explicitly would make the child's config mandatory.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return ""
+	}
+	return path
+}
+
 func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 	if err := validateHeadlessReexecFlags(cmd); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(headless.BaseDir(configDir), 0o700); err != nil {
-		return err
-	}
-	exePath, err := os.Executable()
-	if err != nil {
 		return err
 	}
 	args := append([]string(nil), os.Args[1:]...)
@@ -71,8 +62,7 @@ func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 	if err != nil {
 		return err
 	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
+	if strings.TrimSpace(sessionID) == "" {
 		generated, _ := session.DefaultSessionIdentity()
 		sessionID, err = headless.NormalizeSessionID(generated)
 		if err != nil {
@@ -80,56 +70,11 @@ func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 		}
 		args = append(args, "--session", sessionID)
 	}
-	socketPath, err := headless.SocketPath(configDir, sessionID)
+	launched, err := headless.Launch(cmd.Context(), headless.LaunchRequest{ConfigDir: configDir, SessionID: sessionID, Args: args})
 	if err != nil {
 		return err
 	}
-	statusR, statusW, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = statusR.Close()
-	}()
-	defer func() {
-		_ = statusW.Close()
-	}()
-	child := exec.Command(exePath, args...)
-	configureDetachedProcess(child)
-	child.ExtraFiles = []*os.File{statusW}
-	child.Env = withEnv(withEnv(os.Environ(), headless.EnvForeground, headless.ForegroundValue), headlessStartupStatusEnv, strconv.Itoa(headlessStartupStatusFD))
-	nullIn, err := os.Open(os.DevNull)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = nullIn.Close()
-	}()
-	nullOut, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = nullOut.Close()
-	}()
-	child.Stdin = nullIn
-	child.Stdout = nullOut
-	child.Stderr = nullOut
-	if err := child.Start(); err != nil {
-		return err
-	}
-	_ = statusW.Close()
-	status, err := waitForHeadlessStartupStatus(statusR, child, logPathForHeadlessStartup(cmd))
-	if err != nil {
-		return err
-	}
-	if status.Status != "ready" {
-		if strings.TrimSpace(status.Error) == "" {
-			return fmt.Errorf("headless startup failed before reporting readiness")
-		}
-		return fmt.Errorf("headless startup failed: %s", status.Error)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "headless session starting in background (session=%s pid=%d socket=%s)\n", sessionID, child.Process.Pid, socketPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "headless session starting in background (session=%s pid=%d socket=%s)\n", launched.SessionID, launched.PID, launched.SocketPath)
 	return nil
 }
 
@@ -251,6 +196,7 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	}
 	daemon := headlessd.New(headlessd.Options{
 		ConfigDir:               configDir,
+		ConfigFile:              existingConfigFileForLoader(loader),
 		Endpoint:                relay.Endpoint,
 		Token:                   relay.Token,
 		AuthFile:                relay.AuthPath,
@@ -323,39 +269,6 @@ func (r *headlessStartupReporter) Close() {
 	r.file = nil
 }
 
-func waitForHeadlessStartupStatus(r io.Reader, child *exec.Cmd, logPath string) (headlessStartupStatus, error) {
-	statusCh := make(chan headlessStartupStatus, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		var status headlessStartupStatus
-		err := json.NewDecoder(bufio.NewReader(r)).Decode(&status)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		statusCh <- status
-	}()
-	timer := time.NewTimer(headlessStartupStatusTimeout)
-	defer timer.Stop()
-	select {
-	case status := <-statusCh:
-		return status, nil
-	case err := <-errCh:
-		if errors.Is(err, io.EOF) {
-			return headlessStartupStatus{}, fmt.Errorf("headless startup failed before reporting readiness")
-		}
-		return headlessStartupStatus{}, fmt.Errorf("read headless startup status: %w", err)
-	case <-timer.C:
-		if child != nil && child.Process != nil {
-			_ = child.Process.Kill()
-		}
-		if strings.TrimSpace(logPath) != "" {
-			return headlessStartupStatus{}, fmt.Errorf("headless startup did not report readiness within %s; see %s", headlessStartupStatusTimeout, logPath)
-		}
-		return headlessStartupStatus{}, fmt.Errorf("headless startup did not report readiness within %s", headlessStartupStatusTimeout)
-	}
-}
-
 func headlessStartupErrorMessage(err error) string {
 	msg := strings.TrimSpace(err.Error())
 	if msg == "" {
@@ -365,17 +278,6 @@ func headlessStartupErrorMessage(err error) string {
 		msg += "; use `--offline` for local-only headless startup"
 	}
 	return msg
-}
-
-func logPathForHeadlessStartup(cmd *cobra.Command) string {
-	if cmd == nil {
-		return lingon.DefaultLogPath()
-	}
-	value, err := cmd.Flags().GetString("log-file")
-	if err != nil || strings.TrimSpace(value) == "" {
-		return lingon.DefaultLogPath()
-	}
-	return value
 }
 
 type headlessRelayConfig struct {
@@ -479,17 +381,4 @@ func resolveHeadlessWallInactiveAfterLevels(cmd *cobra.Command, cfg lingon.Confi
 
 func timeNowUTC() time.Time {
 	return time.Now().UTC()
-}
-
-func withEnv(env []string, key, value string) []string {
-	prefix := key + "="
-	out := make([]string, 0, len(env)+1)
-	for _, entry := range env {
-		if strings.HasPrefix(entry, prefix) {
-			continue
-		}
-		out = append(out, entry)
-	}
-	out = append(out, prefix+value)
-	return out
 }

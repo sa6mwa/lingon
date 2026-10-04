@@ -65,6 +65,8 @@ class AppViewModel(
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    private var createdSessionId: String? = null
+    private var sessionManagementGeneration = 0L
     private var ws: WebSocket? = null
     private var socketOpen = false
     private var reconnectJob: Job? = null
@@ -258,6 +260,37 @@ class AppViewModel(
                 delay(minRefreshMs - elapsed)
             }
             _state.update { it.copy(isRefreshing = false) }
+        }
+    }
+
+    fun createTerminal() = manageSession("create", "")
+
+    fun renameSession(name: String) = manageSession("rename", name.trim())
+
+    private fun manageSession(kind: String, name: String) {
+        val before = _state.value
+        if (!before.sessionManagementAvailable) {
+            setStatus("session management requires a connected owner account", StatusLevel.Warn)
+            return
+        }
+        val generation = sessionManagementGeneration
+        _state.update { it.copy(sessionManagementBusy = true) }
+        viewModelScope.launch {
+            try {
+                val result = repository.manageSession(systems.pkt.lingon.data.relay.SessionManagementRequest(
+                    requestId = UUID.randomUUID().toString(), sessionId = before.activeSessionId!!, kind = kind, name = name,
+                ))
+                if (generation != sessionManagementGeneration || _state.value.endpoint != before.endpoint || _state.value.shareToken != null) return@launch
+                if (kind == "create") createdSessionId = result.sessionId
+                updateSessions(repository.listSessions())
+                setStatus(if (kind == "create") "Terminal created" else "Session renamed", StatusLevel.Info)
+            } catch (err: CancellationException) {
+                throw err
+            } catch (err: Exception) {
+                if (generation == sessionManagementGeneration) setStatus(err.message ?: "Session operation outcome unknown; refresh sessions before trying again", StatusLevel.Error)
+            } finally {
+                if (generation == sessionManagementGeneration) _state.update { it.copy(sessionManagementBusy = false) }
+            }
         }
     }
 
@@ -703,6 +736,9 @@ class AppViewModel(
     }
 
     private fun clearSessionCaches() {
+        sessionManagementGeneration++
+        createdSessionId = null
+        _state.update { it.copy(sessionManagementBusy = false) }
         sessionCaches.clear()
         sessionListCache.clear()
         missingSessionSinceMs.clear()
@@ -1066,6 +1102,12 @@ class AppViewModel(
         _state.update { it.copy(sessions = orderedSessions) }
         prefetchSessionViewStates(_state.value.endpoint, orderedSessions)
         syncWallPollingSchedule()
+        val created = createdSessionId
+        if (created != null && orderedSessions.any { it.id == created }) {
+            createdSessionId = null
+            selectSession(created)
+            return true
+        }
         val connectionHandled = ensureActiveSession(orderedSessions)
         if (merged.isNotEmpty()) {
             stopSessionPoll()

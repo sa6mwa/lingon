@@ -36,6 +36,7 @@ data class UiState(
     val transientStatus: StatusMessage? = null,
     val theme: String? = null,
     val isBusy: Boolean = false,
+    val sessionManagementBusy: Boolean = false,
     val showSettings: Boolean = false,
     val showThemePicker: Boolean = false,
     val showAppLockTimeoutDialog: Boolean = false,
@@ -85,6 +86,10 @@ data class UiState(
             connectionState == ConnectionState.Connecting ||
             connectionState == ConnectionState.Waiting ||
             connectionState == ConnectionState.Disconnected
+
+    val sessionManagementAvailable: Boolean
+        get() = loggedIn && shareToken == null && !requiresAppUnlock && !sessionManagementBusy &&
+            connectionState == ConnectionState.Connected && !activeSessionId.isNullOrBlank()
 
     val activeSessionHeadless: Boolean
         get() = activeSessionId?.let { id -> sessions.firstOrNull { it.id == id }?.headless == true } ?: false

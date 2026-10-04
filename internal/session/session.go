@@ -31,6 +31,7 @@ import (
 	"pkt.systems/lingon/internal/publisher"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/render"
+	"pkt.systems/lingon/internal/sessionmanage"
 	"pkt.systems/lingon/internal/sessionorder"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
@@ -40,6 +41,13 @@ import (
 
 // Options configures a local interactive session.
 type Options struct {
+	// ConfigFile preserves host configuration defaults when starting detached terminals.
+	ConfigFile string
+	// HeadlessExecutable overrides the Lingon executable for embedded hosts.
+	HeadlessExecutable string
+	ConfigDir          string
+	// OnRename persists a display name before it is announced to clients.
+	OnRename              func(sessionID, name string) error
 	Endpoint              string
 	Token                 string
 	AuthFile              string
@@ -147,6 +155,7 @@ type WallInactivityToggleResult struct {
 
 // Runner executes a local interactive session with optional relay publishing.
 type Runner struct {
+	management  *sessionmanage.Manager
 	opts        Options
 	logger      pslog.Logger
 	runCtx      context.Context
@@ -228,6 +237,7 @@ func New(opts Options) *Runner {
 	}})
 	return &Runner{
 		opts:       opts,
+		management: sessionmanage.New(),
 		clock:      opts.Clock,
 		trace:      opts.Trace,
 		compositor: compositor,
@@ -502,6 +512,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		defer wg.Done()
 		buf := make([]byte, 4096)
 		var prefix control.Prefix
+		var rename control.RenamePrompt
 		pending := make([]byte, 0, 4096)
 		var scrollState scrollInputState
 		for {
@@ -606,6 +617,33 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				return true
 			}
 			processNormalByte := func(b byte) bool {
+				if rename.DiscardEscapeTail(b) {
+					return true
+				}
+				if rename.Active {
+					name, done := rename.Feed(b)
+					if !done {
+						r.showStatus(rename.Label(), stdout, 24*time.Hour)
+						return true
+					}
+					r.runtime().ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{Kind: mvu.StatusClear}})
+					r.forceRedraw(stdout)
+					if name != "" {
+						req := sessionmanage.Request{RequestID: managementRequestID(), SessionID: rename.SessionID, Kind: "rename", Name: name}
+						go func() {
+							result := sessionmanage.Result{}
+							if r.localSession(req.SessionID) != nil {
+								result = r.Manage(sigCtx, req)
+							} else if r.remoteSessions != nil {
+								result = r.remoteSessions.Manage(sigCtx, req)
+							}
+							if result.Error != "" {
+								r.showErrorStatus(result.Error, stdout, 5*time.Second)
+							}
+						}()
+					}
+					return true
+				}
 				helpVisible := r.runtime().Read().HelpVisible
 				if uiAction, ok := mvu.ActionForHelpDismissKey(helpVisible, b); ok {
 					r.runtime().ApplyAction(uiAction)
@@ -680,6 +718,9 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 								r.logger.Debug("session.remote.command.failed", "session", activeID, "kind", protocolpb.CommandKind_COMMAND_KIND_SEND_EOF.String(), "err", err)
 							}
 						}
+					case control.ActionRename:
+						rename.Begin(activeID)
+						r.showStatus(rename.Label(), stdout, 24*time.Hour)
 					case control.ActionNewPTY:
 						r.createLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput)
 					case control.ActionScrollback:
@@ -1995,6 +2036,10 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 		}
 		pub.OnInput = func(data []byte) {
 			r.handleRemoteInput(session, data, debugRemoteInput)
+		}
+		pub.OnManagement = func(ctx context.Context, request *protocolpb.SessionManagement) *protocolpb.SessionManagement {
+			result := r.Manage(ctx, sessionmanage.Request{RequestID: request.RequestId, SessionID: session.ID(), Kind: request.Kind, Name: request.Name})
+			return &protocolpb.SessionManagement{ResultSessionId: result.SessionID, Name: result.Name, Error: result.Error}
 		}
 		pub.OnCommand = func(kind protocolpb.CommandKind) {
 			r.HandleSessionCommand(session.ctx, session.ID(), kind)

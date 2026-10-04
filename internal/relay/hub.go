@@ -51,6 +51,7 @@ type replayConnection interface {
 type Hub struct {
 	mu                 sync.Mutex
 	sessions           map[string]*sessionState
+	management         map[string]managementWaiter
 	logger             pslog.Logger
 	replayHistoryBytes int
 }
@@ -82,6 +83,7 @@ func NewHub(logger pslog.Logger) *Hub {
 	}
 	return &Hub{
 		sessions:           make(map[string]*sessionState),
+		management:         make(map[string]managementWaiter),
 		logger:             logger,
 		replayHistoryBytes: config.DefaultReplayHistoryBytes,
 	}
@@ -116,6 +118,7 @@ func (h *Hub) registerHost(conn connection, sessionID string, cols, rows int) co
 	var replaced connection
 	if state.host != nil && state.host.ID() != conn.ID() {
 		replaced = state.host
+		h.failManagementLocked(state.host.ID())
 		state.history = nil
 		state.historyBytes = 0
 		h.logger.Info("relay.hub.host.takeover", "session", sessionID, "old_conn", state.host.ID(), "new_conn", conn.ID())
@@ -233,6 +236,7 @@ func (h *Hub) Unregister(conn connection) {
 
 	if conn.Role() == RoleHost {
 		if state.host != nil && state.host.ID() == conn.ID() {
+			h.failManagementLocked(state.host.ID())
 			state.host = nil
 			state.controller = ""
 			h.logger.Info("relay.host.disconnect.done", "session", conn.SessionID())
@@ -526,6 +530,9 @@ func (h *Hub) HasParticipants(sessionID string) bool {
 
 // HandleClientFrame processes client input/control frames and forwards to host.
 func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *protocolpb.Frame) error {
+	if frame.GetManagement() != nil {
+		return fmt.Errorf("session management requires the owner-authenticated HTTP API")
+	}
 	h.mu.Lock()
 	state := h.sessions[conn.SessionID()]
 	if state == nil {

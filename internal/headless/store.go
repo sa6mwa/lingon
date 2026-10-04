@@ -14,6 +14,7 @@ const stateVersion = 1
 // SessionRecord is persisted metadata for a headless session.
 type SessionRecord struct {
 	SessionID  string    `json:"session_id"`
+	Name       string    `json:"name"`
 	PID        int       `json:"pid"`
 	SocketPath string    `json:"socket_path"`
 	StartedAt  time.Time `json:"started_at"`
@@ -177,6 +178,7 @@ type stateSignal struct {
 
 type sessionSignal struct {
 	SessionID  string    `json:"session_id"`
+	Name       string    `json:"name"`
 	PID        int       `json:"pid"`
 	SocketPath string    `json:"socket_path"`
 	StartedAt  time.Time `json:"started_at"`
@@ -194,6 +196,7 @@ func marshalSignificantState(state *State) ([]byte, error) {
 	for id, rec := range state.Sessions {
 		signal.Sessions[id] = sessionSignal{
 			SessionID:  rec.SessionID,
+			Name:       rec.Name,
 			PID:        rec.PID,
 			SocketPath: rec.SocketPath,
 			StartedAt:  rec.StartedAt,

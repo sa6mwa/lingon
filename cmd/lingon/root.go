@@ -216,6 +216,8 @@ func NewRootCommand(loader *lingon.Loader) *cobra.Command {
 				}()
 			}
 			return lingon.Interactive(ctx, lingon.InteractiveOptions{
+				ConfigDir:                   configDirForLoader(loader),
+				ConfigFile:                  existingConfigFileForLoader(loader),
 				Endpoint:                    endpointValue,
 				Token:                       tokenValue,
 				AuthFile:                    authPathValue,

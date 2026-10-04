@@ -37,6 +37,10 @@ import (
 
 // Options configures a headless daemon session.
 type Options struct {
+	// ConfigFile preserves host configuration defaults when starting detached terminals.
+	ConfigFile string
+	// HeadlessExecutable overrides the Lingon executable for embedded hosts.
+	HeadlessExecutable      string
 	ConfigDir               string
 	Endpoint                string
 	Token                   string
@@ -253,6 +257,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer cancelRunner()
 	runnerReadyCh := make(chan error, 1)
 	runner := session.New(session.Options{
+		ConfigDir:                   d.opts.ConfigDir,
+		ConfigFile:                  d.opts.ConfigFile,
+		HeadlessExecutable:          d.opts.HeadlessExecutable,
+		OnRename:                    d.persistRename,
 		Endpoint:                    d.opts.Endpoint,
 		Token:                       d.opts.Token,
 		AuthFile:                    d.opts.AuthFile,
@@ -322,6 +330,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/client", d.handleWSClient)
+	mux.HandleFunc("/sessions/manage", d.handleSessionManagement)
 	mux.HandleFunc("/internal/headless/wall", d.handleInternalWall)
 	detachCh := make(chan string, 1)
 	mux.HandleFunc("/internal/headless/detach", d.handleInternalDetach(detachCh))
@@ -1140,6 +1149,7 @@ func (d *Daemon) writeState(status, lastErr string) error {
 		rec := state.Sessions[d.sessionID]
 		if rec.SessionID == "" {
 			rec.SessionID = d.sessionID
+			rec.Name = d.sessionID
 			rec.StartedAt = d.startedAt
 		}
 		rec.PID = os.Getpid()

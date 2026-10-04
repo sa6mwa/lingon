@@ -69,6 +69,35 @@ class AppViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
+    fun sessionManagementRequiresConnectedOwnerButDoesNotRequireControl() = runTest {
+        val repository = FakeRepository()
+        val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        val owner = viewModel.state.value.copy(loggedIn = true, activeSessionId = "host", connectionState = ConnectionState.Connected, hasControl = false)
+        for (state in listOf(owner.copy(shareToken = "shared", hasControl = true), owner.copy(requiresAppUnlock = true), owner.copy(connectionState = ConnectionState.Disconnected))) {
+            setUiStateForTest(viewModel, state)
+            viewModel.createTerminal()
+            runCurrent()
+        }
+        assertEquals(0, repository.managementRequests.size)
+        setUiStateForTest(viewModel, owner)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        repository.onManage = { release.await() }
+        viewModel.renameSession("build 🦊")
+        runCurrent()
+        assertTrue(viewModel.state.value.sessionManagementBusy)
+        viewModel.createTerminal()
+        runCurrent()
+        assertEquals(1, repository.managementRequests.size)
+        assertEquals("rename", repository.managementRequests.single().kind)
+        assertEquals("build 🦊", repository.managementRequests.single().name)
+        assertEquals("host", repository.managementRequests.single().sessionId)
+        release.complete(Unit)
+        runCurrent()
+        assertFalse(viewModel.state.value.sessionManagementBusy)
+    }
+
+    @Test
     fun shareAuthenticationRetriesNetworkAndServerFailuresWithBackoff() = runTest {
         val wsClient = FakeWsClient()
         var attempts = 0
@@ -2390,6 +2419,8 @@ private class FakeRepository(
     override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(savedEndpoints)
     override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(initialCertificates)
     private val lastActiveSessionByEndpoint = initialLastActiveSessionByEndpoint.toMutableMap()
+    val managementRequests = mutableListOf<systems.pkt.lingon.data.relay.SessionManagementRequest>()
+    var onManage: (suspend () -> Unit)? = null
     var refreshAuthCalls: Int = 0
     var saveZoomCalls: Int = 0
     var onSetBackgroundWallEnabled: ((Boolean) -> Unit)? = null
@@ -2465,6 +2496,12 @@ private class FakeRepository(
         val cleanedEndpoint = endpoint.trim()
         if (cleanedEndpoint.isBlank()) return null
         return lastActiveSessionByEndpoint[cleanedEndpoint]
+    }
+
+    override suspend fun manageSession(operation: systems.pkt.lingon.data.relay.SessionManagementRequest): systems.pkt.lingon.data.relay.SessionManagementResult {
+        managementRequests += operation
+        onManage?.invoke()
+        return systems.pkt.lingon.data.relay.SessionManagementResult(sessionId = operation.sessionId, name = operation.name)
     }
 
     override suspend fun listSessions(): List<RelaySession> {

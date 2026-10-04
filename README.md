@@ -228,6 +228,31 @@ When switching local headless tabs, a session awaiting its first snapshot keeps
 the displayed contents under a loading banner. Its first snapshot replaces the
 contents; tab switching does not clear the screen.
 
+#### Create and rename sessions
+
+- In `lingon attach` (including `attach -x`), `Ctrl+l c` starts and selects a
+  detached terminal on the selected session's machine, equivalent to `lingon -x`.
+- In ordinary interactive `lingon`, `Ctrl+l c` retains its existing behavior:
+  create another tab in that host process.
+- In either CLI, `Ctrl+l e` opens a rename prompt. Enter saves; Escape cancels.
+- Android exposes **New terminal** and **Rename session** in Settings. The Web
+  UI exposes them in its session menu.
+
+Remote management requires the session's owner account and a connected host;
+it does not require the terminal control lease. Share sessions cannot create or
+rename terminals. Local `attach -x` management works while publishing is offline.
+New detached terminals inherit the host process's startup directory and terminal
+configuration, and survive the creating client or host exiting. Lingon does not
+track the running shell's current directory.
+
+Names are display metadata: renaming preserves the session ID, socket filename,
+connections, and share tokens. Use the original ID for CLI session arguments.
+Names support 1–80 Unicode characters without control characters. Headless names
+persist locally and are advertised again on relay reconnect. Interactive names
+last for that host process's lifetime. If a request's response is lost, refresh
+the session list before trying again; clients do not automatically repeat
+uncertain operations. See [session management design and verification](SESSION_MANAGEMENT.md).
+
 Attach options (selection):
 
 - `-e, --endpoint` relay endpoint (https/wss base URL; assumes `https://` if omitted)

@@ -144,6 +144,7 @@ type Frame struct {
 	//	*Frame_Command
 	//	*Frame_WallInactivityStatus
 	//	*Frame_Activity
+	//	*Frame_Management
 	Payload       isFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -344,6 +345,15 @@ func (x *Frame) GetActivity() *Activity {
 	return nil
 }
 
+func (x *Frame) GetManagement() *SessionManagement {
+	if x != nil {
+		if x, ok := x.Payload.(*Frame_Management); ok {
+			return x.Management
+		}
+	}
+	return nil
+}
+
 type isFrame_Payload interface {
 	isFrame_Payload()
 }
@@ -412,6 +422,10 @@ type Frame_Activity struct {
 	Activity *Activity `protobuf:"bytes,25,opt,name=activity,proto3,oneof"`
 }
 
+type Frame_Management struct {
+	Management *SessionManagement `protobuf:"bytes,26,opt,name=management,proto3,oneof"`
+}
+
 func (*Frame_Hello) isFrame_Payload() {}
 
 func (*Frame_Welcome) isFrame_Payload() {}
@@ -443,6 +457,8 @@ func (*Frame_Command) isFrame_Payload() {}
 func (*Frame_WallInactivityStatus) isFrame_Payload() {}
 
 func (*Frame_Activity) isFrame_Payload() {}
+
+func (*Frame_Management) isFrame_Payload() {}
 
 type Hello struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1732,11 +1748,104 @@ func (*Activity) Descriptor() ([]byte, []int) {
 	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{20}
 }
 
+// Sent only between authenticated relay and host, never in terminal replay history.
+type SessionManagement struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	CorrelationId   string                 `protobuf:"bytes,1,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
+	RequestId       string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Kind            string                 `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
+	Name            string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	ResultSessionId string                 `protobuf:"bytes,5,opt,name=result_session_id,json=resultSessionId,proto3" json:"result_session_id,omitempty"`
+	Error           string                 `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	Completed       bool                   `protobuf:"varint,7,opt,name=completed,proto3" json:"completed,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SessionManagement) Reset() {
+	*x = SessionManagement{}
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionManagement) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionManagement) ProtoMessage() {}
+
+func (x *SessionManagement) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_protocolpb_relay_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionManagement.ProtoReflect.Descriptor instead.
+func (*SessionManagement) Descriptor() ([]byte, []int) {
+	return file_internal_protocolpb_relay_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *SessionManagement) GetCorrelationId() string {
+	if x != nil {
+		return x.CorrelationId
+	}
+	return ""
+}
+
+func (x *SessionManagement) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *SessionManagement) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *SessionManagement) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SessionManagement) GetResultSessionId() string {
+	if x != nil {
+		return x.ResultSessionId
+	}
+	return ""
+}
+
+func (x *SessionManagement) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *SessionManagement) GetCompleted() bool {
+	if x != nil {
+		return x.Completed
+	}
+	return false
+}
+
 var File_internal_protocolpb_relay_proto protoreflect.FileDescriptor
 
 const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\n" +
-	"\x1finternal/protocolpb/relay.proto\x12\x0flingon.protocol\"\xb5\a\n" +
+	"\x1finternal/protocolpb/relay.proto\x12\x0flingon.protocol\"\xfb\a\n" +
 	"\x05Frame\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x10\n" +
@@ -1759,7 +1868,10 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\x0esession_closed\x18\x16 \x01(\v2\x1e.lingon.protocol.SessionClosedH\x00R\rsessionClosed\x124\n" +
 	"\acommand\x18\x17 \x01(\v2\x18.lingon.protocol.CommandH\x00R\acommand\x12]\n" +
 	"\x16wall_inactivity_status\x18\x18 \x01(\v2%.lingon.protocol.WallInactivityStatusH\x00R\x14wallInactivityStatus\x127\n" +
-	"\bactivity\x18\x19 \x01(\v2\x19.lingon.protocol.ActivityH\x00R\bactivityB\t\n" +
+	"\bactivity\x18\x19 \x01(\v2\x19.lingon.protocol.ActivityH\x00R\bactivity\x12D\n" +
+	"\n" +
+	"management\x18\x1a \x01(\v2\".lingon.protocol.SessionManagementH\x00R\n" +
+	"managementB\t\n" +
 	"\apayload\"\xc9\x01\n" +
 	"\x05Hello\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x12\n" +
@@ -1857,7 +1969,16 @@ const file_internal_protocolpb_relay_proto_rawDesc = "" +
 	"\rSessionClosed\x12\x16\n" +
 	"\x06reason\x18\x01 \x01(\tR\x06reason\"\n" +
 	"\n" +
-	"\bActivity*\xb0\x01\n" +
+	"\bActivity\"\xe1\x01\n" +
+	"\x11SessionManagement\x12%\n" +
+	"\x0ecorrelation_id\x18\x01 \x01(\tR\rcorrelationId\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x02 \x01(\tR\trequestId\x12\x12\n" +
+	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\x12*\n" +
+	"\x11result_session_id\x18\x05 \x01(\tR\x0fresultSessionId\x12\x14\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\x12\x1c\n" +
+	"\tcompleted\x18\a \x01(\bR\tcompleted*\xb0\x01\n" +
 	"\vCommandKind\x12\x1c\n" +
 	"\x18COMMAND_KIND_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15COMMAND_KIND_SEND_EOF\x10\x01\x12\x1f\n" +
@@ -1881,7 +2002,7 @@ func file_internal_protocolpb_relay_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_protocolpb_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_internal_protocolpb_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_internal_protocolpb_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_internal_protocolpb_relay_proto_goTypes = []any{
 	(CommandKind)(0),             // 0: lingon.protocol.CommandKind
 	(WallKind)(0),                // 1: lingon.protocol.WallKind
@@ -1906,6 +2027,7 @@ var file_internal_protocolpb_relay_proto_goTypes = []any{
 	(*WallInactivityStatus)(nil), // 20: lingon.protocol.WallInactivityStatus
 	(*SessionClosed)(nil),        // 21: lingon.protocol.SessionClosed
 	(*Activity)(nil),             // 22: lingon.protocol.Activity
+	(*SessionManagement)(nil),    // 23: lingon.protocol.SessionManagement
 }
 var file_internal_protocolpb_relay_proto_depIdxs = []int32{
 	3,  // 0: lingon.protocol.Frame.hello:type_name -> lingon.protocol.Hello
@@ -1924,18 +2046,19 @@ var file_internal_protocolpb_relay_proto_depIdxs = []int32{
 	12, // 13: lingon.protocol.Frame.command:type_name -> lingon.protocol.Command
 	20, // 14: lingon.protocol.Frame.wall_inactivity_status:type_name -> lingon.protocol.WallInactivityStatus
 	22, // 15: lingon.protocol.Frame.activity:type_name -> lingon.protocol.Activity
-	16, // 16: lingon.protocol.Snapshot.cursor:type_name -> lingon.protocol.Cursor
-	6,  // 17: lingon.protocol.Diff.diff_rows:type_name -> lingon.protocol.DiffRow
-	16, // 18: lingon.protocol.Diff.cursor:type_name -> lingon.protocol.Cursor
-	8,  // 19: lingon.protocol.Scrollback.rows:type_name -> lingon.protocol.ScrollbackRow
-	0,  // 20: lingon.protocol.Command.kind:type_name -> lingon.protocol.CommandKind
-	18, // 21: lingon.protocol.Sessions.sessions:type_name -> lingon.protocol.SessionInfo
-	1,  // 22: lingon.protocol.Wall.kind:type_name -> lingon.protocol.WallKind
-	23, // [23:23] is the sub-list for method output_type
-	23, // [23:23] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	23, // 16: lingon.protocol.Frame.management:type_name -> lingon.protocol.SessionManagement
+	16, // 17: lingon.protocol.Snapshot.cursor:type_name -> lingon.protocol.Cursor
+	6,  // 18: lingon.protocol.Diff.diff_rows:type_name -> lingon.protocol.DiffRow
+	16, // 19: lingon.protocol.Diff.cursor:type_name -> lingon.protocol.Cursor
+	8,  // 20: lingon.protocol.Scrollback.rows:type_name -> lingon.protocol.ScrollbackRow
+	0,  // 21: lingon.protocol.Command.kind:type_name -> lingon.protocol.CommandKind
+	18, // 22: lingon.protocol.Sessions.sessions:type_name -> lingon.protocol.SessionInfo
+	1,  // 23: lingon.protocol.Wall.kind:type_name -> lingon.protocol.WallKind
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_internal_protocolpb_relay_proto_init() }
@@ -1960,6 +2083,7 @@ func file_internal_protocolpb_relay_proto_init() {
 		(*Frame_Command)(nil),
 		(*Frame_WallInactivityStatus)(nil),
 		(*Frame_Activity)(nil),
+		(*Frame_Management)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1967,7 +2091,7 @@ func file_internal_protocolpb_relay_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_protocolpb_relay_proto_rawDesc), len(file_internal_protocolpb_relay_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   21,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

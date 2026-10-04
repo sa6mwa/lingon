@@ -13,6 +13,7 @@ import (
 )
 
 type localHeadlessSession struct {
+	Name       string    `json:"name"`
 	ID         string    `json:"id"`
 	PID        int       `json:"pid"`
 	SocketPath string    `json:"socket_path"`
@@ -34,6 +35,7 @@ func listLocalHeadlessSessions(configDir string) ([]localHeadlessSession, error)
 	for _, rec := range records {
 		out = append(out, localHeadlessSession{
 			ID:         rec.SessionID,
+			Name:       rec.Name,
 			PID:        rec.PID,
 			SocketPath: rec.SocketPath,
 			StartedAt:  rec.StartedAt,
@@ -65,7 +67,7 @@ func firstLocalHeadlessSession(sessions []localHeadlessSession) (localHeadlessSe
 		return localHeadlessSession{}, fmt.Errorf("no local headless sessions available")
 	}
 	sort.Slice(sessions, func(i, j int) bool {
-		return sessionorder.Less(sessions[i].ID, sessions[i].ID, sessions[j].ID, sessions[j].ID)
+		return sessionorder.Less(localHeadlessName(sessions[i]), sessions[i].ID, localHeadlessName(sessions[j]), sessions[j].ID)
 	})
 	return sessions[0], nil
 }
@@ -75,7 +77,7 @@ func localSessionsAsRelaySessions(sessions []localHeadlessSession) []lingon.Sess
 	for _, session := range sessions {
 		out = append(out, lingon.Session{
 			ID:     session.ID,
-			Name:   session.ID,
+			Name:   localHeadlessName(session),
 			Status: session.Status,
 		})
 	}
@@ -101,4 +103,11 @@ func detachAllLocalHeadlessSessions(configDir string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func localHeadlessName(session localHeadlessSession) string {
+	if session.Name != "" {
+		return session.Name
+	}
+	return session.ID
 }

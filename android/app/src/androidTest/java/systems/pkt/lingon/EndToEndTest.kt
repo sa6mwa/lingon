@@ -302,6 +302,49 @@ class EndToEndTest {
     }
 
     @Test
+    fun settings_session_management_hidden_for_share() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        attachViaShareToken(token)
+        openSettings()
+        composeRule.onAllNodesWithTag(TestTags.NewTerminalButton).assertCountEquals(0)
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionButton).assertCountEquals(0)
+    }
+
+    @Test
+    fun settings_create_terminal_and_rename_session() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val original = appViewModel().state.value.activeSessionId
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.NewTerminalButton)
+        composeRule.onNodeWithTag(TestTags.NewTerminalButton).performClick()
+        waitUntilNoError(15_000) {
+            val state = appViewModel().state.value
+            state.activeSessionId != original && state.activeSessionHeadless && state.connectionState == ConnectionState.Connected
+        }
+        val created = appViewModel().state.value.activeSessionId!!
+        startedHeadlessSessions += created
+        // The configured harness script retains its echo label when re-executed.
+        assertTerminalResponsive(sessionId = original)
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.RenameSessionButton)
+        composeRule.onNodeWithTag(TestTags.RenameSessionButton).performClick()
+        waitForTag(TestTags.RenameSessionInput)
+        composeRule.onNodeWithTag(TestTags.RenameSessionInput).performTextReplacement("Android build 🦊")
+        composeRule.onNodeWithTag(TestTags.RenameSessionSave).performClick()
+        waitUntilNoError(10_000) {
+            appViewModel().state.value.sessions.any { it.id == created && it.name == "Android build 🦊" }
+        }
+        assertEquals(created, appViewModel().state.value.activeSessionId)
+        assertTerminalResponsive(sessionId = original)
+    }
+
+    @Test
     fun terminal_updates_live() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()

@@ -24,6 +24,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import systems.pkt.lingon.share.ShareTokens
 import systems.pkt.lingon.terminal.TerminalViewportState
 import systems.pkt.lingon.ui.dialogs.AppLockTimeoutDialog
+import systems.pkt.lingon.ui.dialogs.RenameSessionDialog
 import systems.pkt.lingon.ui.dialogs.EndpointDialog
 import systems.pkt.lingon.ui.dialogs.ShareTokenDialog
 import systems.pkt.lingon.ui.dialogs.ThemeDialog
@@ -59,6 +60,7 @@ internal fun LingonAppContent(
         "Lingon"
     }
     var settingsOpen by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(viewportCacheIdentity, state.terminalConnectionEpoch) {
         viewportCache.clear()
@@ -89,6 +91,9 @@ internal fun LingonAppContent(
                     ManageCertificatesScreen(state = state, viewModel = viewModel)
                 } else if (settingsOpen) {
                     SettingsScreen(
+                        sessionManagementAvailable = state.sessionManagementAvailable,
+                        onCreateTerminal = { settingsOpen = false; viewModel.createTerminal() },
+                        onRenameSession = { renameTarget = state.activeSessionId },
                         username = state.username,
                         loggedIn = state.loggedIn,
                         wallInactivityEnabled = state.wallInactivityEnabled,
@@ -141,6 +146,18 @@ internal fun LingonAppContent(
                     LoginScreen(state = state, viewModel = viewModel)
                 }
             }
+        }
+
+        if (renameTarget != null) {
+            RenameSessionDialog(
+                currentName = state.sessions.firstOrNull { it.id == renameTarget }?.name.orEmpty(),
+                onDismiss = { renameTarget = null },
+                onSave = { name ->
+                    if (state.activeSessionId == renameTarget && state.sessionManagementAvailable) viewModel.renameSession(name)
+                    renameTarget = null
+                    settingsOpen = false
+                },
+            )
         }
 
         if (state.showSettings) {

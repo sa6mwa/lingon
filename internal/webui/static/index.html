@@ -67,7 +67,19 @@
           </div>
         </section>
 
+        <dialog id="rename-session-dialog">
+          <form id="rename-session-form">
+            <label class="field">Session name <input id="rename-session-input" required autocomplete="off" /></label>
+            <button type="submit">Save</button>
+            <button id="rename-session-cancel" type="button">Cancel</button>
+          </form>
+        </dialog>
         <aside id="menu" class="menu hidden" aria-hidden="true">
+          <div id="session-management-menu" class="menu-section hidden">
+            <div class="menu-title">Session</div>
+            <button id="new-terminal-btn" type="button">New terminal</button>
+            <button id="rename-session-btn" type="button">Rename session</button>
+          </div>
           <div class="menu-section">
             <div class="menu-title">Display</div>
             <label class="menu-field">

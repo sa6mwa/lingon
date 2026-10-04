@@ -56,6 +56,8 @@ type Publisher struct {
 	OnInput                func([]byte)
 	OnResize               func(cols, rows int)
 	OnCommand              func(kind protocolpb.CommandKind)
+	OnManagement           func(context.Context, *protocolpb.SessionManagement) *protocolpb.SessionManagement
+	management             chan *protocolpb.SessionManagement
 	OnControl              func(holderID string)
 	OnFrame                func(*protocolpb.Frame)
 	OnSessions             func([]*protocolpb.SessionInfo)
@@ -139,6 +141,7 @@ func New(opts Options) *Publisher {
 		tokenRefresher:  opts.TokenRefresher,
 		clock:           opts.Clock,
 		stateChangeCh:   make(chan struct{}, 1),
+		management:      make(chan *protocolpb.SessionManagement, 8),
 	}
 }
 
@@ -153,6 +156,9 @@ func (p *Publisher) Run(ctx context.Context) error {
 	if p.opts.SessionID == "" {
 		return fmt.Errorf("session id is required")
 	}
+	managementCtx, cancelManagement := context.WithCancel(ctx)
+	defer cancelManagement()
+	go p.managementLoop(managementCtx)
 	defer p.closeHTTPClient()
 
 	for {
@@ -497,7 +503,7 @@ func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
 	hello := &protocolpb.Frame{
 		SessionId: p.opts.SessionID,
 		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
-			ClientId:     strings.TrimSpace(p.opts.SessionName),
+			ClientId:     p.sessionName(),
 			Cols:         uint32(p.opts.Cols),
 			Rows:         uint32(p.opts.Rows),
 			WantsControl: p.opts.PublishControl,
@@ -589,6 +595,14 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 			return err
 		}
 		p.touchActivity()
+		if request := frame.GetManagement(); request != nil {
+			select {
+			case p.management <- request:
+			default:
+				p.SendManagement(&protocolpb.SessionManagement{CorrelationId: request.CorrelationId, RequestId: request.RequestId, Kind: request.Kind, Completed: true, Error: "session management busy"})
+			}
+			continue
+		}
 		if hello := frame.GetHello(); hello != nil {
 			p.sendScrollbackSnapshot()
 			p.sendSnapshot()

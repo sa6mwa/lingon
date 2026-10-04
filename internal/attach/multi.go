@@ -27,6 +27,7 @@ import (
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/retryafter"
+	"pkt.systems/lingon/internal/sessionmanage"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
 	"pkt.systems/lingon/internal/trace"
@@ -307,6 +308,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	var stopMissingRefresh func()
 	var applySessions func([]SessionInfo)
 	var activateView func(string) error
+	var createdSessionID string
+	managementBusy := false
 	views := make(map[string]*sessionView)
 	backoffAttempts := make(map[string]int)
 	removedSessions := make(map[string]struct{})
@@ -1619,6 +1622,16 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		if needsConnect || needsActivate {
 			_ = activateView(nextActive)
 		}
+		mu.Lock()
+		created := createdSessionID
+		_, discovered := sessionByID(sessions, created)
+		if discovered {
+			createdSessionID = ""
+		}
+		mu.Unlock()
+		if discovered {
+			_ = activateView(created)
+		}
 		renderTabs()
 	}
 
@@ -1802,6 +1815,36 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			readCh <- data
 		}
 	}()
+	var rename control.RenamePrompt
+	manageSession := func(client *Client, req sessionmanage.Request) {
+		mu.Lock()
+		if managementBusy {
+			mu.Unlock()
+			applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusError, Message: "session management busy", Duration: 3 * time.Second})
+			return
+		}
+		managementBusy = true
+		mu.Unlock()
+		applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusConnected, Message: "Updating session…", Duration: 15 * time.Second})
+		go func() {
+			result, err := client.Manage(ctx, req)
+			if ctx.Err() != nil {
+				return
+			}
+			mu.Lock()
+			managementBusy = false
+			if err == nil && req.Kind == "create" {
+				createdSessionID = result.SessionID
+			}
+			mu.Unlock()
+			if err != nil {
+				applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusError, Message: err.Error(), Duration: 5 * time.Second})
+				return
+			}
+			clearConnectionStatus()
+			forceRefreshSessions()
+		}()
+	}
 	var prefix control.Prefix
 	var scrollState scrollInputState
 	pending := make([]byte, 0, 2048)
@@ -1985,6 +2028,26 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 			processNormalByte := func(b byte) bool {
 				_, client, _, _, _ := activeViewSnapshot()
+				if rename.DiscardEscapeTail(b) {
+					return true
+				}
+				if rename.Active {
+					name, done := rename.Feed(b)
+					if !done {
+						applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusConnected, Message: rename.Label(), Duration: 24 * time.Hour})
+						return true
+					}
+					clearConnectionStatus()
+					if name != "" {
+						mu.Lock()
+						target := views[rename.SessionID]
+						mu.Unlock()
+						if target != nil && target.client != nil {
+							manageSession(target.client, sessionmanage.Request{RequestID: target.client.newClientID(), SessionID: rename.SessionID, Kind: "rename", Name: name})
+						}
+					}
+					return true
+				}
 				helpVisible := ui.Read().HelpVisible
 				if uiAction, ok := mvu.ActionForHelpDismissKey(helpVisible, b); ok {
 					ui.ApplyAction(uiAction)
@@ -2038,8 +2101,15 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							client.RenderCurrent()
 						}
 					case control.ActionNewPTY:
-						// Attach does not support spawning host local PTY sessions.
-						// Keep Ctrl+L c as a no-op in both relay and local-headless modes.
+						if client != nil {
+							manageSession(client, sessionmanage.Request{RequestID: client.newClientID(), SessionID: client.SessionID, Kind: "create"})
+						}
+						return true
+					case control.ActionRename:
+						if client != nil {
+							rename.Begin(client.SessionID)
+							applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusConnected, Message: rename.Label(), Duration: 24 * time.Hour})
+						}
 						return true
 					case control.ActionNextTab:
 						next, active := resolveNextTab(1)

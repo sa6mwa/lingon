@@ -831,6 +831,7 @@ func startLingonXHeadlessSessionCLI(t *testing.T, homeDir, sessionID string) {
 	aliasPath := lingonXAliasPath(t)
 	cmd := exec.Command(
 		aliasPath,
+		"--offline", // This local-only fixture has no relay credentials.
 		"--session", sessionID,
 		"--shell", fixedPromptEmitRowsBash(t),
 		"--geometry", "40x10",

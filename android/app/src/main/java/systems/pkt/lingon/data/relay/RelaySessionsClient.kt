@@ -5,8 +5,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.SerializationException
 import okhttp3.HttpUrl
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
+import java.io.IOException
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.data.ApiException
@@ -24,6 +29,35 @@ class RelaySessionsClient(
             .get()
             .build()
         return executeSessionsJson(request, base)
+    }
+
+    suspend fun manageSession(operation: SessionManagementRequest): SessionManagementResult {
+        val base = baseEndpoint()
+        val request = Request.Builder()
+            .url(buildUrl(base, "sessions/manage"))
+            .post(LingonJson.encodeToString(SessionManagementRequest.serializer(), operation).toRequestBody("application/json".toMediaType()))
+            .build()
+        return withContext(Dispatchers.IO) {
+            // A lost response must not silently repeat a process-creation request.
+            val client = httpClientProvider.clientFor(base).newBuilder()
+                .retryOnConnectionFailure(false).callTimeout(15, TimeUnit.SECONDS).build()
+            try {
+                client.newCall(request).execute().use { response ->
+                    val body = response.body.string()
+                    if (!response.isSuccessful) {
+                        val error = runCatching { LingonJson.decodeFromString(SessionManagementResult.serializer(), body).error }.getOrDefault("")
+                        throw ApiException(error.ifEmpty { "session operation rejected (${response.code})" }, response.code)
+                    }
+                    val result = LingonJson.decodeFromString(SessionManagementResult.serializer(), body)
+                    if (result.error.isNotEmpty()) throw ApiException(result.error, response.code)
+                    result
+                }
+            } catch (err: IOException) {
+                throw ApiException("Session operation outcome unknown; refresh sessions before trying again")
+            } catch (err: SerializationException) {
+                throw ApiException("Session operation outcome unknown; refresh sessions before trying again")
+            }
+        }
     }
 
     fun streamSessions(): Flow<List<RelaySession>> = emptyFlow()

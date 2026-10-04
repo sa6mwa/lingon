@@ -3,6 +3,8 @@ package systems.pkt.lingon.data
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.map
+import systems.pkt.lingon.data.relay.SessionManagementRequest
+import systems.pkt.lingon.data.relay.SessionManagementResult
 import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.data.relay.RelayWallEventsPage
 import systems.pkt.lingon.data.relay.RelaySessionsClient
@@ -95,6 +97,8 @@ class LingonRepository(
     override suspend fun loadLastActiveSessionId(endpoint: String): String? {
         return lastActiveSessionStore.load(endpoint)
     }
+
+    override suspend fun manageSession(operation: SessionManagementRequest): SessionManagementResult = sessionsClient.manageSession(operation)
 
     override suspend fun listSessions(): List<RelaySession> {
         return sessionsClient.listSessions()

@@ -109,6 +109,7 @@ func (s *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("/auth/logout/clients", s.handleLogoutClients)
 	mux.HandleFunc("/themes", s.handleThemes)
 	mux.HandleFunc("/sessions", s.handleListSessions)
+	mux.HandleFunc("/sessions/manage", s.handleSessionManagement)
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/users/", s.handleUserAction)
 	mux.HandleFunc("/share/create", s.handleShareCreate)
@@ -1087,10 +1088,12 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 	}
 	replacedHost := s.Hub.registerHost(ws, frame.SessionId, cols, rows)
 	readDone := make(chan struct{})
-	go func() {
-		s.serveWSLoop(ctx, ws)
-		close(readDone)
-	}()
+	startReading := func() {
+		go func() {
+			s.serveWSLoop(ctx, ws)
+			close(readDone)
+		}()
+	}
 	if s.Store != nil {
 		now := time.Now().UTC()
 		if !sessionExists {
@@ -1119,6 +1122,9 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 			Rows:             rows,
 			LastSeenAt:       now,
 		})
+		// Install registration metadata before consuming runtime name updates.
+		// Start the reader before persistence so WebSocket pings still get answered.
+		startReading()
 		if err := s.persist(); err != nil {
 			closeReplacedConnection(replacedHost, "superseded by reconnect")
 			s.Hub.Unregister(ws)
@@ -1128,6 +1134,8 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 			<-readDone
 			return
 		}
+	} else {
+		startReading()
 	}
 	closeReplacedConnection(replacedHost, "superseded by reconnect")
 	logger.Info("relay.host.connect.done", "session", frame.SessionId, "reconnected", reconnected, "ip", remoteIP)
@@ -1344,6 +1352,10 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 
 		switch ws.role {
 		case RoleHost:
+			if management := frame.GetManagement(); management != nil {
+				s.handleManagementResult(ctx, ws, management)
+				continue
+			}
 			if frame.GetActivity() != nil {
 				if svc := s.wallService(); svc != nil {
 					svc.markActivity(ws.sessionID, time.Now().UTC())

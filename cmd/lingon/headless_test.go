@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"pkt.systems/lingon"
+	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/headlessd"
 )
 
@@ -32,20 +34,42 @@ func TestHeadlessAliasEnabled(t *testing.T) {
 	}
 }
 
-func TestWithEnvReplacesExistingKey(t *testing.T) {
-	env := []string{"A=1", "X=old", "B=2"}
-	out := withEnv(env, "X", "new")
-	found := false
-	for _, e := range out {
-		if e == "X=new" {
-			found = true
-		}
-		if e == "X=old" {
-			t.Fatalf("old key retained: %v", out)
+func TestLocalHeadlessSelectionUsesDisplayNameThenStableID(t *testing.T) {
+	for _, test := range []struct {
+		sessions []localHeadlessSession
+		wantID   string
+	}{
+		{[]localHeadlessSession{{ID: "a", Name: "Zulu"}, {ID: "z", Name: "Alpha"}}, "z"},
+		{[]localHeadlessSession{{ID: "b", Name: "same"}, {ID: "a", Name: "same"}}, "a"},
+		{[]localHeadlessSession{{ID: "a", Name: "zulu"}, {ID: "b"}}, "b"},
+	} {
+		got, err := firstLocalHeadlessSession(test.sessions)
+		if err != nil || got.ID != test.wantID {
+			t.Fatalf("selected %q want %q error=%v", got.ID, test.wantID, err)
 		}
 	}
-	if !found {
-		t.Fatalf("new key not found: %v", out)
+}
+
+func TestHeadlessChildConfigFileSelection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINGON_CONFIG_DIR", dir)
+	loader := lingon.NewLoader()
+	if _, err := loader.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if got := existingConfigFileForLoader(loader); got != "" {
+		t.Fatalf("optional missing config became mandatory: %q", got)
+	}
+	path := filepath.Join(dir, "selected.yaml")
+	if err := os.WriteFile(path, []byte("terminal:\n  term: screen-256color\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loader.SetConfigFile(path)
+	if _, err := loader.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if got := existingConfigFileForLoader(loader); got != path {
+		t.Fatalf("selected config lost: %q", got)
 	}
 }
 
@@ -66,7 +90,7 @@ func TestHeadlessStartupReporterWritesReadyStatus(t *testing.T) {
 	}
 	reporter.Close()
 
-	status, err := waitForHeadlessStartupStatus(readFile, nil, "")
+	status, err := headless.ReadStartupStatus(context.Background(), readFile)
 	if err != nil {
 		t.Fatalf("waitForHeadlessStartupStatus: %v", err)
 	}
@@ -89,7 +113,7 @@ func TestHeadlessStartupReporterWritesFailureWithOfflineHint(t *testing.T) {
 	}
 	reporter.Close()
 
-	status, err := waitForHeadlessStartupStatus(readFile, nil, "")
+	status, err := headless.ReadStartupStatus(context.Background(), readFile)
 	if err != nil {
 		t.Fatalf("waitForHeadlessStartupStatus: %v", err)
 	}

@@ -54,6 +54,9 @@ let termPadding = null;
 let graphemeProviderSet = false;
 let sessions = [];
 let activeSessionId = "";
+let createdSessionId = "";
+let managementBusy = false;
+let renameSessionId = "";
 let sessionRefreshTimer = null;
 let wallPollTimer = null;
 let wallPollInFlight = false;
@@ -2185,6 +2188,7 @@ function applySessionsList(list) {
     destroyView(view);
     views.delete(id);
   }
+  const created = sessions.find((s) => s.id === createdSessionId);
   const current = sessions.find((s) => s.id === activeSessionId);
   if (!current) {
     activeSessionId = pickSessionId(sessions);
@@ -2197,7 +2201,10 @@ function applySessionsList(list) {
     }
   }
   renderTabs();
-  if (activeSessionId) {
+  if (created) {
+    createdSessionId = "";
+    switchSession(created.id);
+  } else if (activeSessionId) {
     switchSession(activeSessionId);
     if (sessions.length === 1) {
       requestFocusActiveView();
@@ -2371,6 +2378,7 @@ function cycleActiveSession(direction) {
 }
 
 function handleSessionShortcut(event) {
+  if (document.getElementById("rename-session-dialog").open) return;
   if (!event || !event.ctrlKey) {
     return;
   }
@@ -2991,3 +2999,63 @@ window.addEventListener("resize", () => {
     positionMenu();
   }
 });
+
+const managementMenu = document.getElementById("session-management-menu");
+const newTerminalButton = document.getElementById("new-terminal-btn");
+const renameSessionButton = document.getElementById("rename-session-btn");
+const renameDialog = document.getElementById("rename-session-dialog");
+const renameInput = document.getElementById("rename-session-input");
+
+function updateManagementActions() {
+  const view = getActiveView();
+  const available = !!(view && !view.shareSession && activeSessionId);
+  managementMenu.classList.toggle("hidden", !available);
+  newTerminalButton.disabled = managementBusy || !view || !view.ws || view.ws.readyState !== WebSocket.OPEN;
+  renameSessionButton.disabled = newTerminalButton.disabled;
+}
+
+async function manageSession(kind, sessionId, name = "") {
+  const view = getActiveView();
+  if (managementBusy || !view || view.shareSession || !sessionId) return;
+  managementBusy = true;
+  updateManagementActions();
+  try {
+    // No automatic mutation retries: a lost response has an uncertain outcome.
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const requestId = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+    const response = await fetch("sessions/manage", {
+      method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId, session_id: sessionId, kind, name }),
+    });
+    const result = await response.json();
+    if (!response.ok || result.error) throw new Error(result.error || "Session operation failed");
+    if (getActiveView()?.shareSession || terminalView.classList.contains("hidden")) return;
+    if (kind === "create") createdSessionId = result.session_id;
+    await refreshSessionsWithAuth();
+  } catch (error) {
+    setStatusBanner(error instanceof TypeError || error instanceof SyntaxError ? "Session operation outcome unknown; refresh sessions before trying again" : error.message);
+  } finally {
+    managementBusy = false;
+    updateManagementActions();
+  }
+}
+
+newTerminalButton.addEventListener("click", () => manageSession("create", activeSessionId));
+renameSessionButton.addEventListener("click", () => {
+  renameSessionId = activeSessionId;
+  renameInput.value = sessionLabelById(renameSessionId);
+  renameDialog.showModal();
+  renameInput.focus();
+  renameInput.select();
+});
+document.getElementById("rename-session-cancel").addEventListener("click", () => renameDialog.close());
+document.getElementById("rename-session-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const name = renameInput.value.trim();
+  if (!name || [...name].length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) { renameInput.setCustomValidity("Use 1–80 characters without control characters"); renameInput.reportValidity(); return; }
+  renameDialog.close();
+  manageSession("rename", renameSessionId, name);
+});
+renameInput.addEventListener("input", () => renameInput.setCustomValidity(""));
+menuToggle.addEventListener("click", updateManagementActions);

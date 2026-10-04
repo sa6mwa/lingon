@@ -26,8 +26,9 @@ import (
 )
 
 type localSession struct {
-	id   string
-	name string
+	id     string
+	nameMu sync.RWMutex
+	name   string
 
 	shell string
 	term  string
@@ -522,6 +523,8 @@ func (s *localSession) ID() string {
 }
 
 func (s *localSession) Name() string {
+	s.nameMu.RLock()
+	defer s.nameMu.RUnlock()
 	return s.name
 }
 

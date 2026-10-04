@@ -505,6 +505,7 @@ fi
 echo "Building harness..."
 (
   cd "${ROOT_DIR}"
+  go build -buildvcs=true -o "${ROOT_DIR}/bin/lingon" ./cmd/lingon
   go build -buildvcs=true -o "${HARNESS_BIN}" ./cmd/lingon-android-harness
 )
 
