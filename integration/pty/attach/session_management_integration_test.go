@@ -325,3 +325,65 @@ func TestSessionManagementStartupPerformance(t *testing.T) {
 	slices.Sort(remote)
 	t.Logf("five alternating starts: direct -x median=%s routed creation median=%s added latency=%s", direct[2], remote[2], remote[2]-direct[2])
 }
+
+// This optional companion to the startup gate compares direct startup under one
+// harness, alternating executable order and detaching each child before the next.
+// Build the baseline with the same toolchain/flags as buildLingonAttachBinary.
+func TestSessionManagementStartupBaselineComparison(t *testing.T) {
+	baseline := os.Getenv("LINGON_TEST_STARTUP_BASELINE_BINARY")
+	if baseline == "" {
+		t.Skip("requires an explicitly built baseline executable")
+	}
+	h := newHarness(t, ptytest.WithClock(clock.New()))
+	home := shortHomeDir(t)
+	cfg := filepath.Join(home, lingon.DefaultConfigDirName)
+	cleanupManagedTerminals(t, cfg)
+	fixed := buildLingonAttachBinary(t)
+	// Match filesystem, directory, path length and permissions: executing one
+	// binary from the checkout and another from the harness temp directory can
+	// measure executable-location effects instead of the source change.
+	copyExecutable := func(source, name string) string {
+		t.Helper()
+		data, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(filepath.Dir(fixed), name)
+		if err := os.WriteFile(target, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return target
+	}
+	baseline = copyExecutable(baseline, "baseline-lingon-repro")
+	fixed = copyExecutable(fixed, "modified-lingon-repro")
+	var before, after []time.Duration
+	for pair := 0; pair < 20; pair++ {
+		executables := []string{baseline, fixed}
+		if pair%2 != 0 {
+			executables = []string{fixed, baseline}
+		}
+		for order, executable := range executables {
+			id := fmt.Sprintf("paired-startup-%d-%d", pair, order)
+			cmd := exec.Command(executable, "-x", "--config-dir", cfg, "--session", id, "--shell", fixedPromptEmitRowsBash(t), "--endpoint", h.Endpoint(), "--token", h.AccessToken(), "--insecure", "--cols", "100", "--rows", "24")
+			cmd.Env = testAttachCLIEnv(home)
+			started := time.Now()
+			output, err := cmd.CombinedOutput()
+			elapsed := time.Since(started)
+			if err != nil {
+				t.Fatalf("paired startup: %v %s", err, output)
+			}
+			if executable == baseline {
+				before = append(before, elapsed)
+			} else {
+				after = append(after, elapsed)
+			}
+			if err := headless.DetachSession(context.Background(), cfg, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	slices.Sort(before)
+	slices.Sort(after)
+	median := func(samples []time.Duration) time.Duration { return (samples[9] + samples[10]) / 2 }
+	t.Logf("twenty alternating direct-startup pairs: baseline median=%s p95=%s fixed median=%s p95=%s ratio=%.4f", median(before), before[18], median(after), after[18], float64(median(after))/float64(median(before)))
+}

@@ -157,6 +157,7 @@ type WallInactivityToggleResult struct {
 type Runner struct {
 	management  *sessionmanage.Manager
 	opts        Options
+	geometryMu  sync.RWMutex
 	logger      pslog.Logger
 	runCtx      context.Context
 	stdoutMu    sync.Mutex
@@ -339,23 +340,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	defer r.effects.StopAll()
 	defer r.stopLocalWallNotifications()
 	r.applyTheme(resolveThemeName(r.opts.Theme))
-	if r.opts.Cols <= 0 || r.opts.Rows <= 0 {
-		cols, rows := termSizeAny(r.stdout(), r.stdin())
-		if cols > 0 && rows > 0 {
-			if r.opts.Cols <= 0 {
-				r.opts.Cols = cols
-			}
-			if r.opts.Rows <= 0 {
-				r.opts.Rows = rows
-			}
-		}
-	}
-	if r.opts.Cols <= 0 {
-		r.opts.Cols = config.DefaultTerminalCols
-	}
-	if r.opts.Rows <= 0 {
-		r.opts.Rows = config.DefaultTerminalRows
-	}
+	r.initializeTerminalGeometry()
 	if r.opts.MaxReplayScreens <= 0 {
 		r.opts.MaxReplayScreens = 10
 	}
@@ -969,7 +954,7 @@ func (r *Runner) forceRedrawWithMode(stdout *os.File, forceFull bool) {
 	if snap == nil {
 		cols, rows := termSizeAny(stdout, r.stdin())
 		if cols <= 0 || rows <= 0 {
-			cols, rows = r.opts.Cols, r.opts.Rows
+			cols, rows = r.terminalGeometry()
 		}
 		snap = mvu.BlankSnapshot(cols, rows)
 	}
@@ -1259,7 +1244,7 @@ func (r *Runner) renderSnapshotWithOverlays(ctx context.Context, stdout, stdin *
 	suppressTabs := r.tabSuppressed(activeID)
 	cols, rows := termSizeAny(stdout, stdin)
 	if cols <= 0 || rows <= 0 {
-		cols, rows = r.opts.Cols, r.opts.Rows
+		cols, rows = r.terminalGeometry()
 	}
 	return r.renderHostMVU(ctx, stdout, snap, cols, rows, false, suppressTabs)
 }
@@ -1906,13 +1891,14 @@ func parseSessionSequenceSuffix(name string) int {
 }
 
 func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, offline bool, tokenRefresher func(context.Context) (string, error), gate *netgate.Gate, stdout, stdin *os.File, debugRemoteInput bool) (*localSession, error) {
+	cols, rows := r.terminalGeometry()
 	session := newLocalSession(ctx, localSessionOptions{
 		ID:                id,
 		Name:              name,
 		Shell:             r.opts.Shell,
 		Term:              r.opts.Term,
-		Cols:              r.opts.Cols,
-		Rows:              r.opts.Rows,
+		Cols:              cols,
+		Rows:              rows,
 		ScrollbackLines:   r.opts.ScrollbackLines,
 		Respawn:           respawn,
 		Offline:           offline,
@@ -1951,8 +1937,8 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 			SessionID:        session.ID(),
 			SessionName:      session.Name(),
 			Headless:         r.opts.AllowRemoteResize,
-			Cols:             r.opts.Cols,
-			Rows:             r.opts.Rows,
+			Cols:             cols,
+			Rows:             rows,
 			PublishControl:   r.opts.PublishControl,
 			MaxReplayScreens: r.opts.MaxReplayScreens,
 			ReconnectJitter:  r.opts.ReconnectJitter,
@@ -2118,7 +2104,7 @@ func (r *Runner) handleLocalOutput(stdout, stdin *os.File) func(id string, data 
 		suppressTabs := r.tabSuppressed(activeID)
 		cols, rows := termSizeAny(stdout, stdin)
 		if cols <= 0 || rows <= 0 {
-			cols, rows = r.opts.Cols, r.opts.Rows
+			cols, rows = r.terminalGeometry()
 		}
 		if err := r.renderHostMVU(context.Background(), stdout, snap, cols, rows, forceFull, suppressTabs); err != nil {
 			r.logger.Debug("session.render.failed", "err", err, "session", id)
@@ -3224,7 +3210,8 @@ func (r *Runner) takeControlLocal(local *localSession) {
 		r.logger.Trace("session.local.take_control", "session", local.ID())
 	}
 	local.takeControl()
-	r.resizeLocalSession(local, r.opts.Cols, r.opts.Rows)
+	cols, rows := r.terminalGeometry()
+	r.resizeLocalSession(local, cols, rows)
 }
 
 func (r *Runner) resizeLocalSession(local *localSession, cols, rows int) {

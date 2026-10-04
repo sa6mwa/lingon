@@ -57,7 +57,8 @@ func (r *Runner) Manage(ctx context.Context, req sessionmanage.Request) sessionm
 				return sessionmanage.Result{SessionID: id, Name: record.Name}
 			}
 		}
-		args := []string{"-x", "--config-dir", cfg, "--session", id, "--cols", strconv.Itoa(r.opts.Cols), "--rows", strconv.Itoa(r.opts.Rows), "--term", r.opts.Term, "--respawn=" + strconv.FormatBool(r.opts.Respawn), "--scrollback-lines", strconv.Itoa(r.opts.ScrollbackLines)}
+		cols, rows := r.terminalGeometry()
+		args := []string{"-x", "--config-dir", cfg, "--session", id, "--cols", strconv.Itoa(cols), "--rows", strconv.Itoa(rows), "--term", r.opts.Term, "--respawn=" + strconv.FormatBool(r.opts.Respawn), "--scrollback-lines", strconv.Itoa(r.opts.ScrollbackLines)}
 		if r.opts.ConfigFile != "" {
 			args = append(args, "--config", r.opts.ConfigFile)
 		}
