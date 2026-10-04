@@ -252,7 +252,6 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	}
 
 	c.stdin = c.stdinReader()
-	c.stdout = c.stdoutWriter()
 	c.stderr = c.stderrWriter()
 	ownsStdin := c.Stdin != nil
 	if closer, ok := c.stdin.(io.Closer); ok {
