@@ -29,6 +29,56 @@ Required status values:
 
 ## Active Items
 
+### B-142 Android bootstrap applies sessions from a superseded context
+
+- Status: `resolved`
+- Area: `android`, `authentication`, `session-list`
+- Report: B-139's gated-response investigation exposed the same stale-response defect in the initial `bootstrapSessions` request. A delayed successful old-account response can restore sessions/login state after logout or switching endpoints.
+- Intended behavior: Fence bootstrap results and failures to the context that issued the request, preserving the new context's sessions, login state, and status.
+- Fix: A shared session-context generation and endpoint/username/share identity check fences bootstrap success and failure, management results, and active-session selection after a suspended saved-preference lookup. Stale success cannot restore old sessions/login state; stale errors cannot clear the new account's sessions/status. Current-context recovery retains its existing behavior.
+- Regression: `bootstrapSessionFetchIsIgnoredAfterEndpointChange` and `bootstrapSessionFetchIsIgnoredAfterLogout` fail before the fence (`review-followup-bootstrap-before-unit.log`). `staleBootstrapAuthenticationFailureDoesNotClearNewAccount` fails before the fence (`review-followup-bootstrap-error-before-unit.log`), and `pendingSessionPreferenceCannotRestoreOldActiveSessionAfterEndpointChange` fails before the preference check (`review-followup-preference-before-unit.log`). All pass in the full unit suite after. `bootstrap_session_fetch_does_not_restore_old_endpoint_sessions` passes against the real relay with an explicitly gated response and actual Android UI; the login screen remains visible after the old result completes.
+
+### B-139 Android applies superseded management session lists
+
+- Status: `resolved`
+- Area: `android`, `session-management`
+- Report: Review `codex-review.normal-trunk.6IqSbR.log` at `089c399` finds that logout or endpoint switching during the post-management session fetch allows old sessions/caches and success status into the new context.
+- Intended behavior: Revalidate the management generation and authentication context after the suspended fetch, before applying any result or selecting a created terminal.
+- Fix: Fetch separately, then recheck the issuing context before caching sessions or assigning the created-session selection. Recheck again before publishing success/error status; the shared preference-selection fence also prevents a later suspended lookup from restoring an old active session.
+- Regression: `managementSessionFetchIsIgnoredAfterEndpointChange` and `managementSessionFetchIsIgnoredAfterLogout` cover create and rename with an explicitly released session response. Both fail with the post-fetch fence removed (`review-followup-management-isolated-before-unit.log`) and pass with it restored. `management_session_fetch_does_not_restore_old_endpoint_sessions` passes using a real rename, gated real session-list response, endpoint change, and Android UI state assertions.
+- Fixture audit: Early fixtures accidentally gated initial bootstrap or returned old data to a new endpoint request (`review-followup-android-before-unit.log`, `review-followup-android-after-unit.log`, `review-followup-management-before-unit.log`, `review-followup-android-final-unit.log`). Those management failures are not accepted as repro evidence. The final fixture installs its gate after initialization and rejects fresh requests in the unauthenticated new context. The bootstrap issue exposed during that investigation is independently reproduced and fixed as B-142.
+
+### B-140 Offline host rename leaves the old tab label
+
+- Status: `resolved`
+- Area: `session-management`, `host-tui`
+- Report: Review `codex-review.normal-trunk.6IqSbR.log` finds that renaming updates the local name but repaints an unchanged tab model. Offline/unpublished hosts have no relay update to rebuild it.
+- Intended behavior: Ctrl+L e changes the visible local tab label immediately, preserving session identity and terminal rendering invariants.
+- Fix: Rebuild the tab model from local names and the current remote-session cache before the existing repaint. No new relay request or alternate rendering path is introduced.
+- Regression: `TestOfflineHostRenameUpdatesVisibleTabWithoutRelay` drives actual Ctrl+L e through a `ptytest`-owned host PTY with an injected mock clock, checks row 1 for the new label and absence of the old label, then drives terminal input. It fails before (`review-followup-offline-before.log`) and passes after with the race detector (`review-followup-offline-after.log`). Online/headless lifecycle and permanent tab-switch no-flicker tests also pass, unmodified.
+
+### B-141 Android truncates links at wide Unicode continuation cells
+
+- Status: `resolved`
+- Area: `android`, `terminal-links`
+- Report: Review `codex-review.normal-trunk.6IqSbR.log` finds that a zero-rune continuation cell terminates `https://example.test/日本`, opening a truncated URL.
+- Intended behavior: Extract the full URL once and retain the continuation cell's tappable hit area, including the last wide character. Actual whitespace/concealed cells and hard row boundaries still delimit links.
+- Fix: Omit zero-rune continuation cells from extracted text while extending the preceding character's mapped hit area. UTF-16 mapping retains complete Japanese, supplementary emoji, and combining-grapheme paths. Existing whitespace, hidden-cell, punctuation, and row-boundary handling remain.
+- Regression: `wideUnicodeLinksKeepFullUrlAndContinuationHitArea` fails before with `/日本` truncated to `/日` (`review-followup-android-before-unit.log`) and passes after, asserting every occupied link cell and the following delimiter. `TerminalGridViewInstrumentedTest.wideUnicodeLinkTapOnLastContinuationOpensFullUrl` passes with actual motion events on the final continuation cell, checking the full URL in an Android ACTION_VIEW intent. Existing link and selection instrumentation also passes.
+
+#### Shared verification for B-139–B-142
+
+- Full Android unit suite and instrumentation compile passed (`review-followup-context-after-unit.log`); both targeted emulator runs passed: six session/context/control cases (`review-followup-context-connected.log`) and four terminal-view cases (`review-followup-links-connected.log`). Owned emulator, adb, and harness cleanup is performed by the integration runner. The full release instrumentation sweep was not run.
+- Explicit code-path review confirmed context checks run before cache/selection/status mutation after suspension, tab rebuilding uses current local names without changing identity, and link hit mapping includes the final continuation while leaving real delimiters intact. No public wire format, storage migration, or compatibility shim was added. Permanent no-flicker tests were not modified.
+- No relevant timing/allocation gate exists for Android link extraction or context checks. Full unit coverage includes the existing one-scan-per-update and no-scan-for-unchanged-frame checks. Rename rebuilding occurs only on the management operation and reads the existing remote cache. Correctness and no-flicker evidence are recorded; no measured latency improvement is claimed.
+- Validation commands (serialized):
+  - From `android`, Java 21: `./gradlew --no-daemon --max-workers=2 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process '-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8' :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` passed finally (`review-followup-context-after-unit.log`). Earlier full checks passed before the supporting bootstrap tests (`review-followup-android-verified-unit.log`), and the fixture failures are classified above.
+  - The same Gradle options with `:app:testDebugUnitTest --tests '*AppViewModelTest.managementSessionFetchIsIgnoredAfterEndpointChangeOrLogout' --tests '*TerminalLinksTest.wideUnicodeLinksKeepFullUrlAndContinuationHitArea' :app:compileDebugAndroidTestKotlin` produced the initial link repro/management fixture failure. Subsequent targeted baselines used `--tests '*AppViewModelTest.managementSessionFetchIsIgnoredAfter*'` (corrected fixture log above), `--tests '*AppViewModelTest.bootstrapSessionFetchIsIgnoredAfter*'`, `--tests '*AppViewModelTest.staleBootstrapAuthenticationFailureDoesNotClearNewAccount'`, and `--tests '*AppViewModelTest.pendingSessionPreferenceCannotRestoreOldActiveSessionAfterEndpointChange'`; each accepted baseline fails before its fence as recorded above.
+  - From root with Java 21 and `GOMAXPROCS=2 GOFLAGS=-p=1 LINGON_IT_CPU_QUOTA_PERCENT=200 LINGON_IT_MEMORY_MAX=7G`, `./android/scripts/run-integration-tests.sh` passed with `LINGON_IT_ONLY=management_session_fetch_does_not_restore_old_endpoint_sessions,bootstrap_session_fetch_does_not_restore_old_endpoint_sessions,settings_create_terminal_and_rename_session,owner_typing_reclaims_control_after_real_handoff,control_share_typing_reclaims_control_after_real_handoff,resize_setting_disabled_for_view_only_share_token`, then passed separately with `LINGON_IT_CLASS=systems.pkt.lingon.terminal.TerminalGridViewInstrumentedTest`. Both use `setsid --wait`, `/dev/null` input, and the isolated emulator profile.
+  - From root with `GOMAXPROCS=2 GOFLAGS=-p=1`, `setsid --wait go test -p 1 -tags integration ./integration/pty/session -run '^TestOfflineHostRenameUpdatesVisibleTabWithoutRelay$' -count=1 </dev/null` failed before; the same test with `-race` passed after. `setsid --wait go test -p 1 -race -tags integration ./integration/pty/session ./integration/pty/attach -run 'TestOfflineHostRenameUpdatesVisibleTabWithoutRelay|TestSessionManagement(LocalCLI|RelayAndHeadfulCLI)$|TestHost.*(WrapAroundTabSwitch|RepaintBaseTopRowBeforeOverlay)|TestAttachNoFullRedraw.*TabSwitch' -count=1 </dev/null` passed (`review-followup-lifecycle-no-flicker.log`). Every interactive fixture owns its sub-PTYs.
+  - `setsid --wait go test -p 1 ./... </dev/null` passed (`review-followup-go-test.log`), followed by `go vet ./...`, `golint ./...`, and `golangci-lint run ./...` with zero lint issues. Changed Go files pass `gofmt -l`; documentation was read back and `git diff --check` is clean.
+  - The completed review ran `GOMAXPROCS=2 go test -count=1 -p 1 ./internal/sessionmanage ./internal/relay ./internal/control ./internal/backoff`, which passed. Review scope was normal `androidurl` at `089c399` against local `trunk` at `8751548`, using the prescribed model and reasoning configuration (`codex-review.normal-trunk.6IqSbR.log`). A final clean review remains pending; B-135 is separately open.
+
 ### B-138 Session creation exposes relay credentials in child arguments
 
 - Status: `resolved`
