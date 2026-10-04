@@ -64,6 +64,32 @@ class TerminalLinksTest {
     }
 
     @Test
+    fun wideUnicodeLinksKeepFullUrlAndContinuationHitArea() {
+        for (suffix in listOf("日本", "🦊", "a\u0301")) {
+            val prefix = "https://example.test/"
+            val runes = mutableListOf<Int>()
+            prefix.forEach { runes.add(it.code) }
+            val graphemes = mutableMapOf<Int, String>()
+            if (suffix == "a\u0301") {
+                graphemes[runes.size] = suffix
+                runes.add('a'.code)
+            } else {
+                suffix.codePoints().forEach { rune -> runes.add(rune); runes.add(0) }
+            }
+            val end = runes.size
+            runes.add(' '.code)
+            runes.add('x'.code)
+            val snapshot = TerminalSnapshot(runes.size, 1, runes.toIntArray(), IntArray(runes.size), IntArray(runes.size), IntArray(runes.size), Array(runes.size) { graphemes[it].orEmpty() }, 0, 0, false, 0, "")
+            val link = TerminalLinks.findHttpsLinks(snapshot).single()
+            assertEquals(prefix + suffix, link.url)
+            assertEquals(0, link.startCol)
+            assertEquals(end, link.endColExclusive)
+            for (col in 0 until end) assertTrue("missing hit at $col for $suffix", link.contains(0, col))
+            assertEquals(false, link.contains(0, end))
+        }
+    }
+
+    @Test
     fun findHttpsLinksDoesNotJoinRowsWithoutWrapMetadata() {
         val snapshot = snapshot(
             cols = 10,

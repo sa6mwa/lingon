@@ -156,6 +156,37 @@ class TerminalGridViewInstrumentedTest {
         }
     }
 
+    @Test
+    fun wideUnicodeLinkTapOnLastContinuationOpensFullUrl() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val url = "https://example.test/日本"
+            val prefix = "https://example.test/"
+            var openedUrl: String? = null
+            val view = TerminalGridView(instrumentation.targetContext).apply {
+                setOnOpenLink { value ->
+                    openedUrl = systems.pkt.lingon.ui.TerminalLinkOpener.createIntent(instrumentation.targetContext, value).dataString
+                    true
+                }
+                measure(exactlyMeasureSpec(720), exactlyMeasureSpec(240))
+                layout(0, 0, 720, 240)
+                update(
+                    snapshot = terminalSnapshot(listOf(prefix + "日\u0000本\u0000 now"), 40),
+                    fontSizeSp = 14, minFontSizeSp = 8,
+                    palette = TerminalPalette(defaultFg = Color.White, defaultBg = Color.Black),
+                    frameSeq = 1, hostCols = 40, hostRows = 1, fitToViewWidth = false,
+                    zoomFactor = DefaultTerminalZoom, panResetNonce = 0, scrollbackOffsetRows = 0,
+                    imeVisible = false, isLoading = false,
+                )
+            }
+            val lastContinuation = prefix.length + 3
+            for (col in prefix.length..lastContinuation) assertEquals(url, view.getLinkAtCellForTesting(0, col))
+            assertEquals(null, view.getLinkAtCellForTesting(0, lastContinuation + 1))
+            dispatchSinglePointerTap(view, view.getScaledCellWidthForTesting() * (lastContinuation + 0.5f), view.getScaledCellHeightForTesting() * 0.5f)
+            assertEquals(url, openedUrl)
+        }
+    }
+
     private fun exactlyMeasureSpec(size: Int): Int {
         return View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.EXACTLY)
     }

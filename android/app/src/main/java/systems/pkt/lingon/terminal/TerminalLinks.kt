@@ -44,7 +44,7 @@ object TerminalLinks {
                 startRow = start.row,
                 startCol = start.col,
                 endRow = end.row,
-                endColExclusive = end.col + 1,
+                endColExclusive = end.endColExclusive,
             )
         }
     }
@@ -86,6 +86,19 @@ object TerminalLinks {
         cells: MutableList<CellRef?>,
     ) {
         val idx = row * snapshot.cols + col
+        if (snapshot.runes.getOrElse(idx) { 32 } == 0 &&
+            snapshot.graphemes?.getOrElse(idx) { "" }.isNullOrEmpty() &&
+            snapshot.modes.getOrElse(idx) { 0 } and MODE_HIDDEN == 0
+        ) {
+            // A continuation occupies a screen cell but contributes no text.
+            // Extend the preceding character's hit area without adding a delimiter.
+            cells.lastOrNull()?.let { previous ->
+                if (previous.row == row && previous.col == col - 1) {
+                    cells[cells.lastIndex] = previous.copy(endColExclusive = col + 1)
+                }
+            }
+            return
+        }
         val cellText = when {
             snapshot.modes.getOrElse(idx) { 0 } and MODE_HIDDEN != 0 -> " "
             snapshot.graphemes?.getOrElse(idx) { "" }?.isNotEmpty() == true -> snapshot.graphemes[idx]
@@ -149,7 +162,7 @@ object TerminalLinks {
         return depth < 0
     }
 
-    private data class CellRef(val row: Int, val col: Int)
+    private data class CellRef(val row: Int, val col: Int, val endColExclusive: Int = col + 1)
 }
 
 data class TextLinkRange(
