@@ -6,6 +6,7 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // Start launches the command attached to a new PTY.
@@ -49,5 +50,17 @@ func Resize(ptyFile *os.File, cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return nil
 	}
-	return pty.Setsize(ptyFile, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	raw, err := ptyFile.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var resizeErr error
+	// Control keeps the descriptor alive through the ioctl without changing its
+	// blocking mode. File.Fd does not provide that protection against Close.
+	if err := raw.Control(func(fd uintptr) {
+		resizeErr = unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &unix.Winsize{Col: uint16(cols), Row: uint16(rows)})
+	}); err != nil {
+		return err
+	}
+	return resizeErr
 }

@@ -1450,11 +1450,6 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		return nil
 	}
 
-	if err := activateView(activeID); err != nil {
-		return err
-	}
-	renderTabs()
-
 	applySessions = func(updated []SessionInfo) {
 		if m.Logger != nil {
 			m.Logger.Debug("attach.sessions.apply", "count", len(updated))
@@ -1704,6 +1699,13 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		missingRefreshMu.Unlock()
 	}
+
+	// Publish every callback before connecting: a welcome/sessions frame can
+	// arrive as soon as activateView starts the client's reader goroutine.
+	if err := activateView(activeID); err != nil {
+		return err
+	}
+	renderTabs()
 
 	var refreshTicker *clock.Ticker
 	if m.RefreshInterval > 0 {

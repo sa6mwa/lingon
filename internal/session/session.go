@@ -208,6 +208,9 @@ type Runner struct {
 	outerOscGraceUntil time.Time
 	outerOscParser     oscStreamParser
 
+	desktopNotifierOnce sync.Once
+	desktopNotifier     desktopnotify.Notifier
+
 	scrollbackMu      sync.Mutex
 	scrollbackView    mvu.ScrollbackViewport
 	scrollbackSession string
@@ -329,10 +332,6 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		r.opts.Logger = logging.Default()
 	}
 	r.logger = r.opts.Logger
-	if r.opts.Clock == nil {
-		r.opts.Clock = clock.New()
-	}
-	r.clock = r.opts.Clock
 	r.initializeSessionIdentity()
 	ui := r.runtime()
 	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{Clock: r.clock, Endpoint: r.opts.Endpoint}})
@@ -419,8 +418,10 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		gate = netgate.New(r.clock)
 	}
 
+	r.localMu.Lock()
 	r.localSessions = make(map[string]*localSession)
 	r.localClosed = make(map[string]bool)
+	r.localMu.Unlock()
 	// Initialize the manager before local publishers can invoke OnSessions.
 	if r.opts.Publish && !r.opts.DisableRemoteSessions {
 		r.remoteSessions = newRemoteManager(remoteOptions{
@@ -2791,15 +2792,12 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 		label = sessionID
 	}
 	if !r.opts.DisableDesktopNotifications {
-		if r.opts.DesktopNotifier == nil {
-			r.opts.DesktopNotifier = desktopnotify.New()
-		}
-		if r.opts.DesktopNotifier != nil {
+		if notifier := r.localDesktopNotifier(); notifier != nil {
 			notifyCtx := r.runCtx
 			if notifyCtx == nil {
 				notifyCtx = context.Background()
 			}
-			_ = r.opts.DesktopNotifier.Notify(notifyCtx, desktopnotify.Request{
+			_ = notifier.Notify(notifyCtx, desktopnotify.Request{
 				Title: label,
 				Body:  "inactive",
 			})
@@ -2823,6 +2821,16 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
 		SourceSessionId: sessionID,
 	}, r.stdout())
+}
+
+func (r *Runner) localDesktopNotifier() desktopnotify.Notifier {
+	r.desktopNotifierOnce.Do(func() {
+		r.desktopNotifier = r.opts.DesktopNotifier
+		if r.desktopNotifier == nil {
+			r.desktopNotifier = desktopnotify.New()
+		}
+	})
+	return r.desktopNotifier
 }
 
 func (r *Runner) suppressFocusedLocalInactivityWall(wall *protocolpb.Wall) bool {
