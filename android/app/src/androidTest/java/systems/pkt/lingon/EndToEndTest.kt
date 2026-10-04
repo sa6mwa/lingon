@@ -3025,10 +3025,14 @@ class EndToEndTest {
         val application = composeRule.activity.application as LingonApplication
         val sessionId = activeSessionId()
         val epoch = appViewModel().state.value.terminalConnectionEpoch
+        val token = appViewModel().state.value.shareToken
+        val shareAuthentication = token?.let {
+            runBlocking(Dispatchers.IO) { application.wsClient.authenticateShareSession(testConfig.endpoint.toHttpUrl(), it) }
+        }
         val peer = application.wsClient.connect(
             RelayWebSocketClient.ConnectOptions(
                 baseUrl = testConfig.endpoint.toHttpUrl(), sessionId = sessionId,
-                shareToken = appViewModel().state.value.shareToken,
+                shareToken = token, shareAuthentication = shareAuthentication,
                 clientId = "handoff-${UUID.randomUUID()}", cols = 0, rows = 0, wantsControl = true,
             ),
             object : RelayWebSocketClient.Listener {

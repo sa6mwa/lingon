@@ -28,7 +28,7 @@ import systems.pkt.lingon.data.ApiException
 import systems.pkt.lingon.data.LingonClient
 import systems.pkt.lingon.data.certs.normalizeCertificateEndpointKey
 import systems.pkt.lingon.data.relay.RelaySession
-import systems.pkt.lingon.data.relay.RelayShareSession
+import systems.pkt.lingon.data.relay.AuthenticatedShareSession
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.notifications.NoopWallDeliveryCoordinator
 import systems.pkt.lingon.notifications.WallDeliveryCoordinator
@@ -1304,9 +1304,9 @@ class AppViewModel(
             return
         }
         viewModelScope.launch {
-            val shareSession: RelayShareSession
+            val shareAuthentication: AuthenticatedShareSession
             try {
-                shareSession = withContext(ioDispatcher) {
+                shareAuthentication = withContext(ioDispatcher) {
                     wsClient.authenticateShareSession(baseUrl, shareToken)
                 }
             } catch (err: CancellationException) {
@@ -1338,6 +1338,7 @@ class AppViewModel(
             if (current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl) {
                 return@launch
             }
+            val shareSession = shareAuthentication.session
             val authenticatedSessionID = shareSession.sessionId.trim()
             val authenticatedSession = RelaySession(
                 id = authenticatedSessionID,
@@ -1352,7 +1353,7 @@ class AppViewModel(
                     shareTokenError = null,
                 )
             }
-            openWebSocket(baseUrl, authenticatedSessionID, shareToken, _state.value)
+            openWebSocket(baseUrl, authenticatedSessionID, shareToken, _state.value, shareAuthentication)
         }
     }
 
@@ -1370,7 +1371,7 @@ class AppViewModel(
         setStatus(message, StatusLevel.Error)
     }
 
-    private fun openWebSocket(baseUrl: HttpUrl, sessionId: String?, shareToken: String?, state: UiState) {
+    private fun openWebSocket(baseUrl: HttpUrl, sessionId: String?, shareToken: String?, state: UiState, shareAuthentication: AuthenticatedShareSession? = null) {
         val key = ConnectionKey(sessionId = sessionId, shareToken = shareToken)
         if (activeConnection == key && socketOpen && ws != null) {
             return
@@ -1393,6 +1394,7 @@ class AppViewModel(
             baseUrl = baseUrl,
             sessionId = sessionId,
             shareToken = shareToken,
+            shareAuthentication = shareAuthentication,
             clientId = clientId,
             cols = 0,
             rows = 0,

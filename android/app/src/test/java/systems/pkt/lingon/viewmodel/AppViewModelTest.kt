@@ -40,6 +40,7 @@ import systems.pkt.lingon.data.LingonClient
 import systems.pkt.lingon.data.WallWorkStateStore
 import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.data.relay.RelayShareSession
+import systems.pkt.lingon.data.relay.AuthenticatedShareSession
 import systems.pkt.lingon.data.relay.RelayWallEventsPage
 import systems.pkt.lingon.data.certs.TrustedCert
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
@@ -2733,9 +2734,10 @@ private class FakeRepository(
 }
 
 private class FakeWsClient(
+    private val provider: HttpClientProvider = testHttpClientProvider(),
     var onConnect: (ConnectOptions, Listener, WebSocket) -> Unit = { _, _, _ -> },
 ) : RelayWebSocketClient(
-    testHttpClientProvider(),
+    provider,
 ) {
     var connectCount: Int = 0
     var lastConnectOptions: ConnectOptions? = null
@@ -2776,9 +2778,9 @@ private class FakeWsClient(
         return fakeSocket
     }
 
-    override fun authenticateShareSession(baseUrl: okhttp3.HttpUrl, shareToken: String): RelayShareSession {
-        onAuthenticateShareSession?.let { return it(baseUrl, shareToken) }
-        return shareSession
+    override fun authenticateShareSession(baseUrl: okhttp3.HttpUrl, shareToken: String): AuthenticatedShareSession {
+        val session = onAuthenticateShareSession?.invoke(baseUrl, shareToken) ?: shareSession
+        return AuthenticatedShareSession(session, baseUrl, shareToken, provider.clientFor(baseUrl))
     }
 
     fun fireConnect() {

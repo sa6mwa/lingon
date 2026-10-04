@@ -29,6 +29,7 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         val baseUrl: HttpUrl,
         val sessionId: String?,
         val shareToken: String? = null,
+        val shareAuthentication: AuthenticatedShareSession? = null,
         val clientId: String,
         val cols: Int,
         val rows: Int,
@@ -45,7 +46,13 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
     }
 
     open fun connect(options: ConnectOptions, listener: Listener): WebSocket {
-        val client = httpClientProvider.clientFor(options.baseUrl)
+        val client = if (!options.shareToken.isNullOrBlank()) {
+            requireNotNull(options.shareAuthentication) { "authenticate the share session before connecting" }
+                .clientFor(options)
+        } else {
+            require(options.shareAuthentication == null) { "account connections cannot use share authentication" }
+            httpClientProvider.clientFor(options.baseUrl)
+        }
         val request = buildWebSocketRequest(options)
         return client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -131,8 +138,9 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         webSocket.send(frame.toOkioByteString())
     }
 
-    open fun authenticateShareSession(baseUrl: HttpUrl, shareToken: String): RelayShareSession {
-        val client = httpClientProvider.clientFor(baseUrl)
+    open fun authenticateShareSession(baseUrl: HttpUrl, shareToken: String): AuthenticatedShareSession {
+        val cookies = ShareSessionCookieJar()
+        val client = httpClientProvider.clientFor(baseUrl).newBuilder().cookieJar(cookies).build()
         val url = baseUrl.newBuilder()
             .addPathSegments("auth/share")
             .build()
@@ -154,7 +162,10 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
             if (shareSession.sessionId.isBlank()) {
                 throw IllegalStateException("share authentication failed: missing session")
             }
-            return shareSession
+            if (cookies.loadForRequest(buildWsUrl(baseUrl, shareToken)).isEmpty()) {
+                throw IllegalStateException("share authentication failed: missing cookie")
+            }
+            return AuthenticatedShareSession(shareSession, baseUrl, shareToken, client)
         }
     }
 

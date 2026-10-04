@@ -14,6 +14,37 @@ import org.junit.Test
 
 class AuthRefreshInterceptorTest {
     @Test
+    fun privateShareHandshakeDoesNotConsultAccountCookies() {
+        for (status in listOf(200, 401)) {
+            val server = MockWebServer()
+            server.enqueue(MockResponse().setResponseCode(status).setBody("share response"))
+            server.start()
+            try {
+                val endpoint = server.url("/v1")
+                val accountJar = TestCookieJar()
+                val shareJar = TestCookieJar(Cookie.Builder()
+                    .name("bifrons_share_session").value("private-grant")
+                    .domain(endpoint.host).path("/").build())
+                val refreshClient = OkHttpClient.Builder().cookieJar(accountJar).build()
+                val client = refreshClient.newBuilder()
+                    .addInterceptor(authRefreshInterceptor(endpoint, refreshClient, accountJar, Any()))
+                    .cookieJar(shareJar)
+                    .build()
+                val request = Request.Builder().url(server.url("/v1/ws/client"))
+                    .header("X-Lingon-Share-Session", "1").build()
+                client.newCall(request).execute().use { assertEquals(status, it.code) }
+                assertEquals(1, server.requestCount)
+                val recorded = server.takeRequest()
+                assertEquals("/v1/ws/client", recorded.path)
+                assertEquals("bifrons_share_session=private-grant", recorded.getHeader("Cookie"))
+                assertEquals(emptyList<Cookie>(), accountJar.loadForRequest(endpoint))
+            } finally {
+                server.shutdown()
+            }
+        }
+    }
+
+    @Test
     fun shareAuthRequestBypassesAuthRefresh() {
         val server = MockWebServer()
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))

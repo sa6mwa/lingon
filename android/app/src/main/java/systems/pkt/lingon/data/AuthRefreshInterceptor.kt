@@ -13,7 +13,6 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 
 private const val accessCookieName = "lingon_access"
 private const val refreshCookieName = "lingon_refresh"
-private const val shareCookieName = "bifrons_share_session"
 private const val refreshSkewMillis = 10_000L
 
 private class AuthRefreshInterceptor(
@@ -109,11 +108,10 @@ private class AuthRefreshInterceptor(
     }
 
     private fun isShareSessionWsEndpoint(request: Request): Boolean {
-        val url = request.url
-        if (!url.encodedPath.endsWith("/ws/client")) return false
-        if (request.header("X-Lingon-Share-Session") != "1") return false
-        if (!url.queryParameter("token").isNullOrBlank()) return true
-        return cookieJar.loadForRequest(url).any { it.name == shareCookieName && it.value.isNotBlank() }
+        // Share credentials belong to the connection's private jar. The relay
+        // authenticates them; never refresh or substitute account authority.
+        return request.url.encodedPath.endsWith("/ws/client") &&
+            request.header("X-Lingon-Share-Session") == "1"
     }
 
     private fun canRetry(request: Request): Boolean {
