@@ -29,6 +29,21 @@ Required status values:
 
 ## Active Items
 
+### B-134 Android cannot reclaim control after a handoff
+
+- Status: `open`
+- Area: `android`, `session-control`
+- Report: Third normal branch review against `trunk` found that host input or another controller sets `hasControl=false`, after which every Android input path is blocked. There is no explicit control-reacquisition action; reconnecting or switching sessions is the current workaround. See `codex-review.normal-trunk.x6RgwP.log`.
+- Policy boundary: B-122 explicitly requires text and raw-byte input to remain blocked when control is lost. Restoring automatic control-on-typing would reverse that recorded requirement.
+- Recommendation awaiting product direction: Add an explicit **Take control** action for authorized account/control-share clients while preserving the input guard and view-only restrictions. Prove real host/client handoff and reacquisition end to end, plus continued blocking for view-only shares and ordinary typing without control. No product or protocol change has been implemented.
+
+### B-135 Superseded share-auth requests overwrite the active cookie
+
+- Status: `open`
+- Area: `android`, `share-authentication`
+- Report: Third normal branch review found that overlapping `/auth/share` calls use the same cookie jar. A stale successful response can replace the newer cookie; a stale invalid-token response can delete it before the current HTTPS websocket handshake. UI stale-result checks happen after OkHttp applies cookie writes. See `codex-review.normal-trunk.x6RgwP.log`.
+- Proposed remediation: Isolate each share-authentication attempt and its websocket handshake from account cookies and other attempts; ensure superseded responses cannot publish or clear current authority. Cover late successful and invalid responses with explicitly gated HTTP responses and verify the selected share attaches end to end. No authentication change has been implemented for this finding.
+
 ### B-133 PTY shutdown races descriptor inspection against closure
 
 - Status: `resolved`
