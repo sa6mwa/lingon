@@ -1214,17 +1214,18 @@ func (m *remoteManager) Refresh(ctx context.Context) error {
 
 func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 	rawCount := len(sessions)
+	m.mu.Lock()
+	now := m.clock.Now()
 	if rawCount == 0 && len(m.sessions) > 0 {
-		if m.clock.Now().Sub(m.lastNonEmpty) < 5*time.Second {
+		if now.Sub(m.lastNonEmpty) < 5*time.Second {
+			m.mu.Unlock()
 			m.logger.Debug("session.remote.sessions.empty.ignored")
 			return
 		}
 	}
-	sessions = ensureLocalSession(sessions, m.localID, m.localName, m.clock.Now().UTC())
+	sessions = ensureLocalSession(sessions, m.localID, m.localName, now.UTC())
 	mvu.SortSessionsByName(sessions)
 
-	m.mu.Lock()
-	now := m.clock.Now()
 	if rawCount > 0 {
 		m.lastNonEmpty = now
 	}

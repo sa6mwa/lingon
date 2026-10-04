@@ -212,17 +212,7 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	if c.Endpoint == "" && c.UnixSocket == "" {
 		return fmt.Errorf("endpoint is required")
 	}
-	compositor := c.ensureCompositor()
-	endpointLabel := c.Endpoint
-	if endpointLabel == "" {
-		endpointLabel = "local://headless"
-	}
-	compositor.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
-		Clock:     c.clock(),
-		SessionID: c.SessionID,
-		Endpoint:  endpointLabel,
-		Theme:     theme.TUI(resolveThemeName(c.Theme)),
-	}})
+	c.ensureCompositor()
 	c.setTheme(resolveThemeName(c.Theme))
 	c.runCtx = ctx
 	c.effects = mvu.NewEffectScheduler(c.clock())
@@ -488,10 +478,14 @@ func (c *Client) ensureCompositor() *mvu.Runtime {
 		return c.compositor
 	}
 	ui := mvu.NewRuntime()
+	endpoint := c.Endpoint
+	if endpoint == "" {
+		endpoint = "local://headless"
+	}
 	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
 		Clock:     c.clock(),
 		SessionID: c.SessionID,
-		Endpoint:  c.Endpoint,
+		Endpoint:  endpoint,
 		Theme:     theme.TUI(resolveThemeName(c.Theme)),
 	}})
 	c.compositor = ui
@@ -663,18 +657,13 @@ func (c *Client) SetStdout(w io.Writer) {
 	c.renderMu.Unlock()
 }
 
-// SetCompositor sets the overlay compositor for rendering.
+// SetCompositor shares an owner-managed overlay compositor for rendering.
+// A nil compositor creates a client-owned runtime with this client's context.
 func (c *Client) SetCompositor(ui *mvu.Runtime) {
-	if ui == nil {
-		ui = mvu.NewRuntime()
-	}
-	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
-		Clock:     c.clock(),
-		SessionID: c.SessionID,
-		Endpoint:  c.Endpoint,
-		Theme:     theme.TUI(resolveThemeName(c.Theme)),
-	}})
 	c.compositor = ui
+	if ui == nil {
+		c.ensureCompositor()
+	}
 }
 
 // Compositor returns the overlay compositor in use.
@@ -859,7 +848,7 @@ func (c *Client) ForceTabsVisibleOnce() {
 	atomic.StoreUint32(&c.forceTabsVisible, 2)
 }
 
-// RenderCurrentFull re-renders the last snapshot with a full clear.
+// RenderCurrentFull re-renders the composed snapshot without clearing the screen.
 func (c *Client) RenderCurrentFull() {
 	c.renderMu.Lock()
 	c.renderCache.Reset()

@@ -29,6 +29,75 @@ Required status values:
 
 ## Active Items
 
+### B-154 Offline keyboard regression lacks deterministic command and snapshot setup
+
+- Status: `resolved`
+- Report: The full Go suite failed `TestMultiAttachRespondsToKeysWhileOffline` while checking session B; help still showed session A (`review-verification-go-test.log`). The fixture sends Ctrl+L h on every observation retry and advances fixed delays before sending the tab command.
+- Scope: Emit each help/dismiss/tab command once and wait for observable help dismissal. Prime both tabs online with distinct snapshots before testing cached offline rendering. Preserve existing assertions and add an explicit cached-B assertion. Initial repeated runs exposed the production defects tracked below, rather than establishing a fixture-only explanation.
+- Fix: Send each command once, wait for help dismissal, and visit both tabs online with distinct output before stopping the relay. Assert B's own cached output after switching offline, in addition to the existing help identity and cached-A checks. No existing permitted fallback or assertion was removed.
+- Verification: The initial command-only revision still failed seven of ten runs (`review-verification-offline-keys-after.log`); it is not accepted as a fix. Priming both tabs made the production failures below reproducible (`review-verification-offline-keys-final.log`). The final fixture and production fixes pass ten race runs, all existing no-flicker gates and the full Go suite. Shared command ledger follows B-152.
+
+### B-155 Offline tab reconnect overwrites active help identity and reuses a hidden framebuffer baseline
+
+- Status: `resolved`
+- Report: The primed, single-command owned-PTY regression fails with help identifying session B while A is active, or A's cached content remaining after switching to B (`review-verification-offline-keys-final.log`, ten repeated race runs). Detached hidden clients initialize the shared compositor's session identity, and an offline tab reconnect seeds its previously hidden delta baseline while the physical display still contains the other tab.
+- Scope: Shared compositor context belongs to its owner; only client-owned runtimes initialize client context. Invalidate the cached delta baseline before revealing a different tab, including the reconnect branch, without a screen clear or phased tab overlay repaint.
+- Fix: Initialize client context only when creating a client-owned compositor; `SetCompositor` preserves a supplied owner's context, and detached startup no longer reapplies its own identity. Both shared-runtime adapters (`MultiClient` and host `remoteManager`) already supply their owner context. Preserve the standalone local endpoint label. Before revealing a different cached view, invalidate its delta baseline before the reconnect can seed it. Compose the next frame without a terminal clear. Clarify the existing `RenderCurrentFull` comment to match its no-clear behavior.
+- Failing coverage: `TestClientSetCompositorPreservesOwnerContext` fails against the original code (`review-verification-shared-context-before.log`). The real primed offline PTY regression fails with the wrong help identity and stale/partially overlaid cached content (`review-verification-offline-keys-final.log`). The test drives actual Ctrl+L h/n/p and q in owned PTYs using the injected mock clock.
+- Verification: The context unit tests and offline PTY regression pass ten race runs (`review-verification-offline-production-after.log`). Permanent host/attach no-flicker and 20-cycle shutdown checks pass unchanged (`review-verification-offline-lifecycle-final.log`). Startup and standard checks pass; see shared ledger below. No Android source, relay contract or storage format changed in this batch.
+
+### B-156 Concurrent attach reconnect reads refreshed credentials without synchronization
+
+- Status: `resolved`
+- Report: The same owned-PTY race run reports `connectView` reading `MultiClient.AccessToken` concurrently with another reconnect's refresh callback write (`review-verification-offline-keys-final.log`).
+- Scope: All runtime token reads use the existing refresh mutex; let the refresh method publish the result under that mutex instead of duplicating writes in its default callback. No extra refresh request or protocol change.
+- Fix: Read runtime access tokens through the existing refresh mutex in view construction, session-list requests and inactivity management. The default refresher callback no longer duplicates publication; `refreshToken` publishes under the same mutex. Startup-only assignments occur before concurrent views exist. Input/frame processing gains no lock or extra request.
+- Verification: The failing owned-PTY race report names the callback write and concurrent view-construction read. The same scenario passes ten race runs after, alongside the unchanged lifecycle/no-flicker gates and full Go checks. No credential or protocol behavior was changed.
+
+### B-153 Remote session-list empty grace reads state without its lock
+
+- Status: `resolved`
+- Report: The unchanged `TestAttachNoFullRedrawOnOnlineWrapAroundTabSwitch` failed under the race detector during B-151/B-152 verification (`review-verification-lifecycle-race.log`). `applySessions` reads `sessions` and `lastNonEmpty` before taking the lock while refresh and publisher callbacks update them concurrently.
+- Scope: Make the empty-update guard and state transition atomic under the existing state mutex; preserve mock-clock grace semantics, callback boundaries and permanent no-flicker tests.
+- Fix: Acquire the existing state mutex before checking the empty-update grace and capture one clock value for the atomic transition. Release before early-return logging. Callbacks and network/reconnect work retain their existing boundaries outside the lock; no second lock acquisition was added.
+- Failing coverage: `TestRemoteManagerConcurrentUpdatesPreserveEmptyGrace` races on both `sessions` and `lastNonEmpty` against the original code (`review-verification-remote-corrected-before.log`). Two synchronized workers issue nonempty/empty updates, then assert one live session survives four mock seconds and disappears at five. This pure state test creates no terminal. The first attempted fixture used a nonexistent `Advance` method; its compilation failure (`review-verification-remote-before.log`) is not accepted as defect evidence.
+- Verification: Five race runs pass (`review-verification-remote-after.log`). The unchanged no-flicker gate that originally exposed the race and the complete lifecycle gate pass before and after the later attach fixes (`review-verification-lifecycle-final.log`, `review-verification-offline-lifecycle-final.log`). Startup measurement and standard checks pass; see ledger below.
+
+### B-151 Stale-PID detach regression accepts a killed zombie
+
+- Status: `resolved`
+- Report: `codex-review.normal-trunk.XeaSRJ.log` found that the stale-PID test does not reap its child until cleanup, so `kill(pid, 0)` still reports a killed zombie as alive.
+- Scope: Reap the test-owned child asynchronously and prove it can echo a nonce after detach through owned pipes. Restrict stale start-time protection to Linux, matching existing production policy.
+- Fix: Replace PID-existence inference with a test-owned nonterminal echo child, asynchronously reaped by `cmd.Wait`. Send unique input through owned pipes and assert its exact reply before and after detach, then verify it has not exited and the stale store entry is gone. No inherited stdio is used; cleanup joins the waiter and signals only the test-owned child. Skip this Linux start-time identity assertion on other platforms, preserving their existing PID fallback policy.
+- Failing coverage: Temporarily removing only the `RecordedProcessMayMatch` guard makes the new test fail on the post-detach pipe write (`review-verification-pid-before.log`). A trap restores the exact production source; `internal/headless/control.go` has no final diff.
+- Verification: Five race runs pass with the identity guard (`review-verification-pid-after.log`), the broader reconcile/detach/shutdown unit race gate passes, and Darwin headless test compilation succeeds. Darwin runtime behavior was not claimed or changed.
+
+### B-152 PTY shutdown regression lacks an independent owned terminal boundary
+
+- Status: `resolved`
+- Report: `codex-review.normal-trunk.XeaSRJ.log` found direct `newLocalSession`/`runOnce` terminal regression usage prohibited by the repository isolation rule.
+- Scope: Move the shutdown scenario into the existing owned-PTY harness, preserve 20 cancellation cycles, and prove real input/output and clean shutdown using its injected mock clock. Keep the existing platform shutdown-order unit tests and all permanent no-flicker tests unchanged.
+- Fix: Move the scenario to `integration/pty/session/pty_reader_shutdown_integration_test.go` (`integration && linux`) and run 20 serial host starts/cancels through `ptytest.StartHost`. Before cancellation, prove READY output and a unique ACK response to actual input. Require clean exit using the injected mock clock. The harness opens its own master/slave before Runner construction, routes all stdio to that owned PTY and disables inherited signal resizing. The original prohibited direct-constructor test is retired; platform shutdown-order unit tests and permanent no-flicker tests are untouched.
+- Verification: The prohibited baseline was not executed again; its source is the isolation-policy failure evidence. Earlier bare-test passes are not accepted as terminal-isolation proof. The replacement passes the race detector's 20 cancellation cycles (`review-verification-pty-final.log`) and twice in the broader lifecycle gate. Source audit confirms no direct constructor/runOnce, inherited stdio, `/dev/tty`, SIGWINCH or wall-clock sleep/poll helper in the replacement. An initial READY-on-row-zero fixture was hidden by the tab overlay; that fixture failure (`review-verification-pty-after.log`) is excluded from production-defect evidence.
+
+#### Shared verification for B-151–B-156
+
+- Standard checks: Full `go test -p 1 ./...`, `go vet ./...`, `golint ./...` and `golangci-lint run ./...` pass strictly serially, with zero lint issues (`review-verification-go-test-final.log`, `review-verification-vet-final.log`, `review-verification-golint-final.log`, `review-verification-golangci-final.log`). The earlier full-suite failure is retained in `review-verification-go-test.log`, not treated as a pass. All operational commands used detached stdin, no inherited terminal operations and `GOMAXPROCS=2 GOFLAGS=-p=1`. No Android code changed, so the previously recorded targeted Android evidence remains applicable; no emulator or full release sweep was repeated.
+- Performance: The existing `TestSessionManagementStartupPerformance` measures five alternating real direct/routed child launches per invocation. B-153's pair measured routed/direct 39.023/27.496 ms before and 30.499/23.477 ms after. A later attach-fix pair rose together from 30.487/28.331 to 35.611/31.916 ms, so three additional alternating baseline/fixed invocations were collected. Routed medians were 46.013, 41.053, 48.145 ms before versus 35.622, 36.880, 39.383 ms fixed; direct medians were 33.374, 27.188, 32.933 ms before versus 31.038, 32.586, 33.261 ms fixed. Median-of-medians routed 46.013 → 36.880 ms, direct 32.933 → 32.586 ms: no observed startup regression, but host variation does not support a stable speedup claim. Production source was restored exactly and compared byte-for-byte after baseline switching. This startup gate does not establish per-keystroke latency; no input/frame hot-path work was added. No relevant token-lock or session-list-update microbenchmark exists. An initial wrong-package invocation ran no tests (`review-verification-startup-before.log`), so it is excluded from performance evidence.
+- Validation command ledger (each Go invocation wrapped by `setsid --wait env GOMAXPROCS=2 GOFLAGS=-p=1`, stdin `/dev/null`, output retained in the named root log):
+  - `go test -race -p 1 ./internal/headless -run '^TestDetachWithUnreachableSocketDoesNotKillPIDOnlyRecord$' -count=1 -timeout=60s` failed with the PID-only mutation; `-count=5` passed with restored production code.
+  - `go test -race -p 1 ./internal/headless ./internal/session -run 'Test(Reconcile|Detach|ShutdownPTYReader)' -count=1 -timeout=120s` passed (`review-verification-unit-race.log`).
+  - `GOOS=darwin GOARCH=amd64 go test -c -o review-verification-headless-darwin-binary.log ./internal/headless` passed compilation (`review-verification-darwin-build.log`).
+  - `go test -race -p 1 -tags integration ./integration/pty/session -run '^TestLocalSessionCancelWaitsForPTYReaderBeforeClose$' -count=1 -timeout=120s` passed the corrected owned-PTY fixture; the first row-zero fixture failed.
+  - `go test -race -p 1 ./internal/session -run '^TestRemoteManagerConcurrentUpdatesPreserveEmptyGrace$' -count=1 -timeout=60s` failed against the original guard; `-count=5` passed after. The initial compilation-only fixture error is excluded above.
+  - `go test -race -p 1 -tags integration ./integration/pty/session ./integration/pty/attach -run 'TestLocalSessionCancelWaitsForPTYReaderBeforeClose$|TestHost.*(WrapAroundTabSwitch|RepaintBaseTopRowBeforeOverlay)|TestAttachNoFullRedraw.*TabSwitch' -count=1 -timeout=180s` initially exposed B-153, then passed twice after (`review-verification-lifecycle-final.log`, `review-verification-offline-lifecycle-final.log`).
+  - `go test -race -p 1 ./internal/attach -run '^TestMultiAttachRespondsToKeysWhileOffline$' -count=10 -timeout=120s` failed both initial fixture revisions, exposing the further defects above.
+  - `go test -p 1 ./internal/attach -run '^TestClientSetCompositorPreservesOwnerContext$' -count=1` failed before; `go test -race -p 1 ./internal/attach -run '^Test(MultiAttachRespondsToKeysWhileOffline|Client.*Compositor.*)$' -count=10 -timeout=120s` passed after all attach fixes.
+  - `go test -p 1 -tags integration ./integration/pty/attach -run '^TestSessionManagementStartupPerformance$' -count=1 -v -timeout=90s` passed the two B-153 measurements, the two later attach measurements, and six alternating baseline/fixed invocations (`review-verification-startup-{baseline,fixed}-{1,2,3}.log`). The wrong-package attempt is excluded above.
+  - `go test -p 1 ./...` failed initially, passed finally; `go vet ./...`, `golint ./...`, `golangci-lint run ./...` passed after final source restoration.
+  - `gofmt` on owned Go paths, documentation readback, `git diff --check`, owned-terminal source audit and byte-for-byte baseline-source restoration checks passed. The removed direct-constructor test was never used as new evidence.
+- Remaining gap: None for these findings. A final clean normal branch review remains required after committing this batch.
+
 ### B-150 Malformed shared text causes excessive overlapping token decoding
 
 - Status: `resolved`

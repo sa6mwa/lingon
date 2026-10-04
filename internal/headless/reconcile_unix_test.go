@@ -3,7 +3,10 @@
 package headless
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -148,18 +151,51 @@ func TestReconcileKeepsLivePIDWithoutReachableSocket(t *testing.T) {
 }
 
 func TestDetachWithUnreachableSocketDoesNotKillPIDOnlyRecord(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("process start-time identity protection is linux-only")
+	}
 	dir := t.TempDir()
 	store := NewStore(dir)
-	cmd := exec.Command("sleep", "10")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start sleep: %v", err)
+	// A non-terminal child with test-owned pipes must remain able to respond.
+	// PID existence alone cannot distinguish a live child from a killed zombie.
+	cmd := exec.Command("cat")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
 	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		t.Fatalf("start echo child: %v", err)
+	}
+	exited := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(exited)
+	}()
 	t.Cleanup(func() {
-		if cmd.ProcessState == nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-		}
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		<-exited
 	})
+	reader := bufio.NewReader(stdout)
+	echo := func(nonce string) {
+		t.Helper()
+		if _, err := io.WriteString(stdin, nonce+"\n"); err != nil {
+			t.Fatalf("child input: %v", err)
+		}
+		response, err := reader.ReadString('\n')
+		if err != nil || response != nonce+"\n" {
+			t.Fatalf("child did not survive: response=%q err=%v", response, err)
+		}
+	}
+	echo("before-detach")
 
 	now := time.Now().UTC()
 	if err := store.WithLock(func(state *State) error {
@@ -179,8 +215,11 @@ func TestDetachWithUnreachableSocketDoesNotKillPIDOnlyRecord(t *testing.T) {
 	if err := DetachSession(context.Background(), dir, "stale-pid"); err != nil {
 		t.Fatalf("DetachSession: %v", err)
 	}
-	if !PIDAlive(cmd.Process.Pid) {
-		t.Fatalf("detach killed process identified only by stale pid")
+	echo(fmt.Sprintf("after-detach-%d", cmd.Process.Pid))
+	select {
+	case <-exited:
+		t.Fatalf("detach exited child identified only by stale pid: %v", waitErr)
+	default:
 	}
 	state, err := store.Load()
 	if err != nil {

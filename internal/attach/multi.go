@@ -219,9 +219,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 	}
 	if !localSessionMode && m.TokenRefresher == nil && m.AuthFile != "" {
-		m.TokenRefresher = relayclient.TokenRefresher(m.Endpoint, m.AuthFile, m.TLSDir, m.Insecure, func(token string) {
-			m.AccessToken = token
-		})
+		m.TokenRefresher = relayclient.TokenRefresher(m.Endpoint, m.AuthFile, m.TLSDir, m.Insecure, nil)
 	}
 	if !localSessionMode && m.AccessToken == "" && m.TokenRefresher != nil {
 		token, err := m.refreshToken(ctx)
@@ -817,7 +815,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			Endpoint:                    m.Endpoint,
 			SessionID:                   session.ID,
 			UnixSocket:                  unixSocket,
-			AccessToken:                 m.AccessToken,
+			AccessToken:                 m.accessToken(),
 			RequestControl:              visible && m.RequestControl,
 			AllowOfflineToggle:          m.AllowOfflineToggle,
 			HostnameOnly:                m.HostnameOnly,
@@ -1339,6 +1337,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 			view.visible = true
 			view.hiddenAt = time.Time{}
+			if changedActive {
+				// This view's hidden delta baseline is not the physical display.
+				// Reconnects must seed a fresh composed frame as well.
+				view.client.invalidateDeltaRender()
+			}
 			view.client.SetStdout(renderStdout)
 			mouseMode.Set(view.client.ScrollbackActive())
 			if reconnect && view.cancel != nil {
@@ -2157,7 +2160,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 							return true
 						}
 						targetID := targetView.id
-						tokenValue := strings.TrimSpace(m.AccessToken)
+						tokenValue := strings.TrimSpace(m.accessToken())
 						if tokenValue == "" && m.TokenRefresher != nil {
 							refreshed, err := m.refreshToken(ctx)
 							if err != nil {
@@ -2402,7 +2405,7 @@ func (m *MultiClient) fetchSessions(ctx context.Context, httpURL string) ([]Sess
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+m.AccessToken)
+		req.Header.Set("Authorization", "Bearer "+m.accessToken())
 		resp, err = client.Do(req)
 		if err != nil {
 			return nil, err
@@ -2462,6 +2465,12 @@ func (m *MultiClient) stdinReader() io.Reader {
 		return m.Stdin
 	}
 	return os.Stdin
+}
+
+func (m *MultiClient) accessToken() string {
+	m.tokenMu.Lock()
+	defer m.tokenMu.Unlock()
+	return m.AccessToken
 }
 
 func (m *MultiClient) refreshToken(ctx context.Context) (string, error) {
