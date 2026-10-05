@@ -136,15 +136,47 @@ Use this tiered policy for Android-touching changes:
 An Android-visible bug is not considered fixed without a passing targeted
 instrumentation or end-to-end verification for that exact behavior.
 
-## Android release metadata
+## Local CI and release lifecycle
 
-- `android/app/build.gradle.kts` contains Android app release/version metadata.
-- The engineer may intentionally update this file by running `make release`
-  manually before `make install-release` to the phone that runs Lingon.
-- If this file appears dirty while investigating unrelated work, treat it as
-  expected local release/install metadata churn. Do not revert or normalize it.
-- Include this file in commits like any other tracked source file when it is
-  dirty; the release metadata needs to follow the commit it was generated from.
+- [RELEASE.md](RELEASE.md) defines the repository-owned Go lifecycle;
+  `make help` is the command index. This is local CI, not GitHub Actions.
+- `make prerelease` / `make test-all` run the full serial proof and artifact
+  rehearsal. Root and Android-tool Go tests, race tests, PTY/browser integration,
+  Android unit/compile gates and all instrumentation classes are required.
+  Narrow checks remain available during ordinary development.
+- Release targets are Linux, FreeBSD and Darwin, each on amd64 and arm64, plus
+  the signed APK. CGO is disabled for every shipped Go binary. Linux/BSD must be
+  static; Darwin may depend only on system libraries. Runtime test coverage is
+  Linux/Android; other binaries are cross-built and inspected.
+- Commit candidate code/docs and resolve review findings before release. A
+  clean candidate must contain current `trunk`, which must match `origin/trunk`.
+- `make release VERSION=X.Y.Z RELEASE_MESSAGE='type(scope): change'` runs the
+  complete candidate gate before squashing to trunk, preserves the source
+  branch, creates a lightweight `vX.Y.Z` tag, then cleans/retests/rebuilds and
+  verifies final artifacts from that exact tagged commit. Select actual release
+  versions explicitly; do not treat examples as a version decision.
+- Release gates are stop-only. On failure, report the failing gate and local
+  branch/tag/artifact state. Do not fix, amend, reset, retag, retry correctness
+  gates or publish inside that release attempt; start a separate fix iteration.
+- Final checksums are the upload manifest. Missing/extra artifacts, wrong
+  identity/architecture/linking, private paths and APK signer/version failures
+  block publication. Build scratch/logs belong under ignored `build/`; final
+  artifacts belong under ignored `dist/`.
+- `make publish`, when explicitly authorized, consumes verified full-proof
+  artifacts, checks GitHub immutability, pushes trunk/tag atomically, verifies
+  GitHub draft asset bytes, publishes, then pushes the versioned Podman manifest
+  to `docker.io/pktsystems/lingon` as the last step.
+- Assume existing GitHub/Docker Hub login. A final registry push failure leaves
+  Git/GitHub published; `make push-container` retries only that step with the
+  original verified image. Never rebuild or overwrite released bytes/tags.
+  Once pushed, release identity is immutable; corrections roll forward.
+- Podman is the sole engine. Local services use `podman kube play/down` and
+  `devenv.yaml.in`, with all project-owned state under `build/devenv/` and
+  unprivileged cleanup after teardown. Do not reintroduce containerd/Docker
+  fallbacks, live home-directory mounts or surprise persistent test services.
+- Android release version name/code are supplied as Gradle properties; release
+  builds must not rewrite tracked metadata. Preserve intentional pre-existing
+  `android/app/build.gradle.kts` edits rather than reverting them.
 
 ## Repo hygiene
 

@@ -1,3 +1,4 @@
+.NOTPARALLEL:
 ANDROID_SDK_ROOT ?= $(HOME)/Android/Sdk
 ANDROID_HOME ?= $(ANDROID_SDK_ROOT)
 CMDLINE_TOOLS := $(ANDROID_SDK_ROOT)/cmdline-tools/latest
@@ -135,9 +136,7 @@ emulator:
 
 build: local-properties
 	@VERSION="$$($(VERSION_CMD))"; \
-	sed -i.bak -E "s/^([[:space:]]*versionName[[:space:]]*=[[:space:]]*\").*(\".*)/\\1$${VERSION}\\2/" app/build.gradle.kts; \
-	rm -f app/build.gradle.kts.bak; \
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleDebug
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleDebug -Plingon.versionName="$$VERSION"
 	@APK_PATH="$(CURDIR)/app/build/outputs/apk/debug/app-debug.apk"; \
 	if [ -f "$$APK_PATH" ]; then \
 		echo "APK built: $$APK_PATH"; \
@@ -147,11 +146,9 @@ build: local-properties
 	fi
 
 release: local-properties
-	@VERSION="$$($(VERSION_CMD))"; \
-	sed -i.bak -E "s/^([[:space:]]*versionName[[:space:]]*=[[:space:]]*\").*(\".*)/\\1$${VERSION}\\2/" app/build.gradle.kts; \
-	rm -f app/build.gradle.kts.bak
 	@./scripts/generate-release-keystore.sh
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleRelease
+	@VERSION="$$($(VERSION_CMD))"; \
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleRelease -Plingon.versionName="$$VERSION"
 	@APK_PATH="$(CURDIR)/app/build/outputs/apk/release/app-release.apk"; \
 	if [ -f "$$APK_PATH" ]; then \
 		echo "APK built: $$APK_PATH"; \

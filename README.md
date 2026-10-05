@@ -495,7 +495,13 @@ Top-level `Makefile` targets:
 - `make test-webui` - run Web UI integration tests
 - `make test-android` - run Android integration tests
 - `make lint` - go vet + golint + golangci-lint
-- `make release` - build binary + Android APK + zip bundle
+- `make prerelease` - full serial local CI and artifact rehearsal
+- `make release VERSION=X.Y.Z RELEASE_MESSAGE='type(scope): change'` - verified squash/tag and clean release build
+- `make publish` - publish verified Git/GitHub artifacts, then push the versioned Podman image
+- `make push-container` - retry only the final Docker Hub push
+
+See [RELEASE.md](RELEASE.md) for the platform matrix, immutable release contract,
+verification gates, artifact layout and Podman Kube development workflow.
 
 ## SDK
 

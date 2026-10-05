@@ -1,4 +1,6 @@
-FROM alpine:latest AS certs
+ARG CERTS_IMAGE
+ARG CERTS_PLATFORM=linux/amd64
+FROM --platform=${CERTS_PLATFORM} ${CERTS_IMAGE} AS certs
 RUN apk add --no-cache ca-certificates
 
 FROM scratch

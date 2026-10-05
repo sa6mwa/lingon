@@ -296,6 +296,22 @@ collect_test_timing_profile() {
   run_android_tools test-times --dir "${result_dir}" > "${profile_dir}/test-times.txt" 2>"${profile_dir}/test-times.err" || true
 }
 
+# Keep evidence for every instrumentation batch: the connected task reuses the
+# same XML filename, so a final-only copy cannot prove a complete suite.
+collect_test_batch_profile() {
+  local profile_dir="${LINGON_IT_CGROUP_PROFILE_DIR:-}"
+  if [[ -z "${profile_dir}" ]]; then
+    return 0
+  fi
+  LINGON_BATCH_INDEX=$((LINGON_BATCH_INDEX + 1))
+  local batch_dir="${profile_dir}/android-test-batches/batch-${LINGON_BATCH_INDEX}"
+  local result_dir="${ANDROID_DIR}/app/build/outputs/androidTest-results/connected/debug"
+  mkdir -p "${batch_dir}"
+  if [[ -d "${result_dir}" ]]; then
+    find "${result_dir}" -maxdepth 1 -type f -name 'TEST-*.xml' -exec cp {} "${batch_dir}/" \;
+  fi
+}
+
 resolve_avd_name() {
   if [[ -n "${AVD_NAME}" ]]; then
     echo "${AVD_NAME}"
@@ -460,7 +476,7 @@ SELECTED_TESTS=()
 ONLY_TEST="${LINGON_IT_ONLY:-}"
 TARGET_CLASS="${LINGON_IT_CLASS:-}"
 if [[ -n "${TARGET_CLASS}" ]]; then
-  if [[ ! "${TARGET_CLASS}" =~ ^[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?$ ]]; then
+  if [[ ! "${TARGET_CLASS}" =~ ^[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?(,[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?)*$ ]]; then
     echo "Invalid LINGON_IT_CLASS: ${TARGET_CLASS}" >&2
     exit 1
   fi
@@ -637,6 +653,7 @@ set +e
   cd "${ANDROID_DIR}"
   TEST_EXIT=0
 
+  LINGON_BATCH_INDEX=0
   run_test_batch() {
     local test_names=("$@")
     if [[ "${#test_names[@]}" -eq 0 ]]; then
@@ -686,6 +703,7 @@ set +e
     CURRENT_TEST_PGID="$(ps -o pgid= "${CURRENT_TEST_PID}" | tr -d ' ' || true)"
     wait "${CURRENT_TEST_PID}"
     TEST_EXIT=$?
+    collect_test_batch_profile
     CURRENT_TEST_PID=""
     CURRENT_TEST_PGID=""
     return "${TEST_EXIT}"

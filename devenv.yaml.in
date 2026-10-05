@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: @POD@
+  annotations:
+    io.podman.annotations.userns: keep-id
+spec:
+  restartPolicy: Never
+  containers:
+    - name: relay
+      image: @IMAGE@
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsUser: @UID@
+        runAsGroup: @GID@
+      args: [serve, --tls-mode, auto]
+      env:
+        - name: LOG_MODE
+          value: json
+      ports:
+        - containerPort: 12843
+          hostPort: @PORT@
+          hostIP: 127.0.0.1
+      volumeMounts:
+        - name: state
+          mountPath: /lingon
+  volumes:
+    - name: state
+      hostPath:
+        path: @STATE@
+        type: Directory

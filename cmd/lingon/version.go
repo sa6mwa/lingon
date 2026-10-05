@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"pkt.systems/lingon/internal/buildmeta"
 	"pkt.systems/version"
 )
 
@@ -20,15 +22,19 @@ func NewVersionCommand() *cobra.Command {
 			if semverOnly && versionOnly {
 				return fmt.Errorf("cannot use --semver and --version together")
 			}
+			current := buildmeta.ReleaseVersion()
+			if current == "" {
+				current = version.Current()
+			}
 			if semverOnly {
-				fmt.Fprintln(cmd.OutOrStdout(), version.CurrentSemver())
+				fmt.Fprintln(cmd.OutOrStdout(), strings.TrimPrefix(current, "v"))
 				return nil
 			}
 			if versionOnly {
-				fmt.Fprintln(cmd.OutOrStdout(), version.Current())
+				fmt.Fprintln(cmd.OutOrStdout(), current)
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "pkt.systems/lingon %s\n", version.Current())
+			fmt.Fprintf(cmd.OutOrStdout(), "pkt.systems/lingon %s\n", current)
 			return nil
 		},
 	}

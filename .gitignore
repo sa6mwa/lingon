@@ -4,6 +4,8 @@ testdata/
 bin/
 /stash/
 /podman.yaml
+/build/
+/dist/
 \#*\#
 .vscode/
 .idea/

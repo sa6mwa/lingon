@@ -37,8 +37,8 @@ android {
         applicationId = "systems.pkt.lingon"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "v0.5.0-alpha.1.0.20260925123845-d083cffd9018"
+        versionCode = providers.gradleProperty("lingon.versionCode").orNull?.toInt() ?: 1
+        versionName = providers.gradleProperty("lingon.versionName").orNull ?: "0.0.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         integrationRunnerArgProperties.forEach { (runnerArg, gradleProperty) ->
             providers.gradleProperty(gradleProperty).orNull?.let { value ->
