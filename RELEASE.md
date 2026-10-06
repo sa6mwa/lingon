@@ -162,7 +162,13 @@ is an explicit engineer decision; the normal recovery is a new version.
 ## Local Podman Kube services
 
 The old root manifest using live home-directory credentials is retired.
-`devenv.yaml.in` is the sole service definition. Use:
+`devenv.yaml.in` is the sole service definition.
+
+The relay binds its container interface while the published host port remains
+loopback-only. A failed readiness check retains pod diagnostics in the lifecycle
+log before bounded teardown, including when the caller cancels the operation.
+
+Use:
 
 ```sh
 make dev-up LINGON_DEV_IMAGE=docker.io/pktsystems/lingon:v1.2.3

@@ -58,8 +58,15 @@ func (w *workflow) dev(ctx context.Context, operation string) error {
 			return fmt.Errorf("kube play failed; manifest retained for dev-down: %w", err)
 		}
 		if err := waitDevReady(ctx, devReadiness{URL: "https://127.0.0.1:" + port + "/v1/health", CA: filepath.Join(root, "state", ".lingon", "tls", "ca.pem"), Clock: clock.New()}); err != nil {
-			_, downErr := w.exec(ctx, w.root, "podman", "kube", "down", manifest)
-			return fmt.Errorf("dev readiness failed: %w; cleanup result: %v (manifest retained)", err, downErr)
+			// Preserve diagnostics before removing the pod. Cancellation of the
+			// readiness request must not cancel cleanup of our owned service.
+			logsCtx, logsCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_, logsErr := w.exec(logsCtx, w.root, "podman", "pod", "logs", id)
+			logsCancel()
+			downCtx, downCancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+			_, downErr := w.exec(downCtx, w.root, "podman", "kube", "down", manifest)
+			downCancel()
+			return fmt.Errorf("dev readiness failed: %w; diagnostics result: %v; cleanup result: %v (manifest retained; see lifecycle log)", err, logsErr, downErr)
 		}
 		fmt.Printf("Pod %s ready at https://127.0.0.1:%s/v1/health. State: %s\n", id, port, filepath.Join(root, "state"))
 		return nil

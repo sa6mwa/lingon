@@ -13,7 +13,7 @@ spec:
       securityContext:
         runAsUser: @UID@
         runAsGroup: @GID@
-      args: [serve, --tls-mode, auto]
+      args: [serve, --listen, "0.0.0.0:12843", --tls-mode, auto]
       env:
         - name: LOG_MODE
           value: json

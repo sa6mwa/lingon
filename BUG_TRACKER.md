@@ -29,6 +29,13 @@ Required status values:
 
 ## Active Items
 
+### B-169 Podman Kube development service binds an unreachable loopback listener
+
+- Status: `resolved`
+- Real repro: The verified rehearsal image passes the matrix, but `make dev-up` reaches its readiness deadline. It creates owned TLS state, then automatically removes its pod (`build/lifecycle/dev-up-1755081943.log`). An isolated repeat captures `serve.http.start.init` listening on `127.0.0.1:12843` inside the container; the published host port cannot reach that loopback listener (`build/lifecycle-dev-diagnostic.log`).
+- Plan: Bind the service to its container network interface while retaining the host's loopback-only published port. Capture pod diagnostics before bounded owned teardown, including cancellation. `TestDevCancellationKeepsDiagnosticsAndOwnsTeardown` checks that a canceled readiness context cannot suppress logs or leave the owned pod running.
+- Verification: The cancellation fixture fails before (`build/lifecycle-dev-cancel-before.log`) and the complete dev-focused race cases pass three runs after (`build/lifecycle-dev-unit-after.log`). Real rootless Kube up now passes CA-verified readiness, and a second explicit HTTPS health request returns `{"status":"ok"}` (`build/lifecycle-dev-up-after.log`, `build/lifecycle-dev-health-after.log`). Owned state and CA are UID/GID 1000, mode 700/600. Ordinary-user dev-down/reset pass, the pod is absent and `build/devenv` is removed (`build/lifecycle-dev-{down,reset}-after.log`). Root tests, vet, golint and golangci-lint pass (`build/lifecycle-dev-{go-test,vet,golint,golangci}.log`, zero lint issues). No privileged cleanup, home mounts or lingering service was used.
+
 ### B-168 Broader integration exposes publisher and raw-mode descriptor races
 
 - Status: `resolved`
