@@ -29,6 +29,14 @@ Required status values:
 
 ## Active Items
 
+### B-185 Reopened shared sessions lose their persisted zoom
+
+- Status: `needs_verification`
+- Report: Review of `dc1f69f` against pinned trunk reproduces a saved 1.7x shared-session zoom resetting to 1.0x (`build/resume-review.normal-trunk.ocLW5W.log`). Share startup activates placeholder view state; authentication replaces the ID without activating the authenticated session's persisted state.
+- Regressions: The unit fixture uses the actual endpoint key, restores a pre-existing 1.7x zoom, explicitly advances coroutine time to persist 1.9x, then reopens the share and requires that value. It fails before repair (`build/resume-shared-zoom-unit-before-final.log`). Real relay/emulator instrumentation persists zoom for the authenticated session, logs out, reopens the same share, and requires the visible terminal to restore zoom and rendered scale. Before repair it times out with 1.0x zoom in the real terminal (`build/resume-shared-zoom-e2e-before.log`). The initial unit diagnostic used an incorrect endpoint key; only the corrected before-fix run is treated as proof.
+- Fix: Activate session view state after the current authentication result installs the real session identity. Existing token/endpoint/generation guards still precede that update, so obsolete authentication cannot restore another share's state.
+- Verification: Complete Android unit and instrumentation-compilation gates pass (`build/resume-shared-zoom-build-final.log`). The exact reopening case plus pinch/reset and frame/background/foreground zoom cases all pass together on the owned emulator (`build/resume-shared-zoom-e2e-after.log`, three tests, exit zero, resource/teardown controls enabled). Root Go tests and standard vet/golint/golangci-lint pass (`build/resume-shared-zoom-{go-test,lint}.log`). Changed-path readback confirms the real-ID activation. Clean re-review and full serial prerelease proof remain outstanding.
+
 ### B-184 Detached creation inherits stale startup connectivity and geometry
 
 - Status: `needs_verification`

@@ -561,6 +561,27 @@ class AppViewModelTest {
     }
 
     @Test
+    fun sharedAuthenticationRestoresAndReopensPersistedSessionZoom() = runTest {
+        val key = "https://example|shared-real"
+        val repository = FakeRepository(initialSessionZooms = mapOf(key to 1.7f))
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        assertEquals("shared-real", viewModel.state.value.activeSessionId)
+        assertEquals(1.7f, viewModel.state.value.zoomFactor, 0.0001f)
+
+        viewModel.updateZoomFactor(1.9f)
+        advanceTimeBy(150)
+        runCurrent()
+        assertEquals(1.9f, repository.savedZooms[key]!!, 0.0001f)
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        assertEquals("shared-real", viewModel.state.value.activeSessionId)
+        assertEquals(1.9f, viewModel.state.value.zoomFactor, 0.0001f)
+    }
+
+    @Test
     fun handleSharedTokenUpdatesState() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()

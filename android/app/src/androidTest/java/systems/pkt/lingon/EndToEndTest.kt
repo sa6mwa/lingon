@@ -308,6 +308,36 @@ class EndToEndTest {
     }
 
     @Test
+    fun reopened_shared_session_restores_persisted_zoom() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        attachViaShareToken(token)
+        val state = appViewModel().state.value
+        val sessionId = state.activeSessionId ?: throw AssertionError("missing authenticated share session")
+        val app = composeRule.activity.application as LingonApplication
+        try {
+            setZoomFactor(1.7f)
+            val zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == sessionId && kotlin.math.abs(info.zoomFactor - 1.7f) < 0.001f
+            } ?: throw AssertionError("shared terminal did not apply initial zoom")
+            waitUntil(10_000L) {
+                runBlocking { kotlin.math.abs(app.repository.loadSessionZoom(state.endpoint, sessionId) - 1.7f) < 0.001f }
+            }
+            ensureLoggedOut()
+            attachViaShareToken(token)
+            val restored = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == sessionId && kotlin.math.abs(info.zoomFactor - 1.7f) < 0.001f
+            } ?: throw AssertionError("reopened authenticated share did not restore persisted 1.7x zoom; state=${appViewModel().state.value.zoomFactor}")
+            assertEquals(1.7f, restored.zoomFactor, 0.001f)
+            assertEquals(zoomed.renderScaleX, restored.renderScaleX, 0.03f)
+            assertEquals(zoomed.renderScaleY, restored.renderScaleY, 0.03f)
+        } finally {
+            resetZoomPan()
+        }
+    }
+
+    @Test
     fun settings_session_management_hidden_for_share() {
         val token = testConfig.viewToken ?: throw AssertionError("missing share token")
         setEndpoint(testConfig.endpoint)

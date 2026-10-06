@@ -1361,6 +1361,7 @@ class AppViewModel(
                     shareTokenError = null,
                 )
             }
+            activateSessionViewState()
             openWebSocket(baseUrl, authenticatedSessionID, shareToken, _state.value, shareAuthentication)
         }
     }
