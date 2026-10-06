@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"pkt.systems/lingon/internal/backoff"
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/protocolpb"
 )
 
@@ -274,10 +275,14 @@ func TestPublisherPingLoopSkipsWhileWriteBusy(t *testing.T) {
 		_ = ws.Close(websocket.StatusNormalClosure, "bye")
 	}()
 
+	clk := &busyPingClock{MockClock: clock.NewMock(), ready: make(chan struct{})}
+	clk.Add(time.Minute)
 	p := New(Options{
 		SessionID: "session",
+		Clock:     clk,
 	})
-	p.lastActivity.Store(time.Now().Add(-time.Minute).UnixNano())
+	p.lastActivity.Store(clk.Now().Add(-time.Second).UnixNano())
+	clk.observed = make(chan struct{}, 1)
 	p.writeMu.Lock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -287,10 +292,13 @@ func TestPublisherPingLoopSkipsWhileWriteBusy(t *testing.T) {
 		errCh <- p.pingLoop(ctx, ws, nil)
 	}()
 
+	<-clk.ready
+	clk.Add(150 * time.Millisecond)
+	<-clk.observed
 	select {
 	case err := <-errCh:
 		t.Fatalf("pingLoop returned while write busy: %v", err)
-	case <-time.After(150 * time.Millisecond):
+	default:
 	}
 
 	cancel()

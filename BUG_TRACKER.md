@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-164 Publisher ping cancellation races with a queued timer tick
+
+- Status: `resolved`
+- Report: The second clean `make prerelease` rehearsal (`badc054`) stops at the root race gate on `TestPublisherPingLoopSkipsWhileWriteBusy`; the earlier B-163 failures are absent. `build/lifecycle/prerelease-3203614489.log` records `failed to ping: use of closed network connection, want nil after cancellation`.
+- Finding: A selected ticker event can reach Ping after the parent context is canceled; the busy-writer fixture also uses a 150 ms wall-clock wait as timing proof. Preserve the full gate, convert timing proof to explicitly advanced mock time, and distinguish intentional cancellation from an actual ping failure.
+- Regression: `TestPublisherCanceledQueuedPingReturnsWithoutReconnect` queues a real mock ticker event before entering the canceled loop and asserts a normal return without reconnect/failure recovery. Three race runs fail before the production fix (`build/lifecycle-ping-cancel-before.log`); ten runs pass after (`build/lifecycle-ping-cancel-after.log`). The busy-writer fixture now waits for ticker creation, advances mock time and observes the idle check; its wall-clock delay is removed.
+- Fix: Check parent cancellation after selecting a tick and after the serialized Ping completes. Return normally for deliberate cancellation before clearing connection state or triggering failure recovery; genuine non-cancellation ping errors retain their existing handling. Changes affect the periodic ping path, not input/frame serialization or allocations; no relevant ping performance gate exists and no latency improvement is claimed.
+- Verification: Complete publisher race suite passes (`build/lifecycle-publisher-race.log`), followed by root tests/vet/golint/golangci-lint (`build/lifecycle-ping-{go-test,vet,golint,golangci}.log`, zero lint issues). Owned transport fixtures close their sockets/servers; no inherited terminal is used. A fresh complete release rehearsal is still required after the remediation commit.
+
 ### B-163 Full local CI race gate exposes unjoined fixture callbacks and remote diagnostics
 
 - Status: `resolved`

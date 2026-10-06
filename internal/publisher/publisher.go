@@ -911,6 +911,9 @@ func (p *Publisher) pingLoop(ctx context.Context, ws *websocket.Conn, cancel con
 			return nil
 		case <-ticker.C:
 		}
+		if ctx.Err() != nil {
+			return nil
+		}
 		if p.idleFor() < interval {
 			continue
 		}
@@ -921,6 +924,9 @@ func (p *Publisher) pingLoop(ctx context.Context, ws *websocket.Conn, cancel con
 		err := ws.Ping(pingCtx)
 		pingCancel()
 		p.writeMu.Unlock()
+		if ctx.Err() != nil {
+			return nil
+		}
 		if err == nil {
 			p.touchActivity()
 			continue
