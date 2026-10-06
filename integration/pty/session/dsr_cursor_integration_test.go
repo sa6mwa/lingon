@@ -6,6 +6,7 @@ package integrationptysession_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,10 @@ if ! stty -echo -icanon min 1 time 0; then
 fi
 trap 'stty echo icanon' EXIT
 
+# The host owns row one for tabs; announce readiness in the terminal body.
+printf '\nDSR-READY\n'
+IFS= read -r start_query
+[[ "$start_query" == "QUERY" ]]
 printf '\033[2J\033[H'
 printf '\033[6n'
 
@@ -60,26 +65,45 @@ exit 1
 
 	clk := clock.NewMock()
 	master, slave := ptytest.OpenPTY(t, 80, 24)
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = slave.Close()
+	})
 	sess := ptytest.NewPTYSessionWithClock(t, master, slave, 80, 24, clk)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	runner := session.New(session.Options{
-		Cols:       80,
-		Rows:       24,
-		Shell:      path,
-		Publish:    false,
-		Stdin:      slave,
-		Stdout:     slave,
-		DisableRaw: true,
-		Clock:      clk,
+		Cols:                80,
+		Rows:                24,
+		Shell:               path,
+		Publish:             false,
+		Stdin:               slave,
+		Stdout:              slave,
+		DisableRaw:          true,
+		DisableSignalResize: true,
+		Clock:               clk,
 	})
 
 	runErr := make(chan error, 1)
 	go func() {
 		runErr <- runner.Run(ctx)
 	}()
+	// Wait for the child to own/configure its PTY before starting the cursor
+	// query. This is a transport barrier, not a sleep through shell startup.
+	sess.Eventually(5*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		select {
+		case err := <-runErr:
+			t.Fatalf("runner exited before owned DSR readiness: %v; screen:\n%s", err, screen.String())
+		default:
+		}
+		if !screen.Contains("DSR-READY") {
+			return fmt.Errorf("owned DSR child is not ready; screen:\n%s", screen.String())
+		}
+		return nil
+	})
+	sess.Send("QUERY\n")
 
 	raw := ""
 	found := false

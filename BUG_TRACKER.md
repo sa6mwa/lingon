@@ -29,6 +29,14 @@ Required status values:
 
 ## Active Items
 
+### B-171 DSR startup fixture and management outcome banner are not stable
+
+- Status: `resolved`
+- Repro: The sixth clean rehearsal at `f61fb82` passes the attach package, then `TestDSRReturnsSnapshotCursorPosition` times out with a blank startup frame. Browser malformed-management-response coverage observes an empty uncertainty banner (`build/lifecycle/prerelease-1480205590.log`).
+- Fix: Make the DSR child announce owned-PTY readiness in the terminal body (row one belongs to the host's tabs), then await an explicit test key sequence before emitting its query. Retain the exact cursor-response assertion, disable process-global resize subscription, and close the owned PTY pair in cleanup. Store management errors with their originating view; select the banner consistently in loading, reconnect and recovery callbacks. A new explicit operation clears its previous error. Banner selection does not add layout or scrollbar work to the terminal-frame path.
+- Regression evidence: The interrupted readiness check still fails before the fixture repair (`build/resume-dsr-before.log`). The extended real-browser lost/malformed-response cases fail before the reconnect repair, observing a reconnect countdown in place of the uncertainty banner (`build/resume-banner-before.log`). They now retain the error through a real WebSocket reconnect and returning to the originating tab, and assert that a later rejected operation replaces the old outcome. Reconnect listing uses current relay metadata instead of the auth fixture's deliberately cached pre-creation list.
+- Verification: DSR, browser management and management-auth recovery pass three race runs (`build/resume-regressions-repeat-final.log`). Root `go test ./...`, `go vet ./...`, `golint ./...` and `golangci-lint run ./...` pass (`build/resume-go-test.log`, `build/resume-lint.log`). Changed banner setters were reviewed for consistent priority and PTY cleanup for isolation. A fresh complete prerelease rehearsal is still required; these focused results do not claim full Android or artifact proof.
+
 ### B-170 Host credential refresh mutates startup options during terminal creation
 
 - Status: `resolved`

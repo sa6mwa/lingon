@@ -96,7 +96,7 @@ window.fetch = async (...args) => {
   }
   // Keep unrelated periodic listing from refreshing the deliberately expired
   // cookie. Management and its resulting list refresh still use the real relay.
-  if (args[0] === 'sessions' && !refreshAfterMutation)
+  if (args[0] === 'sessions' && !refreshAfterMutation && !window.__managementLiveSessions)
     return new Response(JSON.stringify(cachedSessions), {status: 200});
   const response = await originalFetch(...args);
   if (args[0] === 'sessions/manage' || args[0] === 'auth/refresh')
@@ -239,6 +239,37 @@ window.fetch = async (...args) => {
 				}
 				if (fault.name == "lost" || fault.name == "malformed") && !strings.Contains(status, "outcome unknown") {
 					t.Fatalf("uncertain outcome not reported: %q", status)
+				}
+				if fault.name != "lost" && fault.name != "malformed" && status != "rejected" {
+					t.Fatalf("new operation retained a previous outcome: %q", status)
+				}
+				if fault.name == "lost" || fault.name == "malformed" {
+					// Drive the real reconnect path after the operation settles.
+					// Connectivity updates must retain an uncertain management result.
+					if err := chromedp.Run(ctx,
+						chromedp.Evaluate(`window.__managementFault = ''; window.__managementLiveSessions = true;
+window.__managementOrigin = window.__bifrons.debug.state.activeSessionId;
+window.__managementOriginLabel = document.querySelector('#tab-list .tab-button.active').textContent;
+window.__bifrons.forceDisconnect(); document.getElementById('status-banner').textContent`, &status),
+					); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(status, "outcome unknown") {
+						t.Fatalf("reconnect callback erased uncertain outcome: %q", status)
+					}
+					if err := chromedp.Run(ctx,
+						chromedp.Poll(`window.__bifrons.viewInfo().wsState === WebSocket.OPEN && !window.__bifrons.viewInfo().reconnectPending`, nil),
+						// Discovery can select another online terminal while the
+						// origin reconnects; return to the operation's own tab.
+						chromedp.Evaluate(`Array.from(document.querySelectorAll('#tab-list .tab-button')).find(button => button.textContent === window.__managementOriginLabel).click()`, nil),
+						chromedp.Poll(`window.__bifrons.debug.state.activeSessionId === window.__managementOrigin && window.__bifrons.viewInfo().wsState === WebSocket.OPEN && !window.__bifrons.viewInfo().reconnectPending`, nil),
+						chromedp.Text("#status-banner", &status),
+					); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(status, "outcome unknown") {
+						t.Fatalf("recovered connection erased uncertain outcome: %q", status)
+					}
 				}
 			})
 		}

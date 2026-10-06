@@ -226,6 +226,7 @@ function createView(sessionId) {
     connectionState: "offline",
     statusLevel: "error",
     statusText: "",
+    managementError: "",
     queuedInput: "",
   };
 }
@@ -950,6 +951,18 @@ function updateActiveTileClasses() {
   }
 }
 
+function updateStatusBanner(view) {
+  if (view.managementError) {
+    setStatusBanner(view.managementError, "error");
+  } else if (view.statusText) {
+    setStatusBanner(view.statusText, view.statusLevel || "error");
+  } else if (view.loadingVisible) {
+    setStatusBanner(view.loadingText || "loading from relay", "loading");
+  } else {
+    setStatusBanner("");
+  }
+}
+
 function updateActiveStatus() {
   const view = getActiveView();
   if (!view) {
@@ -965,13 +978,7 @@ function updateActiveStatus() {
     window.__bifrons.term = view.term || null;
   }
   setConnectionPill(view.connectionState || "offline");
-  if (view.statusText) {
-    setStatusBanner(view.statusText, view.statusLevel || "error");
-  } else if (view.loadingVisible) {
-    setStatusBanner(view.loadingText || "loading from relay", "loading");
-  } else {
-    setStatusBanner("");
-  }
+  updateStatusBanner(view);
   const showEmpty = view.noHost || !view.snapshot;
   setEmptyState(showEmpty);
   updateScrollbar(view);
@@ -1064,7 +1071,7 @@ function scheduleReconnect(view, reason, retryAfterSeconds = 0) {
   view.statusLevel = "error";
   view.connectionState = "waiting";
   if (view === getActiveView()) {
-    setStatusBanner(view.statusText, "error");
+    updateStatusBanner(view);
     setEmptyState(true);
     setConnectionPill("waiting");
   }
@@ -1078,7 +1085,7 @@ function scheduleReconnect(view, reason, retryAfterSeconds = 0) {
     }
     view.statusText = `${reason} (reconnecting ${remaining}s)`;
     if (view === getActiveView()) {
-      setStatusBanner(view.statusText, "error");
+      updateStatusBanner(view);
     }
   }, 1000);
 
@@ -1112,7 +1119,6 @@ function resetReconnect(view) {
   view.statusText = "";
   view.statusLevel = "error";
   if (view === getActiveView()) {
-    setStatusBanner("");
     updateActiveStatus();
   }
 }
@@ -1870,7 +1876,7 @@ function clearLoadingBanner(view) {
   view.loadingVisible = false;
   view.loadingText = "";
   if (view === getActiveView() && !view.statusText) {
-    setStatusBanner("");
+    updateStatusBanner(view);
   }
 }
 
@@ -3020,6 +3026,8 @@ async function manageSession(kind, sessionId, name = "") {
   const view = getActiveView();
   if (managementBusy || !view || view.shareSession || !sessionId) return;
   managementBusy = true;
+  view.managementError = "";
+  updateStatusBanner(view);
   updateManagementActions();
   try {
     // A lost response has an uncertain outcome. Only an explicit authentication
@@ -3042,7 +3050,8 @@ async function manageSession(kind, sessionId, name = "") {
     if (kind === "create") createdSessionId = result.session_id;
     await refreshSessionsWithAuth();
   } catch (error) {
-    setStatusBanner(error instanceof TypeError || error instanceof SyntaxError ? "Session operation outcome unknown; refresh sessions before trying again" : error.message);
+    view.managementError = error instanceof TypeError || error instanceof SyntaxError ? "Session operation outcome unknown; refresh sessions before trying again" : error.message;
+    if (getActiveView() === view) updateStatusBanner(view);
   } finally {
     managementBusy = false;
     updateManagementActions();
