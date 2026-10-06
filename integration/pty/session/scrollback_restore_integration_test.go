@@ -6,18 +6,23 @@ package integrationptysession_test
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 func TestHostScrollbackRestore(t *testing.T) {
 	t.Setenv("PS1", "PROMPT> ")
 	shell := "/bin/sh"
 	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
+		shell = filepath.Join(testutil.TempDir(t), "scrollback-shell.sh")
+		if err := os.WriteFile(shell, []byte("#!/bin/sh\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	h := newHarness(t)
@@ -34,7 +39,7 @@ func TestHostScrollbackRestore(t *testing.T) {
 	host.Send("i=1; while [ $i -le 60 ]; do printf 'LINE-%02d\\n' $i; i=$((i+1)); done\n")
 	eventuallyWithClock(t, host.Clock(), 3*time.Second, 50*time.Millisecond, func() error {
 		screen := host.Screen()
-		if !screen.Contains("LINE-60") {
+		if !screen.Contains("LINE-60") || !strings.HasPrefix(screen.Row(19), "PROMPT> ") {
 			return ptytest.FormatRowDiff("host", 0, screen.Row(0))
 		}
 		return nil

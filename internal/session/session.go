@@ -155,6 +155,9 @@ type WallInactivityToggleResult struct {
 
 // Runner executes a local interactive session with optional relay publishing.
 type Runner struct {
+	credentialMu sync.RWMutex
+	currentToken string
+
 	management  *sessionmanage.Manager
 	opts        Options
 	geometryMu  sync.RWMutex
@@ -240,11 +243,12 @@ func New(opts Options) *Runner {
 		Theme:    theme.TUI(resolveThemeName(opts.Theme)),
 	}})
 	return &Runner{
-		opts:       opts,
-		management: sessionmanage.New(),
-		clock:      opts.Clock,
-		trace:      opts.Trace,
-		compositor: compositor,
+		opts:         opts,
+		currentToken: opts.Token,
+		management:   sessionmanage.New(),
+		clock:        opts.Clock,
+		trace:        opts.Trace,
+		compositor:   compositor,
 	}
 }
 
@@ -354,10 +358,10 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	var tokenRefresher func(context.Context) (string, error)
 	if r.opts.Publish && r.opts.AuthFile != "" && r.opts.Endpoint != "" {
 		tokenRefresher = relayclient.TokenRefresher(r.opts.Endpoint, r.opts.AuthFile, r.opts.TLSDir, r.opts.Insecure, func(token string) {
-			r.opts.Token = token
+			r.setAccessToken(token)
 		})
 	}
-	if r.opts.Publish && r.opts.Token == "" && tokenRefresher == nil {
+	if r.opts.Publish && r.accessToken() == "" && tokenRefresher == nil {
 		return fmt.Errorf("access token is required when publishing")
 	}
 	r.tokenRefresher = tokenRefresher
@@ -426,7 +430,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	if r.opts.Publish && !r.opts.DisableRemoteSessions {
 		r.remoteSessions = newRemoteManager(remoteOptions{
 			Endpoint:                    r.opts.Endpoint,
-			Token:                       r.opts.Token,
+			Token:                       r.accessToken(),
 			TokenRefresher:              tokenRefresher,
 			HostnameOnly:                r.opts.HostnameOnly,
 			TLSDir:                      r.opts.TLSDir,
@@ -1932,7 +1936,7 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 	if r.opts.Publish {
 		pub := publisher.New(publisher.Options{
 			Endpoint:         r.opts.Endpoint,
-			Token:            r.opts.Token,
+			Token:            r.accessToken(),
 			TokenRefresher:   tokenRefresher,
 			Clock:            r.clock,
 			SessionID:        session.ID(),
@@ -2956,7 +2960,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		r.publishWallInactivityStatus(sessionID, "wall inactivity requires relay endpoint")
 		return
 	}
-	token := strings.TrimSpace(r.opts.Token)
+	token := strings.TrimSpace(r.accessToken())
 	if token == "" && tokenRefresher != nil {
 		refreshed, err := tokenRefresher(ctx)
 		if err != nil {
@@ -2969,7 +2973,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		}
 		token = strings.TrimSpace(refreshed)
 		if token != "" {
-			r.opts.Token = token
+			r.setAccessToken(token)
 		}
 	}
 	if token == "" {

@@ -29,6 +29,13 @@ Required status values:
 
 ## Active Items
 
+### B-170 Host credential refresh mutates startup options during terminal creation
+
+- Status: `resolved`
+- Repro: The fifth clean rehearsal (`bb2f2ab`) passes the full root race gate, then `TestAttachRapidTabSwitchKeepsIO` detects the auth refresher writing `Runner.opts.Token` while `addLocalSession` reads it (`build/lifecycle/prerelease-3606110198.log`). `TestHostScrollbackRestore` also snapshots final command output before the shell's next prompt, then compares it against a later prompted screen.
+- Fix under verification: Keep startup options immutable and retain the current credential behind its own mutex for publisher creation, remote setup, wall requests and detached launches. Make the scrollback fixture use its own predictable shell profile and wait for the actual final prompt before taking the baseline; preserve its complete screen-restoration assertion.
+- Verification: The existing real rapid-tab PTY regression fails with the actual before-race stacks in the fifth rehearsal; rapid tabs and full scrollback restoration pass ten race runs after (`build/lifecycle-host-credential-scroll-after.log`). `TestRunnerRefreshKeepsStartupOptionsImmutable` verifies concurrent refresh/read snapshots and retained startup options in ten runs (`build/lifecycle-host-credential-unit.log`). The complete session race suite, root tests, vet, golint and golangci pass (`build/lifecycle-host-credential-{full-race,go-test,vet,golint,golangci}-final.log`). The intermediate architecture assertion rejected a gofmt alignment change from the new fields; group credential fields separately, restoring the existing renderer assertion's format without changing its test. Credential locking runs on creation/authentication/wall-management paths; no input/frame lock or latency improvement is claimed. A fresh complete release rehearsal remains required.
+
 ### B-169 Podman Kube development service binds an unreachable loopback listener
 
 - Status: `resolved`

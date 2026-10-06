@@ -71,7 +71,7 @@ func (r *Runner) Manage(ctx context.Context, req sessionmanage.Request) sessionm
 			if r.opts.AuthFile != "" {
 				args = append(args, "--auth-file", r.opts.AuthFile)
 			} else {
-				launchToken = r.opts.Token
+				launchToken = r.accessToken()
 				if local.publisher != nil {
 					launchToken = local.publisher.AccessToken()
 				}
