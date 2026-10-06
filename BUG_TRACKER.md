@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-172 Pending local-headless tab loses the displayed frame or loading banner
+
+- Status: `resolved`
+- Repro: The clean prerelease rehearsal at `ec04dbd` stops in the root race gate: `TestMultiAttachLocalHeadlessPendingTabPreservesDisplayedFrame` switches to `second` but fails its retained-frame/loading-banner assertion (`build/lifecycle/prerelease-873870796.log`). The preceding root non-race gate passed. Android and artifact gates did not run.
+- Constraint: Preserve every permanent no-flicker, retained-frame, real-snapshot and loading-banner assertion. Diagnose and repair the production rendering/activation path in a separate fix iteration; retain the stopped rehearsal log.
+- Fix: Keep `RenderCurrentFull`'s cache reset and frame render under one render lock, so a pending tab cannot seed an empty intermediate framebuffer. A ready callback clears loading only for its live active view, serialized with activation. Capture the previous client's generated identity, snapshot and sequence under its state lock; startup ID initialization uses that same lock. Switching between different sessions does not clone the previous session's snapshot or replay sequence.
+- Regression: The unchanged owned-PTY retained-frame test fails in the 20-run isolated pre-fix race reproduction (`build/resume-pending-tab-before.log`). Expanded verification exposes the identity seed/startup race in the companion unchanged loading-tab test (`build/resume-pending-tab-after.log`). Both permanent regressions pass 30 race repetitions after repair (`build/resume-pending-tab-after-final.log`), retaining their loading, replacement-frame and no-flicker assertions.
+- Verification: The entire attach race suite passes (`build/resume-attach-race.log`); root `go test ./...` and `make lint` (vet, golint, golangci-lint) pass (`build/resume-pending-go-test.log`, `build/resume-pending-lint.log`). Reviewed render/state lock boundaries and active-view identity checks. No dedicated pending-tab performance gate exists; this repair preserves the one-frame render and avoids extra cross-session snapshot copying. A fresh complete prerelease rehearsal remains required.
+
 ### B-171 DSR startup fixture and management outcome banner are not stable
 
 - Status: `resolved`

@@ -239,9 +239,11 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		}
 	}
 
+	c.mu.Lock()
 	if c.ClientID == "" {
 		c.ClientID = c.newClientID()
 	}
+	c.mu.Unlock()
 
 	c.stdin = c.stdinReader()
 	c.stderr = c.stderrWriter()
@@ -712,20 +714,28 @@ func (c *Client) SeedFrom(prev *Client) {
 	if prev == nil {
 		return
 	}
-	c.ClientID = prev.ClientID
+	prev.mu.RLock()
+	clientID := prev.ClientID
+	var seq uint64
+	var snap *protocolpb.Snapshot
+	if prev.SessionID == c.SessionID {
+		seq = prev.lastSeq
+		snap = cloneSnapshot(prev.lastSnapshot)
+	}
+	prev.mu.RUnlock()
+	c.mu.Lock()
+	c.ClientID = clientID
+	c.mu.Unlock()
 	if prev.SessionID != c.SessionID {
 		return
 	}
-	prev.mu.RLock()
-	snap := cloneSnapshot(prev.lastSnapshot)
-	prev.mu.RUnlock()
 	prev.renderMu.Lock()
 	renderCache := prev.renderCache
 	renderCache.PrevSnapshot = cloneSnapshot(renderCache.PrevSnapshot)
 	prev.renderMu.Unlock()
 	c.mu.Lock()
 	c.lastSnapshot = snap
-	c.lastSeq = prev.lastSeq
+	c.lastSeq = seq
 	c.needsResync = false
 	c.resyncRequested = false
 	c.mu.Unlock()
@@ -873,10 +883,10 @@ func (c *Client) ForceTabsVisibleOnce() {
 // RenderCurrentFull re-renders the composed snapshot without clearing the screen.
 func (c *Client) RenderCurrentFull() {
 	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
 	c.renderCache.Reset()
 	c.forceClear = false
-	c.renderMu.Unlock()
-	c.renderCurrent()
+	c.renderSnapshotLocked(c.snapshotOrBlank())
 }
 
 // RenderCurrentClear re-renders the last snapshot with a full clear.

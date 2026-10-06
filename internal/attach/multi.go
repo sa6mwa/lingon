@@ -958,7 +958,18 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			if showStatus && !localSessionMode {
 				showConnected(mvu.ConnectedToMessage(endpointLabel), 3*time.Second)
 			}
-			showLoading("")
+			// Readiness can finish after the user activates another tab. Clear
+			// only this live active view's loading state, under the same lock as
+			// activation, so a late callback cannot clear the next view's banner.
+			mu.Lock()
+			clearLoading := views[session.ID] == view && activeID == session.ID && view.visible
+			if clearLoading {
+				ui.ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{Kind: mvu.StatusLoading}})
+			}
+			mu.Unlock()
+			if clearLoading {
+				renderActiveCurrent()
+			}
 			if showStatus && client.HasSnapshot() {
 				client.RenderCurrentFull()
 			}
