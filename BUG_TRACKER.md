@@ -29,6 +29,16 @@ Required status values:
 
 ## Active Items
 
+### B-186 CLI credential rotation can restore concurrently revoked relay authority
+
+- Status: `in_progress`
+- Report: Prescribed review of `c7ce58c` against pinned trunk confirms that CLI password/TOTP rotation loads a separate relay Store and overwrites all persisted state. Concurrent live revocation can be lost, restoring another user's revoked share after restart (`build/resume-review.normal-trunk.gu18xi.log`, P1).
+- Diagnosis: `Store.saveMu` serializes only one Store instance. The live relay already invalidates users through its reload hook, but the CLI writes a separate snapshot. A file lock around rename alone would serialize writes without repairing stale in-memory state or ownership.
+- Decision boundary: Preserve online/offline credential rotation and all revocations. No existing relay control IPC or state-owner lease exists. Routing online mutations through the relay and allowing direct updates only with exclusive offline ownership changes operational architecture and requires direction before implementation.
+- Proposed contract awaiting direction: The live relay holds a data-directory ownership lease from before state loading through shutdown. A private local control socket accepts user mutations from the local administrative CLI; mutating commands (`add`, `chpasswd`, `rotate-totp`, `delete`) use that owner while it is live, retaining their existing command/output behavior. Direct mutation is permitted only after acquiring exclusive offline ownership. Failure to contact a live owner must fail visibly, never fall back to a second writer. Local control permissions must match existing private state access, and success must follow durable credential/revocation updates and active-authority invalidation. Existing relay wire messages and `state.json` layout need not change.
+- Planned proof: Capture the old two-writer interleaving as a failing regression; verify unrelated Bob revocations remain revoked after Alice rotation and restart, and new relay tokens/session metadata survive. Exercise live and offline CLI mutations, ownership contention, stale socket/crash cleanup, owner-unavailable failure without fallback, and credential/IPC privacy. Use controlled events and injected clock scheduling rather than sleep-based ordering. Then run standard Go/Android gates, full prerelease, and the prescribed review.
+- Completion audit: Current source defines all six release targets with CGO disabled, signed-APK inspection, exact checksum membership, privacy scans, owned serial Android sweeps, and benchmark observations. That implementation evidence does not establish full proof: no complete prerelease rehearsal has passed, and the P1 plus its architecture decision must be resolved first.
+
 ### B-185 Reopened shared sessions lose their persisted zoom
 
 - Status: `needs_verification`
