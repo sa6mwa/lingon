@@ -57,7 +57,7 @@ func (r *Runner) Manage(ctx context.Context, req sessionmanage.Request) sessionm
 				return sessionmanage.Result{SessionID: id, Name: record.Name}
 			}
 		}
-		cols, rows := r.terminalGeometry()
+		cols, rows := local.Size()
 		args := []string{"-x", "--config-dir", cfg, "--session", id, "--cols", strconv.Itoa(cols), "--rows", strconv.Itoa(rows), "--term", r.opts.Term, "--respawn=" + strconv.FormatBool(r.opts.Respawn), "--scrollback-lines", strconv.Itoa(r.opts.ScrollbackLines)}
 		if r.opts.ConfigFile != "" {
 			args = append(args, "--config", r.opts.ConfigFile)
@@ -80,7 +80,7 @@ func (r *Runner) Manage(ctx context.Context, req sessionmanage.Request) sessionm
 				args = append(args, "--insecure")
 			}
 		}
-		if r.opts.Offline || r.opts.Endpoint == "" || !r.opts.Publish {
+		if local.Offline() || r.opts.Endpoint == "" || !r.opts.Publish {
 			args = append(args, "--offline")
 		}
 		var env []string

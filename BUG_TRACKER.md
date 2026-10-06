@@ -29,6 +29,14 @@ Required status values:
 
 ## Active Items
 
+### B-184 Detached creation inherits stale startup connectivity and geometry
+
+- Status: `needs_verification`
+- Report: Review of `4d3af79` against pinned trunk finds creation using `r.opts.Offline` and runner geometry after the target session changes connectivity or is resized through the relay (`build/resume-review.normal-trunk.64Jl9Z.log`). A successful child can remain undiscoverable or start at stale dimensions.
+- Regressions: The real detached-launch argument fixture fails for both stale connectivity and geometry (`build/resume-creation-current-state-unit-before-fixed-fixture.log`). The new owned-PTY integration case toggles an offline parent online, creates through real attach keys and requires its child to publish. A separate case resizes its parent through relay keypresses, creates through the owner management API without selecting the new child, then observes that child's snapshot through a read-only detached consumer. Avoiding automatic child selection prevents an implicit resize from masking its creation size. Both cases fail before repair: offline child and 80x24 instead of 120x40 (`build/resume-creation-current-state-pty-before-final.log`).
+- Fix: Creation reads the target local session's synchronized `Size()` pair and current `Offline()` state. Endpoint/publishing prerequisites and credential forwarding remain enforced. The concurrent geometry test now mutates only inert, synchronized target state; it allocates no terminal and still rejects mixed size pairs.
+- Verification: Unit race regressions pass ten repetitions (`build/resume-creation-current-state-unit-final.log`). All five management PTY cases pass three repetitions, including offline startup, local/relay creation and credential metadata checks (`build/resume-creation-management-pty-after.log`). Root Go tests and standard vet/golint/golangci-lint pass (`build/resume-current-state-{go-test,lint}-final.log`). Code-path readback confirms both values come from the requested session. A clean re-review and complete serial prerelease rehearsal remain required.
+
 ### B-183 Broader PTY integration exposes scrollback race and unstable fixtures
 
 - Status: `needs_verification`
