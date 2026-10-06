@@ -19,6 +19,7 @@ const storeFilename = "state.json"
 type Store struct {
 	mu     sync.RWMutex
 	saveMu sync.Mutex
+	owner  *StateOwner
 
 	Sessions      map[string]Session       `json:"sessions"`
 	Active        map[string]ActiveSession `json:"active"`
@@ -85,6 +86,20 @@ func (s *Store) Save(dir string) error {
 }
 
 func (s *Store) saveAt(dir string, now time.Time) error {
+	if s.owner != nil {
+		path, err := filepath.Abs(dir)
+		if err != nil {
+			return err
+		}
+		if path != s.owner.dir {
+			return fmt.Errorf("state directory does not match its owner")
+		}
+		return s.owner.withWrite(func() error { return s.saveUnowned(dir, now) })
+	}
+	return s.saveUnowned(dir, now)
+}
+
+func (s *Store) saveUnowned(dir string, now time.Time) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}

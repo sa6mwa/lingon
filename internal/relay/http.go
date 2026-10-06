@@ -491,7 +491,7 @@ func (s *HTTPServer) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		result, err := CreateUser(s.Users, req.Username, req.Password, time.Now().UTC())
+		result, err := s.MutateUser(r.Context(), UserMutationRequest{Action: "add", Username: req.Username, Password: req.Password})
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrUsernameRequired):
@@ -505,16 +505,12 @@ func (s *HTTPServer) handleUsers(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		if err := s.persistUsers(); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to persist state")
-			return
-		}
 		writeJSON(w, http.StatusOK, userCreateResponse{
-			Username:   result.User.Username,
+			Username:   result.Username,
 			Password:   result.Password,
 			TOTPSecret: result.TOTPSecret,
 			TOTPURL:    result.TOTPURL,
-			CreatedAt:  result.User.CreatedAt,
+			CreatedAt:  result.CreatedAt,
 		})
 	}
 }
@@ -541,66 +537,21 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 1 && r.Method == http.MethodDelete {
-		user, err := DeleteUser(s.Users, username)
-		if err != nil {
-			switch {
-			case errors.Is(err, ErrUserNotFound):
-				writeError(w, http.StatusNotFound, "user not found")
-			case errors.Is(err, ErrUsernameRequired):
-				writeError(w, http.StatusBadRequest, "user is required")
-			default:
-				writeError(w, http.StatusInternalServerError, "user delete failed")
-			}
+		if _, err := s.MutateUser(r.Context(), UserMutationRequest{Action: "delete", Username: username}); err != nil {
+			writeUserMutationError(w, err)
 			return
-		}
-		if s.Store != nil {
-			now := time.Now().UTC()
-			shareTokens, sessionIDs := s.invalidateUserAuth(user.Username, now)
-			if err := s.persist(); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to persist state")
-				return
-			}
-			if err := s.persistUsers(); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to persist state")
-				return
-			}
-			s.disconnectUserAuth(user.Username, shareTokens, sessionIDs, "user deleted")
-		} else {
-			if err := s.persistUsers(); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to persist state")
-				return
-			}
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 		return
 	}
-
 	if len(parts) == 2 && r.Method == http.MethodPost {
 		switch parts[1] {
 		case "rotate-totp":
-			result, err := RotateUserTOTP(s.Users, username)
+			result, err := s.MutateUser(r.Context(), UserMutationRequest{Action: "rotate-totp", Username: username})
 			if err != nil {
-				switch {
-				case errors.Is(err, ErrUserNotFound):
-					writeError(w, http.StatusNotFound, "user not found")
-				case errors.Is(err, ErrUsernameRequired):
-					writeError(w, http.StatusBadRequest, "user is required")
-				default:
-					writeError(w, http.StatusInternalServerError, "totp generation failed")
-				}
+				writeUserMutationError(w, err)
 				return
 			}
-			now := time.Now().UTC()
-			shareTokens, sessionIDs := s.invalidateUserAuth(result.User.Username, now)
-			if err := s.persist(); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to persist state")
-				return
-			}
-			if err := s.persistUsers(); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to persist state")
-				return
-			}
-			s.disconnectUserAuth(result.User.Username, shareTokens, sessionIDs, "credentials changed")
 			writeJSON(w, http.StatusOK, userTOTPResponse{TOTPSecret: result.TOTPSecret, TOTPURL: result.TOTPURL})
 			return
 		case "password":
@@ -609,35 +560,28 @@ func (s *HTTPServer) handleUserAction(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "invalid json")
 				return
 			}
-			result, err := ChangeUserPassword(s.Users, username, req.Password)
+			result, err := s.MutateUser(r.Context(), UserMutationRequest{Action: "chpasswd", Username: username, Password: req.Password})
 			if err != nil {
-				switch {
-				case errors.Is(err, ErrUserNotFound):
-					writeError(w, http.StatusNotFound, "user not found")
-				case errors.Is(err, ErrUsernameRequired):
-					writeError(w, http.StatusBadRequest, "user is required")
-				default:
-					writeError(w, http.StatusInternalServerError, "password generation failed")
-				}
+				writeUserMutationError(w, err)
 				return
 			}
-			now := time.Now().UTC()
-			shareTokens, sessionIDs := s.invalidateUserAuth(result.User.Username, now)
-			if err := s.persist(); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to persist state")
-				return
-			}
-			if err := s.persistUsers(); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to persist state")
-				return
-			}
-			s.disconnectUserAuth(result.User.Username, shareTokens, sessionIDs, "credentials changed")
 			writeJSON(w, http.StatusOK, userPasswordResponse{Password: result.Password})
 			return
 		}
 	}
 
 	writeError(w, http.StatusNotFound, "unsupported user action")
+}
+
+func writeUserMutationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrUserNotFound):
+		writeError(w, http.StatusNotFound, "user not found")
+	case errors.Is(err, ErrUsernameRequired), errors.Is(err, ErrUsernameInvalid):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "user mutation failed")
+	}
 }
 
 type shareCreateRequest struct {

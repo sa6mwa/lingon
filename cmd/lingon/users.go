@@ -60,12 +60,7 @@ func NewUsersCommand(loader *lingon.Loader) *cobra.Command {
 		Short: "Add a user",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, path, err := loadUserStore(cmd, loader, usersFile)
-			if err != nil {
-				return err
-			}
-			username := strings.TrimSpace(args[0])
-			if username == "" {
+			if strings.TrimSpace(args[0]) == "" {
 				return fmt.Errorf("username is required")
 			}
 			password := ""
@@ -76,14 +71,11 @@ func NewUsersCommand(loader *lingon.Loader) *cobra.Command {
 				}
 				password = value
 			}
-			resp, err := relay.CreateUser(store, username, password, time.Now().UTC())
+			result, err := mutateUser(cmd, loader, usersFile, relay.UserMutationRequest{Action: "add", Username: args[0], Password: password})
 			if err != nil {
 				return formatUserError(err)
 			}
-			if err := store.Save(path); err != nil {
-				return err
-			}
-			printUserCreate(cmd.OutOrStdout(), resp)
+			printUserCreate(cmd.OutOrStdout(), relay.UserCreateResult{User: relay.User{Username: result.Username, CreatedAt: result.CreatedAt}, Password: result.Password, TOTPSecret: result.TOTPSecret, TOTPURL: result.TOTPURL})
 			return nil
 		},
 	}
@@ -95,12 +87,7 @@ func NewUsersCommand(loader *lingon.Loader) *cobra.Command {
 		Short: "Change a user's password",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, path, err := loadUserStore(cmd, loader, usersFile)
-			if err != nil {
-				return err
-			}
-			username := strings.TrimSpace(args[0])
-			if username == "" {
+			if strings.TrimSpace(args[0]) == "" {
 				return fmt.Errorf("username is required")
 			}
 			password := ""
@@ -111,21 +98,11 @@ func NewUsersCommand(loader *lingon.Loader) *cobra.Command {
 				}
 				password = value
 			}
-			resp, err := relay.ChangeUserPassword(store, username, password)
+			result, err := mutateUser(cmd, loader, usersFile, relay.UserMutationRequest{Action: "chpasswd", Username: args[0], Password: password})
 			if err != nil {
 				return formatUserError(err)
 			}
-			if err := store.Save(path); err != nil {
-				return err
-			}
-			cfg, err := loader.Load()
-			if err != nil {
-				return err
-			}
-			if err := revokePersistedUserAuth(cfg.Server.DataDir, resp.User.Username, time.Now().UTC()); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "password: %s\n", resp.Password)
+			fmt.Fprintf(cmd.OutOrStdout(), "password: %s\n", result.Password)
 			return nil
 		},
 	}
@@ -136,62 +113,23 @@ func NewUsersCommand(loader *lingon.Loader) *cobra.Command {
 		Short: "Rotate a user's TOTP secret",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, path, err := loadUserStore(cmd, loader, usersFile)
-			if err != nil {
-				return err
-			}
-			username := strings.TrimSpace(args[0])
-			if username == "" {
-				return fmt.Errorf("username is required")
-			}
-			resp, err := relay.RotateUserTOTP(store, username)
+			result, err := mutateUser(cmd, loader, usersFile, relay.UserMutationRequest{Action: "rotate-totp", Username: args[0]})
 			if err != nil {
 				return formatUserError(err)
 			}
-			if err := store.Save(path); err != nil {
-				return err
-			}
-			cfg, err := loader.Load()
-			if err != nil {
-				return err
-			}
-			if err := revokePersistedUserAuth(cfg.Server.DataDir, resp.User.Username, time.Now().UTC()); err != nil {
-				return err
-			}
-			printUserTOTP(cmd.OutOrStdout(), resp)
+			printUserTOTP(cmd.OutOrStdout(), relay.UserTOTPResult{User: relay.User{Username: result.Username, CreatedAt: result.CreatedAt}, TOTPSecret: result.TOTPSecret, TOTPURL: result.TOTPURL})
 			return nil
 		},
 	}
-
 	deleteCmd := &cobra.Command{
-		Use: "delete [flags] <username>",
-		Aliases: []string{
-			"rm",
-		},
-		Short: "Delete a user",
-		Args:  cobra.ExactArgs(1),
+		Use:     "delete [flags] <username>",
+		Aliases: []string{"rm"},
+		Short:   "Delete a user",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, path, err := loadUserStore(cmd, loader, usersFile)
-			if err != nil {
-				return err
-			}
-			username := strings.TrimSpace(args[0])
-			if username == "" {
-				return fmt.Errorf("username is required")
-			}
-			user, err := relay.DeleteUser(store, username)
+			_, err := mutateUser(cmd, loader, usersFile, relay.UserMutationRequest{Action: "delete", Username: args[0]})
 			if err != nil {
 				return formatUserError(err)
-			}
-			if err := store.Save(path); err != nil {
-				return err
-			}
-			cfg, err := loader.Load()
-			if err != nil {
-				return err
-			}
-			if err := revokePersistedUserAuth(cfg.Server.DataDir, user.Username, time.Now().UTC()); err != nil {
-				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "user deleted")
 			return nil
@@ -245,22 +183,28 @@ func formatUserError(err error) error {
 	}
 }
 
-func revokePersistedUserAuth(stateDir, username string, now time.Time) error {
-	stateDir = strings.TrimSpace(stateDir)
-	username = strings.TrimSpace(username)
-	if stateDir == "" || username == "" {
-		return nil
+func mutateUser(cmd *cobra.Command, loader *lingon.Loader, usersFileFlag string, req relay.UserMutationRequest) (relay.UserMutationResult, error) {
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		return relay.UserMutationResult{}, relay.ErrUsernameRequired
 	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	stateStore, err := relay.LoadStore(stateDir)
+	cfg, err := loader.Load()
 	if err != nil {
-		return err
+		return relay.UserMutationResult{}, err
 	}
-	stateStore.RevokeTokensForUsername(username)
-	stateStore.RevokeShareTokensForUsername(username, now)
-	return stateStore.Save(stateDir)
+	usersFile := cfg.Server.UsersFile
+	if cmd.Flags().Changed("users-file") {
+		usersFile = usersFileFlag
+	}
+	if strings.TrimSpace(usersFile) == "" {
+		return relay.UserMutationResult{}, fmt.Errorf("users file is required")
+	}
+	admin, err := relay.NewUserAdmin(relay.UserAdminOptions{DataDir: cfg.Server.DataDir, UsersFile: usersFile})
+	if err != nil {
+		return relay.UserMutationResult{}, err
+	}
+	defer func() { _ = admin.Close() }()
+	return admin.MutateUser(cmd.Context(), req)
 }
 
 func promptPassword(label string) (string, error) {

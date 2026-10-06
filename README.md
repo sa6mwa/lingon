@@ -54,6 +54,14 @@ lingon users add alice
 By default Lingon generates a password and prints it along with the TOTP seed.
 Use `--prompt` if you want to enter a custom password.
 
+User administration keeps the same commands and output while the relay is running.
+Use the relay's `server.data_dir` and `server.users_file` configuration (or the
+matching `--users-file` override). The running relay applies mutations through a
+private local socket so its current tokens, revocations and sessions stay intact.
+When the relay is offline, the CLI acquires exclusive state ownership before
+editing files. If a live owner's local administration is unavailable, the command
+reports that error; retry after the relay is ready.
+
 ### 3) Start the relay server
 
 ```bash
@@ -61,6 +69,12 @@ lingon serve
 ```
 
 By default this listens on `127.0.0.1:12843` with base path `/v1`.
+
+Each data directory has one active relay owner. The private `relay-state.lock`
+and `.admin/socket` coordinate the relay and administrative CLI; the ownership
+file remains after shutdown, while the kernel lock is released. The state
+directory must not be writable by other users, and `.admin` is private. A stopped
+owner cannot persist later writes after another owner starts.
 
 ### 4) Log in (client side)
 

@@ -9,77 +9,98 @@ import (
 	"path/filepath"
 	"time"
 
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/pslog"
 )
 
 const userReloadInterval = 1 * time.Second
 
-// StartUserReloadLoop watches the users file and reloads users on change.
-func StartUserReloadLoop(ctx context.Context, path string, store *UserStore, logger pslog.Logger) error {
-	return startUserReloadLoop(ctx, path, store, logger, userReloadInterval, nil)
+// UserReloadOptions configures serialized users-file reloads.
+type UserReloadOptions struct {
+	Path     string
+	Store    *UserStore
+	Logger   pslog.Logger
+	Clock    clock.Clock
+	OnReload UserReloadHook
 }
 
-// UserReloadHook is called after the in-memory user store is replaced.
+// UserReloadHook reports existing users whose credentials changed or were removed.
 type UserReloadHook func(changedUsers []string)
 
-// StartUserReloadLoopWithHook watches the users file and reports users whose
-// existing credentials were changed or removed by a successful reload.
-func StartUserReloadLoopWithHook(ctx context.Context, path string, store *UserStore, logger pslog.Logger, hook UserReloadHook) error {
-	return startUserReloadLoop(ctx, path, store, logger, userReloadInterval, hook)
+// UserReloader owns its background reload loop and joins it during cleanup.
+type UserReloader interface{ Close() error }
+
+type userReloader struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
-func startUserReloadLoop(ctx context.Context, path string, store *UserStore, logger pslog.Logger, interval time.Duration, hook UserReloadHook) error {
-	if store == nil {
-		return fmt.Errorf("user store is nil")
+func (r *userReloader) Close() error { r.cancel(); <-r.done; return nil }
+
+// NewUserReloader reconciles the file and watches with an injectable clock.
+func NewUserReloader(ctx context.Context, opts UserReloadOptions) (UserReloader, error) {
+	if opts.Store == nil {
+		return nil, fmt.Errorf("user store is nil")
 	}
-	if path == "" {
-		return fmt.Errorf("users file is required")
+	if opts.Path == "" {
+		return nil, fmt.Errorf("users file is required")
 	}
-	if logger == nil {
-		logger = logging.Default()
+	if opts.Logger == nil {
+		opts.Logger = logging.Default()
+	}
+	if opts.Clock == nil {
+		opts.Clock = clock.New()
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
-	path = filepath.Clean(path)
+	ctx, cancel := context.WithCancel(ctx)
+	path := filepath.Clean(opts.Path)
 	lastHash := ""
-	if data, err := os.ReadFile(path); err == nil {
-		lastHash = hashBytes(data)
+	reload := func() {
+		// Hold the same transaction lock as live mutations while reading and
+		// replacing the file. An old reload cannot overwrite a newer edit.
+		opts.Store.mutationMu.Lock()
+		defer opts.Store.mutationMu.Unlock()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		hash := hashBytes(data)
+		if hash == lastHash {
+			return
+		}
+		loaded, err := LoadUserStoreFromBytes(data)
+		if err != nil {
+			opts.Logger.Warn("relay.users.reload.failed", "err", err)
+			return
+		}
+		changed := credentialChangedUsers(opts.Store.List(), loaded.List())
+		opts.Store.ReplaceUsers(loaded.Users)
+		if opts.OnReload != nil && len(changed) > 0 {
+			opts.OnReload(changed)
+		}
+		lastHash = hash
 	}
-
-	ticker := time.NewTicker(interval)
+	// Reconcile immediately as well as on ticks: file changes between the
+	// initial load and watcher registration must invalidate old authority.
+	reload()
+	ticker := opts.Clock.NewTicker(userReloadInterval)
+	r := &userReloader{cancel: cancel, done: make(chan struct{})}
 	go func() {
+		defer close(r.done)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				data, err := os.ReadFile(path)
-				if err != nil {
-					continue
-				}
-				hash := hashBytes(data)
-				if hash == lastHash {
-					continue
-				}
-				loaded, err := LoadUserStoreFromBytes(data)
-				if err != nil {
-					logger.Warn("relay.users.reload.failed", "err", err)
-					continue
-				}
-				changedUsers := credentialChangedUsers(store.List(), loaded.List())
-				store.ReplaceUsers(loaded.Users)
-				if hook != nil && len(changedUsers) > 0 {
-					hook(changedUsers)
-				}
-				lastHash = hash
+				reload()
 			}
 		}
 	}()
-	return nil
+	return r, nil
 }
 
 func credentialChangedUsers(previous, next []User) []string {

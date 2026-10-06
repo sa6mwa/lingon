@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -8,9 +10,9 @@ import (
 	"pkt.systems/lingon/internal/testutil"
 )
 
-func TestRevokePersistedUserAuthRevokesTokensAndShareTokens(t *testing.T) {
+func TestOfflineUserAdminRevokesTokensAndShareTokens(t *testing.T) {
 	stateDir := testutil.TempDir(t)
-	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	store := relay.NewStore()
 	store.CreateSession(relay.Session{
 		ID:       "alice-session",
@@ -42,8 +44,19 @@ func TestRevokePersistedUserAuthRevokesTokensAndShareTokens(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if err := revokePersistedUserAuth(stateDir, "alice", now.Add(time.Minute)); err != nil {
-		t.Fatalf("revokePersistedUserAuth: %v", err)
+	usersFile := filepath.Join(stateDir, "users.json")
+	users := relay.NewUserStore()
+	users.Upsert(relay.User{Username: "alice", PasswordHash: "previous", TOTPSecret: "previous"})
+	if err := users.Save(usersFile); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := relay.NewUserAdmin(relay.UserAdminOptions{DataDir: stateDir, UsersFile: usersFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = admin.Close() }()
+	if _, err := admin.MutateUser(context.Background(), relay.UserMutationRequest{Action: "chpasswd", Username: "alice", Password: "new-password"}); err != nil {
+		t.Fatal(err)
 	}
 
 	loaded, err := relay.LoadStore(stateDir)

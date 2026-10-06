@@ -12,8 +12,10 @@ import (
 
 // UserStore persists users to disk.
 type UserStore struct {
-	mu     sync.RWMutex
-	saveMu sync.Mutex
+	mu         sync.RWMutex
+	saveMu     sync.Mutex
+	mutationMu sync.Mutex
+	owner      *StateOwner
 
 	Users map[string]User `json:"users"`
 }
@@ -62,6 +64,13 @@ func (s *UserStore) Save(path string) error {
 	if s == nil {
 		return fmt.Errorf("user store is nil")
 	}
+	if s.owner != nil {
+		return s.owner.withWrite(func() error { return s.saveUnowned(path) })
+	}
+	return s.saveUnowned(path)
+}
+
+func (s *UserStore) saveUnowned(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -101,6 +110,8 @@ func (s *UserStore) ReloadFromDisk(path string) error {
 	if s == nil {
 		return fmt.Errorf("user store is nil")
 	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err

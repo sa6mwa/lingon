@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/testutil"
 )
 
@@ -81,11 +82,13 @@ func TestUserReloadLoopDetectsContentChangeSameMtime(t *testing.T) {
 		t.Fatalf("Chtimes: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := startUserReloadLoop(ctx, path, store, nil, 10*time.Millisecond, nil); err != nil {
-		t.Fatalf("startUserReloadLoop: %v", err)
+	clk := clock.NewMock()
+	changed := make(chan struct{}, 1)
+	reloader, err := NewUserReloader(context.Background(), UserReloadOptions{Path: path, Store: store, Clock: clk, OnReload: func([]string) { changed <- struct{}{} }})
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = reloader.Close() }()
 
 	updated := NewUserStore()
 	updated.Upsert(User{
@@ -101,15 +104,19 @@ func TestUserReloadLoopDetectsContentChangeSameMtime(t *testing.T) {
 		t.Fatalf("Chtimes updated: %v", err)
 	}
 
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		loaded, ok := store.Get("alice")
-		if ok && loaded.TOTPSecret == "newsecret" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	clk.Add(userReloadInterval - time.Nanosecond)
+	select {
+	case <-changed:
+		t.Fatal("reload occurred before its clock deadline")
+	default:
 	}
-	t.Fatalf("expected reload with updated totp secret")
+	clk.Add(time.Nanosecond)
+	<-changed
+	loaded, ok := store.Get("alice")
+	if !ok || loaded.TOTPSecret != "newsecret" {
+		t.Fatal("expected reload with updated totp secret")
+	}
+
 }
 
 func TestCredentialChangedUsersDetectsCredentialsAndRemoval(t *testing.T) {
@@ -135,6 +142,30 @@ func TestCredentialChangedUsersDetectsCredentialsAndRemoval(t *testing.T) {
 		if changed[i] != want[i] {
 			t.Fatalf("changed users = %v, want %v", changed, want)
 		}
+	}
+}
+
+func TestUserReloaderReconcilesChangesBeforeRegistration(t *testing.T) {
+	path := filepath.Join(testutil.TempDir(t), "users.json")
+	current := NewUserStore()
+	current.Upsert(User{Username: "alice", PasswordHash: "previous"})
+	disk := NewUserStore()
+	disk.Upsert(User{Username: "alice", PasswordHash: "changed-before-registration"})
+	if err := disk.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	var changed []string
+	r, err := NewUserReloader(context.Background(), UserReloadOptions{Path: path, Store: current, Clock: clock.NewMock(), OnReload: func(users []string) { changed = users }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	if len(changed) != 1 || changed[0] != "alice" {
+		t.Fatal("registration missed changed credentials")
+	}
+	user, ok := current.Get("alice")
+	if !ok || user.PasswordHash != "changed-before-registration" {
+		t.Fatal("registration did not reconcile latest file")
 	}
 }
 
@@ -177,13 +208,16 @@ func TestUserReloadLoopInvalidatesChangedCredentials(t *testing.T) {
 	server := NewHTTPServer(state, users, NewAuthenticator(users), nil, NewHub(nil))
 	server.DataDir = dir
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := startUserReloadLoop(ctx, path, users, nil, 10*time.Millisecond, func(changedUsers []string) {
+	clk := clock.NewMock()
+	changed := make(chan struct{}, 1)
+	reloader, err := NewUserReloader(context.Background(), UserReloadOptions{Path: path, Store: users, Clock: clk, OnReload: func(changedUsers []string) {
 		server.InvalidateReloadedUsers(changedUsers, now)
-	}); err != nil {
-		t.Fatalf("startUserReloadLoop: %v", err)
+		changed <- struct{}{}
+	}})
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = reloader.Close() }()
 
 	updated := NewUserStore()
 	updated.Upsert(User{
@@ -196,18 +230,13 @@ func TestUserReloadLoopInvalidatesChangedCredentials(t *testing.T) {
 		t.Fatalf("Save updated: %v", err)
 	}
 
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		_, accessErr := state.ValidateAccessToken(access.Token, now)
-		_, refreshErr := state.ValidateRefreshToken(refresh.Token, now)
-		storedShare, shareOK := state.GetShareToken(share.Token)
-		if errors.Is(accessErr, ErrTokenNotFound) &&
-			errors.Is(refreshErr, ErrTokenNotFound) &&
-			shareOK &&
-			storedShare.RevokedAt != nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	clk.Add(userReloadInterval)
+	<-changed
+	_, accessErr := state.ValidateAccessToken(access.Token, now)
+	_, refreshErr := state.ValidateRefreshToken(refresh.Token, now)
+	storedShare, shareOK := state.GetShareToken(share.Token)
+	if !errors.Is(accessErr, ErrTokenNotFound) || !errors.Is(refreshErr, ErrTokenNotFound) || !shareOK || storedShare.RevokedAt == nil {
+		t.Fatal("expected reload to revoke access, refresh, and share token")
 	}
-	t.Fatalf("expected reload to revoke access, refresh, and share token")
+
 }
