@@ -554,7 +554,8 @@ class AppViewModel(
             closeWebSocket("logout")
             try {
                 repository.logout()
-            } catch (err: ApiException) {
+            } catch (err: Exception) {
+                if (err !is ApiException && err !is IOException) throw err
                 _state.update {
                     it.copy(
                         status = StatusMessage(err.message ?: "logout failed", StatusLevel.Error),

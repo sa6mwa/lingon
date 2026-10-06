@@ -2373,6 +2373,40 @@ class AppViewModelTest {
     }
 
     @Test
+    fun logoutCompletesLocallyWhenRelayIsUnreachable() = runTest {
+        val repository = FakeRepository(failListSessions = false)
+        repository.onLogout = { throw java.net.ConnectException("offline") }
+        val model = AppViewModel(repository, FakeWsClient())
+        setUiStateForTest(model, model.state.value.copy(loggedIn = true, username = "owner", shareToken = "shared"))
+
+        model.logout()
+        advanceUntilIdle()
+
+        assertFalse(model.state.value.loggedIn)
+        assertNull(model.state.value.username)
+        assertNull(model.state.value.shareToken)
+        assertNull(model.state.value.activeSessionId)
+        assertTrue(model.state.value.sessions.isEmpty())
+        assertEquals(1, repository.clearAuthCalls)
+        assertFalse(model.state.value.isBusy)
+        assertEquals("offline", model.state.value.status?.message)
+    }
+
+    @Test
+    fun logoutCancellationIsNotReportedAsNetworkFailure() = runTest {
+        val repository = FakeRepository(failListSessions = false)
+        repository.onLogout = { throw kotlinx.coroutines.CancellationException("cancelled") }
+        val model = AppViewModel(repository, FakeWsClient())
+
+        model.logout()
+        advanceUntilIdle()
+
+        assertTrue(model.state.value.status?.level != StatusLevel.Error)
+        assertEquals(1, repository.clearAuthCalls)
+        assertFalse(model.state.value.isBusy)
+    }
+
+    @Test
     fun logoutClearsWallInactivityCacheForFreshSession() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
@@ -2786,6 +2820,8 @@ private class FakeRepository(
     var saveZoomCalls: Int = 0
     var onSetBackgroundWallEnabled: ((Boolean) -> Unit)? = null
     var onRefreshAuth: (suspend () -> Unit)? = null
+    var onLogout: (suspend () -> Unit)? = null
+    var clearAuthCalls: Int = 0
     val savedZooms = initialSessionZooms.toMutableMap()
 
     override fun setEndpoint(value: String) {
@@ -2835,11 +2871,11 @@ private class FakeRepository(
     }
 
     override suspend fun logout() {
-        // no-op
+        onLogout?.invoke()
     }
 
     override suspend fun clearAuth() {
-        // no-op
+        clearAuthCalls += 1
     }
 
     override suspend fun refreshAuth(): Boolean {

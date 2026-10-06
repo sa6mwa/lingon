@@ -29,6 +29,28 @@ Required status values:
 
 ## Active Items
 
+### B-175 Android logout crashes when the relay is unreachable
+
+- Status: `resolved`
+- Repro: The restoration/logout instrumentation case crashes the app with `ConnectException` when logout contacts the deliberately unreachable test endpoint (`build/resume-share-restoration-after.log`). `AppViewModel.logout` handles HTTP API failures but lets transport IO failures escape its coroutine.
+- Constraint: Complete local logout and discard the old share despite a network failure; preserve cancellation and unexpected-exception propagation. Verify with unit and owned-emulator lifecycle coverage.
+- Fix: Handle API and transport IO failures as logout errors while always completing local auth/share cleanup. Rethrow cancellation and unexpected exceptions. The standalone offline-logout regression fails before repair (`build/resume-logout-unit-before.log`); offline cleanup and cancellation tests pass in the complete 250-test Android unit gate (`build/resume-share-logout-build-final.log`). The real owned-emulator logout/recreation case now completes without a crash or share resurrection (`build/resume-share-restoration-after-final.log`).
+
+### B-173 Consumed Android share launches are lost after process recreation
+
+- Status: `resolved`
+- Report: Review at `77167a6` finds that MainActivity's consumed in-memory share request cannot be recovered when both the pending-request map and ViewModel are lost (`build/resume-review.normal-trunk.6HqqBe.log`).
+- Constraint: Restore only previously trusted, consumed context from Android's private saved state. Exported intent extras must not authorize a share launch. Verify lifecycle restoration with an owned-emulator instrumentation regression and preserve normal recreation and logout behavior.
+- Fix: Save the accepted share token and endpoint in MainActivity's private saved instance state and restore them into a replacement ViewModel. Ordinary recreation retains its current ViewModel without replaying the launch. Do not save a consumed launch after local logout. Saved context is never read from exported intent extras.
+- Regression: After correcting the fixture's notification-permission setup, the pre-fix owned-emulator case fails with expected trusted token versus null (`build/resume-share-restoration-before-ready.log`). It consumes the one-time request, recreates normally, then drops the ViewModel and recreates again so neither in-memory launch mechanism can restore the token. This is ActivityScenario lifecycle restoration with process-resident state removed, not an OS process-kill claim.
+- Verification: All three targeted instrumentation methods pass: consumed-share restoration, logout without resurrection, and forged-extra rejection (`build/resume-share-restoration-after-final.log`). The owned emulator/adb/harness run exits successfully with cleanup enabled. Android unit and instrumentation compile gates pass (`build/resume-share-logout-build-final.log`). Root Go tests and vet/golint/golangci-lint also pass (`build/resume-android-repairs-{go-test,lint}.log`). The complete prerelease sweep remains outstanding.
+
+### B-174 Developer release APK installation uses an older version code
+
+- Status: `in_progress`
+- Report: The same review finds that `android/Makefile` supplies the release version name but leaves `versionCode` at 1. Rebuilding a lifecycle-released version then fails phone installation with `INSTALL_FAILED_VERSION_DOWNGRADE`.
+- Constraint: Supply the established `major*1000000+minor*1000+patch` identity as a Gradle property, with the same bounds and rehearsal handling. Preserve tracked Android metadata and the verified-APK install path.
+
 ### B-172 Pending local-headless tab loses the displayed frame or loading banner
 
 - Status: `resolved`
