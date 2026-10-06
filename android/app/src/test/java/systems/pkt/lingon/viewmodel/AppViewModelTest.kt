@@ -73,6 +73,37 @@ class AppViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
+    fun incomingTerminalBurstDoesNotCreateOneMainJobPerFrame() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, snapshotFrame(1, "initial"))
+        }
+        val model = AppViewModel(repository, wsClient)
+        runCurrent()
+        setUiStateForTest(model, model.state.value.copy(loggedIn = true, activeSessionId = "host-1", endpoint = "https://localhost:12843/v1"))
+        model.selectSession("host-1")
+        runCurrent()
+        wsClient.fireConnect()
+        runCurrent()
+        val parent = requireNotNull(model.viewModelScope.coroutineContext[kotlinx.coroutines.Job])
+        val before = parent.children.count { it.isActive }
+
+        // Main is deliberately paused while the callback accepts this burst.
+        // The bound is on retained scheduled work, not on elapsed wall time.
+        for (i in 1..8) wsClient.fireFrame(diffFrame(i + 1L, "burst-$i"))
+        val retained = parent.children.count { it.isActive } - before
+        assertTrue("terminal burst retained $retained separate main jobs", retained <= 2)
+        runCurrent()
+        assertEquals(9L, model.state.value.lastFrameSeq)
+        assertEquals("burst-8", model.state.value.activeSnapshot?.title)
+    }
+
+    @Test
     fun sessionManagementRequiresConnectedOwnerButDoesNotRequireControl() = runTest {
         val repository = FakeRepository()
         val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))

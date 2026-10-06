@@ -69,6 +69,7 @@ class AppViewModel(
     private var sessionContextGeneration = 0L
     private var shareAuthenticationGeneration = 0L
     private var ws: WebSocket? = null
+    private var socketEvents: SocketEventInbox? = null
     private var socketOpen = false
     private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
@@ -1408,14 +1409,16 @@ class AppViewModel(
             wantsControl = true,
             lastSeq = if (forceFullSnapshotOnNextConnect) 0L else lastSeq,
         )
+        val events = SocketEventInbox(viewModelScope)
+        socketEvents = events
         ws = wsClient.connect(options, object : RelayWebSocketClient.Listener {
             private fun isStale(webSocket: WebSocket): Boolean {
                 return ws !== webSocket
             }
 
-            private fun onCurrent(webSocket: WebSocket, block: () -> Unit) {
-                viewModelScope.launch {
-                    if (isStale(webSocket)) return@launch
+            private fun onCurrent(webSocket: WebSocket, block: suspend () -> Unit) {
+                events.post {
+                    if (isStale(webSocket)) return@post
                     block()
                 }
             }
@@ -1445,9 +1448,7 @@ class AppViewModel(
                                 headless = session.headless,
                             )
                         }
-                        viewModelScope.launch {
-                            updateSessions(updated)
-                        }
+                        updateSessions(updated)
                         _state.update {
                             it.copy(
                                 lastFrameSeq = frame.seq,
@@ -1462,9 +1463,7 @@ class AppViewModel(
                             ?: _state.value.activeSessionId
                             ?: activeConnection?.sessionId
                         if (!closedSessionId.isNullOrBlank()) {
-                            viewModelScope.launch {
-                                handleExplicitSessionClosed(closedSessionId.trim())
-                            }
+                            handleExplicitSessionClosed(closedSessionId.trim())
                         }
                         _state.update {
                             it.copy(
@@ -1667,14 +1666,12 @@ class AppViewModel(
                             sourceSessionName = wall.sourceSessionName,
                             message = wall.message,
                         )
-                        viewModelScope.launch {
-                            if (appInForeground) {
-                                if (wallDeliveryCoordinator.consumeInApp(notification)) {
-                                    showTransientStatus(wallBanner(notification), StatusLevel.Info)
-                                }
-                            } else {
-                                wallDeliveryCoordinator.deliver(notification)
+                        if (appInForeground) {
+                            if (wallDeliveryCoordinator.consumeInApp(notification)) {
+                                showTransientStatus(wallBanner(notification), StatusLevel.Info)
                             }
+                        } else {
+                            wallDeliveryCoordinator.deliver(notification)
                         }
                         _state.update {
                             it.copy(
@@ -1778,6 +1775,7 @@ class AppViewModel(
                 onCurrent(webSocket) {
                     ws = null
                     socketOpen = false
+                    events.close()
                     if (response?.code == 401) {
                         handleRecoverableAuthFailure()
                         return@onCurrent
@@ -1799,6 +1797,7 @@ class AppViewModel(
                 onCurrent(webSocket) {
                     ws = null
                     socketOpen = false
+                    events.close()
                     _state.update {
                         it.copy(
                             lastFrameType = "closed",
@@ -1856,6 +1855,8 @@ class AppViewModel(
 
     private fun closeWebSocket(reason: String) {
         shareAuthenticationGeneration++
+        socketEvents?.close()
+        socketEvents = null
         val current = ws
         ws = null
         socketOpen = false

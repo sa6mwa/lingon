@@ -29,6 +29,21 @@ Required status values:
 
 ## Active Items
 
+### B-180 MainActivity intent replacement breaks lifecycle tracking after foregrounding
+
+- Status: `in_progress`
+- Repro: Heavy-output/tab-switch instrumentation reaches teardown, then ActivityScenario cannot observe DESTROYED after foregrounding (`build/resume-android-frame-inbox-e2e.log`). `resumeActivity` delivers a new component intent; MainActivity's recent `setIntent` replaces the original launch action/categories. [AndroidX's lifecycle observer](https://raw.githubusercontent.com/android/android-test/main/core/java/androidx/test/core/app/ActivityScenario.java) ignores events whose current activity intent no longer matches the launch intent.
+- Constraint: Preserve launch identity while consuming trusted new share requests and restoring the latest accepted share from private saved state. Add a direct new-intent/lifecycle instrumentation regression and rerun heavy-output verification.
+
+### B-179 Android terminal frame dispatch retains an unbounded coroutine backlog
+
+- Status: `resolved`
+- Report: Review at `c5ddb3c` finds AppViewModel launches a main-thread coroutine for each incoming protobuf frame. Sustained terminal output or replay can outrun the UI and retain unbounded payloads (`build/resume-review.normal-trunk.6klNMg.log`).
+- Constraint: Preserve frame order and main-thread state confinement, bound retained work, backpressure the WebSocket reader rather than drop diffs, and unblock obsolete/closed producers. Prove overload behavior with controlled producer/consumer tests and Android-visible integration coverage.
+- Regression: With Main deliberately paused, eight incoming terminal frames retain eight separate main jobs before repair (`build/resume-android-frame-burst-before.log`). The regression bounds retained scheduled work and then verifies all eight diffs reach the final sequence/title after Main resumes; it uses no elapsed-time polling as proof.
+- Fix: Each connection owns one ordered main-scope consumer and an eight-event channel. Reader callbacks enqueue directly and block on a full channel, preserving every current frame. Socket replacement/closure cancels the owned inbox and releases blocked senders. Session, close and wall processing stays within the ordered consumer rather than launching per-frame child jobs; yielding between events preserves Main's ability to run other work. Existing callback signatures and wire behavior remain intact.
+- Verification: Controlled inbox tests verify a stalled consumer permits only one executing plus the configured buffered events, then delivers all 100 in order; disposal cancels a blocked producer and discards obsolete work. Complete Android unit and instrumentation compilation gates pass (`build/resume-android-frame-lifecycle-build.log`). Heavy-output/tab-switch instrumentation and all four share-lifecycle methods pass together on an owned emulator (`build/resume-android-frame-lifecycle-e2e.log`, five tests, cleanup enabled). Root Go tests and vet/golint/golangci-lint pass (`build/resume-android-inbox-{go-test,lint}.log`). The complete prerelease remains outstanding; no Android throughput threshold is claimed.
+
 ### B-178 Wall-inactivity tab-switch fixture fails its peer startup marker
 
 - Status: `needs_verification`
