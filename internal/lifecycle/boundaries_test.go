@@ -49,6 +49,20 @@ func TestBranchChangeAtSameCommitStopsProof(t *testing.T) {
 	}
 }
 
+func TestMissingPagerCannotSilentlySkipReleaseCoverage(t *testing.T) {
+	w, f := testWorkflow(t)
+	head := testGit(t, w, "rev-parse", "HEAD")
+	f.fail = "less --version"
+	if err := w.proof(context.Background(), head); err == nil {
+		t.Fatal("full proof accepted missing pager despite integration tests skipping it")
+	}
+	for _, c := range f.calls {
+		if c.Name == "go" && len(c.Args) > 0 && c.Args[0] == "test" {
+			t.Fatal("expensive tests started after missing integration prerequisite")
+		}
+	}
+}
+
 func TestProofIncludesAllModulesAndBothAndroidInstrumentationGroups(t *testing.T) {
 	w, f := testWorkflow(t)
 	head := testGit(t, w, "rev-parse", "HEAD")

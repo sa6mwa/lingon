@@ -28,12 +28,15 @@ func TestTermiosConcurrentCloseUsesOwnedDescriptor(t *testing.T) {
 			t.Fatal(err)
 		}
 		start := make(chan struct{})
+		runner := New(Options{})
 		var workers sync.WaitGroup
 		workers.Add(2)
 		go func() {
 			defer workers.Done()
 			<-start
 			for j := 0; j < 20; j++ {
+				_ = runner.makeRaw(slave)
+				_ = isTerminalWriter(slave)
 				_, _ = getVEOF(slave)
 				_ = setVEOF(slave, 4)
 				_ = filterRemoteInput(slave, []byte{4, 'a'})

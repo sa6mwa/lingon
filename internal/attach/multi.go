@@ -296,6 +296,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 
 	var mu sync.Mutex
 	var refreshMu sync.Mutex
+	var applyMu sync.Mutex
 	var missingRefreshMu sync.Mutex
 	var missingRefreshTimer *clock.Timer
 	var lastRefresh time.Time
@@ -305,6 +306,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	var scheduleMissingRefresh func(time.Duration)
 	var stopMissingRefresh func()
 	var applySessions func([]SessionInfo)
+	var applySessionsLocked func([]SessionInfo)
 	var activateView func(string) error
 	var createdSessionID string
 	managementBusy := false
@@ -1451,6 +1453,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	}
 
 	applySessions = func(updated []SessionInfo) {
+		applyMu.Lock()
+		defer applyMu.Unlock()
+		applySessionsLocked(updated)
+	}
+	applySessionsLocked = func(updated []SessionInfo) {
 		if m.Logger != nil {
 			m.Logger.Debug("attach.sessions.apply", "count", len(updated))
 		}
@@ -1683,8 +1690,22 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				missingRefreshMu.Lock()
 				missingRefreshTimer = nil
 				missingRefreshMu.Unlock()
-				if ctx.Err() == nil && forceRefreshSessions != nil {
-					forceRefreshSessions()
+				if ctx.Err() == nil {
+					// Absence was already established by discovery. Expire that
+					// local grace independently of a blocked network refresh.
+					// Serialize with fresh lists so a reappearing view is retained.
+					applyMu.Lock()
+					defer applyMu.Unlock()
+					mu.Lock()
+					present := make([]SessionInfo, 0, len(sessions))
+					for _, info := range sessions {
+						view := views[info.ID]
+						if view == nil || view.missingSince.IsZero() {
+							present = append(present, info)
+						}
+					}
+					mu.Unlock()
+					applySessionsLocked(present)
 				}
 			})
 			return
@@ -1785,8 +1806,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 	}()
 
-	if stdinFile, ok := stdin.(*os.File); ok && term.IsTerminal(int(stdinFile.Fd())) {
-		stdinState, err := term.MakeRaw(int(stdinFile.Fd()))
+	if stdinFile, ok := stdin.(*os.File); ok && terminal.IsTerminal(stdinFile) {
+		stdinState, err := terminal.MakeRaw(stdinFile)
 		if err != nil {
 			return err
 		}
@@ -2000,7 +2021,17 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		pending = pending[:0]
 		return true
 	}
+	var mouseFilter mouseInputFilter
+	var mouseTimer *clock.Timer
+	var mouseTimerCh <-chan time.Time
+	defer func() {
+		if mouseTimer != nil {
+			mouseTimer.Stop()
+		}
+	}()
 	for {
+		var data []byte
+		flushMouse := false
 		select {
 		case <-ctx.Done():
 			if err := m.fatal(); err != nil {
@@ -2024,344 +2055,362 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				return nil
 			}
 			return err
-		case data := <-readCh:
-			if len(data) == 0 {
-				continue
+		case data = <-readCh:
+		case <-mouseTimerCh:
+			data = mouseFilter.flush()
+			mouseTimerCh = nil
+			flushMouse = true
+		}
+		if len(data) == 0 {
+			continue
+		}
+		if m.Logger != nil && len(data) > 0 {
+			m.Logger.Debug("attach.stdin.read", "bytes", len(data))
+		}
+		processNormalByte := func(b byte) bool {
+			_, client, _, _, _ := activeViewSnapshot()
+			if rename.DiscardEscapeTail(b) {
+				return true
 			}
-			if m.Logger != nil && len(data) > 0 {
-				m.Logger.Debug("attach.stdin.read", "bytes", len(data))
-			}
-			processNormalByte := func(b byte) bool {
-				_, client, _, _, _ := activeViewSnapshot()
-				if rename.DiscardEscapeTail(b) {
+			if rename.Active {
+				name, done := rename.Feed(b)
+				if !done {
+					applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusConnected, Message: rename.Label(), Duration: 24 * time.Hour})
 					return true
 				}
-				if rename.Active {
-					name, done := rename.Feed(b)
-					if !done {
-						applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusConnected, Message: rename.Label(), Duration: 24 * time.Hour})
-						return true
+				clearConnectionStatus()
+				if name != "" {
+					mu.Lock()
+					target := views[rename.SessionID]
+					mu.Unlock()
+					if target != nil && target.client != nil {
+						manageSession(target.client, sessionmanage.Request{RequestID: target.client.newClientID(), SessionID: rename.SessionID, Kind: "rename", Name: name})
 					}
-					clearConnectionStatus()
-					if name != "" {
-						mu.Lock()
-						target := views[rename.SessionID]
-						mu.Unlock()
-						if target != nil && target.client != nil {
-							manageSession(target.client, sessionmanage.Request{RequestID: target.client.newClientID(), SessionID: rename.SessionID, Kind: "rename", Name: name})
-						}
-					}
+				}
+				return true
+			}
+			helpVisible := ui.Read().HelpVisible
+			if uiAction, ok := mvu.ActionForHelpDismissKey(helpVisible, b); ok {
+				ui.ApplyAction(uiAction)
+				renderActiveCurrent()
+				return true
+			}
+			// Help modal is input-modal: consume all non-dismiss keys.
+			if helpVisible {
+				return true
+			}
+			if b == 0x04 {
+				if !flushPending() {
+					return false
+				}
+				cancel()
+				return false
+			}
+			action, out := prefix.Feed(b)
+			cmdKind := protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED
+			cmdSet := false
+			if action != control.ActionNone {
+				if !flushPending() {
+					return false
+				}
+				switch action {
+				case control.ActionHelp:
+					ui.ApplyAction(mvu.HelpVisibleAction{Visible: true})
+					renderActiveCurrent()
+					return true
+				case control.ActionToggleTabBar:
+					ui.ApplyAction(mvu.TabToggleAction{})
+					renderActiveCurrent()
 					return true
 				}
-				helpVisible := ui.Read().HelpVisible
-				if uiAction, ok := mvu.ActionForHelpDismissKey(helpVisible, b); ok {
+				if uiAction, ok := mvu.ActionForControl(action); ok {
 					ui.ApplyAction(uiAction)
 					renderActiveCurrent()
 					return true
 				}
-				// Help modal is input-modal: consume all non-dismiss keys.
-				if helpVisible {
-					return true
-				}
-				if b == 0x04 {
-					if !flushPending() {
-						return false
-					}
+				switch action {
+				case control.ActionQuit:
 					cancel()
 					return false
-				}
-				action, out := prefix.Feed(b)
-				cmdKind := protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED
-				cmdSet := false
-				if action != control.ActionNone {
-					if !flushPending() {
-						return false
+				case control.ActionSendCtrlD:
+					cmdKind = protocolpb.CommandKind_COMMAND_KIND_SEND_EOF
+					cmdSet = true
+				case control.ActionScrollback:
+					if client != nil {
+						client.SetScrollbackActive(true)
+						mouseMode.Set(true)
+						client.RenderCurrent()
 					}
-					switch action {
-					case control.ActionHelp:
-						ui.ApplyAction(mvu.HelpVisibleAction{Visible: true})
-						renderActiveCurrent()
-						return true
-					case control.ActionToggleTabBar:
-						ui.ApplyAction(mvu.TabToggleAction{})
-						renderActiveCurrent()
+				case control.ActionNewPTY:
+					if client != nil {
+						manageSession(client, sessionmanage.Request{RequestID: client.newClientID(), SessionID: client.SessionID, Kind: "create"})
+					}
+					return true
+				case control.ActionRename:
+					if client != nil {
+						rename.Begin(client.SessionID)
+						applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusConnected, Message: rename.Label(), Duration: 24 * time.Hour})
+					}
+					return true
+				case control.ActionNextTab:
+					next, active := resolveNextTab(1)
+					if next == "" || next == active {
+						wakeTabsForNoOpSwitch()
 						return true
 					}
-					if uiAction, ok := mvu.ActionForControl(action); ok {
-						ui.ApplyAction(uiAction)
-						renderActiveCurrent()
+					_ = activateView(next)
+				case control.ActionPrevTab:
+					next, active := resolveNextTab(-1)
+					if next == "" || next == active {
+						wakeTabsForNoOpSwitch()
 						return true
 					}
-					switch action {
-					case control.ActionQuit:
-						cancel()
-						return false
-					case control.ActionSendCtrlD:
-						cmdKind = protocolpb.CommandKind_COMMAND_KIND_SEND_EOF
+					_ = activateView(next)
+				case control.ActionToggleRespawn:
+					if localSessionMode {
+						cmdKind = protocolpb.CommandKind_COMMAND_KIND_TOGGLE_RESPAWN
 						cmdSet = true
-					case control.ActionScrollback:
-						if client != nil {
-							client.SetScrollbackActive(true)
-							mouseMode.Set(true)
-							client.RenderCurrent()
-						}
-					case control.ActionNewPTY:
-						if client != nil {
-							manageSession(client, sessionmanage.Request{RequestID: client.newClientID(), SessionID: client.SessionID, Kind: "create"})
-						}
-						return true
-					case control.ActionRename:
-						if client != nil {
-							rename.Begin(client.SessionID)
-							applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusConnected, Message: rename.Label(), Duration: 24 * time.Hour})
-						}
-						return true
-					case control.ActionNextTab:
-						next, active := resolveNextTab(1)
-						if next == "" || next == active {
-							wakeTabsForNoOpSwitch()
-							return true
-						}
-						_ = activateView(next)
-					case control.ActionPrevTab:
-						next, active := resolveNextTab(-1)
-						if next == "" || next == active {
-							wakeTabsForNoOpSwitch()
-							return true
-						}
-						_ = activateView(next)
-					case control.ActionToggleRespawn:
-						if localSessionMode {
-							cmdKind = protocolpb.CommandKind_COMMAND_KIND_TOGGLE_RESPAWN
-							cmdSet = true
-						}
-					case control.ActionResizeHeadless:
-						targetView, targetClient, _, _, _ := activeViewSnapshot()
-						targetSession, ok := sessionByID(sessions, activeID)
-						if targetView == nil || targetClient == nil || !ok || !sessionAllowsResize(targetSession) {
-							showConnected("resize is headless-only", 2*time.Second)
-							return true
-						}
-						cols, rows := targetClient.terminalSize()
-						if cols == 0 || rows == 0 {
-							cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
-						}
-						if err := targetClient.SendResize(ctx, cols, rows); err != nil {
-							showError("resize failed", 2*time.Second)
-						}
-						return true
-					case control.ActionToggleWallInactivity:
-						if localSessionMode {
-							cmdKind = protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY
-							cmdSet = true
-							break
-						}
-						targetView, _, _, _, _ := activeViewSnapshot()
-						if targetView == nil || strings.TrimSpace(targetView.id) == "" {
-							showConnected("wall inactivity toggle unavailable", 2*time.Second)
-							return true
-						}
-						targetID := targetView.id
-						tokenValue := strings.TrimSpace(m.accessToken())
-						if tokenValue == "" && m.TokenRefresher != nil {
-							refreshed, err := m.refreshToken(ctx)
-							if err != nil {
-								showError("wall inactivity toggle failed: token refresh", 2*time.Second)
-								return true
-							}
-							tokenValue = strings.TrimSpace(refreshed)
-						}
-						if tokenValue == "" {
-							showConnected("wall inactivity requires authentication", 2*time.Second)
-							return true
-						}
-						resp, err := relayclient.ToggleWallInactivity(
-							ctx,
-							m.Endpoint,
-							tokenValue,
-							targetID,
-							m.TLSDir,
-							m.Insecure,
-						)
-						if err != nil {
-							showError("wall inactivity toggle failed", 2*time.Second)
-							return true
-						}
-						if resp.Enabled {
-							status := "wall inactivity on"
-							if label := strings.TrimSpace(resp.InactiveAfter); label != "" {
-								status = "wall inactivity " + label
-							}
-							showConnected(status, 2*time.Second)
-						} else {
-							showConnected("wall inactivity off", 2*time.Second)
-						}
-					case control.ActionToggleOffline:
-						if localSessionMode && m.AllowOfflineToggle {
-							cmdKind = protocolpb.CommandKind_COMMAND_KIND_TOGGLE_OFFLINE
-							cmdSet = true
-							clearActiveRoutedStatus()
-							if toggleActiveSessionOffline() {
-								setTabs()
-								syncActiveRoutedStatus()
-								wakeTabsForNoOpSwitch()
-							}
-						} else {
-							showError("offline toggle is host local-only", 2*time.Second)
-							return true
-						}
-					case control.ActionNextTheme:
-						setTheme(nextThemeName(themeName), true)
 					}
-					if !cmdSet && len(out) == 0 {
+				case control.ActionResizeHeadless:
+					targetView, targetClient, _, _, _ := activeViewSnapshot()
+					targetSession, ok := sessionByID(sessions, activeID)
+					if targetView == nil || targetClient == nil || !ok || !sessionAllowsResize(targetSession) {
+						showConnected("resize is headless-only", 2*time.Second)
 						return true
+					}
+					cols, rows := targetClient.terminalSize()
+					if cols == 0 || rows == 0 {
+						cols, rows = config.DefaultTerminalCols, config.DefaultTerminalRows
+					}
+					if err := targetClient.SendResize(ctx, cols, rows); err != nil {
+						showError("resize failed", 2*time.Second)
+					}
+					return true
+				case control.ActionToggleWallInactivity:
+					if localSessionMode {
+						cmdKind = protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY
+						cmdSet = true
+						break
+					}
+					targetView, _, _, _, _ := activeViewSnapshot()
+					if targetView == nil || strings.TrimSpace(targetView.id) == "" {
+						showConnected("wall inactivity toggle unavailable", 2*time.Second)
+						return true
+					}
+					targetID := targetView.id
+					tokenValue := strings.TrimSpace(m.accessToken())
+					if tokenValue == "" && m.TokenRefresher != nil {
+						refreshed, err := m.refreshToken(ctx)
+						if err != nil {
+							showError("wall inactivity toggle failed: token refresh", 2*time.Second)
+							return true
+						}
+						tokenValue = strings.TrimSpace(refreshed)
+					}
+					if tokenValue == "" {
+						showConnected("wall inactivity requires authentication", 2*time.Second)
+						return true
+					}
+					resp, err := relayclient.ToggleWallInactivity(
+						ctx,
+						m.Endpoint,
+						tokenValue,
+						targetID,
+						m.TLSDir,
+						m.Insecure,
+					)
+					if err != nil {
+						showError("wall inactivity toggle failed", 2*time.Second)
+						return true
+					}
+					if resp.Enabled {
+						status := "wall inactivity on"
+						if label := strings.TrimSpace(resp.InactiveAfter); label != "" {
+							status = "wall inactivity " + label
+						}
+						showConnected(status, 2*time.Second)
+					} else {
+						showConnected("wall inactivity off", 2*time.Second)
+					}
+				case control.ActionToggleOffline:
+					if localSessionMode && m.AllowOfflineToggle {
+						cmdKind = protocolpb.CommandKind_COMMAND_KIND_TOGGLE_OFFLINE
+						cmdSet = true
+						clearActiveRoutedStatus()
+						if toggleActiveSessionOffline() {
+							setTabs()
+							syncActiveRoutedStatus()
+							wakeTabsForNoOpSwitch()
+						}
+					} else {
+						showError("offline toggle is host local-only", 2*time.Second)
+						return true
+					}
+				case control.ActionNextTheme:
+					setTheme(nextThemeName(themeName), true)
+				}
+				if !cmdSet && len(out) == 0 {
+					return true
+				}
+			}
+			if cmdSet {
+				mu.Lock()
+				view := views[activeID]
+				if view == nil && len(views) == 1 {
+					for _, v := range views {
+						view = v
+						break
 					}
 				}
-				if cmdSet {
+				targetClient := (*Client)(nil)
+				if view != nil {
+					targetClient = view.client
+				}
+				connected := view != nil && view.connected
+				flushing := view != nil && view.flushingInput
+				viewID := activeID
+				if view != nil {
+					viewID = view.id
+				}
+				mu.Unlock()
+				if view == nil || targetClient == nil {
+					if m.Logger != nil {
+						m.Logger.Debug("attach.stdin.no.view.command", "session", activeID)
+					}
+					return true
+				}
+				if !connected || flushing {
+					var immediateClient *Client
 					mu.Lock()
-					view := views[activeID]
-					if view == nil && len(views) == 1 {
+					current := views[viewID]
+					if current == nil && len(views) == 1 {
 						for _, v := range views {
-							view = v
+							current = v
 							break
 						}
 					}
-					targetClient := (*Client)(nil)
-					if view != nil {
-						targetClient = view.client
-					}
-					connected := view != nil && view.connected
-					flushing := view != nil && view.flushingInput
-					viewID := activeID
-					if view != nil {
-						viewID = view.id
+					switch {
+					case current == nil || current.client == nil:
+					case current.connected && !current.flushingInput:
+						immediateClient = current.client
+					default:
+						current.pendingOps = append(current.pendingOps, pendingOp{command: cmdKind})
 					}
 					mu.Unlock()
-					if view == nil || targetClient == nil {
-						if m.Logger != nil {
-							m.Logger.Debug("attach.stdin.no.view.command", "session", activeID)
-						}
+					if immediateClient == nil {
 						return true
 					}
-					if !connected || flushing {
-						var immediateClient *Client
-						mu.Lock()
-						current := views[viewID]
-						if current == nil && len(views) == 1 {
-							for _, v := range views {
-								current = v
-								break
-							}
-						}
-						switch {
-						case current == nil || current.client == nil:
-						case current.connected && !current.flushingInput:
-							immediateClient = current.client
-						default:
-							current.pendingOps = append(current.pendingOps, pendingOp{command: cmdKind})
-						}
-						mu.Unlock()
-						if immediateClient == nil {
-							return true
-						}
-						targetClient = immediateClient
+					targetClient = immediateClient
+				}
+				if err := targetClient.SendCommand(ctx, cmdKind); err != nil {
+					if m.Logger != nil {
+						m.Logger.Debug("attach.stdin.command.send.failed", "err", err, "kind", cmdKind.String(), "session", activeID)
 					}
-					if err := targetClient.SendCommand(ctx, cmdKind); err != nil {
-						if m.Logger != nil {
-							m.Logger.Debug("attach.stdin.command.send.failed", "err", err, "kind", cmdKind.String(), "session", activeID)
-						}
-						mu.Lock()
-						current := views[viewID]
-						if current != nil {
-							current.pendingOps = append(current.pendingOps, pendingOp{command: cmdKind})
-						}
-						mu.Unlock()
-						return true
+					mu.Lock()
+					current := views[viewID]
+					if current != nil {
+						current.pendingOps = append(current.pendingOps, pendingOp{command: cmdKind})
 					}
+					mu.Unlock()
 					return true
 				}
-				if len(out) == 0 {
-					return true
-				}
-				pending = append(pending, out...)
 				return true
 			}
-			filtered := make([]byte, 0, len(data))
-			allHandledByScrollback := true
-			for _, b := range data {
-				_, client, _, _, _ := activeViewSnapshot()
-				if client != nil && client.ScrollbackActive() {
-					cmd := scrollState.feed(b)
-					if cmd == scrollExit {
-						client.SetScrollbackActive(false)
-						mouseMode.Set(false)
-						client.RenderCurrent()
-						continue
-					}
-					if cmd != scrollNone {
-						_, rows := client.terminalSize()
-						if rows <= 0 {
-							rows = config.DefaultTerminalRows
-						}
-						half := rows / 2
-						if half < 1 {
-							half = 1
-						}
-						changed := false
-						switch cmd {
-						case scrollPageUp:
-							changed = client.ScrollbackPage(1, half)
-						case scrollPageDown:
-							changed = client.ScrollbackPage(-1, half)
-						case scrollLineUp:
-							changed = client.ScrollbackPage(1, 1)
-						case scrollLineDown:
-							changed = client.ScrollbackPage(-1, 1)
-						case scrollFiveUp:
-							changed = client.ScrollbackPage(1, 5)
-						case scrollFiveDown:
-							changed = client.ScrollbackPage(-1, 5)
-						case scrollLeft:
-							changed = client.ScrollbackPanX(-1)
-						case scrollRight:
-							changed = client.ScrollbackPanX(1)
-						case scrollFarLeft:
-							changed = client.ScrollbackPanX(-5)
-						case scrollFarRight:
-							changed = client.ScrollbackPanX(5)
-						case scrollTop:
-							client.ScrollbackTop(rows)
-							changed = true
-						case scrollBottom:
-							client.ScrollbackBottom()
-							changed = true
-						case scrollWheelUp:
-							changed = client.ScrollbackPage(1, 3)
-						case scrollWheelDown:
-							changed = client.ScrollbackPage(-1, 3)
-						}
-						if changed {
-							client.RenderCurrent()
-						}
-					}
+			if len(out) == 0 {
+				return true
+			}
+			pending = append(pending, out...)
+			return true
+		}
+		filtered := make([]byte, 0, len(data))
+		allHandledByScrollback := true
+		for _, b := range data {
+			_, client, _, _, _ := activeViewSnapshot()
+			if client != nil && client.ScrollbackActive() {
+				cmd := scrollState.feed(b)
+				if cmd == scrollExit {
+					client.SetScrollbackActive(false)
+					mouseMode.Set(false)
+					client.RenderCurrent()
 					continue
 				}
-				allHandledByScrollback = false
-				filtered = append(filtered, b)
-			}
-			if allHandledByScrollback {
+				if cmd != scrollNone {
+					_, rows := client.terminalSize()
+					if rows <= 0 {
+						rows = config.DefaultTerminalRows
+					}
+					half := rows / 2
+					if half < 1 {
+						half = 1
+					}
+					changed := false
+					switch cmd {
+					case scrollPageUp:
+						changed = client.ScrollbackPage(1, half)
+					case scrollPageDown:
+						changed = client.ScrollbackPage(-1, half)
+					case scrollLineUp:
+						changed = client.ScrollbackPage(1, 1)
+					case scrollLineDown:
+						changed = client.ScrollbackPage(-1, 1)
+					case scrollFiveUp:
+						changed = client.ScrollbackPage(1, 5)
+					case scrollFiveDown:
+						changed = client.ScrollbackPage(-1, 5)
+					case scrollLeft:
+						changed = client.ScrollbackPanX(-1)
+					case scrollRight:
+						changed = client.ScrollbackPanX(1)
+					case scrollFarLeft:
+						changed = client.ScrollbackPanX(-5)
+					case scrollFarRight:
+						changed = client.ScrollbackPanX(5)
+					case scrollTop:
+						client.ScrollbackTop(rows)
+						changed = true
+					case scrollBottom:
+						client.ScrollbackBottom()
+						changed = true
+					case scrollWheelUp:
+						changed = client.ScrollbackPage(1, 3)
+					case scrollWheelDown:
+						changed = client.ScrollbackPage(-1, 3)
+					}
+					if changed {
+						client.RenderCurrent()
+					}
+				}
 				continue
 			}
-			_, client, _, _, _ := activeViewSnapshot()
-			filtered = terminal.TranslateAppCursorKeys(filtered, client != nil && client.appCursorActive())
-			for _, fb := range filtered {
-				if !processNormalByte(fb) {
-					return nil
+			allHandledByScrollback = false
+			filtered = append(filtered, b)
+		}
+		if allHandledByScrollback {
+			continue
+		}
+		_, client, _, _, _ := activeViewSnapshot()
+		if !flushMouse {
+			filtered = mouseFilter.feed(filtered)
+			if mouseFilter.ambiguous() {
+				if mouseTimer == nil {
+					mouseTimer = m.Clock.NewTimer(50 * time.Millisecond)
+				} else {
+					mouseTimer.Reset(50 * time.Millisecond)
 				}
+				mouseTimerCh = mouseTimer.C
+			} else if mouseTimer != nil {
+				mouseTimer.Stop()
+				mouseTimerCh = nil
 			}
-			if !flushPending() {
+		}
+		filtered = terminal.TranslateAppCursorKeys(filtered, client != nil && client.appCursorActive())
+		for _, fb := range filtered {
+			if !processNormalByte(fb) {
 				return nil
 			}
+		}
+		if !flushPending() {
+			return nil
 		}
 	}
 }
@@ -2524,22 +2573,22 @@ func (m *MultiClient) stdoutWriter() io.Writer {
 }
 
 func terminalSizeAny(stdout io.Writer, stdin io.Reader) (int, int) {
-	if outFile, ok := stdout.(*os.File); ok && term.IsTerminal(int(outFile.Fd())) {
-		if cols, rows, err := term.GetSize(int(outFile.Fd())); err == nil && cols > 0 && rows > 0 {
-			return cols, rows
+	if outFile, ok := stdout.(*os.File); ok {
+		if size, err := terminal.GetSize(outFile); err == nil && size.Cols > 0 && size.Rows > 0 {
+			return size.Cols, size.Rows
 		}
 	}
-	if inFile, ok := stdin.(*os.File); ok && term.IsTerminal(int(inFile.Fd())) {
-		if cols, rows, err := term.GetSize(int(inFile.Fd())); err == nil && cols > 0 && rows > 0 {
-			return cols, rows
+	if inFile, ok := stdin.(*os.File); ok {
+		if size, err := terminal.GetSize(inFile); err == nil && size.Cols > 0 && size.Rows > 0 {
+			return size.Cols, size.Rows
 		}
 	}
 	if tty, err := os.Open("/dev/tty"); err == nil {
 		defer func() {
 			_ = tty.Close()
 		}()
-		if cols, rows, err := term.GetSize(int(tty.Fd())); err == nil && cols > 0 && rows > 0 {
-			return cols, rows
+		if size, err := terminal.GetSize(tty); err == nil && size.Cols > 0 && size.Rows > 0 {
+			return size.Cols, size.Rows
 		}
 	}
 	return 0, 0

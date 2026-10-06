@@ -2,7 +2,6 @@ package publisher
 
 import (
 	"context"
-	"strings"
 
 	"pkt.systems/lingon/internal/protocolpb"
 )
@@ -36,12 +35,6 @@ func (p *Publisher) SetSessionName(name string) {
 	p.mu.Lock()
 	p.opts.SessionName = name
 	p.mu.Unlock()
-}
-
-func (p *Publisher) sessionName() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return strings.TrimSpace(p.opts.SessionName)
 }
 
 // AccessToken returns the current host credential, including refreshed tokens.

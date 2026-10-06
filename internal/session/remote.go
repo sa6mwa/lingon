@@ -58,6 +58,7 @@ type remoteView struct {
 	disabled        bool
 	awaiting        bool
 	running         bool
+	starting        bool
 	sessionClosed   bool
 	restart         bool
 	needsFullRender bool
@@ -224,7 +225,7 @@ func (m *remoteManager) setToken(token string) {
 	m.token = token
 	for _, view := range m.views {
 		if view != nil && view.client != nil {
-			view.client.AccessToken = token
+			view.client.SetAccessToken(token)
 		}
 	}
 }
@@ -666,12 +667,12 @@ func (m *remoteManager) Show(ctx context.Context, sessionID string, stdout io.Wr
 	if view == nil {
 		view = &remoteView{id: session.ID}
 	}
+	m.mu.Lock()
 	view.name = mvu.SessionLabel(session.ID, session.Name)
 	view.visible = true
 	view.pending = pending
 	view.needsFullRender = true
 
-	m.mu.Lock()
 	m.views[session.ID] = view
 	m.mu.Unlock()
 	m.logViewState("show_connect", view, nil)
@@ -698,6 +699,10 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		return nil
 	}
 	m.mu.Lock()
+	if view.starting {
+		m.mu.Unlock()
+		return nil
+	}
 	view.ctx = ctx
 	viewRunning := view.running
 	var seedFrom *attach.Client
@@ -719,33 +724,47 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		m.mu.Unlock()
 		return nil
 	}
+	view.starting = true
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		view.starting = false
+		m.mu.Unlock()
+	}()
 	m.logViewState("connect_view", view, nil)
 
+	m.mu.Lock()
 	session, ok := sessionByID(m.sessions, view.id)
+	m.mu.Unlock()
 	if !ok {
 		_ = m.refreshSessions(ctx)
+		m.mu.Lock()
 		session, ok = sessionByID(m.sessions, view.id)
+		m.mu.Unlock()
 	}
+	m.mu.Lock()
 	if !ok {
 		session = remoteSessionInfo{ID: view.id, Name: view.name}
 	}
-	if view.client == nil {
+	client := view.client
+	token, themeName := m.token, m.themeName
+	m.mu.Unlock()
+	if client == nil {
 		var tokenRefresher func(context.Context) (string, error)
 		if m.tokenRefresher != nil {
 			tokenRefresher = m.refreshTokenErr
 		}
-		client := &attach.Client{
+		client = &attach.Client{
 			Endpoint:                    m.endpoint,
 			SessionID:                   session.ID,
-			AccessToken:                 m.token,
+			AccessToken:                 token,
 			RequestControl:              true,
 			DisableResizePropagation:    true,
 			DisableDesktopNotifications: m.disableDesktopNotifications,
 			DesktopNotifier:             m.desktopNotifier,
 			TLSDir:                      m.tlsDir,
 			TermSize:                    m.termSize,
-			Theme:                       m.themeName,
+			Theme:                       themeName,
 			Logger:                      m.logger,
 			TokenRefresher:              tokenRefresher,
 			Clock:                       m.clock,
@@ -770,20 +789,20 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 			m.handleExplicitSessionClosed(session.ID)
 		}
 		client.SetCompositor(m.compositor)
-		view.client = client
 	}
-	view.name = mvu.SessionLabel(session.ID, session.Name)
-	view.client.OnReady = onReady
-	view.client.OnSessions = func(updated []attach.SessionInfo) {
+	client.OnReady = onReady
+	client.OnSessions = func(updated []attach.SessionInfo) {
 		if len(updated) > 0 {
 			m.applySessions(toRemoteSessions(updated))
 		} else {
 			m.applySessions(nil)
 		}
 	}
-	view.client.SetStdout(stdout)
+	client.SetStdout(stdout)
 
 	m.mu.Lock()
+	view.client = client
+	view.name = mvu.SessionLabel(session.ID, session.Name)
 	if view.cancel == nil {
 		view.runID++
 		runID := view.runID
@@ -791,7 +810,7 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		view.cancel = cancel
 		view.running = true
 		go func(v *remoteView, id uint64) {
-			err := v.client.RunDetached(cctx)
+			err := client.RunDetached(cctx)
 			m.handleViewClosed(v, id, err)
 		}(view, runID)
 	}
@@ -820,9 +839,13 @@ func (m *remoteManager) Hide(sessionID string) {
 		view.hiddenAt = m.clock.Now()
 		view.needsFullRender = true
 	}
+	var client *attach.Client
+	if view != nil {
+		client = view.client
+	}
 	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.SetStdout(io.Discard)
+	if client != nil {
+		client.SetStdout(io.Discard)
 	}
 	m.logViewState("hide", view, nil)
 }
@@ -830,13 +853,21 @@ func (m *remoteManager) Hide(sessionID string) {
 func (m *remoteManager) Render(sessionID string) {
 	m.mu.Lock()
 	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		if view.needsFullRender {
+	var client *attach.Client
+	full := false
+	if view != nil {
+		client = view.client
+		if client != nil {
+			full = view.needsFullRender
 			view.needsFullRender = false
-			view.client.RenderCurrentFull()
+		}
+	}
+	m.mu.Unlock()
+	if client != nil {
+		if full {
+			client.RenderCurrentFull()
 		} else {
-			view.client.RenderCurrent()
+			client.RenderCurrent()
 		}
 	}
 	m.logViewState("render", view, nil)
@@ -845,9 +876,13 @@ func (m *remoteManager) Render(sessionID string) {
 func (m *remoteManager) RenderFull(sessionID string) {
 	m.mu.Lock()
 	view := m.views[sessionID]
+	var client *attach.Client
+	if view != nil {
+		client = view.client
+	}
 	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.RenderCurrentFull()
+	if client != nil {
+		client.RenderCurrentFull()
 	}
 	m.logViewState("render_full", view, nil)
 }
@@ -855,10 +890,14 @@ func (m *remoteManager) RenderFull(sessionID string) {
 func (m *remoteManager) RenderClear(sessionID string) {
 	m.mu.Lock()
 	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.RenderCurrentClear()
+	var client *attach.Client
+	if view != nil {
+		client = view.client
 		view.needsFullRender = false
+	}
+	m.mu.Unlock()
+	if client != nil {
+		client.RenderCurrentClear()
 	}
 	m.logViewState("render_clear", view, nil)
 }
@@ -869,15 +908,19 @@ func (m *remoteManager) RenderDisabled(sessionID string, stdout io.Writer) {
 	if view != nil {
 		view.visible = true
 		view.hiddenAt = time.Time{}
+		view.needsFullRender = true
+	}
+	var client *attach.Client
+	if view != nil {
+		client = view.client
 	}
 	m.mu.Unlock()
-	if view == nil || view.client == nil {
+	if client == nil {
 		return
 	}
 	m.logViewState("render_disabled", view, nil)
-	view.client.SetStdout(stdout)
-	view.needsFullRender = true
-	view.client.RenderDisabled()
+	client.SetStdout(stdout)
+	client.RenderDisabled()
 }
 
 func (m *remoteManager) SetScrollbackActive(sessionID string, active bool) {

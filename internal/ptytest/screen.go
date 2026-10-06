@@ -103,7 +103,8 @@ type PTYSession struct {
 	readErrSet  bool
 	lastReadErr error
 
-	clock clock.Clock
+	clock      clock.Clock
+	readerDone chan struct{}
 
 	onResize func()
 }
@@ -111,13 +112,14 @@ type PTYSession struct {
 func newPTYSession(t *testing.T, master, slave *os.File, emu terminal.Emulator) *PTYSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &PTYSession{
-		t:      t,
-		master: master,
-		slave:  slave,
-		emu:    emu,
-		ctx:    ctx,
-		cancel: cancel,
-		runErr: make(chan error, 1),
+		t:          t,
+		master:     master,
+		slave:      slave,
+		emu:        emu,
+		ctx:        ctx,
+		cancel:     cancel,
+		runErr:     make(chan error, 1),
+		readerDone: make(chan struct{}),
 	}
 	go s.readLoop()
 	t.Cleanup(s.Close)
@@ -165,6 +167,7 @@ func OpenPTY(t *testing.T, cols, rows int) (*os.File, *os.File) {
 }
 
 func (s *PTYSession) readLoop() {
+	defer close(s.readerDone)
 	buf := make([]byte, 4096)
 	pfd := []unix.PollFd{{Fd: int32(s.master.Fd()), Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR}}
 	for {
@@ -242,6 +245,9 @@ func (s *PTYSession) shutdown() {
 	s.closeMu.Do(func() {
 		if s.cancel != nil {
 			s.cancel()
+		}
+		if s.readerDone != nil {
+			<-s.readerDone
 		}
 		if s.cleanup != nil {
 			s.cleanup()

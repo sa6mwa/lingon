@@ -2008,6 +2008,7 @@ function openViewWS(view) {
       },
     });
     ws.send(hello);
+    updateManagementActions();
   };
 
   ws.onmessage = (event) => {
@@ -2030,6 +2031,7 @@ function openViewWS(view) {
       return;
     }
     view.ws = null;
+    updateManagementActions();
     if (typeof window !== "undefined" && window.__bifrons && window.__bifrons.debug) {
       window.__bifrons.debug.lastWsClose = {
         code: event && event.code ? event.code : 0,

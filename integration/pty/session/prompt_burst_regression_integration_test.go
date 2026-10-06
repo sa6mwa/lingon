@@ -4,7 +4,6 @@
 package integrationptysession_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -17,6 +16,7 @@ import (
 
 	"pkt.systems/lingon/internal/ptytest"
 	"pkt.systems/lingon/internal/session"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 func TestHostBurstEnterKeepsConsecutivePromptNumbers(t *testing.T) {
@@ -88,7 +88,7 @@ func TestHostBurstEnterKeepsConsecutiveBashPromptNumbers(t *testing.T) {
 	}
 
 	h := ptytest.New(t)
-	var ptyOut bytes.Buffer
+	var ptyOut testutil.OutputBuffer
 	host := startHostWithPTYRead(t, h, session.Options{
 		Endpoint:    h.Endpoint(),
 		Token:       h.AccessToken(),
@@ -154,7 +154,7 @@ func TestAttachBurstEnterKeepsConsecutiveBashPromptNumbers(t *testing.T) {
 	}
 
 	h := newHarness(t)
-	var ptyOut bytes.Buffer
+	var ptyOut testutil.OutputBuffer
 	host := startHostWithPTYRead(t, h, session.Options{
 		Endpoint:    h.Endpoint(),
 		Token:       h.AccessToken(),

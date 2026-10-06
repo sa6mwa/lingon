@@ -23,7 +23,7 @@ func (c *Client) Manage(ctx context.Context, req sessionmanage.Request) (session
 	endpoint := "http://unix"
 	transport := &http.Transport{DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
-	token := c.AccessToken
+	token := c.accessToken()
 	if c.UnixSocket != "" {
 		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", c.UnixSocket)

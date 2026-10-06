@@ -38,6 +38,13 @@ Existing relay replay and cursor-position benchmarks run three times with
 allocation reporting. Their results are retained as observations, not invented
 latency thresholds or promises of BSD/Darwin runtime coverage.
 
+The Linux integration runner requires `/bin/bash` and `less`. The lifecycle
+checks these explicitly before expensive gates because developer-focused PTY
+tests may otherwise skip when those tools are missing. The optional startup
+comparison test requires a separately supplied baseline executable; the release
+graph records its required replay/cursor benchmarks without claiming that
+optional comparison ran.
+
 Choose the actual release version and a Conventional Commit message describing
 the durable change:
 

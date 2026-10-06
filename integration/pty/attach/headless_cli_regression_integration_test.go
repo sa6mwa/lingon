@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -108,24 +109,25 @@ func TestRelayHeadlessMultiAttachReceivesInitialSnapshot(t *testing.T) {
 	waitForSessionsWithTimeout(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionID}, 8*time.Second)
 	waitForHeadlessFlags(t, h.Clock(), h.Endpoint(), h.AccessToken(), map[string]bool{sessionID: true}, 8*time.Second)
 
-	var captured *attach.Client
+	var captured atomic.Pointer[attach.Client]
 	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: sessionID,
 		Cols:      40,
 		Rows:      10,
 		OnView: func(id string, client *attach.Client) {
 			if id == sessionID {
-				captured = client
+				captured.Store(client)
 			}
 		},
 	})
 	t.Cleanup(attach.Cancel)
 
 	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
-		if captured == nil {
+		client := captured.Load()
+		if client == nil {
 			return fmt.Errorf("attach view not created yet")
 		}
-		if !captured.HasSnapshot() {
+		if !client.HasSnapshot() {
 			return fmt.Errorf("attach client still has no snapshot:\n%s", screen.String())
 		}
 		if !screen.Contains("PROMPT>") {
@@ -165,24 +167,25 @@ func TestRelayHeadlessMultiAttachExplicitSessionReceivesInitialSnapshotWithPeers
 	waitForSessionsWithTimeout(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionA, sessionB}, 8*time.Second)
 	waitForHeadlessFlags(t, h.Clock(), h.Endpoint(), h.AccessToken(), map[string]bool{sessionA: true, sessionB: true}, 8*time.Second)
 
-	var captured *attach.Client
+	var captured atomic.Pointer[attach.Client]
 	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: sessionB,
 		Cols:      40,
 		Rows:      10,
 		OnView: func(id string, client *attach.Client) {
 			if id == sessionB {
-				captured = client
+				captured.Store(client)
 			}
 		},
 	})
 	t.Cleanup(attach.Cancel)
 
 	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
-		if captured == nil {
+		client := captured.Load()
+		if client == nil {
 			return fmt.Errorf("attach view for %s not created yet", sessionB)
 		}
-		if !captured.HasSnapshot() {
+		if !client.HasSnapshot() {
 			return fmt.Errorf("attach client for %s still has no snapshot:\n%s", sessionB, screen.String())
 		}
 		if !screen.Contains("PROMPT>") {

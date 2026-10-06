@@ -452,9 +452,24 @@ func (p *Publisher) Publish(data []byte, snap *protocolpb.Snapshot) {
 
 // Resize records a resized snapshot and publishes it.
 func (p *Publisher) Resize(cols, rows int, snap *protocolpb.Snapshot) {
+	p.mu.Lock()
 	p.opts.Cols = cols
 	p.opts.Rows = rows
+	p.mu.Unlock()
 	p.Publish(nil, snap)
+}
+
+func (p *Publisher) helloFrame() *protocolpb.Frame {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return &protocolpb.Frame{
+		SessionId: p.opts.SessionID,
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId: strings.TrimSpace(p.opts.SessionName),
+			Cols:     uint32(p.opts.Cols), Rows: uint32(p.opts.Rows),
+			WantsControl: p.opts.PublishControl, ClientType: "host", Headless: p.opts.Headless,
+		}},
+	}
 }
 
 func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
@@ -500,17 +515,7 @@ func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
 		_ = ws.Close(websocket.StatusNormalClosure, "closing")
 	}()
 
-	hello := &protocolpb.Frame{
-		SessionId: p.opts.SessionID,
-		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
-			ClientId:     p.sessionName(),
-			Cols:         uint32(p.opts.Cols),
-			Rows:         uint32(p.opts.Rows),
-			WantsControl: p.opts.PublishControl,
-			ClientType:   "host",
-			Headless:     p.opts.Headless,
-		}},
-	}
+	hello := p.helloFrame()
 	if err := relaywire.WriteFrame(ctx, ws, hello); err != nil {
 		return false, err
 	}
@@ -699,8 +704,8 @@ func (p *Publisher) sendScrollbackSnapshot() {
 	if len(rows) == 0 {
 		return
 	}
-	cols := p.opts.Cols
 	p.mu.Lock()
+	cols := p.opts.Cols
 	if p.lastSnap != nil {
 		cols = int(p.lastSnap.Cols)
 	}
@@ -811,8 +816,9 @@ func (p *Publisher) SendSessionClosed(reason string) {
 func (p *Publisher) TakeControl() {
 	p.mu.Lock()
 	p.wantControl = true
+	alreadyHeld := p.holderID == HostControlID
 	p.mu.Unlock()
-	if p.holderID == HostControlID {
+	if alreadyHeld {
 		return
 	}
 	_ = p.sendControl(context.Background(), HostControlID)

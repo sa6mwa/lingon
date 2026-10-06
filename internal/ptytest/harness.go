@@ -22,6 +22,7 @@ import (
 	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/desktopnotify"
+	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/server"
@@ -732,6 +733,8 @@ type MultiAttachOptions struct {
 	SessionEvents <-chan struct{}
 	// Clock controls attach time in tests.
 	Clock clock.Clock
+	// Gate overrides the network gate for deterministic backoff tests.
+	Gate *netgate.Gate
 	// OnView is called when a session view is created.
 	OnView func(sessionID string, client *attach.Client)
 	// OnReconnect is called before a view attempts to reconnect.
@@ -813,6 +816,7 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 		SessionSource:               opts.SessionSource,
 		SocketResolver:              opts.SocketResolver,
 		SessionEvents:               opts.SessionEvents,
+		Gate:                        opts.Gate,
 		Clock:                       clk,
 		OnView:                      opts.OnView,
 		OnReconnect:                 opts.OnReconnect,

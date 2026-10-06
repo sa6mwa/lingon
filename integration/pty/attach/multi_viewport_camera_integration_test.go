@@ -934,8 +934,21 @@ func TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable(t *tes
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
-	shell := testutil.TempDir(t) + "/attach-multi-bash.sh"
-	const script = "#!/usr/bin/env bash\nexport PS1='PROMPT> '\nexec /bin/bash --noprofile --norc -i\n"
+	fixtureDir := testutil.TempDir(t)
+	gatePath := filepath.Join(fixtureDir, "process-output-gate")
+	if err := syscall.Mkfifo(gatePath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := os.OpenFile(gatePath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = gate.Close() })
+	shell := filepath.Join(fixtureDir, "attach-multi-bash.sh")
+	// Hold ps output until its input echo is observed; otherwise a fast process
+	// listing can overwrite the echo before the screen observer consumes it.
+	script := "#!/usr/bin/env bash\nexport PS1='PROMPT> '\n" +
+		"ps() { IFS= read -r ignored < " + shellQuote(gatePath) + "; command ps \"$@\"; printf 'PROCESS_OUTPUT_%s\\n' COMPLETE; }\nexport -f ps\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write multi attach bash wrapper: %v", err)
 	}
@@ -1004,8 +1017,14 @@ func TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable(t *tes
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("expected echoed command within 500ms, took %v", elapsed)
 	}
+	if _, err := gate.Write([]byte("continue\n")); err != nil {
+		t.Fatal(err)
+	}
 	attach.session.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
 		body := attachBody(screen)
+		if !strings.Contains(body, "PROCESS_OUTPUT_COMPLETE") {
+			return fmt.Errorf("process output has not completed:\n%s", screen.String())
+		}
 		if !strings.Contains(body, "PROMPT>") {
 			return fmt.Errorf("prompt missing after command:\n%s", screen.String())
 		}
@@ -1086,7 +1105,7 @@ func TestMultiAttachRealCLIControlBurstEnterKeepsConsecutiveBashPromptNumbers(t 
 	}
 
 	h := newHarness(t)
-	var ptyOut bytes.Buffer
+	var ptyOut testutil.OutputBuffer
 	hostA := h.StartHost(ptytest.HostOptions{
 		SessionID:   "prompt-burst-multi-a",
 		SessionName: "prompt-burst-multi-a",

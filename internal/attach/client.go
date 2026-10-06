@@ -110,6 +110,7 @@ type Client struct {
 	writeMu                   sync.Mutex
 	renderReqMu               sync.Mutex
 	renderReqCh               chan struct{}
+	renderStopped             bool
 	renderDirty               atomic.Uint32
 	lastActivity              atomic.Int64
 	stdin                     io.Reader
@@ -217,7 +218,8 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	c.runCtx = ctx
 	c.effects = mvu.NewEffectScheduler(c.clock())
 	defer c.effects.StopAll()
-	c.startRenderLoop(ctx)
+	stopRender := c.startRenderLoop(ctx)
+	defer stopRender()
 	c.resetReady()
 	c.scrollbackMu.Lock()
 	if c.scrollbackBuffer == nil {
@@ -249,9 +251,9 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	}
 	if opts.input {
 		if stdinFile, ok := c.stdin.(*os.File); ok {
-			stdinState, err := term.MakeRaw(int(stdinFile.Fd()))
+			stdinState, err := terminal.MakeRaw(stdinFile)
 			if err != nil {
-				if term.IsTerminal(int(stdinFile.Fd())) {
+				if terminal.IsTerminal(stdinFile) {
 					return err
 				}
 			} else {
@@ -264,7 +266,10 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		}
 	}
 	if opts.restore {
-		defer restoreCursor(c.clock(), c.stdoutWriter())
+		defer func() {
+			stopRender()
+			restoreCursor(c.clock(), c.stdoutWriter())
+		}()
 	}
 
 	cols, rows := c.terminalSize()
@@ -305,10 +310,10 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 				return authExpiredError(c.Endpoint, err)
 			}
 		}
-		if c.AccessToken == "" {
+		if c.accessToken() == "" {
 			return fmt.Errorf("access token is required")
 		}
-		setDialAuthHeader(dialOptions, c.AccessToken)
+		setDialAuthHeader(dialOptions, c.accessToken())
 	} else {
 		parsed, parseErr := url.Parse(wsEndpoint)
 		if parseErr == nil {
@@ -364,15 +369,19 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 
 	if opts.raw {
 		if enterAltScreen(c.clock(), c.stdoutWriter()) {
-			defer exitAltScreen(c.clock(), c.stdoutWriter())
+			defer func() {
+				stopRender()
+				exitAltScreen(c.clock(), c.stdoutWriter())
+			}()
 		}
 		mouseMode := newTerminalMouseMode(c.clock(), c.stdoutWriter())
 		c.scrollbackMouse = mouseMode
 		defer func() {
+			stopRender()
 			mouseMode.Set(false)
 		}()
-		if stdinFile, ok := c.stdin.(*os.File); ok && term.IsTerminal(int(stdinFile.Fd())) {
-			stdinState, err := term.MakeRaw(int(stdinFile.Fd()))
+		if stdinFile, ok := c.stdin.(*os.File); ok && terminal.IsTerminal(stdinFile) {
+			stdinState, err := terminal.MakeRaw(stdinFile)
 			if err != nil {
 				return err
 			}
@@ -509,7 +518,7 @@ func (c *Client) dialWithRefresh(ctx context.Context, url string, opts *websocke
 						if resp.Body != nil {
 							_ = resp.Body.Close()
 						}
-						setDialAuthHeader(opts, c.AccessToken)
+						setDialAuthHeader(opts, c.accessToken())
 						continue
 					} else {
 						if resp.Body != nil {
@@ -541,6 +550,19 @@ func (c *Client) dialWithRefresh(ctx context.Context, url string, opts *websocke
 	return nil, authExpiredError(c.Endpoint, fmt.Errorf("unauthorized"))
 }
 
+// SetAccessToken updates credentials used by subsequent owner requests.
+func (c *Client) SetAccessToken(token string) {
+	c.mu.Lock()
+	c.AccessToken = token
+	c.mu.Unlock()
+}
+
+func (c *Client) accessToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AccessToken
+}
+
 func (c *Client) refreshToken(ctx context.Context) (string, error) {
 	if c.TokenRefresher == nil {
 		return "", fmt.Errorf("token refresh unavailable")
@@ -552,7 +574,7 @@ func (c *Client) refreshToken(ctx context.Context) (string, error) {
 	if token == "" {
 		return "", fmt.Errorf("refresh returned empty token")
 	}
-	c.AccessToken = token
+	c.SetAccessToken(token)
 	return token, nil
 }
 
@@ -1375,17 +1397,21 @@ func (c *Client) renderSnapshotLocked(snap *protocolpb.Snapshot) {
 	c.scheduleRedrawEffect(mvu.EffectKeyStateExpiry, frame.StateDelay, true)
 }
 
-func (c *Client) startRenderLoop(ctx context.Context) {
+func (c *Client) startRenderLoop(ctx context.Context) func() {
 	c.renderReqMu.Lock()
 	if c.renderReqCh != nil {
 		c.renderReqMu.Unlock()
-		return
+		return func() {}
 	}
 	ch := make(chan struct{}, 1)
 	c.renderReqCh = ch
+	c.renderStopped = false
 	c.renderReqMu.Unlock()
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		for {
 			select {
 			case <-ctx.Done():
@@ -1393,6 +1419,9 @@ func (c *Client) startRenderLoop(ctx context.Context) {
 			case <-ch:
 			}
 			for {
+				if ctx.Err() != nil {
+					return
+				}
 				c.renderDirty.Store(0)
 				c.renderCurrent()
 				if c.renderDirty.Load() == 0 {
@@ -1401,12 +1430,31 @@ func (c *Client) startRenderLoop(ctx context.Context) {
 			}
 		}
 	}()
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			c.renderReqMu.Lock()
+			c.renderStopped = true
+			c.renderReqMu.Unlock()
+			cancel()
+			<-done
+			c.renderReqMu.Lock()
+			if c.renderReqCh == ch {
+				c.renderReqCh = nil
+			}
+			c.renderReqMu.Unlock()
+		})
+	}
 }
 
 func (c *Client) requestRenderCurrent() {
 	c.renderReqMu.Lock()
 	ch := c.renderReqCh
+	stopped := c.renderStopped
 	c.renderReqMu.Unlock()
+	if stopped {
+		return
+	}
 	if ch == nil {
 		c.renderCurrent()
 		return
@@ -1927,7 +1975,7 @@ func (c *Client) toggleWallInactivity(ctx context.Context) {
 		c.showViewOnlyBanner("wall inactivity toggle unavailable")
 		return
 	}
-	token := strings.TrimSpace(c.AccessToken)
+	token := strings.TrimSpace(c.accessToken())
 	if token == "" && c.TokenRefresher != nil {
 		refreshed, err := c.TokenRefresher(ctx)
 		if err != nil {
@@ -1936,7 +1984,7 @@ func (c *Client) toggleWallInactivity(ctx context.Context) {
 		}
 		token = strings.TrimSpace(refreshed)
 		if token != "" {
-			c.AccessToken = token
+			c.SetAccessToken(token)
 		}
 	}
 	if token == "" {
@@ -2446,7 +2494,7 @@ func isTerminalWriter(w io.Writer) bool {
 	if !ok || outFile == nil {
 		return false
 	}
-	return term.IsTerminal(int(outFile.Fd()))
+	return terminal.IsTerminal(outFile)
 }
 
 func normalizeEndpoint(endpoint string) (string, string, error) {
@@ -2633,10 +2681,10 @@ func (c *Client) terminalSize() (int, int) {
 	if c.TermSize != nil {
 		return c.TermSize()
 	}
-	if outFile, ok := c.stdoutWriter().(*os.File); ok && term.IsTerminal(int(outFile.Fd())) {
-		cols, rows, err := term.GetSize(int(outFile.Fd()))
+	if outFile, ok := c.stdoutWriter().(*os.File); ok {
+		size, err := terminal.GetSize(outFile)
 		if err == nil {
-			return cols, rows
+			return size.Cols, size.Rows
 		}
 	}
 	return 0, 0

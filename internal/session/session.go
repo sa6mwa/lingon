@@ -388,7 +388,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		}()
 	}
 
-	if isTerminalWriter(stdout) && term.IsTerminal(int(stdin.Fd())) {
+	if isTerminalWriter(stdout) && terminal.IsTerminal(stdin) {
 		defaults, prefill := probeOuterColors(ctx, stdout, stdin, r.clock, r.trace)
 		r.outerDefaultFg = defaults.fg
 		r.outerDefaultBg = defaults.bg
@@ -903,7 +903,7 @@ func (r *Runner) makeRaw(file *os.File) error {
 	if file == nil {
 		return fmt.Errorf("stdin is nil")
 	}
-	state, err := term.MakeRaw(int(file.Fd()))
+	state, err := terminal.MakeRaw(file)
 	if err != nil {
 		return fmt.Errorf("stdin is not a terminal")
 	}
@@ -3282,7 +3282,7 @@ func isTerminalWriter(w io.Writer) bool {
 	if !ok {
 		return false
 	}
-	return term.IsTerminal(int(outFile.Fd()))
+	return terminal.IsTerminal(outFile)
 }
 
 var terminalStateMu sync.Mutex
