@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-178 Wall-inactivity tab-switch fixture fails its peer startup marker
+
+- Status: `needs_verification`
+- Repro: The clean full rehearsal at `088352a` stops in the uncached root Go gate. `TestMultiAttachTabSwitchDoesNotRearmWallInactivityWithoutTerminalInput` fails before attach, expecting the peer-session marker (`build/lifecycle/prerelease-2188530102.log`). No race, integration, Android or artifact gates ran afterward.
+- Constraint: Diagnose the fixture startup boundary and preserve its actual terminal-input versus view-only wall-inactivity assertions. Retain the stopped rehearsal log and repair in a separate iteration.
+- Investigation: The same original case passes 20 isolated race runs (`build/resume-inactivity-before.log`); the exact intermittent user-shell startup failure was not reproduced in isolation. Registration did not prove shell readiness, and this fixture relied on the user's shell startup. Its wall-inactivity sleep used real relay timers despite mock host/attach clocks.
+- Repair: Use a minimal test-owned shell that configures only its owned terminal, announces readiness in the terminal body, and accepts line input; await that marker before sending commands. Supply an explicit wall clock to the relay service/harness for wall timestamps, activity and timer scheduling. The default remains a system clock, with authentication timestamps independent. Replace the inactivity sleeps with explicit clock advances and retain the original connect/tab-switch assertions; actual terminal input must positively rearm a second notification.
+- Verification: Clock deadline, timestamp, no-repeat, rearm and disable semantics plus both owned-PTY inactivity cases pass ten race repetitions (`build/resume-inactivity-final-proof.log`). Complete relay/attach/PTY-harness race suites pass (`build/resume-inactivity-affected-race.log`), as do root Go tests and vet/golint/golangci-lint (`build/resume-inactivity-{go-test,lint}.log`). Reviewed all wall-service clock reads and activity entry points. No dedicated wall-clock performance gate exists; no wall-timer throughput claim is made. A clean full prerelease rehearsal is still required to close the original intermittent full-gate report.
+
 ### B-177 Reactivating a pending local-headless tab discards the retained frame
 
 - Status: `resolved`

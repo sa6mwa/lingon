@@ -59,6 +59,7 @@ type Harness struct {
 	connectLimit *relay.ConnectLimitConfig
 	wallTimeout  time.Duration
 	wallLevels   []time.Duration
+	wallClock    clock.Clock
 	clock        clock.Clock
 	tracePath    string
 	trace        *trace.Writer
@@ -118,6 +119,12 @@ func WithWallConfig(timeout time.Duration, inactiveAfterLevels []time.Duration) 
 		}
 		h.wallLevels = append([]time.Duration(nil), inactiveAfterLevels...)
 	}
+}
+
+// WithWallClock controls relay wall timestamps and inactivity timers separately
+// from session timing. The default is the system clock.
+func WithWallClock(clk clock.Clock) HarnessOption {
+	return func(h *Harness) { h.wallClock = clk }
 }
 
 // WithClock sets the harness clock used by sessions.
@@ -402,6 +409,7 @@ func (h *Harness) startServer(listener net.Listener) {
 	relayServer := relay.NewHTTPServer(h.store, h.users, h.auth, nil, hub)
 	relayServer.UsersFile = h.usersPath
 	relayServer.DataDir = h.dataDir
+	relayServer.WallClock = h.wallClock
 	if h.wallTimeout > 0 || len(h.wallLevels) > 0 {
 		relayServer.ConfigureWall(h.wallTimeout, h.wallLevels)
 	}

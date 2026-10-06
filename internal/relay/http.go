@@ -18,6 +18,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
@@ -63,10 +64,13 @@ type HTTPServer struct {
 	ConnectLimiter          *ConnectLimiter
 	WallTimeout             time.Duration
 	WallInactiveAfterLevels []time.Duration
-	shareMu                 sync.Mutex
-	shareSessions           map[string]shareSession
-	wallMu                  sync.Mutex
-	wallSvc                 *WallService
+	// WallClock controls wall events and inactivity timers. Set before Handler;
+	// nil uses the system clock independently of authentication timestamps.
+	WallClock     clock.Clock
+	shareMu       sync.Mutex
+	shareSessions map[string]shareSession
+	wallMu        sync.Mutex
+	wallSvc       *WallService
 }
 
 type shareSession struct {
@@ -878,7 +882,7 @@ func (s *HTTPServer) handleWall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sender := svc.senderLabel(username, server.RealIP(r))
-	sent, err := svc.sendUserWall(username, sender, message, time.Now().UTC())
+	sent, err := svc.sendUserWall(username, sender, message, svc.now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -923,7 +927,7 @@ func (s *HTTPServer) handleWallEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	events, nextID, hasMore := svc.listEvents(username, sinceID, limit, time.Now().UTC())
+	events, nextID, hasMore := svc.listEvents(username, sinceID, limit, svc.now())
 	payload := make([]wallEventResponse, 0, len(events))
 	for _, event := range events {
 		payload = append(payload, wallEventResponse{
@@ -978,7 +982,7 @@ func (s *HTTPServer) handleWallInactivity(w http.ResponseWriter, r *http.Request
 		return
 	}
 	sender := svc.senderLabel(username, server.RealIP(r))
-	now := time.Now().UTC()
+	now := svc.now()
 	var (
 		enabled bool
 		after   time.Duration
@@ -1364,7 +1368,7 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 			}
 			if frame.GetActivity() != nil {
 				if svc := s.wallService(); svc != nil {
-					svc.markActivity(ws.sessionID, time.Now().UTC())
+					svc.markActivity(ws.sessionID, svc.now())
 				}
 				continue
 			}
@@ -1391,7 +1395,7 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 				_ = ws.Send(ctx, frameError(err.Error()))
 			} else if isClientActivityFrame(frame) {
 				if svc := s.wallService(); svc != nil {
-					svc.markActivity(ws.sessionID, time.Now().UTC())
+					svc.markActivity(ws.sessionID, svc.now())
 				}
 			}
 		}
@@ -1661,6 +1665,9 @@ func (s *HTTPServer) wallService() *WallService {
 	defer s.wallMu.Unlock()
 	if s.wallSvc == nil {
 		s.wallSvc = newWallService(s.Store, s.Hub, s.Logger, s.WallTimeout, s.WallInactiveAfterLevels)
+		if s.WallClock != nil {
+			s.wallSvc.clock = s.WallClock
+		}
 		return s.wallSvc
 	}
 	s.wallSvc.setConfig(s.WallTimeout, s.WallInactiveAfterLevels)
