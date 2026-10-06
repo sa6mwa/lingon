@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.Rule
 import org.junit.runner.RunWith
@@ -22,6 +23,36 @@ class ShareLaunchRestorationInstrumentedTest {
     @get:Rule
     val notificationPermissionRule: GrantPermissionRule =
         GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS)
+
+    @Test
+    fun trustedNewIntentKeepsLaunchIdentityAndRestoresShare() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val token = "trusted-new-intent-token"
+        val requestId = PendingShareLaunches.put(token, "https://127.0.0.1:1")
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val launchIdentity = Intent(activity.intent)
+                val incoming = Intent(activity, MainActivity::class.java).apply {
+                    action = MainActivity.ACTION_INTERNAL_SHARE
+                    putExtra(MainActivity.EXTRA_SHARE_REQUEST_ID, requestId)
+                }
+                try {
+                    instrumentation.callActivityOnNewIntent(activity, incoming)
+                    assertEquals(token, ViewModelProvider(activity)[AppViewModel::class.java].state.value.shareToken)
+                    assertTrue("new share must retain activity launch identity", activity.intent.filterEquals(launchIdentity))
+                } finally {
+                    // Preserve test-owned lifecycle cleanup even on the pre-fix
+                    // failure; the identity assertion above remains mandatory.
+                    activity.intent = launchIdentity
+                }
+                activity.viewModelStore.clear()
+            }
+            scenario.recreate()
+            scenario.onActivity { activity ->
+                assertEquals(token, ViewModelProvider(activity)[AppViewModel::class.java].state.value.shareToken)
+            }
+        }
+    }
 
     @Test
     fun consumedShareSurvivesLossOfPendingRequestAndViewModel() {

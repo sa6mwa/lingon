@@ -31,9 +31,12 @@ Required status values:
 
 ### B-180 MainActivity intent replacement breaks lifecycle tracking after foregrounding
 
-- Status: `in_progress`
+- Status: `resolved`
 - Repro: Heavy-output/tab-switch instrumentation reaches teardown, then ActivityScenario cannot observe DESTROYED after foregrounding (`build/resume-android-frame-inbox-e2e.log`). `resumeActivity` delivers a new component intent; MainActivity's recent `setIntent` replaces the original launch action/categories. [AndroidX's lifecycle observer](https://raw.githubusercontent.com/android/android-test/main/core/java/androidx/test/core/app/ActivityScenario.java) ignores events whose current activity intent no longer matches the launch intent.
 - Constraint: Preserve launch identity while consuming trusted new share requests and restoring the latest accepted share from private saved state. Add a direct new-intent/lifecycle instrumentation regression and rerun heavy-output verification.
+- Regression: A real instrumentation new-intent call consumes a trusted share, then asserts unchanged launch identity and restores that share after ViewModel loss/recreation. It fails before repair at the launch-identity assertion (`build/resume-android-intent-identity-before.log`). The fixture restores only its own original intent in failure cleanup so the intended assertion is not masked by teardown.
+- Fix: Remove the redundant `setIntent` call; `handleIncomingIntent` still consumes the trusted request and private saved state still carries the accepted token/endpoint. No trusted context is recovered from exported extras.
+- Verification: All four share-lifecycle instrumentation cases plus heavy-output/tab-switch instrumentation pass together (`build/resume-android-frame-lifecycle-e2e.log`, five tests). Activity teardown succeeds and owned harness cleanup completes. Android unit/compile gates and standard Go checks pass (`build/resume-android-frame-lifecycle-build.log`, `build/resume-android-inbox-{go-test,lint}.log`). Full prerelease proof remains outstanding.
 
 ### B-179 Android terminal frame dispatch retains an unbounded coroutine backlog
 
