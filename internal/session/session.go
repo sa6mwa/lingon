@@ -3157,7 +3157,9 @@ func (r *Runner) activateLocalSession(sessionID string, stdout, stdin *os.File) 
 	if !activeLocal {
 		// Switching from remote to local has no compatible local render baseline.
 		// Local-to-local switches keep the previous snapshot for delta rendering.
+		r.stdoutMu.Lock()
 		r.renderCache.SetPrevSnapshot(nil)
+		r.stdoutMu.Unlock()
 	}
 	if r.remoteSessions != nil {
 		r.updateTabs(r.remoteSessions.Sessions())
@@ -3183,7 +3185,9 @@ func (r *Runner) activateRemote(ctx context.Context, sessionID string, stdout, s
 		r.remoteSessions.Hide(activeID)
 	}
 	if activeLocal {
+		r.stdoutMu.Lock()
 		r.renderCache.SetPrevSnapshot(nil)
+		r.stdoutMu.Unlock()
 	}
 	if r.remoteSessions.IsDisabled(sessionID) {
 		r.setActiveSession(sessionID, false)

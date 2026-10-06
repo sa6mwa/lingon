@@ -213,10 +213,8 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 		activeID, activeLocal := runnerA.activeSession()
 		return activeID == "session_b" && !activeLocal
 	}, runErrA, runErrB)
-	waitUntilAll(t, 5*time.Second, func() bool {
-		view := runnerA.remoteSessions.views["session_b"]
-		return view != nil && !view.needsFullRender
-	}, runErrA, runErrB)
+	// The following remote echo is the observable readiness/routing barrier;
+	// internal render flags are owned by the renderer, not by this observer.
 	_, _ = uiMasterA.Write([]byte("echo REMOTE_OK\n"))
 	waitUntilAll(t, 5*time.Second, func() bool {
 		return strings.Contains(outB.String(), "REMOTE_OK")

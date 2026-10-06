@@ -237,18 +237,21 @@ func (m *remoteManager) logViewState(event string, view *remoteView, err error) 
 		m.logger.Trace("session.remote.view.state", "event", event, "view", "nil")
 		return
 	}
+	m.mu.Lock()
+	id, visible, awaiting, disabled, running, restart, runID, hiddenAt, hasClient := view.id, view.visible, view.awaiting, view.disabled, view.running, view.restart, view.runID, view.hiddenAt, view.client != nil
+	m.mu.Unlock()
 	m.logger.Trace(
 		"session.remote.view.state",
 		"event", event,
-		"session", view.id,
-		"visible", view.visible,
-		"awaiting", view.awaiting,
-		"disabled", view.disabled,
-		"running", view.running,
-		"restart", view.restart,
-		"run_id", view.runID,
-		"hidden_at", view.hiddenAt,
-		"has_client", view.client != nil,
+		"session", id,
+		"visible", visible,
+		"awaiting", awaiting,
+		"disabled", disabled,
+		"running", running,
+		"restart", restart,
+		"run_id", runID,
+		"hidden_at", hiddenAt,
+		"has_client", hasClient,
 		"err", err,
 	)
 }

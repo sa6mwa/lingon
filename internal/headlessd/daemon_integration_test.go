@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,6 +25,18 @@ import (
 	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/pslog"
 )
+
+type observedOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (o *observedOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.Write(p)
+}
+func (o *observedOutput) String() string { o.mu.Lock(); defer o.mu.Unlock(); return o.buf.String() }
 
 func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
 	cfgDir := testutil.TempDir(t)
@@ -58,7 +71,7 @@ func TestDaemonAttachAndSendViaUnixSocket(t *testing.T) {
 		return headless.SocketExists(socketPath)
 	})
 
-	var out bytes.Buffer
+	var out observedOutput
 	attachClient := &attach.Client{
 		Endpoint:            "local://headless",
 		SessionID:           sessionID,
@@ -272,7 +285,7 @@ func TestDaemonReplaysPublishStatusToNewAttachClient(t *testing.T) {
 		Endpoint:  "https://relay.example/v1",
 	})
 
-	var out bytes.Buffer
+	var out observedOutput
 	attachClient := &attach.Client{
 		Endpoint:            "local://headless",
 		SessionID:           sessionID,
@@ -353,7 +366,7 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 		return headless.SocketExists(socketPath)
 	})
 
-	var out bytes.Buffer
+	var out observedOutput
 	var wallCount atomic.Int32
 	attachClient := &attach.Client{
 		Endpoint:            "local://headless",
@@ -420,9 +433,11 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 		UnixSocket:     socketPath,
 		SessionID:      sessionID,
 		RequestControl: true,
-		Tokens:         []string{"echo REARM_INACTIVITY_WALL"},
-		NoNewline:      false,
-		Logger:         pslog.NoopLogger(),
+		// The completed output nonce is absent from the echoed command, so the
+		// observer cannot advance time while the command is still executing.
+		Tokens:    []string{"printf 'REARM_%s\\n' INACTIVITY_WALL"},
+		NoNewline: false,
+		Logger:    pslog.NoopLogger(),
 	}); err != nil {
 		t.Fatalf("SendInput activity: %v", err)
 	}
@@ -888,8 +903,11 @@ func TestDaemonForwardedInternalWallPreservesKindForAttachClients(t *testing.T) 
 		return headless.SocketExists(socketPath)
 	})
 
-	var gotKind protocolpb.WallKind
-	var gotMessage string
+	type wallResult struct {
+		kind    protocolpb.WallKind
+		message string
+	}
+	wallResults := make(chan wallResult, 1)
 	attachClient := &attach.Client{
 		Endpoint:            "local://headless",
 		SessionID:           sessionID,
@@ -904,8 +922,10 @@ func TestDaemonForwardedInternalWallPreservesKindForAttachClients(t *testing.T) 
 			if wall == nil {
 				return
 			}
-			gotKind = wall.GetKind()
-			gotMessage = wall.GetMessage()
+			select {
+			case wallResults <- wallResult{kind: wall.GetKind(), message: wall.GetMessage()}:
+			default:
+			}
 		},
 	}
 	ready := make(chan struct{})
@@ -936,9 +956,14 @@ func TestDaemonForwardedInternalWallPreservesKindForAttachClients(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("postInternalWallEvent: %v", err)
 	}
-	waitUntil(t, 2*time.Second, func() bool {
-		return gotKind == protocolpb.WallKind_WALL_KIND_INACTIVITY && gotMessage == "peer-session inactive"
-	})
+	select {
+	case got := <-wallResults:
+		if got.kind != protocolpb.WallKind_WALL_KIND_INACTIVITY || got.message != "peer-session inactive" {
+			t.Fatalf("forwarded wall=%+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("forwarded wall was not delivered")
+	}
 
 	cancelAttach()
 	select {

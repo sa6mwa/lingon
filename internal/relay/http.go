@@ -1142,10 +1142,12 @@ func (s *HTTPServer) handleWSHost(w http.ResponseWriter, r *http.Request) {
 	s.notifySessions(username)
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
-	go s.streamSessionsWS(streamCtx, ws, username, r)
+	streamDone := make(chan struct{})
+	go func() { defer close(streamDone); s.streamSessionsWS(streamCtx, ws, username, r) }()
 
 	<-readDone
 	cancelStream()
+	<-streamDone
 	s.Hub.Unregister(ws)
 	unregistered = true
 	if s.Store != nil {
@@ -1275,9 +1277,11 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 			}
 			defer unregister()
 			streamCtx, cancelStream := context.WithCancel(ctx)
-			go s.streamSessionsWS(streamCtx, ws, username, r)
+			streamDone := make(chan struct{})
+			go func() { defer close(streamDone); s.streamSessionsWS(streamCtx, ws, username, r) }()
 			s.serveWSLoop(ctx, ws)
 			cancelStream()
+			<-streamDone
 			return
 		}
 		_ = ws.SendImmediate(ctx, frameError("missing session"))
@@ -1307,10 +1311,12 @@ func (s *HTTPServer) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	logger.Info("relay.client.connect.done", "session", sessionID, "client", clientID, "reconnected", reconnected, "ip", remoteIP)
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
-	go s.streamSessionsWS(streamCtx, ws, username, r)
+	streamDone := make(chan struct{})
+	go func() { defer close(streamDone); s.streamSessionsWS(streamCtx, ws, username, r) }()
 
 	s.serveWSLoop(ctx, ws)
 	cancelStream()
+	<-streamDone
 }
 
 func isBrowserShareSessionHello(hello *protocolpb.Hello) bool {

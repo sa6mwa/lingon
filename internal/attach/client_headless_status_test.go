@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"pkt.systems/lingon/internal/mvu"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/lingon/internal/terminal/emu"
+	"pkt.systems/lingon/internal/testclock"
 )
 
 func TestHandleRoutedHeadlessStatus(t *testing.T) {
@@ -269,7 +269,7 @@ func TestPrepareForCtrlLClearRendersImmediatelyAndAvoidsDeferredFullClear(t *tes
 }
 
 func TestPrepareForCtrlLClearPreservesStateExpiryWithoutRemoteSnapshot(t *testing.T) {
-	clk := clock.NewMock()
+	clk := testclock.New()
 	var buf bytes.Buffer
 	client := &Client{
 		SessionID: "s1",
@@ -316,16 +316,8 @@ func TestPrepareForCtrlLClearPreservesStateExpiryWithoutRemoteSnapshot(t *testin
 	buf.Reset()
 
 	clk.Add(2100 * time.Millisecond)
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for {
-		if len(expired) > 0 && buf.Len() > 0 {
-			<-expired
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("expected expiry redraw after Ctrl+L clear")
-		}
-		runtime.Gosched()
+	if len(expired) == 0 || buf.Len() == 0 {
+		t.Fatal("expected completed expiry redraw after Ctrl+L clear")
 	}
 	e := emu.New(80, 24)
 	if err := e.Write(buf.Bytes()); err != nil {
