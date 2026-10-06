@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-165 Terminal-attribute ioctl races with owned PTY shutdown
+
+- Status: `resolved`
+- Report: The third full rehearsal at `5b3b45c` stops in the root race gate: relay-host retry cleanup closes the owned PTY while a publisher ownership callback calls `setVEOF`. Evidence: `build/lifecycle/prerelease-2897003153.log`.
+- Regression: `TestTermiosConcurrentCloseUsesOwnedDescriptor` creates fresh isolated PTY pairs with no child or inherited stdio, checks successful live EOF operations, then joins concurrent close and terminal-attribute calls. Three runs fail against the original code, detecting races in EOF, input-filter and echo-control helpers (`build/lifecycle-termios-before.log`).
+- Fix: Use `SyscallConn.Control` to retain the descriptor through each termios ioctl, including read/modify/write and echo restoration. A concurrent close returns a normal file error instead of exposing a destroyed/reused descriptor. No session/render locks or terminal semantics changed.
+- Verification: Complete session and relay-host suites pass three race runs (`build/lifecycle-termios-after.log`); the final descriptor wrapper passes ten close-regression race runs (`build/lifecycle-termios-final-race.log`). Root Go tests, vet, golint and golangci-lint pass (`build/lifecycle-termios-final-{go-test,vet,golint,golangci}.log`). A temporary benchmark-source backup initially made Go discover a spurious build package; rename it to a non-Go suffix before the passing full rerun. No gate was bypassed.
+- Performance: Three owned-descriptor read samples measured 210.8/213.4/225.4 ns versus original 336.3/333.3/334.2 ns, retaining zero bytes and allocations per operation (`build/lifecycle-termios-bench-{before,final}.log`). An intermediate wrapper allocated 48 bytes and was replaced before acceptance. These are narrow unpaired observations, not an application-wide speed claim. A fresh complete release rehearsal is still required.
+
 ### B-164 Publisher ping cancellation races with a queued timer tick
 
 - Status: `resolved`

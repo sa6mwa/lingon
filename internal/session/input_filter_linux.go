@@ -12,7 +12,7 @@ func filterRemoteInput(ttyFile *os.File, data []byte) []byte {
 	if ttyFile == nil || len(data) == 0 {
 		return data
 	}
-	termios, err := unix.IoctlGetTermios(int(ttyFile.Fd()), unix.TCGETS)
+	termios, err := readTermios(ttyFile)
 	if err != nil {
 		return data
 	}

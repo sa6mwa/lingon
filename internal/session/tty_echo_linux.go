@@ -9,19 +9,30 @@ import (
 )
 
 func disableTTYEcho(file *os.File) (func(), error) {
-	termios, err := unix.IoctlGetTermios(int(file.Fd()), unix.TCGETS)
+	var original unix.Termios
+	changed := false
+	err := withTTYDescriptor(file, func(fd int) error {
+		termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+		if err != nil {
+			return err
+		}
+		if termios.Lflag&unix.ECHO == 0 {
+			return nil
+		}
+		original = *termios
+		termios.Lflag &^= unix.ECHO
+		changed = true
+		return unix.IoctlSetTermios(fd, unix.TCSETS, termios)
+	})
 	if err != nil {
 		return nil, err
 	}
-	if termios.Lflag&unix.ECHO == 0 {
+	if !changed {
 		return nil, nil
 	}
-	original := *termios
-	termios.Lflag &^= unix.ECHO
-	if err := unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, termios); err != nil {
-		return nil, err
-	}
 	return func() {
-		_ = unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, &original)
+		_ = withTTYDescriptor(file, func(fd int) error {
+			return unix.IoctlSetTermios(fd, unix.TCSETS, &original)
+		})
 	}, nil
 }
