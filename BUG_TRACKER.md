@@ -47,9 +47,12 @@ Required status values:
 
 ### B-174 Developer release APK installation uses an older version code
 
-- Status: `in_progress`
+- Status: `resolved`
 - Report: The same review finds that `android/Makefile` supplies the release version name but leaves `versionCode` at 1. Rebuilding a lifecycle-released version then fails phone installation with `INSTALL_FAILED_VERSION_DOWNGRADE`.
 - Constraint: Supply the established `major*1000000+minor*1000+patch` identity as a Gradle property, with the same bounds and rehearsal handling. Preserve tracked Android metadata and the verified-APK install path.
+- Fix: The lifecycle resolves an exact lightweight tag once and reports the Android version name/code together through its internal `android-version` operation. The developer release build passes both to Gradle with error propagation. It reuses the existing version-code policy; untagged local builds use `v0.0.0` / `1`. The selected verified-APK installation path is unchanged.
+- Regression: The existing Make metadata contract now fails before repair because the version-code property is absent (`build/resume-android-version-before.log`). Owned fixture histories exercise tagged/untagged identity and invalid component bounds; a stubbed real Make release invocation asserts Gradle receives `v1.2.3` and `1002003` as one resolved identity. Lifecycle and Make suites pass under race (`build/resume-android-version-after.log`); the real internal CLI smoke returns `v0.0.0 1` on this untagged branch (`build/resume-android-version-smoke.log`).
+- Verification: Root Go tests and vet/golint/golangci-lint pass (`build/resume-android-repairs-{go-test,lint}.log`). Make execution verifies argument propagation without using a phone, signing real fixture bytes, or mutating tracked metadata. `RELEASE.md` was read back against the implemented identity. The complete prerelease/artifact rehearsal remains outstanding.
 
 ### B-172 Pending local-headless tab loses the displayed frame or loading banner
 

@@ -83,7 +83,7 @@ func TestAndroidBuildUsesPropertiesWithoutMutatingTrackedMetadata(t *testing.T) 
 		t.Fatalf("Android release plan: %v\n%s", err, out)
 	}
 	text := string(out)
-	if strings.Contains(text, "sed -i") || !strings.Contains(text, "-Plingon.versionName=") {
+	if strings.Contains(text, "sed -i") || !strings.Contains(text, "-Plingon.versionName=") || !strings.Contains(text, "-Plingon.versionCode=") {
 		t.Fatalf("release still rewrites metadata or loses its version: %s", out)
 	}
 }

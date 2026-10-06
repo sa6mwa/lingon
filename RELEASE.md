@@ -107,7 +107,9 @@ cache paths, local file URLs and instrumentation leaks fail verification.
 Android release identity is passed through Gradle properties, not edits to
 `build.gradle.kts`. Publication verifies the actual APK package name, version
 name/code and signer. Developer `make android-release` remains a local APK build;
-install a verified release without rebuilding through:
+its version name and code come together from the lifecycle's exact lightweight
+tag policy (`v0.0.0` and code `1` for an untagged local rehearsal). To install a
+verified release without rebuilding, use:
 
 ```sh
 make android-install-release APK="$PWD/dist/v1.2.3/lingon-1.2.3-android.apk" ADB_SERIAL=PHONE

@@ -45,6 +45,7 @@ endif
 
 .PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install install-release run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-push integration-test
 VERSION_CMD := cd .. && go run -buildvcs=true ./cmd/lingon version --version
+RELEASE_IDENTITY_CMD := cd .. && go run ./cmd/lingon-lifecycle android-version
 
 help:
 	@echo "lingon android make targets:"
@@ -147,8 +148,10 @@ build: local-properties
 
 release: local-properties
 	@./scripts/generate-release-keystore.sh
-	@VERSION="$$($(VERSION_CMD))"; \
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleRelease -Plingon.versionName="$$VERSION"
+	@set -e; \
+	IDENTITY="$$($(RELEASE_IDENTITY_CMD))"; \
+	VERSION="$${IDENTITY% *}"; VERSION_CODE="$${IDENTITY##* }"; \
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleRelease -Plingon.versionName="$$VERSION" -Plingon.versionCode="$$VERSION_CODE"
 	@APK_PATH="$(CURDIR)/app/build/outputs/apk/release/app-release.apk"; \
 	if [ -f "$$APK_PATH" ]; then \
 		echo "APK built: $$APK_PATH"; \

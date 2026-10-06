@@ -98,6 +98,18 @@ func (w *workflow) exactVersion(ctx context.Context) (string, error) {
 	return version, nil
 }
 
+func (w *workflow) androidReleaseIdentity(ctx context.Context) (string, error) {
+	version, err := w.exactVersion(ctx)
+	if err != nil {
+		return "", err
+	}
+	code := androidVersionCode(version)
+	if code == "0" {
+		return "", fmt.Errorf("release version exceeds Android versionCode limits")
+	}
+	return "v" + version + " " + code, nil
+}
+
 func newerVersion(a, b string) bool {
 	pa, pb := strings.Split(strings.TrimPrefix(a, "v"), "."), strings.Split(strings.TrimPrefix(b, "v"), ".")
 	for i := range 3 {

@@ -94,3 +94,43 @@ func TestRootAndroidInstallReleaseBuildsCurrentAPKByDefault(t *testing.T) {
 		})
 	}
 }
+
+func TestAndroidReleasePassesLifecycleIdentityToGradle(t *testing.T) {
+	work := lifecycleWork(t)
+	makefile, err := os.ReadFile(filepath.Join(repoRoot(t), "android", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"Makefile":                             makefile,
+		"scripts/generate-release-keystore.sh": []byte("#!/bin/sh\nexit 0\n"),
+		"scripts/verify-release-cert.sh":       []byte("#!/bin/sh\nexit 0\n"),
+		"sdk/build-tools/36/apksigner":         []byte("#!/bin/sh\nexit 0\n"),
+		"gradlew":                              []byte("#!/bin/sh\nset -e\nprintf '%s\\n' \"$@\" > \"$FAKE_GRADLE_LOG\"\nmkdir -p app/build/outputs/apk/release\nprintf 'fixture' > app/build/outputs/apk/release/app-release.apk\n"),
+	}
+	for name, data := range files {
+		path := filepath.Join(work, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log := filepath.Join(work, "gradle.log")
+	cmd := exec.Command("make", "release", "ANDROID_SDK_ROOT="+filepath.Join(work, "sdk"),
+		"RELEASE_IDENTITY_CMD=printf 'v1.2.3 1002003'", "VERSION_CMD=printf 'v1.2.3'")
+	cmd.Dir = work
+	cmd.Env = append(os.Environ(), "FAKE_GRADLE_LOG="+log)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("release build failed: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(data)
+	if !strings.Contains(args, "-Plingon.versionName=v1.2.3\n") || !strings.Contains(args, "-Plingon.versionCode=1002003\n") {
+		t.Fatalf("Gradle lost the paired lifecycle identity:\n%s", args)
+	}
+}

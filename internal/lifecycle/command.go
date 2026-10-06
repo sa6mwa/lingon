@@ -176,6 +176,12 @@ func (w *workflow) run(ctx context.Context, opts Options) error {
 			fmt.Println(v)
 		}
 		return err
+	case "android-version":
+		identity, err := w.androidReleaseIdentity(ctx)
+		if err == nil {
+			fmt.Println(identity)
+		}
+		return err
 	case "prerelease":
 		return w.prerelease(ctx)
 	case "release":
