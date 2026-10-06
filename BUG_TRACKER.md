@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-181 Active Android session closure cancels its own surviving-session reconciliation
+
+- Status: `resolved`
+- Report: Review at `328d7e1` finds the ordered socket consumer calls `handleExplicitSessionClosed`, which closes/cancels its own inbox before the cancellable preference read used to select a surviving session (`build/resume-review.normal-trunk.QKKNh8.log`). This can leave `activeSessionId` null with reconnect/polling stopped.
+- Constraint: Reconciliation must outlive the old socket in a ViewModel-owned job; retain bounded ordered processing for other events and verify a genuinely suspended preference read plus Android session/lifecycle behavior.
+- Regression: The new unit case suspends the actual preferred-session read during active closure, then releases it and requires the surviving session/connection. Before repair it leaves the active session null (`build/resume-android-session-close-before.log`). It uses coroutine scheduler events rather than wall-time sleeps.
+- Fix: Run explicit session-close reconciliation in a ViewModel-owned job starting undispatched, and join it from the ordered inbox. Inactive close events stay serialized; an active close cancels only the old inbox, while its owned reconciliation continues past the preference read. Terminal frame dispatch remains bounded.
+- Verification: Complete Android unit/compile gates pass (`build/resume-android-session-close-build.log`). Strengthened headless-detach instrumentation now requires a nonblank surviving session present in the list and successful real terminal input afterward. It and heavy-output/tab-switch instrumentation both pass on the owned emulator with teardown/cleanup (`build/resume-android-session-close-e2e.log`, two tests). Root Go tests and final vet/golint/golangci-lint pass (`build/resume-android-reconcile-{go-test,lint}.log`). Full prerelease proof remains outstanding.
+
 ### B-180 MainActivity intent replacement breaks lifecycle tracking after foregrounding
 
 - Status: `resolved`

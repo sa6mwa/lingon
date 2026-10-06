@@ -4059,9 +4059,12 @@ class EndToEndTest {
         waitUntilNoError(20_000L) {
             val state = stateForTest()
             state.sessions.none { it.id == headlessId } &&
+                !state.activeSessionId.isNullOrBlank() &&
+                state.sessions.any { it.id == state.activeSessionId } &&
                 state.activeSessionId != headlessId &&
                 !state.sessionSyncing
         }
+        assertTerminalResponsive(requireNotNull(activeSessionId()))
         val banner = readStatusBanner()?.message.orEmpty()
         assertFalse("unexpected reconnect/not-connected banner: $banner", banner.contains("Not connected", ignoreCase = true))
         assertFalse("unexpected reconnect/not-connected banner: $banner", banner.contains("connection lost", ignoreCase = true))

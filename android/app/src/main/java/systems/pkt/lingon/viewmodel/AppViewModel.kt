@@ -1463,7 +1463,14 @@ class AppViewModel(
                             ?: _state.value.activeSessionId
                             ?: activeConnection?.sessionId
                         if (!closedSessionId.isNullOrBlank()) {
-                            handleExplicitSessionClosed(closedSessionId.trim())
+                            // Closing the source socket cancels this inbox. The
+                            // surviving-session preference read must outlive it.
+                            // Join keeps inactive-session events ordered; active
+                            // closure cancels the old inbox while this owned job
+                            // continues reconciliation for the remaining views.
+                            viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                                handleExplicitSessionClosed(closedSessionId.trim())
+                            }.join()
                         }
                         _state.update {
                             it.copy(

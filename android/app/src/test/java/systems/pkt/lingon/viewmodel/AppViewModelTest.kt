@@ -73,6 +73,44 @@ class AppViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
+    fun activeSessionClosureSelectsSurvivorAfterSuspendedPreferenceRead() = runTest {
+        val sessions = listOf(
+            RelaySession(id = "first", name = "First", status = "active"),
+            RelaySession(id = "second", name = "Second", status = "active"),
+        )
+        val repository = FakeRepository(sessions = sessions, failListSessions = false)
+        val wsClient = FakeWsClient { options, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, snapshotFrame(1, options.sessionId.orEmpty()))
+        }
+        val model = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        setUiStateForTest(model, model.state.value.copy(loggedIn = true, sessions = sessions, activeSessionId = "first", endpoint = "https://localhost:12843/v1"))
+        model.selectSession("first")
+        runCurrent()
+        wsClient.fireConnect()
+        runCurrent()
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        repository.onLoadLastActiveSession = {
+            entered.complete(Unit)
+            release.await()
+            "second"
+        }
+
+        wsClient.fireFrame(Frame.newBuilder().setSessionId("first")
+            .setSessionClosed(SessionClosed.newBuilder().setReason("closed")).build())
+        runCurrent()
+        assertTrue("socket closure cancelled survivor preference loading", entered.isCompleted)
+        assertNull(model.state.value.activeSessionId)
+        release.complete(Unit)
+        runCurrent()
+        assertEquals("second", model.state.value.activeSessionId)
+        assertEquals("second", wsClient.lastConnectOptions?.sessionId)
+    }
+
+    @Test
     fun incomingTerminalBurstDoesNotCreateOneMainJobPerFrame() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
