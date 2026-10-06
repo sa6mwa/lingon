@@ -1350,9 +1350,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 			view.visible = true
 			view.hiddenAt = time.Time{}
-			if changedActive {
+			if changedActive && view.client.HasSnapshot() {
 				// This view's hidden delta baseline is not the physical display.
 				// Reconnects must seed a fresh composed frame as well.
+				// A snapshot-less view instead retains the loading framebuffer
+				// just seeded from the previously displayed terminal.
 				view.client.invalidateDeltaRender()
 			}
 			view.client.SetStdout(renderStdout)

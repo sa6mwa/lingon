@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-177 Reactivating a pending local-headless tab discards the retained frame
+
+- Status: `resolved`
+- Report: Review at `81e501b` confirms A → pending B → A → B loses A's displayed content before B's first snapshot. The existing-view activation seeds the physical frame, then unconditional delta-cache invalidation erases that seed (`build/resume-review.normal-trunk.qUhVFI.log`).
+- Constraint: Preserve the seed for snapshot-less views, retain normal cache invalidation for views with real snapshots, and add an owned-PTY return-to-pending regression without changing permanent flicker assertions.
+- Regression: The new owned-PTY case drives A → pending B → A → B twice, checks retained content and B's loading banner, verifies the retained display is not B's snapshot, then releases B's first snapshot and checks replacement content and cleared loading. It fails before repair with a blank frame on return to B (`build/resume-pending-reactivation-before.log`). Every switch invokes the unchanged permanent no-flicker assertion.
+- Fix: Invalidate a reactivated view's hidden delta baseline only when it has a real snapshot. Snapshot-less views retain the physical frame just seeded from the prior display; first-snapshot handling still replaces it normally. Reviewed snapshot arrival versus the seed/invalidation path.
+- Verification: All four pending/loading/readiness regressions pass 20 race repetitions (`build/resume-pending-reactivation-after.log`). The complete attach race suite, root Go tests and vet/golint/golangci-lint pass (`build/resume-pending-reactivation-{attach-race,go-test,lint}.log`). A fresh full prerelease rehearsal remains outstanding.
+
 ### B-176 Local-headless activation races with readiness when applying loading
 
 - Status: `resolved`
