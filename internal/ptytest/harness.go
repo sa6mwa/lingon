@@ -458,6 +458,7 @@ type HostOptions struct {
 	Rows                        int
 	Clock                       clock.Clock
 	OnPTYRead                   func([]byte)
+	OnPublishStatus             func(session.PublishStatus)
 	DisableRaw                  bool
 	DisablePublish              bool
 	DisableDesktopNotifications bool
@@ -554,6 +555,7 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		Clock:                       clk,
 		ReconnectJitter:             func(time.Duration) time.Duration { return 0 },
 		OnPTYRead:                   opts.OnPTYRead,
+		OnPublishStatus:             opts.OnPublishStatus,
 		DisableDesktopNotifications: disableDesktopNotifications,
 		DesktopNotifier:             desktopNotifier,
 		Trace:                       h.trace,

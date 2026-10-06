@@ -948,7 +948,7 @@ func TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable(t *tes
 	// Hold ps output until its input echo is observed; otherwise a fast process
 	// listing can overwrite the echo before the screen observer consumes it.
 	script := "#!/usr/bin/env bash\nexport PS1='PROMPT> '\n" +
-		"ps() { IFS= read -r ignored < " + shellQuote(gatePath) + "; command ps \"$@\"; printf 'PROCESS_OUTPUT_%s\\n' COMPLETE; }\nexport -f ps\nexec /bin/bash --noprofile --norc -i\n"
+		"ps() { IFS= read -r ignored < " + shellQuote(gatePath) + "; command ps -p \"$$\" -o pid,stat,comm; printf 'PROCESS_OUTPUT_%s\\n' COMPLETE; }\nexport -f ps\nexec /bin/bash --noprofile --norc -i\n"
 	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
 		t.Fatalf("write multi attach bash wrapper: %v", err)
 	}

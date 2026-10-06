@@ -1926,8 +1926,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		client.RenderCurrent()
 	}
 	processResizeEvent := func() {
-		id := activeID
 		mu.Lock()
+		id := activeID
 		view := views[id]
 		session, _ := sessionByID(sessions, id)
 		mu.Unlock()
@@ -1987,14 +1987,14 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		mu.Unlock()
 		if view == nil || targetClient == nil {
 			if m.Logger != nil {
-				m.Logger.Debug("attach.stdin.no.view", "session", activeID, "hasView", view != nil, "hasClient", targetClient != nil)
+				m.Logger.Debug("attach.stdin.no.view", "session", viewID, "hasView", view != nil, "hasClient", targetClient != nil)
 			}
 			pending = pending[:0]
 			return true
 		}
 		if !connected || flushing {
 			if m.Logger != nil {
-				m.Logger.Debug("attach.stdin.dropped.disconnected", "session", activeID, "connecting", connecting, "flushing", flushing)
+				m.Logger.Debug("attach.stdin.dropped.disconnected", "session", viewID, "connecting", connecting, "flushing", flushing)
 			}
 			var immediateClient *Client
 			queued := append([]byte(nil), pending...)
@@ -2186,7 +2186,13 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					}
 				case control.ActionResizeHeadless:
 					targetView, targetClient, _, _, _ := activeViewSnapshot()
-					targetSession, ok := sessionByID(sessions, activeID)
+					mu.Lock()
+					var targetSession SessionInfo
+					ok := false
+					if targetView != nil {
+						targetSession, ok = sessionByID(sessions, targetView.id)
+					}
+					mu.Unlock()
 					if targetView == nil || targetClient == nil || !ok || !sessionAllowsResize(targetSession) {
 						showConnected("resize is headless-only", 2*time.Second)
 						return true
@@ -2288,7 +2294,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				mu.Unlock()
 				if view == nil || targetClient == nil {
 					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.no.view.command", "session", activeID)
+						m.Logger.Debug("attach.stdin.no.view.command", "session", viewID)
 					}
 					return true
 				}
@@ -2317,7 +2323,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				}
 				if err := targetClient.SendCommand(ctx, cmdKind); err != nil {
 					if m.Logger != nil {
-						m.Logger.Debug("attach.stdin.command.send.failed", "err", err, "kind", cmdKind.String(), "session", activeID)
+						m.Logger.Debug("attach.stdin.command.send.failed", "err", err, "kind", cmdKind.String(), "session", viewID)
 					}
 					mu.Lock()
 					current := views[viewID]

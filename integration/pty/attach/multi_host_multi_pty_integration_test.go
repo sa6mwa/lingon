@@ -61,7 +61,7 @@ func TestMultiHostMultiPTYInteraction(t *testing.T) {
 		},
 	})
 
-	_ = waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
+	_ = waitForSelectedSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
 	primeTabsByCount(t, attachSess, sessionCount)
 	primeTabsByCount(t, hostA, sessionCount)
 	primeTabsByCount(t, hostB, sessionCount)
@@ -119,7 +119,7 @@ func TestMultiHostMultiPTYInteractionAfterCreate(t *testing.T) {
 		t.Fatalf("expected 3 sessions, got %d", sessionCount)
 	}
 
-	_ = waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
+	_ = waitForSelectedSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
 	primeTabsByCount(t, attachSess, sessionCount)
 	primeTabsByCount(t, hostA, sessionCount)
 	primeTabsByCount(t, hostB, sessionCount)
@@ -184,7 +184,7 @@ func TestMultiHostMultiPTYRemoval(t *testing.T) {
 			viewsMu.Unlock()
 		},
 	})
-	switchAttachToHost(t, attachSess, hostB, sessionCount, h.Clock(), &activeMu, &activeID, &viewsMu, views)
+	switchAttachToHost(t, attachSess, hostB, "host-b", sessionCount, h.Clock(), &activeMu, &activeID, &viewsMu, views)
 
 	hostA.Send("exit\n")
 
@@ -321,7 +321,7 @@ func cycleSendTokens(t *testing.T, sess *ptytest.PTYSession, count int, prefix s
 func cycleSendTokensWithActive(t *testing.T, sess *ptytest.PTYSession, count int, prefix string, clk clock.Clock, activeMu *sync.Mutex, active *string, viewsMu *sync.Mutex, views map[string]*attach.Client) []string {
 	t.Helper()
 	tokens := make([]string, 0, count)
-	current := waitForActiveSessionReady(t, clk, activeMu, active, viewsMu, views, "", 3*time.Second)
+	current := waitForSelectedSessionReady(t, clk, activeMu, active, viewsMu, views, "", 3*time.Second)
 	for i := 0; i < count; i++ {
 		token := fmt.Sprintf("%s_%d", prefix, i)
 		deadline := ptytest.Now(clk).Add(2 * time.Second)
@@ -358,6 +358,17 @@ func advanceActiveTabWithRetry(t *testing.T, sess *ptytest.PTYSession, clk clock
 	return ""
 }
 
+// waitForSelectedSessionReady requires the selected view, never an inactive
+// cached view returned by the generic readiness helper's fallback.
+func waitForSelectedSessionReady(t *testing.T, clk clock.Clock, activeMu *sync.Mutex, active *string, viewsMu *sync.Mutex, views map[string]*attach.Client, prev string, timeout time.Duration) string {
+	t.Helper()
+	if id, ok := tryWaitForActiveSessionReady(clk, activeMu, active, viewsMu, views, prev, timeout); ok {
+		return id
+	}
+	t.Fatalf("timed out waiting for selected session after %q", prev)
+	return ""
+}
+
 func tryWaitForActiveSessionReady(clk clock.Clock, activeMu *sync.Mutex, active *string, viewsMu *sync.Mutex, views map[string]*attach.Client, prev string, timeout time.Duration) (string, bool) {
 	deadline := ptytest.Now(clk).Add(timeout)
 	for ptytest.Now(clk).Before(deadline) {
@@ -368,7 +379,7 @@ func tryWaitForActiveSessionReady(clk clock.Clock, activeMu *sync.Mutex, active 
 			viewsMu.Lock()
 			client := views[current]
 			viewsMu.Unlock()
-			if client != nil && client.Connected() {
+			if client != nil && client.Connected() && client.HasSnapshot() {
 				return current, true
 			}
 		}
@@ -408,21 +419,26 @@ func assertTokensVisibleAcrossTabs(t *testing.T, sess *ptytest.PTYSession, count
 	}
 }
 
-func switchAttachToHost(t *testing.T, attachSess, host *ptytest.PTYSession, count int, clk clock.Clock, activeMu *sync.Mutex, active *string, viewsMu *sync.Mutex, views map[string]*attach.Client) {
+func switchAttachToHost(t *testing.T, attachSess, host *ptytest.PTYSession, targetID string, count int, clk clock.Clock, activeMu *sync.Mutex, active *string, viewsMu *sync.Mutex, views map[string]*attach.Client) {
 	t.Helper()
-	current := waitForActiveSessionReady(t, clk, activeMu, active, viewsMu, views, "", 3*time.Second)
+	host.Send("echo DESTINATION_READY\n")
+	if !screenContainsWithin(host, "DESTINATION_READY", 2*time.Second) {
+		t.Fatalf("destination shell not ready: %s", host.Screen().String())
+	}
+	current := waitForSelectedSessionReady(t, clk, activeMu, active, viewsMu, views, "", 3*time.Second)
 	for i := 0; i < count+1; i++ {
-		token := fmt.Sprintf("ATTACH_HOSTB_%d", i)
-		attachSess.Send("echo " + token + "\n")
-		if screenContainsWithin(host, token, 300*time.Millisecond) {
+		if current == targetID {
+			attachSess.Send("echo ATTACH_DESTINATION_CONFIRMED\n")
+			if !screenContainsWithin(host, "ATTACH_DESTINATION_CONFIRMED", 2*time.Second) {
+				t.Fatalf("selected destination did not receive input: %s", host.Screen().String())
+			}
 			return
 		}
 		attachSess.SendCtrlL()
 		attachSess.Send("n")
-		ptytest.Advance(attachSess.Clock(), 150*time.Millisecond)
-		current = waitForActiveSessionReady(t, clk, activeMu, active, viewsMu, views, current, 3*time.Second)
+		current = waitForSelectedSessionReady(t, clk, activeMu, active, viewsMu, views, current, 3*time.Second)
 	}
-	t.Fatalf("unable to switch attach to host tab")
+	t.Fatalf("unable to switch attach to host tab %s; active=%s", targetID, current)
 }
 
 func waitForTabLabels(t *testing.T, sess *ptytest.PTYSession, labels []string, timeout time.Duration) {

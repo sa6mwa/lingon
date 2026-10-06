@@ -1333,6 +1333,7 @@ func (c *Client) renderSnapshotLocked(snap *protocolpb.Snapshot) {
 	scrollCol := c.scrollbackView.Column()
 	scrollActive := c.scrollbackView.Active()
 	scrollbackVisible := c.scrollbackView.Visible()
+	scrollPercent := c.scrollbackView.Percent(totalRows, rows)
 	c.scrollbackMu.Unlock()
 	viewSnap := snap
 	if scrollActive || scrollOffset > 0 {
@@ -1340,8 +1341,7 @@ func (c *Client) renderSnapshotLocked(snap *protocolpb.Snapshot) {
 	}
 	compositor := c.ensureCompositor()
 	if scrollbackVisible {
-		percent := c.scrollbackView.Percent(len(scrollRows)+int(snap.Rows), rows)
-		compositor.ApplyAction(mvu.ScrollbackPercentAction{Visible: true, Percent: percent})
+		compositor.ApplyAction(mvu.ScrollbackPercentAction{Visible: true, Percent: scrollPercent})
 	} else {
 		compositor.ApplyAction(mvu.ScrollbackPercentAction{Visible: false})
 	}

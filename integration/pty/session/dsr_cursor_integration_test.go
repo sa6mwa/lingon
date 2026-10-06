@@ -50,6 +50,10 @@ done
 expected=$'\033[1;1R'
 if [[ "$resp" == "$expected" ]]; then
   printf '\nDSR-OK\n'
+  # Keep the owned producer alive until the consumer captures the result.
+  # Process exit is independent of the cursor-response behavior under test.
+  IFS= read -r finish
+  [[ "$finish" == "FINISH" ]]
   exit 0
 fi
 printf '\nDSR-BAD:'
@@ -127,6 +131,7 @@ exit 1
 	if !found && !strings.Contains(raw, "DSR-OK") {
 		t.Fatalf("timed out waiting for DSR response; raw:\n%s", raw)
 	}
+	sess.Send("FINISH\n")
 
 	cancel()
 	deadline = clk.Now().Add(2 * time.Second)

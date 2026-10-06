@@ -29,6 +29,23 @@ Required status values:
 
 ## Active Items
 
+### B-183 Broader PTY integration exposes scrollback race and unstable fixtures
+
+- Status: `needs_verification`
+- Repro: `build/resume-pty-browser-gate-after.log` passes all session and browser cases but fails three attach cases: `TestMultiHostMultiPTYRemoval` cannot select host B, `TestMultiAttachRealCLIControlWithMultipleSessionsKeepsViewportStable` never captures process-output completion, and `TestAttachScrollbackDuringDisconnect` reports `ScrollbackViewport.Percent` racing with `SetActive`.
+- Diagnosis: Scroll percentage is read after releasing `scrollbackMu`. The process fixture runs a machine-wide listing, so output depends on unrelated host activity. The shared tab-readiness helper falls back to an arbitrary connected inactive view, causing the removal fixture to advance before the selected view is ready. A related audit finds explicit headless resize reading `activeID` and `sessions` outside the view lock.
+- Fix: Capture scroll percentage with the other viewport fields under `scrollbackMu`. Resolve explicit-resize metadata under `mu` by the already selected view ID. Multi-host fixtures now require the selected connected view and its snapshot; removal also proves shell readiness and actual destination input. The process fixture lists only its owned shell PID, preserving the command-echo and viewport assertions. Permanent flicker assertions are unchanged.
+- Before/after evidence: `build/resume-b183-before.log` reproduces the scrollback race and tab-removal failure. `build/resume-b183-after.log` passes ten repetitions of all five non-removal cases, including resize/control matrices and the process-output case. Strict selected-view readiness then passes all three multi-host cases ten times (`build/resume-selected-readiness-after.log`). The new explicit Ctrl+L/0 regression checks actual child dimensions across two selected headless sessions during refresh. Twenty stress repetitions also pass before its audit repair (`build/resume-explicit-resize-stress-before.log`); that specific unlocked read was not reproduced as a race and is not claimed as before-fix proof.
+- Verification: Root `go test ./...`, affected internal attach/session/ptytest race suites, and standard vet/golint/golangci-lint pass (`build/resume-b182-b183-{go-test,race,lint}.log`). Full serial prerelease proof remains required; earlier failed runs are retained.
+
+### B-182 Full PTY/browser rehearsal exposes resize identity race and session failures
+
+- Status: `needs_verification`
+- Repro: The clean full rehearsal at `da78bd3` passes root Go/race and Android-tool gates, then stops in PTY/browser integration (`build/lifecycle/prerelease-2679100699.log`). Browser integration passes. Attach resize/control tests detect `processResizeEvent` reading `activeID` before locking `mu`, concurrent with active-view resolution. Session tests fail reconnect-banner setup and DSR result capture immediately before child exit.
+- Fix: Capture resize identity, view and session metadata under the same lock; diagnostics use the captured view ID. Reconnect fixtures wait for both owned-shell prompt and publisher connectivity before sending READY/disconnecting. DSR keeps its owned child alive until the consumer captures DSR-OK, then acknowledges FINISH; exact cursor-response and failure assertions remain intact. This isolates cursor-response verification from child-exit output draining and does not claim a production EOF-drain fix.
+- Before/after evidence: The two resize/control PTY cases reproduce the race in `build/resume-resize-identity-before.log`, then pass ten race repetitions (`build/resume-resize-identity-after.log`). Session failures are captured in `build/resume-session-gate-before.log`; DSR passes thirty repetitions after acknowledgment (`build/resume-dsr-ack-after.log`). The combined DSR/local-output/rapid-output cases pass twenty repetitions (`build/resume-session-readiness-diagnostic.log`), and the full session package passes under race in `build/resume-pty-browser-gate-after.log`. An intermittent READY failure during refinement remains retained in `build/resume-session-readiness-after.log`; later combined and full-package runs pass.
+- Verification: Root Go tests, affected internal race suites and standard lint pass (`build/resume-b182-b183-{go-test,race,lint}.log`). All permanent content/flicker assertions are retained. Full serial prerelease proof remains outstanding.
+
 ### B-181 Active Android session closure cancels its own surviving-session reconciliation
 
 - Status: `resolved`
