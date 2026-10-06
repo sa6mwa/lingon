@@ -710,12 +710,20 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		renderActiveCurrent()
 		scheduleOverlayRedraw(effect)
 	}
-	showLoading := func(msg string) {
+	showLoading := func(view *sessionView, msg string) {
+		mu.Lock()
+		if view == nil || views[view.id] != view || activeID != view.id || !view.visible || !view.connecting || view.connected {
+			mu.Unlock()
+			return
+		}
+		// Readiness clears loading under this same lock. Applying the action
+		// here prevents a delayed activation from restoring an obsolete banner.
 		effect := ui.ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{
 			Kind:     mvu.StatusLoading,
 			Endpoint: endpointLabel,
 			Message:  msg,
 		}})
+		mu.Unlock()
 		_, client, _, _, _ := activeViewSnapshot()
 		if client != nil {
 			if client.HasSnapshot() {
@@ -728,20 +736,12 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		}
 		scheduleOverlayRedraw(effect)
 	}
-	scheduleLoading := func(sessionID string, view *sessionView) {
+	scheduleLoading := func(view *sessionView) {
 		if view == nil {
 			return
 		}
 		m.Clock.AfterFunc(3*time.Second, func() {
-			mu.Lock()
-			current := views[sessionID]
-			visible := current == view && view.visible
-			connecting := current == view && view.connecting && !view.connected
-			mu.Unlock()
-			if !visible || !connecting {
-				return
-			}
-			showLoading("loading from relay")
+			showLoading(view, "loading from relay")
 		})
 	}
 	showError := func(msg string, d time.Duration) {
@@ -1011,7 +1011,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			m.OnView(session.ID, client)
 		}
 		if visible && !localSessionMode {
-			scheduleLoading(session.ID, view)
+			scheduleLoading(view)
 		}
 		view.cancel = ccancel
 		view.done = make(chan error, 1)
@@ -1408,8 +1408,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			} else {
 				renderActiveCurrent()
 			}
-			if localSessionMode && view.connecting && !view.connected {
-				showLoading("loading local headless")
+			if localSessionMode {
+				showLoading(view, "loading local headless")
 			}
 			updateDisconnectOverlay()
 			if localSessionMode {
@@ -1450,8 +1450,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 		}
 		renderActiveCurrent()
-		if localSessionMode && view.connecting && !view.connected {
-			showLoading("loading local headless")
+		if localSessionMode {
+			showLoading(view, "loading local headless")
 		}
 		updateDisconnectOverlay()
 		if localSessionMode {

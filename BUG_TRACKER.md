@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-176 Local-headless activation races with readiness when applying loading
+
+- Status: `resolved`
+- Report: Review at `4603706` finds both activation branches read `view.connecting` / `view.connected` after releasing `mu`. A ready callback can clear loading between that check and the loading action, leaving a ready terminal with a persistent loading banner (`build/resume-review.normal-trunk.FNvnep.log`).
+- Constraint: Check readiness and apply loading under the view-state lock, render after unlocking, and preserve all permanent tab flicker and retained-frame regressions. Add real owned-PTY coverage for immediately ready terminals.
+- Regression: Ordinary cached/fresh-tab stress did not reproduce the defect. The controlled owned-PTY case preloads a second snapshot, holds its real readiness callback, and releases it during an actual cached-tab frame swap using injected-clock barriers. Before repair, the race detector reports the activation readiness read concurrent with the callback (`build/resume-ready-activation-before-controlled.log`). It drives real Ctrl+L n keys and retains the permanent no-flicker assertion; the frame-swap window covers the injected delay.
+- Fix: One guarded loading action checks live active-view identity, visibility and readiness and applies the loading state under `mu`, then renders outside the lock. Both activation branches and delayed relay loading use that action; readiness's clearing action uses the same mutex. No parallel legacy loading path or test hook was added to production.
+- Verification: Controlled readiness and both unchanged permanent loading/retained-frame regressions pass 20 race repetitions (`build/resume-ready-activation-after.log`). The full attach race suite passes (`build/resume-ready-activation-attach-race.log`), and the final controlled test passes three additional race runs (`build/resume-ready-activation-final-repeat.log`). Root Go tests and final vet/golint/golangci-lint pass (`build/resume-ready-activation-go-test.log`, `build/resume-ready-activation-lint-final.log`). Changed lock/action/render boundaries were reviewed. A fresh complete prerelease rehearsal remains outstanding.
+
 ### B-175 Android logout crashes when the relay is unreachable
 
 - Status: `resolved`
