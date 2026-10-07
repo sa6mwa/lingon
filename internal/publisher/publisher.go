@@ -926,10 +926,13 @@ func (p *Publisher) pingLoop(ctx context.Context, ws *websocket.Conn, cancel con
 		if !p.writeMu.TryLock() {
 			continue
 		}
+		// Ping waits for readWS to consume pong. That reader may first need
+		// to answer hello with a snapshot, so it must remain able to write.
+		// websocket.Conn serializes its concurrent control/data writes.
+		p.writeMu.Unlock()
 		pingCtx, pingCancel := context.WithTimeout(ctx, timeout)
 		err := ws.Ping(pingCtx)
 		pingCancel()
-		p.writeMu.Unlock()
 		if ctx.Err() != nil {
 			return nil
 		}
