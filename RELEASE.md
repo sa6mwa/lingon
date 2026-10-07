@@ -127,8 +127,16 @@ Final files live under `dist/vX.Y.Z/`:
 - `lingon-X.Y.Z-RELEASE.json` (commit, Go toolchain and container provenance).
 - `lingon-X.Y.Z-CHECKSUMS` (SHA-256 and the complete upload set).
 
-Each CLI archive contains only `lingon-X.Y.Z-OS-ARCH/lingon`, the adjacent
-`lingonx -> lingon` symlink and `LICENSE`. Archives have commit-derived timestamps.
+Each CLI archive contains `lingon-X.Y.Z-OS-ARCH/` with this install layout:
+
+```text
+bin/lingon
+bin/lingonx -> lingon
+share/doc/lingon/LICENSE
+```
+
+Directories are mode 0755, the executable is 0755 and the license is 0644.
+Archives have commit-derived timestamps.
 Checksums require exact set equality: missing, duplicated, escaping, stale or
 extra files fail. Extraction validates layout before writing; privacy scans use
 bounded buffers and inspect expanded archives and APK entries. Home/repository/

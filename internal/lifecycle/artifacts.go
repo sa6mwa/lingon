@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -296,13 +297,18 @@ func writeArchive(dir, bin, root string, t target, version string, epoch int64) 
 	defer f.Close()
 	gz := gzip.NewWriter(f)
 	tw := tar.NewWriter(gz)
-	for _, item := range []struct{ source, name string }{{bin, "lingon"}, {filepath.Join(root, "LICENSE"), "LICENSE"}} {
+	for _, directory := range []string{"", "bin", "share", "share/doc", "share/doc/lingon"} {
+		if err := tw.WriteHeader(&tar.Header{Name: path.Join(name, directory) + "/", Typeflag: tar.TypeDir, Mode: 0o755, ModTime: time.Unix(epoch, 0)}); err != nil {
+			return err
+		}
+	}
+	for _, item := range []struct{ source, name string }{{bin, "bin/lingon"}, {filepath.Join(root, "LICENSE"), "share/doc/lingon/LICENSE"}} {
 		info, err := os.Stat(item.source)
 		if err != nil {
 			return err
 		}
 		mode := int64(0o644)
-		if item.name == "lingon" {
+		if item.name == "bin/lingon" {
 			mode = 0o755
 		}
 		if err := tw.WriteHeader(&tar.Header{Name: name + "/" + item.name, Mode: mode, Size: info.Size(), ModTime: time.Unix(epoch, 0)}); err != nil {
@@ -318,7 +324,7 @@ func writeArchive(dir, bin, root string, t target, version string, epoch int64) 
 			return err
 		}
 	}
-	if err := tw.WriteHeader(&tar.Header{Name: name + "/lingonx", Typeflag: tar.TypeSymlink, Linkname: "lingon", Mode: 0o777, ModTime: time.Unix(epoch, 0)}); err != nil {
+	if err := tw.WriteHeader(&tar.Header{Name: name + "/bin/lingonx", Typeflag: tar.TypeSymlink, Linkname: "lingon", Mode: 0o777, ModTime: time.Unix(epoch, 0)}); err != nil {
 		return err
 	}
 	if err := tw.Close(); err != nil {

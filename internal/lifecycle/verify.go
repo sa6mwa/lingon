@@ -177,6 +177,12 @@ func (w *workflow) inspectArchive(path string, r receipt) error {
 	defer os.RemoveAll(work)
 	prefix := strings.TrimSuffix(filepath.Base(path), ".tar.gz") + "/"
 	seen := make(map[string]bool)
+	expected := map[string]byte{
+		"": tar.TypeDir, "bin/": tar.TypeDir, "share/": tar.TypeDir,
+		"share/doc/": tar.TypeDir, "share/doc/lingon/": tar.TypeDir,
+		"bin/lingon": tar.TypeReg, "bin/lingonx": tar.TypeSymlink,
+		"share/doc/lingon/LICENSE": tar.TypeReg,
+	}
 	tr := tar.NewReader(gz)
 	for {
 		h, err := tr.Next()
@@ -187,18 +193,38 @@ func (w *workflow) inspectArchive(path string, r receipt) error {
 			return err
 		}
 		name := strings.TrimPrefix(h.Name, prefix)
-		if h.Name != prefix+name || seen[name] || (name != "lingon" && name != "lingonx" && name != "LICENSE") {
+		kind, allowed := expected[name]
+		if h.Name != prefix+name || seen[name] || !allowed {
 			return fmt.Errorf("unexpected or duplicate archive entry: %s", h.Name)
 		}
 		seen[name] = true
-		if name == "lingonx" {
-			if h.Typeflag != tar.TypeSymlink || h.Linkname != "lingon" {
+		if h.Typeflag != kind {
+			return fmt.Errorf("invalid archive entry type: %s", h.Name)
+		}
+		if kind == tar.TypeDir {
+			if h.Mode != 0o755 || h.Size != 0 || h.Linkname != "" {
+				return fmt.Errorf("invalid archive directory: %s", h.Name)
+			}
+			if err := os.MkdirAll(filepath.Join(work, name), 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if name == "bin/lingonx" {
+			if h.Linkname != "lingon" || h.Size != 0 || h.Mode != 0o777 {
 				return fmt.Errorf("lingonx must link to the adjacent lingon binary")
 			}
 			continue
 		}
-		if h.Typeflag != tar.TypeReg || h.Size > 512*1024*1024 || (name == "lingon" && h.Mode != 0o755) {
+		mode := int64(0o644)
+		if name == "bin/lingon" {
+			mode = 0o755
+		}
+		if h.Size < 0 || h.Size > 512*1024*1024 || h.Mode != mode || h.Linkname != "" {
 			return fmt.Errorf("invalid archive file: %s", h.Name)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(work, name)), 0o755); err != nil {
+			return err
 		}
 		out, err := os.Create(filepath.Join(work, name))
 		if err != nil {
@@ -219,10 +245,10 @@ func (w *workflow) inspectArchive(path string, r receipt) error {
 			return err
 		}
 	}
-	if len(seen) != 3 {
+	if len(seen) != len(expected) {
 		return fmt.Errorf("archive is missing required payloads")
 	}
-	return inspectBinary(filepath.Join(work, "lingon"), selected, r.Version, r.Commit)
+	return inspectBinary(filepath.Join(work, "bin", "lingon"), selected, r.Version, r.Commit)
 }
 
 func androidTool(name string) (string, error) {
