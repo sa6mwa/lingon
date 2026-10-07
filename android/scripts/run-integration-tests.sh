@@ -122,11 +122,11 @@ maybe_wrap_in_cgroup_scope() {
     echo "Verification containment cannot be disabled." >&2
     exit 1
   fi
-  local quota_percent=100 memory_max=3G memory_swap_max=0 unit profile_dir
-  if [[ "${LINGON_IT_CPU_QUOTA_PERCENT:-100}" != 100 ||
-        "${LINGON_IT_MEMORY_MAX:-3G}" != 3G ||
+  local quota_percent=400 memory_max=4G memory_swap_max=0 unit profile_dir
+  if [[ "${LINGON_IT_CPU_QUOTA_PERCENT:-400}" != 400 ||
+        "${LINGON_IT_MEMORY_MAX:-4G}" != 4G ||
         "${LINGON_IT_MEMORY_SWAP_MAX:-0}" != 0 || "${REUSE_DEVICE}" != 0 ]]; then
-    echo "Verification requires 1 CPU / 3 GiB / zero swap and an owned emulator." >&2
+    echo "Verification requires 4 CPUs / 4 GiB / zero swap and an owned emulator." >&2
     exit 1
   fi
   if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" ]]; then
@@ -290,10 +290,10 @@ start_emulator() {
   local emu_port="$2"
   if [[ " ${EMULATOR_FLAGS} " != *" -no-window "* ]] && command -v xws >/dev/null 2>&1; then
     echo "Starting emulator ${avd_name} on port ${emu_port} via xws workspace ${EMULATOR_WORKSPACE}..."
-    xws -w "${EMULATOR_WORKSPACE}" -- "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 1 >/dev/null 2>&1 &
+    xws -w "${EMULATOR_WORKSPACE}" -- "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 2 >/dev/null 2>&1 &
   else
     echo "Starting emulator ${avd_name} on port ${emu_port}..."
-    "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 1 >/dev/null 2>&1 &
+    "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 2 >/dev/null 2>&1 &
   fi
   EMULATOR_PID=$!
 }
@@ -306,8 +306,8 @@ verify_emulator_profile() {
   fi
   guest_ram="$(awk -F' = ' '$1 == "hw.ramSize" {print $2}' "${hardware_config}")"
   guest_cores="$(awk -F' = ' '$1 == "hw.cpu.ncore" {print $2}' "${hardware_config}")"
-  if [[ "${guest_ram}" != 1024 || "${guest_cores}" != 1 ]]; then
-    echo "Emulator ignored 1024 MiB RAM / 1 vCPU (actual: ${guest_ram:-unknown} MiB / ${guest_cores:-unknown} vCPUs); stopping." >&2
+  if [[ "${guest_ram}" != 1024 || "${guest_cores}" != 2 ]]; then
+    echo "Emulator ignored 1024 MiB RAM / 2 vCPUs (actual: ${guest_ram:-unknown} MiB / ${guest_cores:-unknown} vCPUs); stopping." >&2
     exit 1
   fi
   guest_width="$(awk -F' = ' '$1 == "hw.lcd.width" {print $2}' "${hardware_config}")"
@@ -542,7 +542,7 @@ mkdir -p "${ANDROID_DIR}/build"
 echo "Building app and instrumentation APKs before starting the emulator..."
 (cd "${ANDROID_DIR}" && ./gradlew --no-daemon --max-workers=1 \
   -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process \
-  "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=1 -Dfile.encoding=UTF-8" \
+  "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8" \
   :app:assembleDebug :app:assembleDebugAndroidTest --no-configuration-cache)
 
 read_config() {
@@ -642,7 +642,7 @@ if [[ -z "${DEVICE_SERIAL}" ]]; then
   fi
   AVD_NAME="${AVD_NAME}" \
     AVD_RAM_MB=1024 \
-    AVD_CPU_CORES=1 \
+    AVD_CPU_CORES=2 \
     "${ANDROID_DIR}/scripts/configure-avd.sh"
   # Scale framebuffer and density together to retain the medium phone's
   # logical layout while reducing graphics/shared-memory allocations.

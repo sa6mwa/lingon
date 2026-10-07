@@ -87,7 +87,7 @@ func TestVerificationWrapperContainsEntireCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"CPUQuota=100%\n", "MemoryMax=3G\n", "MemorySwapMax=0\n", "--slice=lingonverification.slice\n", "GOMAXPROCS=1\n", "GOFLAGS=-p=1\n", "printf\na b\n"} {
+	for _, want := range []string{"CPUQuota=400%\n", "MemoryMax=4G\n", "MemorySwapMax=0\n", "--slice=lingonverification.slice\n", "GOMAXPROCS=4\n", "GOFLAGS=-p=1\n", "printf\na b\n"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("missing %q in %s", want, out)
 		}
@@ -127,12 +127,12 @@ func TestVerificationWrapperFailsBeforeCommandWhenLimitsCannotBeSet(t *testing.T
 }
 
 func TestAndroidVerificationRejectsEscapingResourceOptions(t *testing.T) {
-	for _, option := range []string{"LINGON_IT_CPU_QUOTA_PERCENT=200", "LINGON_IT_MEMORY_MAX=7G", "LINGON_IT_MEMORY_SWAP_MAX=1G", "LINGON_IT_REUSE_DEVICE=1"} {
+	for _, option := range []string{"LINGON_IT_CPU_QUOTA_PERCENT=500", "LINGON_IT_MEMORY_MAX=7G", "LINGON_IT_MEMORY_SWAP_MAX=1G", "LINGON_IT_REUSE_DEVICE=1"} {
 		t.Run(option, func(t *testing.T) {
 			cmd := exec.Command("bash", "../../android/scripts/run-integration-tests.sh")
 			cmd.Env = append(os.Environ(), "LINGON_IT_CGROUP=1", "LINGON_IT_CGROUP_WRAPPED=1", option)
 			out, err := cmd.CombinedOutput()
-			if err == nil || !strings.Contains(string(out), "requires 1 CPU / 3 GiB") {
+			if err == nil || !strings.Contains(string(out), "requires 4 CPUs / 4 GiB") {
 				t.Fatalf("must reject escaping options before tools start: %v: %s", err, out)
 			}
 		})

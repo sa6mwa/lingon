@@ -20,6 +20,12 @@ inside a release attempt.
 `make test-all` uses the same graph. Neither squashes, tags, pushes, nor publishes.
 Untagged rehearsals use `0.0.0`; that version cannot be published.
 
+During remediation, reproduce and verify each defect with its focused regression
+and affected component checks. Stabilize those isolated checks before starting
+the complete rehearsal. If the complete gate finds another defect, stop that
+attempt, fix and verify the defect in isolation, and begin a new complete
+rehearsal only after the isolated checks are stable again.
+
 The proof graph asserts formatting, module integrity, vet, golint and
 golangci-lint, uncached root Go tests and race tests, the Android Go tools module,
 all Go integration packages (including actual owned-PTY and browser suites),
@@ -31,11 +37,11 @@ release. The TLS sweep permits only its cleartext-only test to skip; a separate
 cleartext harness run must pass that exact test. Missing tools, missing runners and failures are
 blockers; selecting a subset through ambient Android variables cannot satisfy
 release proof. All verification commands share the systemd user slice `lingonverification.slice`,
-with an aggregate 100% CPU quota, 3 GiB memory ceiling and zero swap.
+with an aggregate 400% CPU quota, 4 GiB memory ceiling and zero swap.
 `make` contains lifecycle compilation and all proof gates; direct commands use
 `bash scripts/verify-contained.sh <command> [arguments...]`. Containment is
 mandatory and larger limits are rejected. Android owns and cleans up its
-emulator/adb/relay resources, using 1 vCPU, 1024 MiB guest RAM and a 512 MiB
+emulator/adb/relay resources, using 2 vCPUs, 1024 MiB guest RAM and a 512 MiB
 Gradle build heap and a 256 MiB default heap for other JVM launchers.
 App and instrumentation APKs are built before emulator startup. The installed
 AndroidJUnitRunner executes through native adb instrumentation, without live
@@ -43,7 +49,7 @@ Gradle/UTP JVMs. Its result parser rejects crashes, incomplete or duplicate resu
 failures and unauthorized skips, and retains raw protocol, per-batch JUnit XML
 and the matching harness trace before any harness restart can replace it.
 The emulator
-uses `-lowram -memory 1024 -cores 1`; startup verifies its actual generated
+uses `-lowram -memory 1024 -cores 2`; startup verifies its actual generated
 hardware configuration, because ordinary RAM settings are otherwise enlarged
 by the emulator. Host GPU rendering is retained, with Vulkan and the host
 window disabled to fit the budget. Framebuffer size and density are scaled
@@ -53,6 +59,8 @@ Instrumentation batches contain at most ten methods. App/test processes reset
 between batches so instrumentation allocations
 do not accumulate in one long-lived process. One owned emulator remains for
 the sweep and is joined during cleanup; each batch retains its JUnit evidence.
+Go and JVMs may use four processor threads; the emulator has two vCPUs,
+sharing the same aggregate ceiling with its relay and reporting processes.
 Podman build/runtime checks join the same slice. These full sweeps
 can take substantial time; run no other heavy work alongside them.
 

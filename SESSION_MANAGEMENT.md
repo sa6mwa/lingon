@@ -128,4 +128,4 @@ LINGON_IT_ONLY=settings_create_terminal_and_rename_session,settings_session_mana
 
 PTY interaction is isolated inside test-owned terminals. The Android runner owns
 and cleans up its harness, detached terminals, emulator and adb server; the above
-commands share the enforced aggregate ceiling of 1 CPU / 3 GiB RAM and zero swap.
+commands share the enforced aggregate ceiling of 4 CPUs / 4 GiB RAM and zero swap.

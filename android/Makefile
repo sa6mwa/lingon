@@ -14,7 +14,7 @@ SYSTEM_IMAGE ?= system-images;android-35;default;x86_64
 DEVICE_PROFILE ?= small_phone
 APP_ID := systems.pkt.lingon
 UI_TEST_FLAGS ?= --rerun-tasks --no-build-cache
-GRADLE = bash ../scripts/verify-contained.sh ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=1 -Dfile.encoding=UTF-8"
+GRADLE = bash ../scripts/verify-contained.sh ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8"
 
 PRESET_LC := $(shell printf '%s' '$(PRESET)' | tr '[:upper:]' '[:lower:]')
 
@@ -80,8 +80,8 @@ help:
 	@echo "  make avd AVD_NAME=... DEVICE_PROFILE=... SYSTEM_IMAGE=..."
 	@echo "  make emulator PRESET=medium AVD_RAM_MB=2048   - lower emulator RAM when needed"
 	@echo "  make install-release ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
-	@echo "  make integration-test - mandatory shared 1 CPU / 3 GiB ceiling, zero swap"
-	@echo "                      (systemd cgroup; 1 vCPU / 1024 MiB guest RAM, 720x1600 / 280 dpi)"
+	@echo "  make integration-test - mandatory shared 4 CPUs / 4 GiB ceiling, zero swap"
+	@echo "                      (systemd cgroup; 2 vCPUs / 1024 MiB guest RAM, 720x1600 / 280 dpi)"
 	@echo "                      integration verification requires an owned emulator; existing devices are not reused"
 	@echo "                      integration emulator uses host GPU rendering without a host window or Vulkan"
 

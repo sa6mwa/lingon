@@ -16,11 +16,11 @@ type gate struct {
 }
 
 var goEnvironment = map[string]string{
-	"GOMAXPROCS": "1", "GOFLAGS": "-p=1", "GOTOOLCHAIN": "local", "GOOS": "linux", "GOARCH": runtime.GOARCH, "CGO_ENABLED": "1",
+	"GOMAXPROCS": "4", "GOFLAGS": "-p=1", "GOTOOLCHAIN": "local", "GOOS": "linux", "GOARCH": runtime.GOARCH, "CGO_ENABLED": "1",
 }
 
 func gradleGate(name string, tasks ...string) gate {
-	args := []string{"--no-daemon", "--max-workers=1", "--rerun-tasks", "--no-build-cache", "-Dorg.gradle.parallel=false", "-Dkotlin.compiler.execution.strategy=in-process", "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=1 -Dfile.encoding=UTF-8"}
+	args := []string{"--no-daemon", "--max-workers=1", "--rerun-tasks", "--no-build-cache", "-Dorg.gradle.parallel=false", "-Dkotlin.compiler.execution.strategy=in-process", "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8"}
 	return gate{name: name, dir: "android", tool: "./gradlew", args: append(args, tasks...)}
 }
 
@@ -39,15 +39,15 @@ func proofGates() []gate {
 		{name: "PTY and browser integration", tool: "go", args: []string{"test", "-race", "-tags=integration", "-count=1", "-timeout=30m", "./integration/..."}},
 		gradleGate("Android unit and instrumentation build", ":app:testDebugUnitTest", ":app:compileDebugAndroidTestKotlin"),
 		{name: "full Android end-to-end sweep", tool: "bash", args: []string{"android/scripts/run-integration-tests.sh"}, env: map[string]string{
-			"LINGON_IT_ONLY": "", "LINGON_IT_CLASS": "", "LINGON_IT_CLEARTEXT": "0", "LINGON_IT_KEEP_EMULATOR": "0", "LINGON_IT_REUSE_DEVICE": "0", "LINGON_IT_CPU_QUOTA_PERCENT": "100", "LINGON_IT_MEMORY_MAX": "3G",
+			"LINGON_IT_ONLY": "", "LINGON_IT_CLASS": "", "LINGON_IT_CLEARTEXT": "0", "LINGON_IT_KEEP_EMULATOR": "0", "LINGON_IT_REUSE_DEVICE": "0", "LINGON_IT_CPU_QUOTA_PERCENT": "400", "LINGON_IT_MEMORY_MAX": "4G",
 		}},
 		{name: "Android cleartext transport", tool: "bash", args: []string{"android/scripts/run-integration-tests.sh"}, env: map[string]string{
-			"LINGON_IT_ONLY": "cleartext_share_authentication_uses_token_fallback", "LINGON_IT_CLASS": "", "LINGON_IT_CLEARTEXT": "1", "LINGON_IT_KEEP_EMULATOR": "0", "LINGON_IT_REUSE_DEVICE": "0", "LINGON_IT_CPU_QUOTA_PERCENT": "100", "LINGON_IT_MEMORY_MAX": "3G",
+			"LINGON_IT_ONLY": "cleartext_share_authentication_uses_token_fallback", "LINGON_IT_CLASS": "", "LINGON_IT_CLEARTEXT": "1", "LINGON_IT_KEEP_EMULATOR": "0", "LINGON_IT_REUSE_DEVICE": "0", "LINGON_IT_CPU_QUOTA_PERCENT": "400", "LINGON_IT_MEMORY_MAX": "4G",
 		}},
 		// EndToEndTest is not the entire instrumentation tree: run the remaining
 		// UI/render/share-intent classes through the same owned-device harness.
 		{name: "remaining Android instrumentation", tool: "bash", args: []string{"android/scripts/run-integration-tests.sh"}, env: map[string]string{
-			"LINGON_IT_ONLY": "", "LINGON_IT_CLASS": "__ALL_NON_E2E__", "LINGON_IT_CLEARTEXT": "0", "LINGON_IT_KEEP_EMULATOR": "0", "LINGON_IT_REUSE_DEVICE": "0", "LINGON_IT_CPU_QUOTA_PERCENT": "100", "LINGON_IT_MEMORY_MAX": "3G",
+			"LINGON_IT_ONLY": "", "LINGON_IT_CLASS": "__ALL_NON_E2E__", "LINGON_IT_CLEARTEXT": "0", "LINGON_IT_KEEP_EMULATOR": "0", "LINGON_IT_REUSE_DEVICE": "0", "LINGON_IT_CPU_QUOTA_PERCENT": "400", "LINGON_IT_MEMORY_MAX": "4G",
 		}},
 		{name: "performance observations", tool: "go", args: []string{"test", "./internal/relay", "./internal/terminal/emu", "-run=^$", "-bench=Benchmark(WSReplay|AbsoluteCursorPositionScrollRegion)$", "-benchmem", "-benchtime=1s", "-count=3"}},
 	}
