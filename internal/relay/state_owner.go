@@ -3,7 +3,6 @@ package relay
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -140,7 +139,7 @@ func (o *StateOwner) ListenUsers(usersFile string, mutator UserMutator) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	listener, err := newUserAdminUnixListener(path)
 	if err != nil {
 		return fmt.Errorf("listen for local user administration: %w", err)
 	}
@@ -196,12 +195,13 @@ func (o *StateOwner) Close() error {
 		o.closed = true
 		server, done := o.server, o.done
 		o.mu.Unlock()
+		var serverErr error
 		if server != nil {
-			_ = server.Close()
+			serverErr = server.Close()
 			<-done
 			o.requests.Wait()
 		}
-		o.closeErr = o.file.Close()
+		o.closeErr = errors.Join(serverErr, o.file.Close())
 	})
 	return o.closeErr
 }

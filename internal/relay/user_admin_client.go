@@ -44,7 +44,7 @@ func NewUserAdmin(opts UserAdminOptions) (UserAdmin, error) {
 	if errors.Is(err, ErrStateOwned) {
 		path := userAdminSocket(opts.DataDir)
 		transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", path)
+			return dialUserAdminSocket(ctx, path)
 		}}
 		return &remoteUserAdmin{client: &http.Client{Transport: transport, Timeout: 10 * time.Second}, transport: transport, usersFile: opts.UsersFile}, nil
 	}

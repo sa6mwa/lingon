@@ -43,6 +43,72 @@ func newTestStateOwner(t *testing.T) (*StateOwner, *HTTPServer, string) {
 	return owner, server, path
 }
 
+func TestUserAdminWorksWithLongDataDirectoryPaths(t *testing.T) {
+	for _, relative := range []bool{false, true} {
+		name := "absolute"
+		if relative {
+			name = "relative"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(testutil.TempDir(t), strings.Repeat("deep-", 12), strings.Repeat("nested-", 10), strings.Repeat("state-", 12))
+			owner, err := NewStateOwner(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = owner.Close() })
+			store, err := owner.LoadStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			usersPath := filepath.Join(dir, "users.json")
+			users, err := owner.LoadUsers(usersPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := NewHTTPServer(store, users, nil, nil, nil)
+			server.DataDir, server.UsersFile = dir, usersPath
+			t.Cleanup(func() { server.Close("test cleanup") })
+			if err := owner.ListenUsers(usersPath, server); err != nil {
+				t.Fatalf("valid long data directory cannot listen: %v", err)
+			}
+			socket := userAdminSocket(dir)
+			info, err := os.Lstat(socket)
+			if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o600 {
+				t.Fatalf("socket did not retain its private data-directory location: %v", err)
+			}
+			clientDir := dir
+			if relative {
+				cwd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				clientDir, err = filepath.Rel(cwd, dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			admin, err := NewUserAdmin(UserAdminOptions{DataDir: clientDir, UsersFile: usersPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = admin.Close() })
+			created, err := admin.MutateUser(context.Background(), UserMutationRequest{Action: "add", Username: "alice", Password: "test-only"})
+			if err != nil || created.Username != "alice" {
+				t.Fatalf("long-path live administration failed: %v", err)
+			}
+			if _, ok := server.Users.Get("alice"); !ok {
+				t.Fatal("mutation bypassed the live owner")
+			}
+			if err := owner.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(socket); !os.IsNotExist(err) {
+				t.Fatalf("closed owner left its socket behind: %v", err)
+			}
+		})
+	}
+}
+
 func TestStateOwnerTransfersLeaseAndFencesOldWriters(t *testing.T) {
 	owner, server, usersPath := newTestStateOwner(t)
 	if _, err := NewStateOwner(owner.dir); !errors.Is(err, ErrStateOwned) {
