@@ -59,7 +59,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Base64
@@ -4405,15 +4404,33 @@ class EndToEndTest {
             activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
         }
 
-        assumeTrue(
-            "runtime notification gating toggle unsupported on this device",
-            setNotificationDeliveryEnabled(false),
+        val deliveryDisabled = setNotificationDeliveryEnabled(false)
+        assertTrue(
+            "notification gating failed: enabled=${notificationsEnabled()}, appops=" +
+                shellCommandOutput("cmd appops get --uid systems.pkt.lingon POST_NOTIFICATION"),
+            deliveryDisabled,
+        )
+        assertEquals(
+            android.content.pm.PackageManager.PERMISSION_DENIED,
+            InstrumentationRegistry.getInstrumentation().targetContext
+                .checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS),
         )
         clearWallNotifications()
 
         val blockedMessage = "permission blocked wall ${System.currentTimeMillis()}"
         sendWallViaHarness(blockedMessage)
-        Thread.sleep(3_000L)
+        val app = composeRule.activity.application as LingonApplication
+        var fetchedBlockedEvent = false
+        val blockedPoll = runBlocking {
+            app.wallDeliveryCoordinator.pollOnce(testConfig.endpoint, 100) { since, limit ->
+                app.repository.listWallEvents(sinceId = since, limit = limit).also { page ->
+                    fetchedBlockedEvent = page.events.any { it.message == blockedMessage }
+                }
+            }
+        }
+        assertTrue("blocked relay message was not fetched", fetchedBlockedEvent)
+        assertEquals(systems.pkt.lingon.notifications.WallPollStatus.Blocked, blockedPoll.status)
+        assertEquals("blocked delivery must retain its cursor", blockedPoll.since, blockedPoll.cursor)
         assertFalse(
             "wall notification should be suppressed when POST_NOTIFICATIONS is revoked",
             activeNotifications().any { it.notification.channelId == "lingon_wall" },
@@ -4422,12 +4439,14 @@ class EndToEndTest {
         assertTrue("failed to re-enable notifications", setNotificationDeliveryEnabled(true))
         val recoveredMessage = "permission restored wall ${System.currentTimeMillis()}"
         sendWallViaHarness(recoveredMessage)
-        waitUntilDeviceCondition(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS, "permission restored wall notification") {
-            wallNotifications().isNotEmpty()
-        }
+        waitForWallNotificationBody(
+            recoveredMessage,
+            "permission restored wall notification",
+            clearUnexpectedWallNotifications = false,
+        )
         assertNoWallNotificationAutogroupSummary()
         val wallNotification = wallNotifications()
-            .firstOrNull()
+            .firstOrNull { wallNotificationFullText(it) == recoveredMessage }
             ?: throw AssertionError("missing lingon_wall notification after restoring permission")
         val title = wallNotification.notification.extras
             .getCharSequence(Notification.EXTRA_TITLE)
@@ -4961,15 +4980,16 @@ class EndToEndTest {
 
     private fun setNotificationDeliveryEnabled(enabled: Boolean): Boolean {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        consumeShellCommand(
-            instrumentation.uiAutomation.executeShellCommand(
-                if (enabled) {
-                    "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION allow"
-                } else {
-                    "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION deny"
-                },
-            ),
-        )
+        if (enabled) {
+            consumeShellCommand(instrumentation.uiAutomation.executeShellCommand(
+                "pm grant systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
+            ))
+            consumeShellCommand(instrumentation.uiAutomation.executeShellCommand(
+                "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION allow",
+            ))
+        } else {
+            revokeNotificationPermissionWithoutKillingInstrumentation()
+        }
         val deadline = System.currentTimeMillis() + 5_000L
         while (System.currentTimeMillis() < deadline) {
             if (notificationsEnabled() == enabled) {
@@ -4981,15 +5001,32 @@ class EndToEndTest {
         return notificationsEnabled() == enabled
     }
 
-    private fun restoreNotificationDelivery(): Boolean {
+    private fun revokeNotificationPermissionWithoutKillingInstrumentation() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        consumeShellCommand(
-            instrumentation.uiAutomation.executeShellCommand(
-                "pm grant systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
-            ),
+        val automation = instrumentation.uiAutomation
+        // Android CTS uses this TestApi; regular revocation kills the test's UID.
+        // Reflection keeps this instrumentation-only API out of production SDK code.
+        val managerClass = Class.forName("android.permission.PermissionManager")
+        val manager = instrumentation.targetContext.getSystemService(managerClass)
+            ?: throw AssertionError("platform permission manager missing")
+        val user = android.os.Process.myUserHandle()
+        val userId = user.javaClass.getMethod("getIdentifier").invoke(user) as Int
+        automation.adoptShellPermissionIdentity(
+            "android.permission.REVOKE_POST_NOTIFICATIONS_WITHOUT_KILL",
+            "android.permission.REVOKE_RUNTIME_PERMISSIONS",
         )
-        return setNotificationDeliveryEnabled(true)
+        try {
+            managerClass.getMethod(
+                "revokePostNotificationPermissionWithoutKillForTest",
+                String::class.java,
+                Integer.TYPE,
+            ).invoke(manager, instrumentation.targetContext.packageName, userId)
+        } finally {
+            automation.dropShellPermissionIdentity()
+        }
     }
+
+    private fun restoreNotificationDelivery(): Boolean = setNotificationDeliveryEnabled(true)
 
     private fun notificationsEnabled(): Boolean {
         return NotificationManagerCompat.from(InstrumentationRegistry.getInstrumentation().targetContext)
@@ -6158,6 +6195,13 @@ class EndToEndTest {
                 }
             }
         }
+    }
+
+    private fun shellCommandOutput(command: String): String {
+        val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation
+            .executeShellCommand(command)
+        return ParcelFileDescriptor.AutoCloseInputStream(descriptor)
+            .bufferedReader().use { it.readText() }
     }
 
     private fun resetZoomPan() {
