@@ -42,7 +42,9 @@ with an aggregate 400% CPU quota, 4 GiB memory ceiling and zero swap.
 `bash scripts/verify-contained.sh <command> [arguments...]`. Containment is
 mandatory and larger limits are rejected. Android owns and cleans up its
 emulator/adb/relay resources, using 2 vCPUs, 1024 MiB guest RAM and a 512 MiB
-Gradle build heap and a 256 MiB default heap for other JVM launchers.
+Gradle verification heap and a 256 MiB default heap for other JVM launchers.
+The serial release APK build uses a 1536 MiB Gradle heap after emulator teardown,
+within the same aggregate four-GiB ceiling.
 App and instrumentation APKs are built before emulator startup. The installed
 AndroidJUnitRunner executes through native adb instrumentation, without live
 Gradle/UTP JVMs. Its result parser rejects crashes, incomplete or duplicate results,

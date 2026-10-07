@@ -14,7 +14,8 @@ SYSTEM_IMAGE ?= system-images;android-35;default;x86_64
 DEVICE_PROFILE ?= small_phone
 APP_ID := systems.pkt.lingon
 UI_TEST_FLAGS ?= --rerun-tasks --no-build-cache
-GRADLE = bash ../scripts/verify-contained.sh ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8"
+GRADLE_HEAP := 512m
+GRADLE = bash ../scripts/verify-contained.sh ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx$(GRADLE_HEAP) -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8"
 
 PRESET_LC := $(shell printf '%s' '$(PRESET)' | tr '[:upper:]' '[:lower:]')
 
@@ -147,6 +148,7 @@ build: local-properties
 		exit 1; \
 	fi
 
+release: GRADLE_HEAP := 1536m
 release: local-properties
 	@./scripts/generate-release-keystore.sh
 	@set -e; \

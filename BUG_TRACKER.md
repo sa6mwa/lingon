@@ -29,6 +29,14 @@ Required status values:
 
 ## Active Items
 
+### B-209 Release APK dex merge exhausts the 512 MiB Gradle heap
+
+- Status: `resolved`
+- Repro: Artifact-only matrix at clean `1099485` builds all six CLI archives with the requested Unix install layout, then fails `:app:mergeExtDexRelease` with D8 `java.lang.OutOfMemoryError: Java heap space`. Build uses a 512 MiB Gradle heap. The prior full run at `8450be7` passed every application/test gate and was stopped during this same build stage when the archive contract changed.
+- Evidence: `build/unix-layout-artifact-matrix.log`, lifecycle `build/lifecycle/release-matrix-1530615538.log`. Exit 2; source unchanged, six archives retained, APK/container/manifest not completed, no tag/push/publication. Owned slice empty after cleanup. Isolate the release APK build; allocate a larger release-only JVM heap within the unchanged 4-vCPU / 4-GiB / zero-swap ceiling.
+
+- Isolated confirmation: Stage-heap expectations fail before for both lifecycle and Android Make release entry points (`build/release-dex-heap-before.log`, `build/release-dex-heap-make-before.log`). Release assembly alone uses a 1536 MiB heap; debug/verification retains 512 MiB. The exact uncached signed release APK build passes in 1m37s (`build/release-dex-heap-isolated-after.log`), within the unchanged aggregate ceiling. Both heap regressions, focused vet/lint pass (`build/release-dex-heap-focused-final.log`). The artifact matrix remains to be completed; application/test gates are already recorded at `8450be7` and need no rerun to confirm this build-stage repair.
+
 ### B-208 Headless publication cancellation reports a socket-close error
 
 - Status: `resolved`

@@ -20,7 +20,16 @@ var goEnvironment = map[string]string{
 }
 
 func gradleGate(name string, tasks ...string) gate {
-	args := []string{"--no-daemon", "--max-workers=1", "--rerun-tasks", "--no-build-cache", "-Dorg.gradle.parallel=false", "-Dkotlin.compiler.execution.strategy=in-process", "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8"}
+	heap := "512m"
+	for _, task := range tasks {
+		if task == ":app:assembleRelease" {
+			// Release dex merging runs after emulator teardown, so it can
+			// use more of the shared four-GiB budget without overlapping it.
+			heap = "1536m"
+			break
+		}
+	}
+	args := []string{"--no-daemon", "--max-workers=1", "--rerun-tasks", "--no-build-cache", "-Dorg.gradle.parallel=false", "-Dkotlin.compiler.execution.strategy=in-process", "-Dorg.gradle.jvmargs=-Xmx" + heap + " -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8"}
 	return gate{name: name, dir: "android", tool: "./gradlew", args: append(args, tasks...)}
 }
 
