@@ -49,6 +49,11 @@ publication:
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {
+			// Cancellation can close the socket before Read reports the
+			// context error. Preserve the caller's cancellation contract.
+			if contextErr := ctx.Err(); contextErr != nil {
+				err = contextErr
+			}
 			return lingon.ShareCreateResponse{}, fmt.Errorf("wait for headless %s publication: %w", id, err)
 		}
 		var frame protocolpb.Frame

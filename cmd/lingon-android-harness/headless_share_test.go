@@ -16,20 +16,25 @@ import (
 )
 
 func TestHeadlessShareWaitsForItsRelayPublication(t *testing.T) {
-	testHeadlessSharePublication(t, false)
+	testHeadlessSharePublication(t, false, false)
 }
 
 func TestHeadlessShareCancellationDoesNotCreateToken(t *testing.T) {
-	testHeadlessSharePublication(t, true)
+	testHeadlessSharePublication(t, true, false)
 }
 
-func testHeadlessSharePublication(t *testing.T, cancelBeforePublication bool) {
+func TestHeadlessShareTransportFailureDoesNotCreateToken(t *testing.T) {
+	testHeadlessSharePublication(t, false, true)
+}
+
+func testHeadlessSharePublication(t *testing.T, cancelBeforePublication, disconnectBeforePublication bool) {
 	t.Helper()
 	// Deadline is only a deadlock guard; protocol gates prove ordering.
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	subscribed := make(chan struct{})
 	publish := make(chan struct{})
+	disconnect := make(chan struct{})
 	var ready atomic.Bool
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +68,8 @@ func testHeadlessSharePublication(t *testing.T, cancelBeforePublication bool) {
 			close(subscribed)
 			select {
 			case <-publish:
+			case <-disconnect:
+				return
 			case <-ctx.Done():
 				return
 			}
@@ -103,6 +110,16 @@ func testHeadlessSharePublication(t *testing.T, cancelBeforePublication bool) {
 	}
 	if requests.Load() != 0 {
 		t.Fatal("unrelated active session or offline target triggered share creation")
+	}
+	if disconnectBeforePublication {
+		close(disconnect)
+		if err := <-done; err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("peer disconnect must remain a transport failure: %v", err)
+		}
+		if requests.Load() != 0 {
+			t.Fatal("failed transport created a share")
+		}
+		return
 	}
 	if cancelBeforePublication {
 		cancel()

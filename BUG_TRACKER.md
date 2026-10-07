@@ -29,6 +29,14 @@ Required status values:
 
 ## Active Items
 
+### B-208 Headless publication cancellation reports a socket-close error
+
+- Status: `resolved`
+- Repro: Clean `c028868` full verification stops in root Go tests: `TestHeadlessShareCancellationDoesNotCreateToken` expects cancellation but receives `wait for headless headless-1 publication: failed to read: use of closed network connection`. Four-processor scheduling exposes cancellation/transport-close ordering.
+- Evidence: `build/four-cpu-stable-prerelease.log`, lifecycle `build/lifecycle/prerelease-1649766393.log`. No later gate/artifact/tag/publication reached; worktree clean at the failure and owned slice empty after cleanup. Preserve the stopped attempt. Reproduce and repair only this cancellation path before wider verification.
+
+- Isolated confirmation: 100 cancellation repetitions fail 11 times before (`build/headless-cancellation-four-cpu-before.log`). When socket read fails and the caller context is cancelled, the helper wraps that context error. With a live context, a peer disconnect remains a transport failure. Publication, cancellation and peer-disconnect cases each pass 100 race-detector repetitions afterward; the success path creates exactly one token, and both failure paths create none (`build/headless-cancellation-four-cpu-after.log`). Focused vet/lint pass. This confirms the fix in isolation; full release readiness remains pending.
+
 ### B-207 Foreground wall fixture reads transient banner after live frames clear it
 
 - Status: `needs_verification`
