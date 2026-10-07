@@ -25,8 +25,22 @@ func (w *workflow) rootlessPodman(ctx context.Context) error {
 	return nil
 }
 
-func (w *workflow) buildContainer(ctx context.Context, r *receipt, epoch string) error {
+func (w *workflow) verificationPodman(ctx context.Context) error {
 	if err := w.rootlessPodman(ctx); err != nil {
+		return err
+	}
+	out, err := w.exec(ctx, w.root, "podman", "info", "--format", "{{.Host.CgroupManager}}")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(out)) != "systemd" {
+		return fmt.Errorf("podman verification requires the systemd cgroup manager to join the shared resource budget")
+	}
+	return nil
+}
+
+func (w *workflow) buildContainer(ctx context.Context, r *receipt, epoch string) error {
+	if err := w.verificationPodman(ctx); err != nil {
 		return err
 	}
 	// Resolve the certificate stage once and record immutable provenance. The
@@ -72,7 +86,7 @@ func (w *workflow) buildContainer(ctx context.Context, r *receipt, epoch string)
 			if err := os.Chmod(filepath.Join(work, "lingon"), 0o755); err != nil {
 				return err
 			}
-			_, err := w.exec(ctx, w.root, "podman", "build", "--platform=linux/"+arch, "--pull=never", "--timestamp="+epoch,
+			_, err := w.exec(ctx, w.root, "podman", "build", "--cgroup-parent=lingonverification.slice", "--platform=linux/"+arch, "--pull=never", "--timestamp="+epoch,
 				"--manifest="+r.Image, "--label=org.opencontainers.image.version=v"+r.Version,
 				"--label=org.opencontainers.image.revision="+r.Commit,
 				"--build-arg=CERTS_IMAGE="+r.BaseImage, "--build-arg=CERTS_PLATFORM=linux/"+runtime.GOARCH, "--build-arg=LINGON_BIN=lingon", "-f", filepath.Join(work, "Containerfile"), work)
@@ -92,7 +106,7 @@ func (w *workflow) buildContainer(ctx context.Context, r *receipt, epoch string)
 	r.ImageID = manifestHash(out)
 	// Real runtime smoke is only for the native architecture. The arm64 image
 	// is inspected, not falsely reported as executed on amd64.
-	out, err = w.exec(ctx, w.root, "podman", "run", "--rm", "--network=none", "--platform=linux/"+runtime.GOARCH, r.Image, "version", "--semver")
+	out, err = w.exec(ctx, w.root, "podman", "run", "--cgroup-parent=lingonverification.slice", "--rm", "--network=none", "--platform=linux/"+runtime.GOARCH, r.Image, "version", "--semver")
 	if err != nil || strings.TrimSpace(string(out)) != r.Version {
 		return fmt.Errorf("native container version smoke failed")
 	}

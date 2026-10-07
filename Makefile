@@ -13,7 +13,8 @@ VERSION ?=
 RELEASE_MESSAGE ?=
 export LINGON_RELEASE_VERSION := $(VERSION)
 export LINGON_RELEASE_MESSAGE := $(RELEASE_MESSAGE)
-LIFECYCLE = env GOMAXPROCS=2 GOFLAGS=-p=1 $(GO) run ./cmd/lingon-lifecycle
+VERIFY = bash scripts/verify-contained.sh
+LIFECYCLE = $(VERIFY) $(GO) run ./cmd/lingon-lifecycle
 
 GOFLAGS ?=
 BUILD_FLAGS ?= -trimpath
@@ -37,7 +38,7 @@ help:
 	@echo "  make test-webui     # run web UI integration tests"
 	@echo "  make test-last-fail # show last failing test from $(TEST_LOG)"
 	@echo "  make test-android   # run Android integration tests"
-	@echo "  make test-all       # run all tests (phone tests are not headless!)"
+	@echo "  make test-all       # serial full proof including the owned Android emulator"
 	@echo "  make lint           # go vet + golint + golangci-lint"
 	@echo "  make install        # install binary"
 	@echo "  make prerelease     # serial full proof + six-platform matrix + APK + Podman rehearsal"
@@ -90,26 +91,26 @@ fmt:
 	$(GO) fmt ./...
 
 vet:
-	$(GO) vet ./...
+	$(VERIFY) $(GO) vet ./...
 
 golangci-lint:
-	golangci-lint run ./...
+	$(VERIFY) golangci-lint run --concurrency=1 ./...
 
 lint: vet
-	golint ./...
+	$(VERIFY) golint ./...
 	$(MAKE) golangci-lint
 
 test:
 	@mkdir -p $(dir $(TEST_LOG))
-	@bash -lc 'set -o pipefail; $(GO) test -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
+	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
 
 test-short:
 	@mkdir -p $(dir $(TEST_LOG))
-	@bash -lc 'set -o pipefail; $(GO) test -short -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
+	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -short -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
 
 test-webui:
 	@mkdir -p $(dir $(TEST_LOG))
-	@bash -lc 'set -o pipefail; $(GO) test -count=1 -tags integration -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
+	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -count=1 -tags integration -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
 
 test-last-fail:
 	@bash -lc 'if [ ! -f "$(TEST_LOG)" ]; then echo "missing $(TEST_LOG); run make test first"; exit 1; fi; \

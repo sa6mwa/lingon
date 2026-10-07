@@ -14,6 +14,7 @@ SYSTEM_IMAGE ?= system-images;android-35;default;x86_64
 DEVICE_PROFILE ?= small_phone
 APP_ID := systems.pkt.lingon
 UI_TEST_FLAGS ?= --rerun-tasks --no-build-cache
+GRADLE = bash ../scripts/verify-contained.sh ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=1 -Dfile.encoding=UTF-8"
 
 PRESET_LC := $(shell printf '%s' '$(PRESET)' | tr '[:upper:]' '[:lower:]')
 
@@ -44,8 +45,8 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install install-release run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-push integration-test
-VERSION_CMD := cd .. && go run -buildvcs=true ./cmd/lingon version --version
-RELEASE_IDENTITY_CMD := cd .. && go run ./cmd/lingon-lifecycle android-version
+VERSION_CMD := cd .. && bash scripts/verify-contained.sh go run -buildvcs=true ./cmd/lingon version --version
+RELEASE_IDENTITY_CMD := cd .. && bash scripts/verify-contained.sh go run ./cmd/lingon-lifecycle android-version
 
 help:
 	@echo "lingon android make targets:"
@@ -79,10 +80,10 @@ help:
 	@echo "  make avd AVD_NAME=... DEVICE_PROFILE=... SYSTEM_IMAGE=..."
 	@echo "  make emulator PRESET=medium AVD_RAM_MB=2048   - lower emulator RAM when needed"
 	@echo "  make install-release ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
-	@echo "  make integration-test LINGON_IT_CPU_QUOTA_PERCENT=400 LINGON_IT_MEMORY_MAX=6G"
-	@echo "                      (default: systemd cgroup, CPUQuota=min(half of online CPUs, 200%), MemoryMax=7G, fresh managed emulator)"
-	@echo "                      set LINGON_IT_REUSE_DEVICE=1 only when deliberately using an existing device/emulator"
-	@echo "                      uses xws -w 8 for the emulator GUI when xws is on PATH; override with LINGON_IT_EMULATOR_WORKSPACE=N"
+	@echo "  make integration-test - mandatory shared 1 CPU / 3 GiB ceiling, zero swap"
+	@echo "                      (systemd cgroup; fresh owned emulator with 1 vCPU / 1024 MiB guest RAM)"
+	@echo "                      integration verification requires an owned emulator; existing devices are not reused"
+	@echo "                      integration emulator uses host GPU rendering without a host window or Vulkan"
 
 list-presets:
 	@echo "Available PRESET values:"
@@ -137,7 +138,7 @@ emulator:
 
 build: local-properties
 	@VERSION="$$($(VERSION_CMD))"; \
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleDebug -Plingon.versionName="$$VERSION"
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) :app:assembleDebug -Plingon.versionName="$$VERSION"
 	@APK_PATH="$(CURDIR)/app/build/outputs/apk/debug/app-debug.apk"; \
 	if [ -f "$$APK_PATH" ]; then \
 		echo "APK built: $$APK_PATH"; \
@@ -151,7 +152,7 @@ release: local-properties
 	@set -e; \
 	IDENTITY="$$($(RELEASE_IDENTITY_CMD))"; \
 	VERSION="$${IDENTITY% *}"; VERSION_CODE="$${IDENTITY##* }"; \
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleRelease -Plingon.versionName="$$VERSION" -Plingon.versionCode="$$VERSION_CODE"
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) :app:assembleRelease -Plingon.versionName="$$VERSION" -Plingon.versionCode="$$VERSION_CODE"
 	@APK_PATH="$(CURDIR)/app/build/outputs/apk/release/app-release.apk"; \
 	if [ -f "$$APK_PATH" ]; then \
 		echo "APK built: $$APK_PATH"; \
@@ -167,7 +168,7 @@ release: local-properties
 	APKSIGNER_BIN="$$APK_SIGNER" EXPECTED_CERT_PATH="$(CURDIR)/lingon-release-cert.pem" ./scripts/verify-release-cert.sh "$$APK_PATH"
 
 install: local-properties
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:installDebug
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) :app:installDebug
 
 ifeq ($(strip $(APK)),)
 install-release: release
@@ -249,7 +250,7 @@ run: install
 ui-test: local-properties
 	@set -e; \
 	trap './scripts/cleanup-managed-devices.sh' EXIT; \
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew $(UI_TEST_FLAGS) :app:phoneApi35DebugAndroidTest
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) $(UI_TEST_FLAGS) :app:phoneApi35DebugAndroidTest
 
 clean: local-properties
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew clean
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) clean

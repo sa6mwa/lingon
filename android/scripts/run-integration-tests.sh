@@ -25,7 +25,7 @@ export ANDROID_ADB_SERVER_PORT="${LINGON_IT_ADB_SERVER_PORT}"
 
 ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
 EMULATOR_BIN="${EMULATOR:-${ANDROID_SDK_ROOT}/emulator/emulator}"
-EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-snapshot}"
+EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-window -no-snapshot -no-boot-anim -feature -Vulkan}"
 PRESET="${PRESET:-medium}"
 AVD_NAME="${AVD_NAME:-}"
 EMULATOR_WORKSPACE="${LINGON_IT_EMULATOR_WORKSPACE:-8}"
@@ -48,28 +48,6 @@ REUSE_DEVICE="${LINGON_IT_REUSE_DEVICE:-0}"
 APP_ID="systems.pkt.lingon"
 TEST_APP_ID="${APP_ID}.test"
 CGROUP_MONITOR_PID=""
-
-detect_online_cpu_count() {
-  local cores=""
-  cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
-  if [[ ! "${cores}" =~ ^[0-9]+$ ]] || [[ "${cores}" -le 0 ]]; then
-    cores="$(nproc 2>/dev/null || true)"
-  fi
-  if [[ ! "${cores}" =~ ^[0-9]+$ ]] || [[ "${cores}" -le 0 ]]; then
-    cores="2"
-  fi
-  echo "${cores}"
-}
-
-default_cpu_quota_percent() {
-  local cores="$1"
-  local half_quota=$((cores * 50))
-  if [[ "${half_quota}" -gt 200 ]]; then
-    echo "200"
-  else
-    echo "${half_quota}"
-  fi
-}
 
 summarize_cgroup_profile() {
   local profile_dir="$1"
@@ -131,6 +109,8 @@ summarize_cgroup_profile() {
     fi
     echo "samples_path=${samples}"
     echo "top_processes_path=${profile_dir}/top-processes.txt"
+    echo "memory_stat_path=${profile_dir}/memory.stat"
+    echo "memory_events_path=${profile_dir}/memory.events"
   } > "${summary}"
   echo "Resource profile: ${summary}"
   cat "${summary}"
@@ -138,27 +118,30 @@ summarize_cgroup_profile() {
 
 maybe_wrap_in_cgroup_scope() {
   if [[ "${LINGON_IT_CGROUP:-1}" == "0" ]]; then
-    return 0
-  fi
-  if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" ]]; then
-    return 0
-  fi
-  if ! command -v systemd-run >/dev/null 2>&1; then
-    echo "systemd-run is required for contained Android integration tests; set LINGON_IT_CGROUP=0 to bypass deliberately." >&2
+    echo "Verification containment cannot be disabled." >&2
     exit 1
   fi
-
-  local cores quota_percent memory_max memory_swap_max unit profile_dir
-  cores="$(detect_online_cpu_count)"
-  quota_percent="${LINGON_IT_CPU_QUOTA_PERCENT:-$(default_cpu_quota_percent "${cores}")}"
-  memory_max="${LINGON_IT_MEMORY_MAX:-7G}"
-  memory_swap_max="${LINGON_IT_MEMORY_SWAP_MAX:-0}"
-  unit="lingon-android-it-$$"
+  local quota_percent=100 memory_max=3G memory_swap_max=0 unit profile_dir
+  if [[ "${LINGON_IT_CPU_QUOTA_PERCENT:-100}" != 100 ||
+        "${LINGON_IT_MEMORY_MAX:-3G}" != 3G ||
+        "${LINGON_IT_MEMORY_SWAP_MAX:-0}" != 0 || "${REUSE_DEVICE}" != 0 ]]; then
+    echo "Verification requires 1 CPU / 3 GiB / zero swap and an owned emulator." >&2
+    exit 1
+  fi
+  if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" ]]; then
+    bash "${ROOT_DIR}/scripts/verify-contained.sh" --check
+    return 0
+  fi
+  if bash "${ROOT_DIR}/scripts/verify-contained.sh" --check >/dev/null 2>&1; then
+    unit="$(basename "$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup)" .scope)"
+  else
+    unit="lingon-android-it-$$"
+  fi
   profile_dir="${ARTIFACT_OUT}/resource-profile-$(date +%Y%m%d-%H%M%S)-$$"
   mkdir -p "${profile_dir}"
 
   echo "Running Android integration tests in systemd scope ${unit}.scope"
-  echo "Limits: CPUQuota=${quota_percent}% (${cores} online CPUs, capped integration default), MemoryMax=${memory_max}, MemorySwapMax=${memory_swap_max}"
+  echo "Limits: CPUQuota=${quota_percent}% (aggregate verification ceiling), MemoryMax=${memory_max}, MemorySwapMax=${memory_swap_max}"
   echo "Resource profile directory: ${profile_dir}"
   export LINGON_IT_CGROUP_UNIT="${unit}.scope"
   export LINGON_IT_CPU_QUOTA_PERCENT_EFFECTIVE="${quota_percent}"
@@ -166,14 +149,7 @@ maybe_wrap_in_cgroup_scope() {
   export LINGON_IT_MEMORY_SWAP_MAX_EFFECTIVE="${memory_swap_max}"
 
   set +e
-  systemd-run --user --scope --quiet --collect \
-    --unit="${unit}" \
-    -p CPUAccounting=yes \
-    -p "CPUQuota=${quota_percent}%" \
-    -p MemoryAccounting=yes \
-    -p "MemoryMax=${memory_max}" \
-    -p "MemorySwapMax=${memory_swap_max}" \
-    -p OOMPolicy=kill \
+  LINGON_VERIFY_UNIT="${unit}" bash "${ROOT_DIR}/scripts/verify-contained.sh" \
     env \
       LINGON_IT_CGROUP_WRAPPED=1 \
       LINGON_IT_CGROUP_UNIT="${LINGON_IT_CGROUP_UNIT}" \
@@ -225,6 +201,10 @@ start_cgroup_monitor() {
       memory_current="$(cat "${cgroup_dir}/memory.current" 2>/dev/null)"
       memory_peak="$(cat "${cgroup_dir}/memory.peak" 2>/dev/null)"
       pids_current="$(cat "${cgroup_dir}/pids.current" 2>/dev/null)"
+      # Preserve the last owned-scope breakdown even if OOMPolicy kills the
+      # monitor with the workload. RSS omits GPU/shared/cache charges.
+      cat "${cgroup_dir}/memory.stat" > "${profile_dir}/memory.stat" 2>/dev/null || true
+      cat "${cgroup_dir}/memory.events" > "${profile_dir}/memory.events" 2>/dev/null || true
       local cpu_some_avg10="0.00"
       if [[ -r "${cgroup_dir}/cpu.pressure" ]]; then
         cpu_some_avg10="$(awk -F'[ =]' '$1 == "some" {for (i=1; i<=NF; i++) if ($i == "avg10") {print $(i+1); exit}}' "${cgroup_dir}/cpu.pressure")"
@@ -329,12 +309,12 @@ resolve_avd_name() {
 start_emulator() {
   local avd_name="$1"
   local emu_port="$2"
-  if command -v xws >/dev/null 2>&1; then
+  if [[ " ${EMULATOR_FLAGS} " != *" -no-window "* ]] && command -v xws >/dev/null 2>&1; then
     echo "Starting emulator ${avd_name} on port ${emu_port} via xws workspace ${EMULATOR_WORKSPACE}..."
-    xws -w "${EMULATOR_WORKSPACE}" -- "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} >/dev/null 2>&1 &
+    xws -w "${EMULATOR_WORKSPACE}" -- "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 1 >/dev/null 2>&1 &
   else
     echo "Starting emulator ${avd_name} on port ${emu_port}..."
-    "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} >/dev/null 2>&1 &
+    "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 1 >/dev/null 2>&1 &
   fi
 }
 
@@ -624,8 +604,8 @@ if [[ -z "${DEVICE_SERIAL}" ]]; then
     (cd "${ANDROID_DIR}" && make avd PRESET="${PRESET}")
   fi
   AVD_NAME="${AVD_NAME}" \
-    AVD_RAM_MB="${LINGON_IT_AVD_RAM_MB:-2048}" \
-    AVD_CPU_CORES="${LINGON_IT_AVD_CPU_CORES:-2}" \
+    AVD_RAM_MB=1024 \
+    AVD_CPU_CORES=1 \
     "${ANDROID_DIR}/scripts/configure-avd.sh"
   AVD_NAME="${AVD_NAME}" "${ANDROID_DIR}/scripts/cleanup-avd-snapshots.sh" || true
   EMU_PORT="$(ADB="${ADB_BIN}" "${ANDROID_DIR}/scripts/find-emu-port.sh")"
@@ -643,6 +623,19 @@ export ADB_SERIAL
 export ADB="${ADB_BIN}"
 
 "${ANDROID_DIR}/scripts/ensure-emu-keyboard.sh" || true
+
+hardware_config="${ANDROID_AVD_HOME}/${AVD_NAME}.avd/hardware-qemu.ini"
+if [[ ! -r "${hardware_config}" ]]; then
+  echo "Missing actual emulator hardware configuration: ${hardware_config}; stopping." >&2
+  exit 1
+fi
+guest_ram="$(awk -F' = ' '$1 == "hw.ramSize" {print $2}' "${hardware_config}")"
+guest_cores="$(awk -F' = ' '$1 == "hw.cpu.ncore" {print $2}' "${hardware_config}")"
+if [[ "${guest_ram}" != 1024 || "${guest_cores}" != 1 ]]; then
+  echo "Emulator ignored 1024 MiB RAM / 1 vCPU (actual: ${guest_ram:-unknown} MiB / ${guest_cores:-unknown} vCPUs); stopping." >&2
+  exit 1
+fi
+echo "Verified actual emulator guest RAM: ${guest_ram} MiB."
 
 start_harness 2
 ensure_adb_reverse
@@ -678,9 +671,10 @@ set +e
     else
       echo "Running ${#test_names[@]} Android tests in one instrumentation batch..."
     fi
-    ./gradlew --no-daemon \
+    ./gradlew --no-daemon --max-workers=1 \
+      -Dorg.gradle.parallel=false \
       -Dkotlin.compiler.execution.strategy=in-process \
-      "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" \
+      "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=1 -Dfile.encoding=UTF-8" \
       :app:connectedDebugAndroidTest \
       --no-configuration-cache \
       -Plingon.it.class="${class_arg}" \

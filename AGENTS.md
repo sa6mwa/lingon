@@ -34,6 +34,10 @@ This is a hard stop, not a preference:
 
 Agent-driven verification must also avoid surprise resource exhaustion:
 
+- Verification must use `bash scripts/verify-contained.sh <command> [args...]`
+  or a Make target that uses it. The entire verification stack shares a hard
+  1 CPU / 3 GiB RAM ceiling with zero swap; do not bypass or raise these limits.
+
 - Do not run full Android/emulator/instrumentation sweeps in parallel with other
   heavy suites.
 - Do not leave emulators, adb servers, Gradle daemons, harnesses, or test

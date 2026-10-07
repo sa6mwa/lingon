@@ -80,7 +80,7 @@ func TestRootAndroidInstallReleaseBuildsCurrentAPKByDefault(t *testing.T) {
 				t.Fatalf("release install dry run failed: %v\n%s", err, output)
 			}
 			plan := string(output)
-			buildAt := strings.Index(plan, "./gradlew :app:assembleRelease")
+			buildAt := strings.Index(plan, ":app:assembleRelease")
 			installAt := strings.Index(plan, "install -r")
 			if installAt < 0 {
 				t.Fatalf("release install missing from plan:\n%s", plan)
@@ -119,6 +119,7 @@ func TestAndroidReleasePassesLifecycleIdentityToGradle(t *testing.T) {
 	}
 	log := filepath.Join(work, "gradle.log")
 	cmd := exec.Command("make", "release", "ANDROID_SDK_ROOT="+filepath.Join(work, "sdk"),
+		"GRADLE=bash "+filepath.Join(repoRoot(t), "scripts", "verify-contained.sh")+" ./gradlew",
 		"RELEASE_IDENTITY_CMD=printf 'v1.2.3 1002003'", "VERSION_CMD=printf 'v1.2.3'")
 	cmd.Dir = work
 	cmd.Env = append(os.Environ(), "FAKE_GRADLE_LOG="+log)

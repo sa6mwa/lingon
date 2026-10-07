@@ -194,7 +194,7 @@ func (w *workflow) matrix(ctx context.Context) error {
 		if err := os.MkdirAll(filepath.Dir(bin), 0o700); err != nil {
 			return err
 		}
-		env := map[string]string{"GOMAXPROCS": "2", "GOFLAGS": "-p=1", "GOTOOLCHAIN": "local", "CGO_ENABLED": "0", "GOOS": t.OS, "GOARCH": t.Arch, "GOAMD64": "v1", "GOARM64": "v8.0", "GOEXPERIMENT": "", "GOWORK": "off"}
+		env := map[string]string{"GOMAXPROCS": "1", "GOFLAGS": "-p=1", "GOTOOLCHAIN": "local", "CGO_ENABLED": "0", "GOOS": t.OS, "GOARCH": t.Arch, "GOAMD64": "v1", "GOARM64": "v8.0", "GOEXPERIMENT": "", "GOWORK": "off"}
 		flags := "-s -w -X pkt.systems/version.buildVersion=v" + version + " -X pkt.systems/lingon/internal/buildmeta.Stamp=LINGON_RELEASE:v" + version + ":" + commit + ":END"
 		if _, err := w.r.run(ctx, command{Dir: w.root, Name: "go", Args: []string{"build", "-buildvcs=true", "-trimpath", "-ldflags=" + flags, "-o", bin, "./cmd/lingon"}, Env: env}); err != nil {
 			return err

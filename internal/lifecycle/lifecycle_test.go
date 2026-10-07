@@ -233,6 +233,9 @@ func (f *fakeRunner) run(ctx context.Context, c command) ([]byte, error) {
 	if c.Name == "podman" {
 		switch {
 		case c.Args[0] == "info":
+			if c.Args[len(c.Args)-1] == "{{.Host.CgroupManager}}" {
+				return []byte("systemd\n"), nil
+			}
 			return []byte("true\n"), nil
 		case c.Args[0] == "image":
 			return []byte("docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)), nil

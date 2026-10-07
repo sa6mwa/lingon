@@ -459,10 +459,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			share, err := lingon.ShareCreate(r.Context(), lingon.ShareCreateOptions{
-				Endpoint: h.endpoint, AccessToken: h.access, SessionID: id,
-				Scope: lingon.ShareScopeView, TTL: time.Hour, TLSDir: filepath.Dir(h.config.CACertPath),
-			})
+			share, err := h.createHeadlessShare(r.Context(), id)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return

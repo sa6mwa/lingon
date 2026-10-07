@@ -30,9 +30,19 @@ required method; missing, duplicate, failed or unexpectedly skipped results bloc
 release. The TLS sweep permits only its cleartext-only test to skip; a separate
 cleartext harness run must pass that exact test. Missing tools, missing runners and failures are
 blockers; selecting a subset through ambient Android variables cannot satisfy
-release proof. The harness uses its owned emulator/adb/relay resources with a
-200% CPU quota and 7 GiB memory ceiling, and cleans them up. These full sweeps can
-take substantial time and memory; run no other heavy work alongside them.
+release proof. All verification commands share the systemd user slice `lingonverification.slice`,
+with an aggregate 100% CPU quota, 3 GiB memory ceiling and zero swap.
+`make` contains lifecycle compilation and all proof gates; direct commands use
+`bash scripts/verify-contained.sh <command> [arguments...]`. Containment is
+mandatory and larger limits are rejected. Android owns and cleans up its
+emulator/adb/relay resources, using 1 vCPU, 1024 MiB guest RAM and a 512 MiB
+Gradle heap and a 256 MiB default heap for other JVM launchers. The emulator
+uses `-lowram -memory 1024 -cores 1`; startup verifies its actual generated
+hardware configuration, because ordinary RAM settings are otherwise enlarged
+by the emulator. Host GPU rendering is retained, with Vulkan and the host
+window disabled to fit the budget; the medium-phone screen geometry is unchanged.
+Podman build/runtime checks join the same slice. These full sweeps
+can take substantial time; run no other heavy work alongside them.
 
 Existing relay replay and cursor-position benchmarks run three times with
 allocation reporting. Their results are retained as observations, not invented

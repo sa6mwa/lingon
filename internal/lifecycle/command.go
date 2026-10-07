@@ -145,6 +145,12 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("resolve lifecycle repository root: %w", err)
 	}
 	root = strings.TrimSpace(string(rootOut))
+	if opts.Operation != "version" && opts.Operation != "android-version" && !strings.HasPrefix(opts.Operation, "dev-") {
+		check := exec.CommandContext(ctx, "bash", filepath.Join(root, "scripts", "verify-contained.sh"), "--check")
+		if out, err := check.CombinedOutput(); err != nil {
+			return fmt.Errorf("verification containment: %w: %s", err, out)
+		}
+	}
 	work := filepath.Join(root, "build", "lifecycle")
 	if err := os.MkdirAll(work, 0o700); err != nil {
 		return err
