@@ -712,7 +712,7 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 							}
 						}
 					case control.ActionRename:
-						rename.Begin(activeID)
+						rename.Begin(activeID, r.clock)
 						r.showStatus(rename.Label(), stdout, 24*time.Hour)
 					case control.ActionNewPTY:
 						r.createLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput)

@@ -3,13 +3,15 @@ package control
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/sessionmanage"
 )
 
 func TestRenamePromptNeverRendersPastedControlCharacters(t *testing.T) {
 	var prompt RenamePrompt
-	prompt.Begin("immutable")
+	prompt.Begin("immutable", clock.NewMock())
 	for _, b := range []byte("safe\u009b2J\u202etext") {
 		prompt.Feed(b)
 	}
@@ -37,7 +39,7 @@ func TestRenamePromptCancellationPreservesFollowingInput(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var prompt RenamePrompt
-			prompt.Begin("immutable")
+			prompt.Begin("immutable", clock.NewMock())
 			name, done := prompt.Feed(tc.cancel)
 			if name != "" || !done || prompt.Active {
 				t.Fatal("cancellation did not close the prompt")
@@ -62,7 +64,7 @@ func TestRenamePrefixAndPromptUnicode(t *testing.T) {
 		t.Fatal("rename keymap missing")
 	}
 	var prompt RenamePrompt
-	prompt.Begin("immutable")
+	prompt.Begin("immutable", clock.NewMock())
 	for _, b := range []byte("日本🦊") {
 		prompt.Feed(b)
 	}
@@ -74,12 +76,69 @@ func TestRenamePrefixAndPromptUnicode(t *testing.T) {
 	if name != "日本語" || !done || prompt.Active || prompt.SessionID != "immutable" {
 		t.Fatalf("prompt=%+v name=%q", prompt, name)
 	}
-	prompt.Begin("immutable")
+	prompt.Begin("immutable", clock.NewMock())
 	name, done = prompt.Feed(0x1b)
 	if !prompt.DiscardEscapeTail('[') || !prompt.DiscardEscapeTail('A') || prompt.DiscardEscapeTail('x') {
 		t.Fatal("escape tail leaked to the shell")
 	}
 	if name != "" || !done || prompt.Active {
 		t.Fatal("escape did not cancel")
+	}
+}
+
+func TestRenameEscapeTailExpiresBeforeDelayedInput(t *testing.T) {
+	for _, prefix := range []string{"", "[", "O"} {
+		for _, input := range []string{"OMP_NUM_THREADS=1\n", "[hello"} {
+			t.Run(prefix+"/"+input, func(t *testing.T) {
+				clk := clock.NewMock()
+				var prompt RenamePrompt
+				prompt.Begin("immutable", clk)
+				prompt.Feed(0x1b)
+				for _, b := range []byte(prefix) {
+					if !prompt.DiscardEscapeTail(b) {
+						t.Fatal("immediate escape introducer leaked")
+					}
+				}
+				clk.Add(time.Second)
+				var forwarded strings.Builder
+				for _, b := range []byte(input) {
+					if !prompt.DiscardEscapeTail(b) {
+						forwarded.WriteByte(b)
+					}
+				}
+				if forwarded.String() != input {
+					t.Fatalf("delayed input = %q, want %q", forwarded.String(), input)
+				}
+			})
+		}
+	}
+}
+
+func TestRenameEscapeTailRecognitionBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		delay       time.Duration
+		input, want string
+	}{
+		{99 * time.Millisecond, "[A", ""},
+		{99 * time.Millisecond, "OA", ""},
+		{100 * time.Millisecond, "OMP_NUM_THREADS=1", "OMP_NUM_THREADS=1"},
+		{100 * time.Millisecond, "[hello", "[hello"},
+	} {
+		t.Run(tc.input+"/"+tc.delay.String(), func(t *testing.T) {
+			clk := clock.NewMock()
+			var prompt RenamePrompt
+			prompt.Begin("immutable", clk)
+			prompt.Feed(0x1b)
+			clk.Add(tc.delay)
+			var forwarded strings.Builder
+			for _, b := range []byte(tc.input) {
+				if !prompt.DiscardEscapeTail(b) {
+					forwarded.WriteByte(b)
+				}
+			}
+			if forwarded.String() != tc.want {
+				t.Fatalf("forwarded %q, want %q", forwarded.String(), tc.want)
+			}
+		})
 	}
 }

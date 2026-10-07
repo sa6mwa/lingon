@@ -2161,7 +2161,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					return true
 				case control.ActionRename:
 					if client != nil {
-						rename.Begin(client.SessionID)
+						rename.Begin(client.SessionID, m.Clock)
 						applyConnectionStatus(mvu.StatusInput{Kind: mvu.StatusConnected, Message: rename.Label(), Duration: 24 * time.Hour})
 					}
 					return true

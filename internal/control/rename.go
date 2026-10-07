@@ -2,8 +2,11 @@ package control
 
 import (
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"pkt.systems/lingon/internal/clock"
 )
 
 // RenamePrompt consumes terminal bytes while editing a display name.
@@ -14,10 +17,18 @@ type RenamePrompt struct {
 	text           []byte
 	escape         bool
 	escapeSequence bool
+	clock          clock.Clock
+	escapeDeadline time.Time
 }
 
-// Begin starts an empty rename prompt for an immutable session ID.
-func (p *RenamePrompt) Begin(id string) { *p = RenamePrompt{Active: true, SessionID: id} }
+// Begin starts an empty rename prompt for an immutable session ID using clk.
+// A nil clock uses the system clock.
+func (p *RenamePrompt) Begin(id string, clk clock.Clock) {
+	if clk == nil {
+		clk = clock.New()
+	}
+	*p = RenamePrompt{Active: true, SessionID: id, clock: clk}
+}
 
 // Label returns a printable prompt without incomplete UTF-8 or terminal escapes.
 func (p *RenamePrompt) Label() string {
@@ -35,6 +46,10 @@ func (p *RenamePrompt) Feed(b byte) (name string, done bool) {
 	if b == 0x1b || b == 0x03 {
 		p.Active = false
 		p.escape = b == 0x1b
+		p.escapeSequence = false
+		if p.escape {
+			p.escapeDeadline = p.clock.Now().Add(100 * time.Millisecond)
+		}
 		return "", true
 	}
 	if b == '\r' || b == '\n' {
@@ -55,8 +70,14 @@ func (p *RenamePrompt) Feed(b byte) (name string, done bool) {
 }
 
 // DiscardEscapeTail prevents an arrow-key sequence that cancels editing from reaching the shell.
+// Recognition ends 100 ms after Escape, even for an incomplete CSI or SS3 tail.
 func (p *RenamePrompt) DiscardEscapeTail(b byte) bool {
 	if !p.escape {
+		return false
+	}
+	if !p.clock.Now().Before(p.escapeDeadline) {
+		p.escape = false
+		p.escapeSequence = false
 		return false
 	}
 	if p.escapeSequence {
