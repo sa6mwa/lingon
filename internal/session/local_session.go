@@ -1215,6 +1215,8 @@ func (s *localSession) runOnce(ctx context.Context) error {
 		s.ptyMu.Unlock()
 	}
 
+	// Startup and later resize/control requests share one geometry boundary.
+	s.emuMu.Lock()
 	if s.cols <= 0 {
 		s.cols = 80
 	}
@@ -1222,7 +1224,6 @@ func (s *localSession) runOnce(ctx context.Context) error {
 		s.rows = 24
 	}
 
-	s.emuMu.Lock()
 	s.emulator = emu.New(s.cols, s.rows)
 	if emuImpl, ok := s.emulator.(*emu.Emulator); ok {
 		if s.trace != nil {
@@ -1291,16 +1292,15 @@ func (s *localSession) runOnce(ctx context.Context) error {
 		}
 		emuImpl.SetScrollbackLimit(s.scrollbackLines)
 	}
-	s.emuMu.Unlock()
-	if s.logger != nil {
-		s.logger.Trace("session.emulator.ready", "session", s.id, "cols", s.cols, "rows", s.rows)
-	}
-	_ = s.resizePTY(s.cols, s.rows)
-	s.emuMu.Lock()
+	cols, rows := s.cols, s.rows
+	_ = s.resizePTY(cols, rows)
 	rawSnap, snapErr := s.emulator.Snapshot()
-	s.emuMu.Unlock()
 	if snapErr == nil {
 		s.storeSnapshot(protocol.SnapshotToProto(rawSnap), 0)
+	}
+	s.emuMu.Unlock()
+	if s.logger != nil {
+		s.logger.Trace("session.emulator.ready", "session", s.id, "cols", cols, "rows", rows)
 	}
 	s.reportStartup(nil)
 	_ = setNonblock(ptyFile, true)

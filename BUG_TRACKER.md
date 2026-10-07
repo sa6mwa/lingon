@@ -29,6 +29,16 @@ Required status values:
 
 ## Active Items
 
+### B-188 Local session startup races control/resize geometry
+
+- Status: `needs_verification`
+- Repro: The full serial rehearsal at clean `acf3be9` passes root/Android-tool gates, then stops in PTY/browser integration (`build/lifecycle/prerelease-1509340191.log`). Session and browser packages pass. `TestAttachMultiHostRelayDropSwitchesTabs` detects `localSession.Resize` writing cols/rows under `emuMu` while `runOnce` reads/defaults them outside that lock during a newly created session's startup.
+- Scope: Serialize defaulting, emulator initialization and initial PTY geometry with normal resizing; use captured dimensions for logging. Preserve owned-PTY terminal isolation and all existing tab/input/flicker assertions. Retain the failed terminal attempt and verify before/after races before a fresh rehearsal.
+
+- Fix/readback: Hold `emuMu` before defaulting geometry and through emulator initialization, the initial owned-PTY resize, and the initial snapshot store. Normal resizing uses the same lock; the ready log uses the captured pair after unlocking. All cols/rows accesses in this path are now synchronized, and startup cannot reapply a stale size after a newer resize.
+- Evidence: The actual failing-before race is retained in the full rehearsal log. Ten isolated pre-fix repetitions did not reproduce it (`build/resume-startup-geometry-before.log`); those are not claimed as failing proof. After repair, the unchanged owned-PTY relay-drop/tab-switch case passes twenty race repetitions (`build/resume-startup-geometry-after.log`), full internal session/ptytest races pass, and resize/creation companions pass three repetitions (`build/resume-startup-geometry-session-race.log`, `build/resume-startup-geometry-companions.log`).
+- Verification: Root Go tests, standard vet/golint/golangci-lint, Android unit/compile gates, and all three headless resize/detach instrumentation cases pass (`build/resume-startup-geometry-{go-test,lint,android-build,android-e2e}.log`). Owned harness teardown completes. Clean prescribed review and fresh full serial prerelease remain required.
+
 ### B-187 Repeated-input fixture clears connection status before readiness completes
 
 - Status: `needs_verification`
