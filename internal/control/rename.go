@@ -7,7 +7,7 @@ import (
 )
 
 // RenamePrompt consumes terminal bytes while editing a display name.
-// Escape cancels, Enter accepts, and Backspace removes one complete code point.
+// Escape or Ctrl+C cancels, Enter accepts, and Backspace removes one complete code point.
 type RenamePrompt struct {
 	Active         bool
 	SessionID      string
@@ -34,7 +34,7 @@ func (p *RenamePrompt) Label() string {
 func (p *RenamePrompt) Feed(b byte) (name string, done bool) {
 	if b == 0x1b || b == 0x03 {
 		p.Active = false
-		p.escape = true
+		p.escape = b == 0x1b
 		return "", true
 	}
 	if b == '\r' || b == '\n' {

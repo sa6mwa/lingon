@@ -29,6 +29,14 @@ Required status values:
 
 ## Active Items
 
+### B-191 Rename cancellation swallows ordinary input after Ctrl+C
+
+- Status: `needs_verification`
+- Report: Prescribed review of clean `c24935b` against pinned trunk finds Ctrl+C cancellation setting the same escape-tail state as ESC. Host and attach then discard characters from ordinary input beginning with `O` or `[` (`build/resume-review.normal-trunk.cDQ28a.log`, P2, `internal/control/rename.go`).
+- Scope: Only ESC may arm escape-tail suppression. Preserve existing escape cancellation and all permanent flicker assertions; add failing-before owned-PTY input regressions for host and attach before fixing the shared parser.
+- Before/after proof: The exported prompt API loses both `Ohello` and `[hello` after Ctrl+C (`build/resume-rename-cancel-unit-before.log`). All four real owned-PTY combinations (host/attach and both prefixes) fail before the repair and display `PROMPT>ello` (`build/resume-rename-cancel-pty-before.log`). After setting escape-tail state only for ESC, the complete control unit suite passes twenty race repetitions, including preserved CSI/SS3 escape-tail handling, and all four PTY cases pass twenty repetitions (`build/resume-rename-cancel-{unit,pty}-after.log`). Fixtures establish actual shell input/output and visible rename readiness before cancelling; no inherited terminal control is used.
+- Verification/readback: Existing local-CLI, relay/headful-CLI and offline accepted-rename PTY flows pass (`build/resume-rename-cancel-companions.log`). Root Go tests and standard vet/golint/golangci-lint pass (`build/resume-rename-cancel-go-gates.log`). Both host and attach still call the same prompt parser; ordinary bytes after Ctrl+C now bypass tail suppression, while ESC retains it. Public interfaces, accepted-name behavior and permanent flicker assertions are unchanged. Clean prescribed re-review and a fresh complete serial rehearsal remain required.
+
 ### B-190 Android notification-permission coverage silently skips
 
 - Status: `needs_verification`

@@ -22,6 +22,39 @@ func TestRenamePromptNeverRendersPastedControlCharacters(t *testing.T) {
 	}
 }
 
+func TestRenamePromptCancellationPreservesFollowingInput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cancel byte
+		input  string
+		want   string
+	}{
+		{"ctrl-c SS3 prefix", 0x03, "Ohello", "Ohello"},
+		{"ctrl-c CSI prefix", 0x03, "[hello", "[hello"},
+		{"escape CSI tail", 0x1b, "[Ahello", "hello"},
+		{"escape SS3 tail", 0x1b, "OAhello", "hello"},
+		{"escape ordinary input", 0x1b, "hello", "hello"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var prompt RenamePrompt
+			prompt.Begin("immutable")
+			name, done := prompt.Feed(tc.cancel)
+			if name != "" || !done || prompt.Active {
+				t.Fatal("cancellation did not close the prompt")
+			}
+			var forwarded strings.Builder
+			for _, b := range []byte(tc.input) {
+				if !prompt.DiscardEscapeTail(b) {
+					forwarded.WriteByte(b)
+				}
+			}
+			if forwarded.String() != tc.want {
+				t.Fatalf("forwarded %q, want %q", forwarded.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestRenamePrefixAndPromptUnicode(t *testing.T) {
 	var prefix Prefix
 	prefix.Feed(CtrlL)
