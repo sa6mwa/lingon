@@ -36,11 +36,22 @@ with an aggregate 100% CPU quota, 3 GiB memory ceiling and zero swap.
 `bash scripts/verify-contained.sh <command> [arguments...]`. Containment is
 mandatory and larger limits are rejected. Android owns and cleans up its
 emulator/adb/relay resources, using 1 vCPU, 1024 MiB guest RAM and a 512 MiB
-Gradle heap and a 256 MiB default heap for other JVM launchers. The emulator
+Gradle build heap and a 256 MiB default heap for other JVM launchers.
+App and instrumentation APKs are built before emulator startup. The installed
+AndroidJUnitRunner executes through native adb instrumentation, without live
+Gradle/UTP JVMs. Its result parser rejects crashes, incomplete or duplicate results,
+failures and unauthorized skips, and retains raw protocol plus per-batch JUnit XML.
+The emulator
 uses `-lowram -memory 1024 -cores 1`; startup verifies its actual generated
 hardware configuration, because ordinary RAM settings are otherwise enlarged
 by the emulator. Host GPU rendering is retained, with Vulkan and the host
-window disabled to fit the budget; the medium-phone screen geometry is unchanged.
+window disabled to fit the budget. Framebuffer size and density are scaled
+together from 1080×2400 / 420 dpi to 720×1600 / 280 dpi, preserving the
+medium phone's logical layout bounds; startup asserts the actual display values.
+Instrumentation batches contain at most ten methods. App/test processes reset
+between batches so instrumentation allocations
+do not accumulate in one long-lived process. One owned emulator remains for
+the sweep and is joined during cleanup; each batch retains its JUnit evidence.
 Podman build/runtime checks join the same slice. These full sweeps
 can take substantial time; run no other heavy work alongside them.
 

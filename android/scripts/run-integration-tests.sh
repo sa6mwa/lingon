@@ -25,7 +25,7 @@ export ANDROID_ADB_SERVER_PORT="${LINGON_IT_ADB_SERVER_PORT}"
 
 ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
 EMULATOR_BIN="${EMULATOR:-${ANDROID_SDK_ROOT}/emulator/emulator}"
-EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-window -no-snapshot -no-boot-anim -feature -Vulkan}"
+EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-window -no-snapshot -no-boot-anim -feature -Vulkan -skin 720x1600}"
 PRESET="${PRESET:-medium}"
 AVD_NAME="${AVD_NAME:-}"
 EMULATOR_WORKSPACE="${LINGON_IT_EMULATOR_WORKSPACE:-8}"
@@ -36,6 +36,7 @@ LOCK_PATH="${ARTIFACT_OUT}/integration-test.lock"
 CURRENT_TEST_PID=""
 CURRENT_TEST_PGID=""
 EMULATOR_STARTED="0"
+EMULATOR_PID=""
 ADB_SERVER_OWNED="0"
 HOST_COLS_OVERRIDE="${HOST_COLS:-}"
 HOST_ROWS_OVERRIDE="${HOST_ROWS:-}"
@@ -267,29 +268,7 @@ collect_test_timing_profile() {
   if [[ -z "${profile_dir}" ]]; then
     return 0
   fi
-  local result_dir="${ANDROID_DIR}/app/build/outputs/androidTest-results/connected/debug"
-  if [[ ! -d "${result_dir}" ]]; then
-    return 0
-  fi
-  mkdir -p "${profile_dir}/android-test-results"
-  find "${result_dir}" -maxdepth 1 -type f -name 'TEST-*.xml' -exec cp {} "${profile_dir}/android-test-results/" \; 2>/dev/null || true
-  run_android_tools test-times --dir "${result_dir}" > "${profile_dir}/test-times.txt" 2>"${profile_dir}/test-times.err" || true
-}
-
-# Keep evidence for every instrumentation batch: the connected task reuses the
-# same XML filename, so a final-only copy cannot prove a complete suite.
-collect_test_batch_profile() {
-  local profile_dir="${LINGON_IT_CGROUP_PROFILE_DIR:-}"
-  if [[ -z "${profile_dir}" ]]; then
-    return 0
-  fi
-  LINGON_BATCH_INDEX=$((LINGON_BATCH_INDEX + 1))
-  local batch_dir="${profile_dir}/android-test-batches/batch-${LINGON_BATCH_INDEX}"
-  local result_dir="${ANDROID_DIR}/app/build/outputs/androidTest-results/connected/debug"
-  mkdir -p "${batch_dir}"
-  if [[ -d "${result_dir}" ]]; then
-    find "${result_dir}" -maxdepth 1 -type f -name 'TEST-*.xml' -exec cp {} "${batch_dir}/" \;
-  fi
+  run_android_tools test-times --dir "${profile_dir}/android-test-batches" > "${profile_dir}/test-times.txt" 2>"${profile_dir}/test-times.err" || true
 }
 
 resolve_avd_name() {
@@ -316,6 +295,30 @@ start_emulator() {
     echo "Starting emulator ${avd_name} on port ${emu_port}..."
     "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 1 >/dev/null 2>&1 &
   fi
+  EMULATOR_PID=$!
+}
+
+verify_emulator_profile() {
+  hardware_config="${ANDROID_AVD_HOME}/${AVD_NAME}.avd/hardware-qemu.ini"
+  if [[ ! -r "${hardware_config}" ]]; then
+    echo "Missing actual emulator hardware configuration: ${hardware_config}; stopping." >&2
+    exit 1
+  fi
+  guest_ram="$(awk -F' = ' '$1 == "hw.ramSize" {print $2}' "${hardware_config}")"
+  guest_cores="$(awk -F' = ' '$1 == "hw.cpu.ncore" {print $2}' "${hardware_config}")"
+  if [[ "${guest_ram}" != 1024 || "${guest_cores}" != 1 ]]; then
+    echo "Emulator ignored 1024 MiB RAM / 1 vCPU (actual: ${guest_ram:-unknown} MiB / ${guest_cores:-unknown} vCPUs); stopping." >&2
+    exit 1
+  fi
+  guest_width="$(awk -F' = ' '$1 == "hw.lcd.width" {print $2}' "${hardware_config}")"
+  guest_height="$(awk -F' = ' '$1 == "hw.lcd.height" {print $2}' "${hardware_config}")"
+  guest_density="$(awk -F' = ' '$1 == "hw.lcd.density" {print $2}' "${hardware_config}")"
+  if [[ "${guest_width}" != 720 || "${guest_height}" != 1600 || "${guest_density}" != 280 ]]; then
+    echo "Emulator ignored 720x1600 / 280 dpi (actual: ${guest_width:-unknown}x${guest_height:-unknown} / ${guest_density:-unknown} dpi); stopping." >&2
+    exit 1
+  fi
+  echo "Verified actual emulator: ${guest_ram} MiB / ${guest_cores} vCPU / ${guest_width}x${guest_height} / ${guest_density} dpi."
+
 }
 
 acquire_lock() {
@@ -363,7 +366,7 @@ remove_harness_root() {
 
 kill_running_tests() {
   if [[ -n "${CURRENT_TEST_PID}" ]]; then
-    if [[ -n "${CURRENT_TEST_PGID}" ]]; then
+    if [[ "${CURRENT_TEST_PGID}" == "${CURRENT_TEST_PID}" ]]; then
       kill -TERM -- "-${CURRENT_TEST_PGID}" >/dev/null 2>&1 || true
     fi
     kill -TERM "${CURRENT_TEST_PID}" >/dev/null 2>&1 || true
@@ -389,6 +392,10 @@ cleanup() {
   done
   if [[ "${EMULATOR_STARTED}" == "1" ]] && [[ "${KEEP_EMULATOR}" != "1" ]] && [[ -n "${DEVICE_SERIAL:-}" ]]; then
     "${ADB_BIN}" -s "${DEVICE_SERIAL}" emu kill >/dev/null 2>&1 || true
+    if [[ -n "${EMULATOR_PID}" ]]; then
+      wait "${EMULATOR_PID}" || true
+      EMULATOR_PID=""
+    fi
   fi
   if [[ "${ADB_SERVER_OWNED}" == "1" ]]; then
     "${ADB_BIN}" kill-server >/dev/null 2>&1 || true
@@ -464,7 +471,28 @@ if [[ -n "${TARGET_CLASS}" ]]; then
     echo "Set only one of LINGON_IT_CLASS and LINGON_IT_ONLY." >&2
     exit 1
   fi
-  TESTS=("${TARGET_CLASS}")
+  IFS=',' read -r -a requested_classes <<< "${TARGET_CLASS}"
+  for selection in "${requested_classes[@]}"; do
+    class="${selection%%#*}"
+    source="${ANDROID_DIR}/app/src/androidTest/java/${class//./\/}.kt"
+    if [[ ! -f "${source}" ]]; then
+      echo "No Android test source for ${class}" >&2
+      exit 1
+    fi
+    methods="$(run_android_tools test-names --file "${source}")"
+    matched=false
+    while IFS= read -r method; do
+      [[ -n "${method}" ]] || continue
+      if [[ "${selection}" == "${class}" || "${selection}" == "${class}#${method}" ]]; then
+        TESTS+=("${class}#${method}")
+        matched=true
+      fi
+    done <<< "${methods}"
+    if [[ "${matched}" != true ]]; then
+      echo "No Android methods matched ${selection}" >&2
+      exit 1
+    fi
+  done
 elif [[ -f "${TEST_SRC}" ]]; then
   mapfile -t TESTS < <(run_android_tools test-names --file "${TEST_SRC}")
 fi
@@ -507,6 +535,15 @@ echo "Building harness..."
   go build -buildvcs=true -o "${ROOT_DIR}/bin/lingon" ./cmd/lingon
   go build -buildvcs=true -o "${HARNESS_BIN}" ./cmd/lingon-android-harness
 )
+
+ANDROID_TOOLS_BIN="${ANDROID_DIR}/build/lingon-android-tools"
+mkdir -p "${ANDROID_DIR}/build"
+(cd "${ANDROID_DIR}" && go build -buildvcs=true -o "${ANDROID_TOOLS_BIN}" ./cmd/lingon-android-tools)
+echo "Building app and instrumentation APKs before starting the emulator..."
+(cd "${ANDROID_DIR}" && ./gradlew --no-daemon --max-workers=1 \
+  -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process \
+  "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=1 -Dfile.encoding=UTF-8" \
+  :app:assembleDebug :app:assembleDebugAndroidTest --no-configuration-cache)
 
 read_config() {
   run_android_tools config-env --config "${CONFIG_PATH}"
@@ -607,6 +644,14 @@ if [[ -z "${DEVICE_SERIAL}" ]]; then
     AVD_RAM_MB=1024 \
     AVD_CPU_CORES=1 \
     "${ANDROID_DIR}/scripts/configure-avd.sh"
+  # Scale framebuffer and density together to retain the medium phone's
+  # logical layout while reducing graphics/shared-memory allocations.
+  display_config="${ANDROID_AVD_HOME}/${AVD_NAME}.avd/config.ini"
+  sed -i -E \
+    -e 's/^hw\.lcd\.width[[:space:]]*=.*/hw.lcd.width = 720/' \
+    -e 's/^hw\.lcd\.height[[:space:]]*=.*/hw.lcd.height = 1600/' \
+    -e 's/^hw\.lcd\.density[[:space:]]*=.*/hw.lcd.density = 280/' \
+    "${display_config}"
   AVD_NAME="${AVD_NAME}" "${ANDROID_DIR}/scripts/cleanup-avd-snapshots.sh" || true
   EMU_PORT="$(ADB="${ADB_BIN}" "${ANDROID_DIR}/scripts/find-emu-port.sh")"
   start_emulator "${AVD_NAME}" "${EMU_PORT}"
@@ -624,25 +669,21 @@ export ADB="${ADB_BIN}"
 
 "${ANDROID_DIR}/scripts/ensure-emu-keyboard.sh" || true
 
-hardware_config="${ANDROID_AVD_HOME}/${AVD_NAME}.avd/hardware-qemu.ini"
-if [[ ! -r "${hardware_config}" ]]; then
-  echo "Missing actual emulator hardware configuration: ${hardware_config}; stopping." >&2
-  exit 1
-fi
-guest_ram="$(awk -F' = ' '$1 == "hw.ramSize" {print $2}' "${hardware_config}")"
-guest_cores="$(awk -F' = ' '$1 == "hw.cpu.ncore" {print $2}' "${hardware_config}")"
-if [[ "${guest_ram}" != 1024 || "${guest_cores}" != 1 ]]; then
-  echo "Emulator ignored 1024 MiB RAM / 1 vCPU (actual: ${guest_ram:-unknown} MiB / ${guest_cores:-unknown} vCPUs); stopping." >&2
-  exit 1
-fi
-echo "Verified actual emulator guest RAM: ${guest_ram} MiB."
+verify_emulator_profile
 
+echo "Installing app and instrumentation APKs..."
+"${ADB_BIN}" -s "${DEVICE_SERIAL}" install -r -t "${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
+"${ADB_BIN}" -s "${DEVICE_SERIAL}" install -r -t "${ANDROID_DIR}/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+if ! "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell pm list instrumentation | grep -Fxq \
+  "instrumentation:${TEST_APP_ID}/androidx.test.runner.AndroidJUnitRunner (target=${APP_ID})"; then
+  echo "Installed instrumentation runner/target identity mismatch." >&2
+  exit 1
+fi
 start_harness 2
 ensure_adb_reverse
 
-echo "Running connectedDebugAndroidTest..."
-set +e
-(
+echo "Running native AndroidJUnitRunner instrumentation..."
+run_selected_tests() {
   cd "${ANDROID_DIR}"
   TEST_EXIT=0
 
@@ -671,33 +712,19 @@ set +e
     else
       echo "Running ${#test_names[@]} Android tests in one instrumentation batch..."
     fi
-    ./gradlew --no-daemon --max-workers=1 \
-      -Dorg.gradle.parallel=false \
-      -Dkotlin.compiler.execution.strategy=in-process \
-      "-Dorg.gradle.jvmargs=-Xmx512m -XX:ActiveProcessorCount=1 -Dfile.encoding=UTF-8" \
-      :app:connectedDebugAndroidTest \
-      --no-configuration-cache \
-      -Plingon.it.class="${class_arg}" \
-      -Plingon.it.endpoint="${DEVICE_ENDPOINT}" \
-      -Plingon.it.username="${USERNAME}" \
-      -Plingon.it.password="${PASSWORD}" \
-      -Plingon.it.totp_secret="${TOTP_SECRET}" \
-      -Plingon.it.ca_pem_b64="${CA_PEM_B64}" \
-      -Plingon.it.sessions="${SESSIONS}" \
-      -Plingon.it.view_token="${VIEW_TOKEN}" \
-      -Plingon.it.control_token="${CONTROL_TOKEN}" \
-      -Plingon.it.username2="${USERNAME2}" \
-      -Plingon.it.password2="${PASSWORD2}" \
-      -Plingon.it.totp_secret2="${TOTP_SECRET2}" \
-      -Plingon.it.sessions2="${SESSIONS2}" \
-      -Plingon.it.view_token2="${VIEW_TOKEN2}" \
-      -Plingon.it.host_cols="${HOST_COLS}" \
-      -Plingon.it.host_rows="${HOST_ROWS}" &
+    LINGON_BATCH_INDEX=$((LINGON_BATCH_INDEX + 1))
+    local report_dir="${LINGON_IT_CGROUP_PROFILE_DIR}/android-test-batches/batch-${LINGON_BATCH_INDEX}"
+    local skip_args=()
+    if [[ "${LINGON_IT_CLEARTEXT:-0}" == "0" && ",${class_arg}," == *",systems.pkt.lingon.EndToEndTest#cleartext_share_authentication_uses_token_fallback,"* ]]; then
+      skip_args=(--allow-skip "systems.pkt.lingon.EndToEndTest#cleartext_share_authentication_uses_token_fallback")
+    fi
+    setsid --wait "${ANDROID_TOOLS_BIN}" instrument --adb "${ADB_BIN}" \
+      --serial "${DEVICE_SERIAL}" --config "${CONFIG_PATH}" --classes "${class_arg}" \
+      --report "${report_dir}/TEST-instrumentation.xml" "${skip_args[@]}" </dev/null &
     CURRENT_TEST_PID=$!
     CURRENT_TEST_PGID="$(ps -o pgid= "${CURRENT_TEST_PID}" | tr -d ' ' || true)"
     wait "${CURRENT_TEST_PID}"
     TEST_EXIT=$?
-    collect_test_batch_profile
     CURRENT_TEST_PID=""
     CURRENT_TEST_PGID=""
     return "${TEST_EXIT}"
@@ -742,14 +769,19 @@ set +e
       continue
     fi
     BATCH+=("${test_name}")
+    if [[ "${#BATCH[@]}" -eq 10 ]]; then
+      flush_batch || break
+    fi
   done
   if [[ "${TEST_EXIT}" -eq 0 ]]; then
     flush_batch
     TEST_EXIT=$?
   fi
   stop_harness
-  exit "${TEST_EXIT}"
-)
+  return "${TEST_EXIT}"
+}
+set +e
+run_selected_tests
 TEST_EXIT=$?
 set -e
 collect_test_timing_profile

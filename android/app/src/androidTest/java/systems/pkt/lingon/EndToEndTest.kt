@@ -5219,14 +5219,33 @@ class EndToEndTest {
 
     private fun assertTerminalInputBlocked() {
         val nonce = appViewModel().state.value.localInputNonce
-        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
-        sendTerminalInput("Z")
-        sendTerminalEnter()
-        composeRule.runOnIdle {
-            val state = appViewModel().state.value
-            assertEquals(nonce, state.localInputNonce)
-            assertFalse(state.hasControl)
-            assertEquals("view-only session", state.status?.message)
+        val observedBlockedStatus = AtomicBoolean(false)
+        val observedInputOrControl = AtomicBoolean(false)
+        lateinit var observer: Job
+        composeRule.runOnUiThread {
+            // Discard attachment feedback: the attempted keys must produce a
+            // fresh warning. Live terminal frames may then clear that warning.
+            appViewModel().dismissStatus()
+            observer = CoroutineScope(Dispatchers.Main.immediate).launch(start = CoroutineStart.UNDISPATCHED) {
+                appViewModel().state.collect { current ->
+                    if (current.status?.message == "view-only session") observedBlockedStatus.set(true)
+                    if (current.localInputNonce != nonce || current.hasControl) observedInputOrControl.set(true)
+                }
+            }
+        }
+        try {
+            composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+            sendTerminalInput("Z")
+            sendTerminalEnter()
+            composeRule.runOnIdle {
+                val state = appViewModel().state.value
+                assertEquals(nonce, state.localInputNonce)
+                assertFalse(state.hasControl)
+                assertTrue("attempted input produced no view-only warning", observedBlockedStatus.get())
+                assertFalse("view-only input changed nonce or gained control", observedInputOrControl.get())
+            }
+        } finally {
+            observer.cancel()
         }
     }
 

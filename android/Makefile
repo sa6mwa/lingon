@@ -81,7 +81,7 @@ help:
 	@echo "  make emulator PRESET=medium AVD_RAM_MB=2048   - lower emulator RAM when needed"
 	@echo "  make install-release ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
 	@echo "  make integration-test - mandatory shared 1 CPU / 3 GiB ceiling, zero swap"
-	@echo "                      (systemd cgroup; fresh owned emulator with 1 vCPU / 1024 MiB guest RAM)"
+	@echo "                      (systemd cgroup; 1 vCPU / 1024 MiB guest RAM, 720x1600 / 280 dpi)"
 	@echo "                      integration verification requires an owned emulator; existing devices are not reused"
 	@echo "                      integration emulator uses host GPU rendering without a host window or Vulkan"
 
