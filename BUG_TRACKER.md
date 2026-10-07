@@ -29,6 +29,16 @@ Required status values:
 
 ## Active Items
 
+### B-187 Repeated-input fixture clears connection status before readiness completes
+
+- Status: `needs_verification`
+- Repro: The full serial rehearsal at clean `26a8c0e` passes prerequisites, lint, root Go/race and Android-tool gates, then stops at PTY/browser integration (`build/lifecycle/prerelease-1106980684.log`). Session and browser packages pass. `TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsive` cannot observe `PROMPT> abcde` within its unchanged 700 ms bound; the captured row contains `PROMPT> abcconnected to ...`.
+- Diagnosis: The existing banner-clear helper returns on an initial banner-free frame before the asynchronous ready callback displays connection status. Confirm callback/display ordering, establish an observable readiness/display barrier, and retain all input-latency and permanent flicker assertions.
+- Attempt state: The failed attempt is terminal and retained. No tag, push, publish or artifact build occurred. Any repair/rehearsal is a separate iteration.
+
+- Before/after proof: The unchanged isolated fixture fails twice in twenty race repetitions (`build/resume-input-banner-before.log`). The setup now waits for completion of the active-view readiness callback and its observable connection banner before the existing mock-clock expiration helper runs. The repaired fixture passes thirty repetitions (`build/resume-input-banner-after.log`); repeated real-clock input, resize/control and multi-session viewport companions also pass (`build/resume-input-banner-companions.log`). All 350/700 ms latency and echo assertions remain unchanged, and no runtime terminal code or permanent flicker assertions were modified.
+- Verification: Root Go tests and standard vet/golint/golangci-lint pass (`build/resume-input-banner-{go-test,lint}.log`). Changed-path readback confirms only setup ordering changed. A fresh clean review and full serial prerelease remain required.
+
 ### B-186 CLI credential rotation can restore concurrently revoked relay authority
 
 - Status: `needs_verification`

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -381,16 +382,24 @@ func TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsive(t *test
 		t.Fatalf("expected host prompt before attach startup, got:\n%s", host.Screen().String())
 	}
 
+	var ready atomic.Bool
 	attach := startMultiAttachWithoutExplicitTermSize(t, h, ptytest.MultiAttachOptions{
 		SessionID: "attach-repeated-byte",
 		Cols:      60,
 		Rows:      16,
+		OnActive: func(id string) {
+			if id == "attach-repeated-byte" {
+				ready.Store(true)
+			}
+		},
 	})
 	t.Cleanup(attach.session.Cancel)
 
 	attach.session.Eventually(5*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		if !strings.Contains(screen.String(), "PROMPT>") {
-			return fmt.Errorf("prompt not visible yet")
+		// A prompt can arrive before the asynchronous ready callback shows
+		// connection status. Consume that visible phase before expiring it.
+		if !ready.Load() || !strings.Contains(screen.String(), "PROMPT>") || !hasConnectionStatusBanner(screen.Row(0)) {
+			return fmt.Errorf("waiting for completed readiness and visible connection status: %s", screen.String())
 		}
 		return nil
 	})
