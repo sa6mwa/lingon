@@ -29,6 +29,27 @@ Required status values:
 
 ## Active Items
 
+### B-199 Remote close refresh reads session-closure state without its lock
+
+- Status: `needs_verification`
+- Repro: Full affected session race suite reports `applySessions` writing `view.sessionClosed` at `remote.go:1293` concurrently with `handleViewClosed` reading it after unlocking at `remote.go:1226` (`build/rename-escape-expiry-affected-races.log`, `TestRemoteInputSurvivesStaleSessionsList`).
+- Required repair: Capture refresh eligibility and context under the manager lock for the current view/run generation; obsolete callbacks must not refresh. Add concurrent metadata/close and observable HTTP refresh regressions; retain existing session/input and permanent flicker assertions.
+
+- Before/after regression: Obsolete-run and replaced-view callbacks refresh before repair (`build/remote-close-refresh-before.log`). A concurrent publication/close stress test reproduces the unlocked read with the race detector (`build/remote-close-refresh-before-race.log`); its two scheduler threads remain inside the mandatory 100% CPU / 3 GiB cgroup. Three corrected repetitions pass (`build/remote-close-refresh-after.log`). The fixture exercises HTTP/state callbacks without allocating or controlling a terminal.
+- Repair/readback: Refresh context and eligibility are captured under the same manager mutex as session-list updates, only for the current view and run ID. Closed sessions and obsolete generations issue zero refresh requests; current error closures issue one. No unlocked session-closure/context read remains in that path.
+- Verification: Complete control/attach/session race suites pass (`build/rename-and-close-final-races.log`), including the original stale-session input test. Uncached root Go tests and vet/golint/golangci-lint pass with zero issues (`build/rename-and-close-{go-test,lint}.log`). Clean prescribed review and a complete bounded prerelease remain pending.
+
+### B-198 Escape rename cancellation can consume later shell input
+
+- Status: `needs_verification`
+- Finding: Prescribed review of clean `1f2aa03` reports an indefinitely armed escape-tail parser after standalone Escape (`build/resource-review.normal-trunk.s1AiDM.log`, P2). A later `OMP_NUM_THREADS=1` or `[`-prefixed input loses bytes in both host and attach modes.
+- Required proof: Add isolated `ptytest` host/attach regressions with an injected clock and an explicit delayed-input advance. Preserve immediate CSI/SS3 cancellation-tail swallowing, Ctrl+C input preservation, all prompt assertions and permanent flicker tests.
+- Repair envelope: Bound escape-tail recognition to 100 ms from the cancelling Escape, including incomplete CSI/SS3 tails; use the caller's injected clock rather than wall-clock sleeps.
+
+- Before/after proof: All six parser cases (standalone Escape and incomplete CSI/SS3 prefixes) fail before expiry, and all four delayed host/attach PTY cases lose the expected bytes (`build/rename-escape-expiry-before-{unit,pty}.log`). The fixed parser uses the supplied clock and bounds the whole tail to 100 ms; both TUI callers provide their existing injected clock. Twenty unit race repetitions and exact 99/100 ms boundary assertions pass (`build/rename-escape-expiry-after-unit.log`).
+- PTY proof: Ten repetitions pass all 120 subcases: delayed SS3/CSI-prefixed commands, immediate CSI/SS3 cancellation tails and the existing Ctrl+C preservation cases, in both host and attach (`build/rename-escape-expiry-final-pty.log`). The initial repeat had one attach startup timeout before any input assertion; only the new fixture gained the established active-view/snapshot readiness barrier. Timing assertions, Ctrl+C regressions and permanent flicker tests are unchanged; there is no wall-clock sleep proving expiry.
+- Broader verification: Complete control/attach/session races and uncached root Go tests pass after B-199 remediation; standard vet/golint/golangci-lint pass. This change affects local TUI byte parsing; full PTY/browser/Android release proof remains required in the next bounded `make prerelease`.
+
 ### B-197 Android harness creates a headless share before relay registration
 
 - Status: `needs_verification`

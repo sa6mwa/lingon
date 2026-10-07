@@ -1196,6 +1196,7 @@ func (m *remoteManager) handleViewClosed(view *remoteView, runID uint64, err err
 	}
 	var restart bool
 	var ctx context.Context
+	var refreshCtx context.Context
 	m.mu.Lock()
 	current := m.views[view.id]
 	if current == view && view.runID == runID {
@@ -1220,11 +1221,14 @@ func (m *remoteManager) handleViewClosed(view *remoteView, runID uint64, err err
 			delete(m.retained, view.id)
 			delete(m.views, view.id)
 		}
+		if !view.sessionClosed && err != nil {
+			refreshCtx = view.ctx
+		}
 	}
 	m.mu.Unlock()
 	m.logViewState("view_closed", view, err)
-	if view.ctx != nil && view.ctx.Err() == nil && !view.sessionClosed && err != nil {
-		_ = m.refreshSessions(view.ctx)
+	if refreshCtx != nil && refreshCtx.Err() == nil {
+		_ = m.refreshSessions(refreshCtx)
 	}
 	if restart && ctx != nil && ctx.Err() == nil {
 		_ = m.connectView(ctx, view, io.Discard, func() {
