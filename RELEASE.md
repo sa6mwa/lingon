@@ -40,7 +40,8 @@ Gradle build heap and a 256 MiB default heap for other JVM launchers.
 App and instrumentation APKs are built before emulator startup. The installed
 AndroidJUnitRunner executes through native adb instrumentation, without live
 Gradle/UTP JVMs. Its result parser rejects crashes, incomplete or duplicate results,
-failures and unauthorized skips, and retains raw protocol plus per-batch JUnit XML.
+failures and unauthorized skips, and retains raw protocol, per-batch JUnit XML
+and the matching harness trace before any harness restart can replace it.
 The emulator
 uses `-lowram -memory 1024 -cores 1`; startup verifies its actual generated
 hardware configuration, because ordinary RAM settings are otherwise enlarged

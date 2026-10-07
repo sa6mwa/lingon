@@ -3539,14 +3539,19 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
-        val tallHosts = startHostsViaHarness(count = 2, rows = 240, initialLines = 260)
+        // Static geometry checks need the complete tall payload, without an
+        // unrelated periodic echo producer keeping Compose continuously busy.
+        val tallHosts = startHostsViaHarness(count = 2, rows = 240, shell = "/bin/sh", initialLines = 260)
         val first = tallHosts[0]
         val second = tallHosts[1]
         val sessions = listOf(first, second)
         sessions.forEach { sessionId ->
             waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
             selectSessionTab(sessionId, timeoutMs = 10_000L)
-            waitUntilNoError(10_000L) { activeSessionId() == sessionId && !stateForTest().sessionSyncing }
+            waitUntilNoError(10_000L) {
+                activeSessionId() == sessionId && !stateForTest().sessionSyncing &&
+                    snapshotContainsToken("LINE_${sessionId} 259")
+            }
             composeRule.runOnIdle {
                 appViewModel().resetZoomAndPan()
             }
@@ -4117,6 +4122,21 @@ class EndToEndTest {
     }
 
     @Test
+    fun wall_event_count_includes_all_relay_pages() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        composeRule.runOnUiThread { appViewModel().setBackgroundWallEnabled(false) }
+        composeRule.waitForIdle()
+        ensureAllWallInactivityOff()
+        val before = wallEventCount()
+        val nonce = System.currentTimeMillis()
+        repeat(34) { index -> sendWallViaHarness("page boundary $nonce $index") }
+        assertEquals("wall count must include every relay page", before + 34, wallEventCount())
+    }
+
+    @Test
     fun foreground_manual_wall_delivery_does_not_post_system_notification() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -4134,19 +4154,31 @@ class EndToEndTest {
         val baselineWalls = wallEventCount()
 
         val message = "manual wall ${System.currentTimeMillis()}"
-        sendWallViaHarness(message)
-
-        waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
-        waitUntilNoError(5_000L) {
-            readStatusBanner()?.message?.contains(message) == true
+        val observedBanner = AtomicBoolean(false)
+        lateinit var observer: Job
+        composeRule.runOnUiThread {
+            observer = CoroutineScope(Dispatchers.Main.immediate).launch(start = CoroutineStart.UNDISPATCHED) {
+                appViewModel().state.collect { current ->
+                    if (current.bannerStatus?.message?.contains(message) == true) observedBanner.set(true)
+                }
+            }
         }
-        SystemClock.sleep(3_000L)
-        assertNoWallNotificationAutogroupSummary()
-        val visibleMessages = wallNotifications().map { wallNotificationFullText(it) }
-        assertFalse(
-            "foreground wall notification appeared while background wall was disabled: $visibleMessages",
-            visibleMessages.contains(message),
-        )
+        try {
+            sendWallViaHarness(message)
+            waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
+            // Count queries may span several pages while live frames clear
+            // status; the exact fresh banner must have been delivered meanwhile.
+            waitUntilNoError(5_000L) { observedBanner.get() }
+            SystemClock.sleep(3_000L)
+            assertNoWallNotificationAutogroupSummary()
+            val visibleMessages = wallNotifications().map { wallNotificationFullText(it) }
+            assertFalse(
+                "foreground wall notification appeared while background wall was disabled: $visibleMessages",
+                visibleMessages.contains(message),
+            )
+        } finally {
+            observer.cancel()
+        }
     }
 
     @Test
@@ -4877,7 +4909,19 @@ class EndToEndTest {
     private fun wallEventCount(): Int {
         val app = composeRule.activity.application as LingonApplication
         return runBlocking {
-            app.repository.listWallEvents(sinceId = 0, limit = 32).events.size
+            var total = 0
+            var since = 0L
+            var more = true
+            while (more) {
+                val page = app.repository.listWallEvents(sinceId = since, limit = 32)
+                total += page.events.size
+                more = page.hasMore
+                if (more) {
+                    assertTrue("wall pagination made no progress", page.nextId > since)
+                    since = page.nextId
+                }
+            }
+            total
         }
     }
 

@@ -29,6 +29,42 @@ Required status values:
 
 ## Active Items
 
+### B-207 Foreground wall fixture reads transient banner after live frames clear it
+
+- Status: `needs_verification`
+- Repro: With pagination repaired, the remaining-case probe passes event counting but `foreground_manual_wall_delivery_does_not_post_system_notification` times out at `EndToEndTest.kt:4160`, reading the banner after the network count query. Incoming snapshots/diffs clear status; foreground wall feedback is transient. Preserve exact delivery and notification-absence assertions, and observe the fresh banner while the wall is delivered.
+- Evidence: `build/android-remainder-pagination-after.log`, profile `resource-profile-20261007-193633-28852`, batch-3 raw/JUnit and peer trace. Twenty-nine other cases pass; later cases/classes are not reached. Probe stopped and owned resources cleaned.
+
+- Regression/fix: The exact fresh banner is observed through main-thread state flow before sending the wall, so subsequent live frames and paginated count queries cannot erase its evidence. The same unique message, exact count increment, no-autogroup and no-foreground-notification assertions remain. Android unit/compile gates pass (`build/foreground-banner-android-checks.log`). The final 17 selected cases pass with only the expected TLS cleartext skip, followed by all 16 cases in five additional classes (`build/android-final-cases-banner-after.log`, profiles `resource-profile-20261007-195220-64706` and `resource-profile-20261007-195712-74085`). A separate cleartext run passes the skipped exact method (`build/native-cleartext-fallback-proof.log`, profile `resource-profile-20261007-200114-79075`). No OOM or owned residual process remains. Full clean-candidate rehearsal is still required.
+
+- Final remediation checks: Uncached root Go tests, vet/golint/golangci-lint, Bash syntax, and three complete harness/publisher race runs pass (`build/publisher-android-fixes-standard-checks.log`). The publisher fix is committed as `cbc43fb`. Five additional instrumentation classes and the separate cleartext fallback are verified; a fresh complete `make prerelease` remains required before release readiness.
+
+### B-206 Wall-event instrumentation counter stops at its first 32 results
+
+- Status: `needs_verification`
+- Repro: The remaining-case probe with repaired tall fixture passes the first ten cases, then `foreground_manual_wall_delivery_does_not_post_system_notification` times out at `EndToEndTest.kt:4144`, waiting for its expected wall-event count. No notification assertion fails. The shared helper returns only `listWallEvents(sinceId=0, limit=32).events.size`, so counts can saturate after earlier cases produce wall history.
+- Evidence: `build/android-remainder-static-tall-after.log`; profile `resource-profile-20261007-191204-4166899`, batch-2 raw/JUnit and peer trace. Nineteen cases pass, one fails; later cases/classes are not reached. Add a real relay regression beyond 32 events before fixing the shared counter. Preserve all delivery/banner/notification assertions and resource limits.
+
+- Confirmed regression/fix: New real-relay `wall_event_count_includes_all_relay_pages` stores 34 messages and fails with expected 34 / actual 32 (`build/wall-count-pagination-before.log`, profile `resource-profile-20261007-192518-12862`). The counter now paginates with bounded 32-event pages and rejects non-progressing cursors. The regression and original foreground case pass together (`build/wall-count-pagination-after.log`, profile `resource-profile-20261007-193153-23740`); broader runs confirm pagination while exposing B-207. Notification and delivery assertions remain unchanged.
+
+### B-205 Tall-session keyboard hide test times out waiting for Compose idle
+
+- Status: `needs_verification`
+- Repro: The separate remaining-35-case native probe fails `keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions` at `EndToEndTest.kt:3563`: `ComposeNotIdleException` in `safeRunOnIdle` / `readLoginError`, while waiting for quick keys to disappear after Back. No bottom-anchor assertion fails. Nine other cases in that batch pass; the five additional classes are not reached because the serial driver stops on failure.
+- Evidence: `build/android-remainder-verify.log`; profile `resource-profile-20261007-185502-4124658`, batch-1 raw/JUnit and matching retained `harness.log`. The workload survives a tool-server restart and is followed through its original known systemd scope; no duplicate is started. Scope inactive/dead after failure. Reproduce the exact case before changing app or fixture behavior; preserve all viewport/anchor assertions and the hard resource limits.
+
+- Regression/fix: The isolated original case also fails (`build/tall-keyboard-idle-before.log`). `TestHostScriptShellOverridePreservesInitialLines` fails before (`build/quiet-tall-script-before.log`) and passes twenty race repetitions afterward (`build/quiet-tall-script-android-checks.log`). The shell override now preserves requested initial lines. The geometry fixture uses a quiet real shell with the same 260-line payload, verifies line 259 arrived, and retains every keyboard/anchor/cross-tab assertion. The complete affected ten-case batch passes in `build/android-remainder-static-tall-after.log` and again in `build/android-remainder-pagination-after.log`; Android unit/compile gates pass. Production app behavior and permanent flicker regressions are unchanged.
+
+### B-204 Quiet host loses its connection during initial snapshot request
+
+- Status: `needs_verification`
+- Repro: Fresh clean `00e575b` rehearsal passes every Go/tool/PTY/browser and uncached Android unit/compile gate. Native Android reaches 70 passing cases, then the controlled-clock inactivity case fails during login, before its timing assertions: waiting connection, empty snapshot, last frame error. Harness trace shows host-1's publisher closes with `ping timeout` during initial client attachment.
+- Evidence: `build/headless-fixed-prerelease-full.log`, lifecycle `build/lifecycle/prerelease-1065269367.log`; profile `resource-profile-20261007-182530-4076600`, batch-10 raw/JUnit; the shared harness log was inspected before a later run replaced it. Its observed failure is `relay.ws.read.failed role=host session=host-1` with close reason `ping timeout`, followed by `host.publisher.disconnect.done`. Exit 2, unchanged candidate, no artifact/tag/publication reached. Peak memory 3,180,630,016 bytes; zero OOM/events/kills; owned slice empty after cleanup. Preserve this stopped attempt.
+- Investigation: Publisher ping waits for pong while holding the application write mutex. Its synchronous hello/snapshot reader also needs that mutex before it can resume reading pong. Add an event-controlled real-WebSocket regression to prove or falsify this lock cycle before changing the transport.
+
+- Confirmed regression/fix: `TestPublisherSnapshotAndInputProceedDuringPendingPing` uses a mock ticker and actual outgoing ping observation, sends hello before peer pong, and asserts the real snapshot followed by input on the same connection. It fails before (`build/publisher-ping-snapshot-before-final.log`) and passes twenty race repetitions after (`build/publisher-ping-snapshot-after.log`). Ping releases the application write mutex before waiting for pong; the pinned WebSocket transport serializes control/data writes. Existing busy-write skip, timeout and cancellation behavior remains, with three complete publisher race runs passing (`build/publisher-complete-races-after.log`).
+- Device proof: Exact controlled-clock Android inactivity case passes (`build/quiet-host-ping-after.log`, profile `resource-profile-20261007-184757-4114740`) at 1 CPU / 3 GiB / zero swap, including unchanged deadline, tab-switch and typed-input assertions. The integration runner now retains each batch's peer trace beside raw/JUnit evidence so later harness restarts cannot replace it. Full rehearsal remains required.
+
 ### B-203 Headless discovery fixture reads labels at top-row auto-hide boundary
 
 - Status: `needs_verification`

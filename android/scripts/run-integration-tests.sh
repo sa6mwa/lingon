@@ -725,6 +725,12 @@ run_selected_tests() {
     CURRENT_TEST_PGID="$(ps -o pgid= "${CURRENT_TEST_PID}" | tr -d ' ' || true)"
     wait "${CURRENT_TEST_PID}"
     TEST_EXIT=$?
+    # A later harness restart replaces the shared log. Retain the exact peer
+    # trace alongside this batch's raw protocol/JUnit, including failed runs.
+    if ! cp "${HARNESS_LOG}" "${report_dir}/harness.log" || ! chmod 600 "${report_dir}/harness.log"; then
+      echo "Failed to retain instrumentation batch harness evidence." >&2
+      TEST_EXIT=1
+    fi
     CURRENT_TEST_PID=""
     CURRENT_TEST_PGID=""
     return "${TEST_EXIT}"

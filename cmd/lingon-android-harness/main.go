@@ -972,10 +972,20 @@ func writeHostScript(baseDir, id, harnessPath string, shellOverride string, init
 		shellPath = strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_HOST_SHELL"))
 	}
 	if shellPath != "" {
+		initialOutput := ""
+		if initialLines > 0 {
+			initialOutput = fmt.Sprintf(`line_index=0
+while [ "$line_index" -lt %d ]; do
+  printf 'LINE_%s %%03d\r\n' "$line_index"
+  line_index=$((line_index + 1))
+done
+`, initialLines, id)
+		}
 		content := fmt.Sprintf(`#!/bin/sh
+%s
 export PS1='%s$ '
 exec "%s" -i
-`, id, shellPath)
+`, initialOutput, id, shellPath)
 		if err := os.WriteFile(scriptPath, []byte(content), 0o700); err != nil {
 			return "", err
 		}
