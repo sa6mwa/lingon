@@ -29,6 +29,17 @@ Required status values:
 
 ## Active Items
 
+### B-200 Dual-local-PTY inactivity test reports a focused self-modal
+
+- Status: `needs_verification`
+- Repro: Clean bounded rehearsal at `e7ba6c9` passes prerequisites, lint, all Go normal/race and Android-tool checks, then fails `TestTwoEnabledLocalPTYsSuppressFocusedSelfModalAndAvoidDuplicateNotifications` at line 318. Screen contains `DUAL_FOCUS_B` and a `wall-dual-a inactive` modal while the assertion expects focus on A (`build/lifecycle/prerelease-2993681075.log`, driver `build/resource-prerelease.6QVBFh.log`). Attach PTY and browser packages pass.
+- Attempt state: Exit 2; source candidate unchanged and clean before this investigation; owned verification scope inactive/dead. Android and artifacts were not reached. No merge/tag/push/publish. Preserve this attempt and repair separately within 1 CPU / 3 GiB / zero swap.
+- Investigation envelope: Establish actual focus before advancing inactivity deadlines, use an injected mock clock for timing proof, and retain focused-modal suppression, sibling-modal visibility, both exact notification counts/bodies and permanent flicker assertions.
+
+- Confirmed fixture cause: Ten unchanged isolated repetitions fail (`build/wall-dual-focus-before.log`). The retained trace shows sibling creation focuses B, `n` switches B → A, and the later `p` switches A → B. `switchToToken` sees the old A frame before the queued `p` completes, so the test incorrectly treats B as focused A (`build/wall-dual-focus-before.trace.jsonl`). The source correctly displays A's sibling modal when B is focused.
+- Fixture repair: Keep A focused after enabling both local PTYs, removing the unnecessary final `p`/blind advance. Retain the mock clock, focused self-modal absence, sibling modal visibility, exactly two notifications and exact per-session titles/bodies. Production modal/rendering code and permanent flicker tests are untouched.
+- Verification: Ten corrected race repetitions pass (`build/wall-dual-focus-after.log`). The complete related wall-inactivity/explicit-kind integration group passes (`build/wall-dual-focus-companions.log`); integration-tagged vet, formatting/diff validation and standard vet/golint/golangci-lint pass (`build/wall-dual-focus-{vet,lint}.log`). Clean prescribed review and a fresh complete bounded rehearsal remain required.
+
 ### B-199 Remote close refresh reads session-closure state without its lock
 
 - Status: `needs_verification`

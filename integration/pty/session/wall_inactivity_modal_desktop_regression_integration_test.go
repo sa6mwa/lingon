@@ -299,10 +299,9 @@ func TestTwoEnabledLocalPTYsSuppressFocusedSelfModalAndAvoidDuplicateNotificatio
 		t.Fatalf("expected wall inactivity banner for second session")
 	}
 
-	host.SendCtrlL()
-	host.Send("p")
-	advanceTestClock(h.Clock(), 200*time.Millisecond)
-	if !switchToToken(host, firstMark, 3, 500*time.Millisecond) {
+	// Creating the sibling focuses B; next returns to A. Both are enabled
+	// now, so keep A focused while advancing the inactivity timers.
+	if !screenContainsWithin(host, firstMark, 500*time.Millisecond) {
 		t.Fatalf("expected focus to return to wall-dual-a before inactivity timers")
 	}
 
