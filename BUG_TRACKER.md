@@ -29,6 +29,27 @@ Required status values:
 
 ## Active Items
 
+Verification closeout (2026-10-08): B-187 through B-207 now have their complete
+relevant-suite evidence in `build/lifecycle/prerelease-53352114.log`, tested at
+`8450be7`: root/tool normal and race gates, lint, actual owned-PTY attach
+(299.568s)/session (296.820s), browser (58.310s), uncached Android unit/compile,
+107 end-to-end methods (sole TLS cleartext skip covered by the separate HTTP
+pass), all 16 additional instrumentation methods, and performance observations.
+The attempt was stopped during artifact construction when the requested archive
+layout changed; it is preserved and is not claimed as a completed prerelease.
+
+Packaging and release-heap changes were proved in isolation, then the complete
+artifact-only matrix passed at `54076e5` (`build/unix-layout-dex-fixed-artifact-matrix.log`,
+`build/lifecycle/release-matrix-2243103556.log`). Six CLI archives have the Unix
+install layout and verified OS/CPU/static-or-system-linking/commit identity;
+the signed APK, Podman amd64/arm64 manifest/native smoke, exact checksums and
+privacy checks pass. Artifacts are untagged `0.0.0` rehearsal bytes under
+`dist/v0.0.0`; the receipt intentionally has `FullProof=false`, so publication
+still requires the normal tagged release proof. No merge/tag/push/publication
+occurred. The enforced aggregate ceiling is 4 CPUs/4 GiB/zero swap; cleanup leaves
+zero owned tasks. Artifact proof predates this documentation-only closeout commit.
+
+
 ### B-209 Release APK dex merge exhausts the 512 MiB Gradle heap
 
 - Status: `resolved`
@@ -47,7 +68,7 @@ Required status values:
 
 ### B-207 Foreground wall fixture reads transient banner after live frames clear it
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: With pagination repaired, the remaining-case probe passes event counting but `foreground_manual_wall_delivery_does_not_post_system_notification` times out at `EndToEndTest.kt:4160`, reading the banner after the network count query. Incoming snapshots/diffs clear status; foreground wall feedback is transient. Preserve exact delivery and notification-absence assertions, and observe the fresh banner while the wall is delivered.
 - Evidence: `build/android-remainder-pagination-after.log`, profile `resource-profile-20261007-193633-28852`, batch-3 raw/JUnit and peer trace. Twenty-nine other cases pass; later cases/classes are not reached. Probe stopped and owned resources cleaned.
 
@@ -57,7 +78,7 @@ Required status values:
 
 ### B-206 Wall-event instrumentation counter stops at its first 32 results
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: The remaining-case probe with repaired tall fixture passes the first ten cases, then `foreground_manual_wall_delivery_does_not_post_system_notification` times out at `EndToEndTest.kt:4144`, waiting for its expected wall-event count. No notification assertion fails. The shared helper returns only `listWallEvents(sinceId=0, limit=32).events.size`, so counts can saturate after earlier cases produce wall history.
 - Evidence: `build/android-remainder-static-tall-after.log`; profile `resource-profile-20261007-191204-4166899`, batch-2 raw/JUnit and peer trace. Nineteen cases pass, one fails; later cases/classes are not reached. Add a real relay regression beyond 32 events before fixing the shared counter. Preserve all delivery/banner/notification assertions and resource limits.
 
@@ -65,7 +86,7 @@ Required status values:
 
 ### B-205 Tall-session keyboard hide test times out waiting for Compose idle
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: The separate remaining-35-case native probe fails `keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions` at `EndToEndTest.kt:3563`: `ComposeNotIdleException` in `safeRunOnIdle` / `readLoginError`, while waiting for quick keys to disappear after Back. No bottom-anchor assertion fails. Nine other cases in that batch pass; the five additional classes are not reached because the serial driver stops on failure.
 - Evidence: `build/android-remainder-verify.log`; profile `resource-profile-20261007-185502-4124658`, batch-1 raw/JUnit and matching retained `harness.log`. The workload survives a tool-server restart and is followed through its original known systemd scope; no duplicate is started. Scope inactive/dead after failure. Reproduce the exact case before changing app or fixture behavior; preserve all viewport/anchor assertions and the hard resource limits.
 
@@ -73,7 +94,7 @@ Required status values:
 
 ### B-204 Quiet host loses its connection during initial snapshot request
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Fresh clean `00e575b` rehearsal passes every Go/tool/PTY/browser and uncached Android unit/compile gate. Native Android reaches 70 passing cases, then the controlled-clock inactivity case fails during login, before its timing assertions: waiting connection, empty snapshot, last frame error. Harness trace shows host-1's publisher closes with `ping timeout` during initial client attachment.
 - Evidence: `build/headless-fixed-prerelease-full.log`, lifecycle `build/lifecycle/prerelease-1065269367.log`; profile `resource-profile-20261007-182530-4076600`, batch-10 raw/JUnit; the shared harness log was inspected before a later run replaced it. Its observed failure is `relay.ws.read.failed role=host session=host-1` with close reason `ping timeout`, followed by `host.publisher.disconnect.done`. Exit 2, unchanged candidate, no artifact/tag/publication reached. Peak memory 3,180,630,016 bytes; zero OOM/events/kills; owned slice empty after cleanup. Preserve this stopped attempt.
 - Investigation: Publisher ping waits for pong while holding the application write mutex. Its synchronous hello/snapshot reader also needs that mutex before it can resume reading pong. Add an event-controlled real-WebSocket regression to prove or falsify this lock cycle before changing the transport.
@@ -83,7 +104,7 @@ Required status values:
 
 ### B-203 Headless discovery fixture reads labels at top-row auto-hide boundary
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Clean `7443f84` full rehearsal fails `TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh`: row 1 contains the child shell prompt instead of both labels (`multi_headless_local_integration_test.go:150`). The fixture neither establishes a terminal snapshot/cursor below the auto-hide boundary nor injects its timing clock. Preserve default event-driven discovery and the two-second visibility bound.
 - Evidence: `build/native-prerelease-full.log`, lifecycle `build/lifecycle/prerelease-1564723225.log`. All Go normal/race/tool gates pass; session PTY (440.006s) and browser (90.476s) pass. Attach (458.042s) fails B-202/B-203. Exit 2, unchanged candidate, no Android/artifact/tag/publication reached. Investigate separately from the stopped attempt.
 
@@ -91,7 +112,7 @@ Required status values:
 
 ### B-202 Local detach fixture accepts the closed session's stale prompt
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: The same full rehearsal fails `TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay`: survivor input produces no expected token (`headless_cli_regression_integration_test.go:765`). The readiness predicate permits a blank tab row plus the old session's identical `PROMPT>` before the survivor's snapshot is ready. Preserve real CLI/PTY input and all stale-overlay/dead-tab assertions; establish distinct survivor readiness before sending input.
 - Evidence: `build/lifecycle/prerelease-1564723225.log`, preceding real relay close/connect trace and failed screen. This diagnosis remains to be verified by focused regressions.
 
@@ -99,7 +120,7 @@ Required status values:
 
 ### B-201 View-only resize instrumentation races transient blocked-input status
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Native full Android sweep reaches 68 results at the approved 1 CPU / 3 GiB ceiling without OOM, then fails `resize_setting_disabled_for_view_only_share_token`: expected `view-only session` status after attempted keyboard input, observed null. Input nonce remains unchanged and control remains false. Preserve all three assertions while determining why the blocked-input feedback is missing.
 - Evidence: `build/native-full-android-sweep.log`; `android/test-artifacts/resource-profile-20261007-164131-3913785/android-test-batches/batch-8/TEST-instrumentation.xml.raw`, stack at `EndToEndTest.kt:5229`. The sweep exits 1 and owned resources are cleaned; memory events show zero OOM/kills. Full release proof remains incomplete.
 
@@ -108,7 +129,7 @@ Required status values:
 
 ### B-200 Dual-local-PTY inactivity test reports a focused self-modal
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Clean bounded rehearsal at `e7ba6c9` passes prerequisites, lint, all Go normal/race and Android-tool checks, then fails `TestTwoEnabledLocalPTYsSuppressFocusedSelfModalAndAvoidDuplicateNotifications` at line 318. Screen contains `DUAL_FOCUS_B` and a `wall-dual-a inactive` modal while the assertion expects focus on A (`build/lifecycle/prerelease-2993681075.log`, driver `build/resource-prerelease.6QVBFh.log`). Attach PTY and browser packages pass.
 - Attempt state: Exit 2; source candidate unchanged and clean before this investigation; owned verification scope inactive/dead. Android and artifacts were not reached. No merge/tag/push/publish. Preserve this attempt and repair separately within 1 CPU / 3 GiB / zero swap.
 - Investigation envelope: Establish actual focus before advancing inactivity deadlines, use an injected mock clock for timing proof, and retain focused-modal suppression, sibling-modal visibility, both exact notification counts/bodies and permanent flicker assertions.
@@ -119,7 +140,7 @@ Required status values:
 
 ### B-199 Remote close refresh reads session-closure state without its lock
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Full affected session race suite reports `applySessions` writing `view.sessionClosed` at `remote.go:1293` concurrently with `handleViewClosed` reading it after unlocking at `remote.go:1226` (`build/rename-escape-expiry-affected-races.log`, `TestRemoteInputSurvivesStaleSessionsList`).
 - Required repair: Capture refresh eligibility and context under the manager lock for the current view/run generation; obsolete callbacks must not refresh. Add concurrent metadata/close and observable HTTP refresh regressions; retain existing session/input and permanent flicker assertions.
 
@@ -129,7 +150,7 @@ Required status values:
 
 ### B-198 Escape rename cancellation can consume later shell input
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Finding: Prescribed review of clean `1f2aa03` reports an indefinitely armed escape-tail parser after standalone Escape (`build/resource-review.normal-trunk.s1AiDM.log`, P2). A later `OMP_NUM_THREADS=1` or `[`-prefixed input loses bytes in both host and attach modes.
 - Required proof: Add isolated `ptytest` host/attach regressions with an injected clock and an explicit delayed-input advance. Preserve immediate CSI/SS3 cancellation-tail swallowing, Ctrl+C input preservation, all prompt assertions and permanent flicker tests.
 - Repair envelope: Bound escape-tail recognition to 100 ms from the cancelling Escape, including incomplete CSI/SS3 tails; use the caller's injected clock rather than wall-clock sleeps.
@@ -140,7 +161,7 @@ Required status values:
 
 ### B-197 Android harness creates a headless share before relay registration
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Under the approved 1 CPU / 3 GiB profile, headless resize setup returns HTTP 500 while zoom and typing takeover pass (`build/resource-android-terminal-no-vulkan.log`). That run completes without OOM; all owned resources are stopped.
 - Diagnostic: Ten direct HTTP requests to the existing isolated Android harness at the same CPU/RAM limit return five successes and five `share create failed: 404 Not Found` failures (`build/resource-headless-http-diagnostic.log`). The helper accepts local socket existence as readiness, then asks the real SDK to create a share before the relay necessarily records session ownership.
 - Intended repair: Wait for the requested session's active relay publication before creating the real share. Add controlled protocol regression coverage without wall-clock sleeps or retries that hide incorrect ordering; retain all Android assertions.
@@ -149,7 +170,7 @@ Required status values:
 
 ### B-196 Android verification exhausts the approved aggregate memory budget
 
-- Status: `in_progress`
+- Status: `resolved`
 - Repro: Full serial rehearsal at clean `37005f7` passes all Go, race, tool, PTY/browser and Android unit/compile gates. Android's seven-test, late-host, 62-test and controlled inactivity batches pass. The final 35-test batch reaches 31 completed, no failures and only the expected cleartext skip, then the systemd-scoped runner is killed with exit 137 (`build/lifecycle/prerelease-948193201.log`, driver `build/resume-prerelease.rGQ4Tq.log`).
 - Evidence: Owned resource profile `android/test-artifacts/resource-profile-20261007-083829-3554491` records a 7 GiB ceiling, no swap and peak memory about 7 GiB. Its final process snapshots contain the owned emulator, current Gradle/UTP processes and one harness. Exact memory-category/OOM counters are not currently recorded, so add diagnostics before selecting a bounded-resource runner repair. Preserve the CPU/memory caps and complete method accounting.
 - Attempt state: Terminal exit 2, unchanged source candidate, no tag/push/publish or artifact build. Cleartext/remaining instrumentation/performance/artifact gates were not reached. Preserve the attempt; investigate and verify separately.
@@ -173,7 +194,7 @@ Required status values:
 
 ### B-195 Local attach immediate online toggle loses the visible tab label
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Full serial rehearsal at clean `bd45351` passes all Go normal/race/tool gates, then stops in PTY/browser integration. `TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip` cannot observe the session label within its existing 900 ms immediate-online bound (`multi_headless_local_integration_test.go:632`, `build/lifecycle/prerelease-3404138252.log`, driver `build/resume-prerelease.kVaTGm.log`). Session and browser packages pass.
 - Attempt state: Terminal exit 2, unchanged candidate, no tag/push/publish or artifact build. Android was not reached. Preserve the attempt; diagnose and repair separately. Retain all label/style/bound assertions and permanent flicker regressions.
 - Investigation: Ten unchanged isolated repetitions and thirty repetitions with a rendered-row diagnostic pass (`build/resume-online-tab-{before,diagnostic}.log`); these are not claimed as failing proof. The retained full-suite failure is authoritative. Readback shows explicit wakes force only two render passes and top-row cursor ownership hides tabs afterward. The fixture asserted visible labels without establishing that the shell cursor had left that auto-hide boundary.
@@ -182,7 +203,7 @@ Required status values:
 
 ### B-194 Long data-directory paths prevent relay administration startup
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Report: Prescribed review of clean `068bb3d` against pinned trunk finds `ListenUsers` binding the absolute data-directory socket path directly. Valid paths beyond the OS Unix-domain address length cause relay startup to fail (`build/resume-review.normal-trunk.Mj1xjl.log`, P2).
 - Scope: Preserve authoritative ownership, private socket permissions and the actual `.admin/socket` location. Prove startup and administrative mutations with a long data directory, use bounded private pathname addressing, and verify cleanup and existing security/ownership boundaries. No new transport or persistence format.
 - Before/after proof: Both absolute and relative long-directory configurations fail to bind before repair (`build/resume-admin-long-path-before.log`). Live-owner administrative creation and original-location/private-permission/close cleanup assertions pass afterward, including three race repetitions with the final addressing adapters (`build/resume-admin-socket-boundaries-final.log`).
@@ -191,7 +212,7 @@ Required status values:
 
 ### B-193 New Android share inherits reconnect suppression from a closed session
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Report: The same prescribed review finds `handleExplicitSessionClosed` leaving suppression enabled after the last session closes; a new share starts HTTP authentication before suppression is cleared. Transient authentication failures therefore cannot schedule reconnect (`build/resume-review.normal-trunk.Mj1xjl.log`, P2).
 - Scope: Clear old-session suppression when beginning the new share connection. Add failing-before unit and exact Android instrumentation coverage for closure followed by transient share authentication and recovery; preserve obsolete-result guards.
 - Before/after proof: The new unit regression closes the last authenticated share and opens another; explicit coroutine-time advancement finds one attempt instead of the required retry (`build/resume-share-close-retry-unit-before.log`). Real relay/emulator instrumentation creates a disposable headless share, closes it, then submits one replacement share with two injected transient failures. Before repair it remains idle at the placeholder (`build/resume-share-close-retry-e2e-before-ready.log`). The initial diagnostic expected a tick from a headless child that does not emit ticks; that setup failure is not claimed as bug proof.
@@ -200,7 +221,7 @@ Required status values:
 
 ### B-192 Headless inactivity race-gate regression times out
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Full serial rehearsal at clean `ff41ccd` passes prerequisites, lint and uncached Go tests, then stops in the Go race suite when `TestDaemonInactivityWallFiresOnceUntilNewActivity` times out at `daemon_integration_test.go:454` (`build/lifecycle/prerelease-2714658299.log`, driver `build/resume-prerelease.rGaLqp.log`). The test passed earlier complete Go race gates, so investigate the specific ordering rather than weakening its assertions or timeout.
 - Attempt state: Terminal exit 2, unchanged candidate branch, no tag/push/publish or artifact build. PTY/browser and Android were not reached in this attempt. Retain the failed attempt and repair separately with owned-PTY and controlled-clock proof.
 - Diagnosis/readback: The second-event assertion advances the injected clock after formatted command output is observed, while an interactive shell can still emit its prompt. That late child output updates headless activity at the advanced time and postpones the wall. Two of thirty isolated race repetitions reproduce the unchanged two-second observation timeout (`build/resume-headless-wall-before.log`).
@@ -209,7 +230,7 @@ Required status values:
 
 ### B-191 Rename cancellation swallows ordinary input after Ctrl+C
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Report: Prescribed review of clean `c24935b` against pinned trunk finds Ctrl+C cancellation setting the same escape-tail state as ESC. Host and attach then discard characters from ordinary input beginning with `O` or `[` (`build/resume-review.normal-trunk.cDQ28a.log`, P2, `internal/control/rename.go`).
 - Scope: Only ESC may arm escape-tail suppression. Preserve existing escape cancellation and all permanent flicker assertions; add failing-before owned-PTY input regressions for host and attach before fixing the shared parser.
 - Before/after proof: The exported prompt API loses both `Ohello` and `[hello` after Ctrl+C (`build/resume-rename-cancel-unit-before.log`). All four real owned-PTY combinations (host/attach and both prefixes) fail before the repair and display `PROMPT>ello` (`build/resume-rename-cancel-pty-before.log`). After setting escape-tail state only for ESC, the complete control unit suite passes twenty race repetitions, including preserved CSI/SS3 escape-tail handling, and all four PTY cases pass twenty repetitions (`build/resume-rename-cancel-{unit,pty}-after.log`). Fixtures establish actual shell input/output and visible rename readiness before cancelling; no inherited terminal control is used.
@@ -217,7 +238,7 @@ Required status values:
 
 ### B-190 Android notification-permission coverage silently skips
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Full serial rehearsal at clean `5269285` passes all Go normal/race/tool gates, full PTY/browser integration, Android unit/compile gates and the end-to-end assertions, including B-189's controlled-clock regression. It stops at coverage verification because `background_wall_delivery_stops_without_notification_permission_and_recovers_after_grant` skips after its AppOps helper fails to disable delivery (`build/lifecycle/prerelease-238689470.log`, driver `build/resume-prerelease-after-wall.log`). The cleartext-only skip is expected in TLS; this permission-test skip is not.
 - Attempt state: Terminal exit 2, owned harness teardown complete, unchanged clean candidate branch, no tag/push/publish or artifact build. Retain this attempt; repair and fresh verification occur separately.
 - Scope: Prove notification gating and recovery on the owned API-35 emulator without skipping the required behavior or terminating instrumentation. Capture command/state diagnostics before selecting the fixture repair; retain the suppression and recovery assertions.
@@ -227,7 +248,7 @@ Required status values:
 
 ### B-189 Android wall-inactivity tab-switch regression fails full sweep setup
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: Full serial rehearsal at `ac4083a` passes all Go/integration and Android unit/compile gates, plus the first seven-test, late-host and 62-test Android batches. The isolated `tab_switch_does_not_rearm_wall_inactivity_without_terminal_input` case then fails waiting for enabled status with a `250ms` label (`build/lifecycle/prerelease-4248568043.log`, instrumented line 3317). The attempt is stopped and retained; no artifacts were built.
 - Constraint: Diagnose the actual status transition; preserve explicit no-rearm behavior and positive terminal-input rearming. Timing proof must use an injected clock and controlled advancement rather than the current wall-clock sleep. Exact Android-visible instrumentation proof is required.
 - Diagnosis/readback: The shared semantics tag selected an offscreen settings action; repeated failures retained disabled state and forwarded no command (`build/resume-wall-tab-{android-before,status-diagnostic,trace-final}.log`). The fixture now scrolls the uniquely named settings action into view before clicking it. The same correction applies to the banner fixture. Production wall behavior is unchanged.
@@ -236,7 +257,7 @@ Required status values:
 
 ### B-188 Local session startup races control/resize geometry
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: The full serial rehearsal at clean `acf3be9` passes root/Android-tool gates, then stops in PTY/browser integration (`build/lifecycle/prerelease-1509340191.log`). Session and browser packages pass. `TestAttachMultiHostRelayDropSwitchesTabs` detects `localSession.Resize` writing cols/rows under `emuMu` while `runOnce` reads/defaults them outside that lock during a newly created session's startup.
 - Scope: Serialize defaulting, emulator initialization and initial PTY geometry with normal resizing; use captured dimensions for logging. Preserve owned-PTY terminal isolation and all existing tab/input/flicker assertions. Retain the failed terminal attempt and verify before/after races before a fresh rehearsal.
 
@@ -246,7 +267,7 @@ Required status values:
 
 ### B-187 Repeated-input fixture clears connection status before readiness completes
 
-- Status: `needs_verification`
+- Status: `resolved`
 - Repro: The full serial rehearsal at clean `26a8c0e` passes prerequisites, lint, root Go/race and Android-tool gates, then stops at PTY/browser integration (`build/lifecycle/prerelease-1106980684.log`). Session and browser packages pass. `TestMultiAttachRealCLIControlRepeatedSingleByteInputStaysResponsive` cannot observe `PROMPT> abcde` within its unchanged 700 ms bound; the captured row contains `PROMPT> abcconnected to ...`.
 - Diagnosis: The existing banner-clear helper returns on an initial banner-free frame before the asynchronous ready callback displays connection status. Confirm callback/display ordering, establish an observable readiness/display barrier, and retain all input-latency and permanent flicker assertions.
 - Attempt state: The failed attempt is terminal and retained. No tag, push, publish or artifact build occurred. Any repair/rehearsal is a separate iteration.
