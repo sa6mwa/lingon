@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -340,6 +341,12 @@ func TestDaemonReplaysPublishStatusToNewAttachClient(t *testing.T) {
 
 func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	cfgDir := testutil.TempDir(t)
+	// This script runs only in the daemon's dedicated child PTY. Disable its
+	// echo before readiness and emit no prompt after the completion marker.
+	shell := filepath.Join(cfgDir, "inactivity-shell.sh")
+	if err := os.WriteFile(shell, []byte("#!/bin/sh\nstty -echo || exit 1\nprintf 'INACTIVITY_READY\\n'\nwhile IFS= read -r line; do\n  printf 'REARM_INACTIVITY_WALL\\n'\ndone\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	sessionID := "headless-inactive-once"
 	socketPath, err := headless.SocketPath(cfgDir, sessionID)
 	if err != nil {
@@ -352,6 +359,7 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	d := New(Options{
 		ConfigDir:               cfgDir,
 		SessionID:               sessionID,
+		Shell:                   shell,
 		Publish:                 false,
 		Clock:                   clk,
 		WallInactiveAfterLevels: []time.Duration{2 * time.Second},
@@ -408,6 +416,10 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 		t.Fatalf("attach did not become ready")
 	}
 
+	defer cancelAttach()
+	waitUntil(t, 2*time.Second, func() bool {
+		return strings.Contains(out.String(), "INACTIVITY_READY")
+	})
 	if err := sendHeadlessCommand(context.Background(), socketPath, sessionID, protocolpb.CommandKind_COMMAND_KIND_CYCLE_WALL_INACTIVITY); err != nil {
 		t.Fatalf("send command enable inactivity wall: %v", err)
 	}
@@ -423,7 +435,6 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 	})
 
 	clk.Add(8 * time.Second)
-	time.Sleep(50 * time.Millisecond)
 	if got := wallCount.Load(); got != 1 {
 		t.Fatalf("expected one inactivity wall without new activity, got %d", got)
 	}
@@ -433,9 +444,9 @@ func TestDaemonInactivityWallFiresOnceUntilNewActivity(t *testing.T) {
 		UnixSocket:     socketPath,
 		SessionID:      sessionID,
 		RequestControl: true,
-		// The completed output nonce is absent from the echoed command, so the
-		// observer cannot advance time while the command is still executing.
-		Tokens:    []string{"printf 'REARM_%s\\n' INACTIVITY_WALL"},
+		// The test-owned child acknowledges the completed line with its final
+		// output marker; no shell prompt can arrive after time is advanced.
+		Tokens:    []string{"REARM"},
 		NoNewline: false,
 		Logger:    pslog.NoopLogger(),
 	}); err != nil {

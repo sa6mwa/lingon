@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-192 Headless inactivity race-gate regression times out
+
+- Status: `needs_verification`
+- Repro: Full serial rehearsal at clean `ff41ccd` passes prerequisites, lint and uncached Go tests, then stops in the Go race suite when `TestDaemonInactivityWallFiresOnceUntilNewActivity` times out at `daemon_integration_test.go:454` (`build/lifecycle/prerelease-2714658299.log`, driver `build/resume-prerelease.rGaLqp.log`). The test passed earlier complete Go race gates, so investigate the specific ordering rather than weakening its assertions or timeout.
+- Attempt state: Terminal exit 2, unchanged candidate branch, no tag/push/publish or artifact build. PTY/browser and Android were not reached in this attempt. Retain the failed attempt and repair separately with owned-PTY and controlled-clock proof.
+- Diagnosis/readback: The second-event assertion advances the injected clock after formatted command output is observed, while an interactive shell can still emit its prompt. That late child output updates headless activity at the advanced time and postpones the wall. Two of thirty isolated race repetitions reproduce the unchanged two-second observation timeout (`build/resume-headless-wall-before.log`).
+- Fixture repair: Use a controlled script exclusively inside the daemon's existing test-owned child PTY. It disables only its own terminal echo, announces readiness, reads actual input lines and emits a final completion marker without a later prompt. Wait for readiness before enabling inactivity and for the final marker before advancing mock time. Preserve the two-second inactivity level and all once/until-new-activity assertions; remove the negative wall-clock sleep. Cancel the detached observer on late failure as well as normal completion. No production timer or terminal behavior changes.
+- Verification: Thirty race repetitions pass (`build/resume-headless-wall-after.log`); complete headless/session/PTY-support race suites pass (`build/resume-headless-wall-affected-race.log`). Root Go tests and standard vet/golint/golangci-lint pass (`build/resume-headless-wall-go-gates.log`). All terminal operations belong to the daemon's isolated child PTY; parent runner I/O remains owned pipes/null output. Clean prescribed review and a fresh complete serial rehearsal remain required.
+
 ### B-191 Rename cancellation swallows ordinary input after Ctrl+C
 
 - Status: `needs_verification`
