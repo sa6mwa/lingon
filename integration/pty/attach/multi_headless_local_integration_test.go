@@ -562,13 +562,16 @@ func TestMultiAttachHeadlessOfflineToggleImmediatelyMutesActiveTab(t *testing.T)
 func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	cfgDir := shortConfigDir(t)
 	const sessionID = "offline-immediate-roundtrip-a"
-	h := newHarness(t, ptytest.WithClock(clock.New()))
+	clk := clock.NewMock()
+	h := newHarness(t, ptytest.WithClock(clk))
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
 		SessionID: sessionID,
 		Publish:   true,
 		Endpoint:  h.Endpoint(),
 		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBash(t),
+		Clock:     clk,
 	})
 	defer stop()
 
@@ -595,6 +598,15 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 		return nil
 	})
 
+	// Keep the shell cursor below the top-row auto-hide boundary before
+	// asserting tab labels/styles, as in the permanent tab-switch fixtures.
+	attachSess.Send("printf 'ONLINE_%s\\n' READY\r")
+	attachSess.Eventually(8*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains("ONLINE_READY") || attachSess.Cursor().Row <= 1 {
+			return fmt.Errorf("shell output/cursor not ready for visible tab assertions: %s", screen.String())
+		}
+		return nil
+	})
 	h.StopServer()
 	attachSess.Eventually(12*time.Second, 150*time.Millisecond, func(screen ptytest.Screen) error {
 		row := screen.Row(0)
@@ -632,7 +644,7 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	attachSess.Eventually(900*time.Millisecond, 60*time.Millisecond, func(_ ptytest.Screen) error {
 		mode, ok := tabLabelMode(attachSess, sessionID)
 		if !ok {
-			return fmt.Errorf("session label %q not visible after immediate online toggle", sessionID)
+			return fmt.Errorf("session label %q not visible after immediate online toggle, row=%q", sessionID, attachSess.Screen().Row(0))
 		}
 		if mode&terminal.ModeFaint != 0 || mode&terminal.ModeItalic != 0 {
 			return fmt.Errorf("expected immediate non-muted tab style in online mode, mode=%d", mode)

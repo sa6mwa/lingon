@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-195 Local attach immediate online toggle loses the visible tab label
+
+- Status: `needs_verification`
+- Repro: Full serial rehearsal at clean `bd45351` passes all Go normal/race/tool gates, then stops in PTY/browser integration. `TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip` cannot observe the session label within its existing 900 ms immediate-online bound (`multi_headless_local_integration_test.go:632`, `build/lifecycle/prerelease-3404138252.log`, driver `build/resume-prerelease.kVaTGm.log`). Session and browser packages pass.
+- Attempt state: Terminal exit 2, unchanged candidate, no tag/push/publish or artifact build. Android was not reached. Preserve the attempt; diagnose and repair separately. Retain all label/style/bound assertions and permanent flicker regressions.
+- Investigation: Ten unchanged isolated repetitions and thirty repetitions with a rendered-row diagnostic pass (`build/resume-online-tab-{before,diagnostic}.log`); these are not claimed as failing proof. The retained full-suite failure is authoritative. Readback shows explicit wakes force only two render passes and top-row cursor ownership hides tabs afterward. The fixture asserted visible labels without establishing that the shell cursor had left that auto-hide boundary.
+- Fixture repair: Use the existing owned known-prompt shell, share an injected mock clock across relay/attach/headless flows, and require actual formatted output plus a cursor below row 1 before disconnecting and exercising the toggles. This matches the readiness precondition in existing tab-switch tests. Both 900 ms bounds and every label/style/status assertion remain intact; production rendering and permanent flicker tests are unchanged.
+- Verification: Twenty corrected-fixture race repetitions pass (`build/resume-online-tab-controlled-after.log`). Offline/style/status companions, startup/top-row auto-hide and all existing no-full-redraw/reconnect/resize regressions pass (`build/resume-online-tab-companions.log`). Root Go tests and standard vet/golint/golangci-lint pass (`build/resume-online-tab-go-gates.log`). Clean prescribed review and a fresh complete serial rehearsal remain required.
+
 ### B-194 Long data-directory paths prevent relay administration startup
 
 - Status: `needs_verification`
