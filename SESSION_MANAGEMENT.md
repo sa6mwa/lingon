@@ -120,12 +120,12 @@ slowdown, and process creation completes without blocking the terminal reader.
 Reproduce the performance comparisons and UI checks serially:
 
 ```sh
-GOMAXPROCS=2 go test -tags=integration -p 1 ./integration/pty/attach -run '^TestSessionManagement' -count=1 -v
-GOMAXPROCS=2 go test ./internal/relay -run '^$' -bench '^BenchmarkWSReplay$' -benchmem -count=3 -benchtime=1s
-GOMAXPROCS=2 go test -tags=integration -p 1 ./integration/webui -run '^TestWebUISessionManagement$' -count=1
-LINGON_IT_ONLY=settings_create_terminal_and_rename_session,settings_session_management_hidden_for_share LINGON_IT_CPU_QUOTA_PERCENT=200 LINGON_IT_MEMORY_MAX=7G ./android/scripts/run-integration-tests.sh
+bash scripts/verify-contained.sh go test -tags=integration -p 1 ./integration/pty/attach -run '^TestSessionManagement' -count=1 -v
+bash scripts/verify-contained.sh go test ./internal/relay -run '^$' -bench '^BenchmarkWSReplay$' -benchmem -count=3 -benchtime=1s
+bash scripts/verify-contained.sh go test -tags=integration -p 1 ./integration/webui -run '^TestWebUISessionManagement$' -count=1
+LINGON_IT_ONLY=settings_create_terminal_and_rename_session,settings_session_management_hidden_for_share bash scripts/verify-contained.sh bash android/scripts/run-integration-tests.sh
 ```
 
 PTY interaction is isolated inside test-owned terminals. The Android runner owns
 and cleans up its harness, detached terminals, emulator and adb server; the above
-targeted run is capped at two CPU cores and 7 GB of memory.
+commands share the enforced aggregate ceiling of 1 CPU / 3 GiB RAM and zero swap.
