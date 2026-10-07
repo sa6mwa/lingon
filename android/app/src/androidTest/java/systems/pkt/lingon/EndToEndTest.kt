@@ -26,6 +26,7 @@ import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
@@ -3314,10 +3315,19 @@ class EndToEndTest {
 
         val baselineWalls = wallEventCount()
         clickSettingsWallInactivity()
-        waitUntilNoError(5_000L) {
-            appViewModel().state.value.wallInactivityEnabled &&
-                appViewModel().state.value.wallInactivityLabel == "250ms"
+        try {
+            waitUntilNoError(5_000L) {
+                appViewModel().state.value.wallInactivityEnabled &&
+                    appViewModel().state.value.wallInactivityLabel == "250ms"
+            }
+        } catch (err: AssertionError) {
+            throw AssertionError("wall enable setup: baseline=$baselineWalls, actual=${wallEventCount()}, status=${readStatusBanner()}; ${err.message}", err)
         }
+        assertEquals("wall must wait for controlled time", baselineWalls, wallEventCount())
+        // The relay schedules inactivity timers with a one-second minimum.
+        advanceWallClockViaHarness(999)
+        assertEquals("wall fired before its exact deadline", baselineWalls, wallEventCount())
+        advanceWallClockViaHarness(1)
         waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
 
         selectSessionTab(second, timeoutMs = 10_000L)
@@ -3326,8 +3336,15 @@ class EndToEndTest {
         waitUntilNoError(10_000L) { activeSessionId() == first }
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
 
-        SystemClock.sleep(1500L)
-        assertEquals(baselineWalls + 1, wallEventCount())
+        advanceWallClockViaHarness(1500)
+        assertEquals("tab switches must not rearm inactivity", baselineWalls + 1, wallEventCount())
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        sendTerminalInput("echo WALLINPUT$(echo ACK)")
+        sendTerminalEnter()
+        // The marker appears only in shell output, not in the command's echo.
+        waitUntilNoError(5_000L) { snapshotContainsToken("WALLINPUTACK") }
+        advanceWallClockViaHarness(1000)
+        waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 2 }
     }
 
     @Test
@@ -3350,8 +3367,8 @@ class EndToEndTest {
         }
         try {
             openSettings()
-            composeRule.onAllNodesWithTag(TestTags.WallInactivityButton, useUnmergedTree = true)
-                .onFirst()
+            composeRule.onNodeWithText("Wall inactivity")
+                .performScrollTo()
                 .performClick()
             waitUntilNoError(5_000L) { observedBanner.get() }
             closeSettingsIfOpen()
@@ -5001,8 +5018,8 @@ class EndToEndTest {
 
     private fun clickSettingsWallInactivity() {
         openSettings()
-        composeRule.onAllNodesWithTag(TestTags.WallInactivityButton, useUnmergedTree = true)
-            .onFirst()
+        composeRule.onNodeWithText("Wall inactivity")
+            .performScrollTo()
             .performClick()
         closeSettingsIfOpen()
     }
@@ -6066,7 +6083,8 @@ class EndToEndTest {
                 "renderScaleX=${debug?.renderScaleX ?: 0f}, renderScaleY=${debug?.renderScaleY ?: 0f}, " +
                 "visibleStartRow=${debug?.visibleStartRow ?: 0}, " +
                 "visibleEndRowExclusive=${debug?.visibleEndRowExclusive ?: 0}, " +
-                "zoomFactor=${debug?.zoomFactor ?: 0f})",
+                "zoomFactor=${debug?.zoomFactor ?: 0f}, " +
+                "wallInactivityEnabled=${state.wallInactivityEnabled}, wallInactivityLabel=${state.wallInactivityLabel})",
         )
     }
 
@@ -6643,6 +6661,26 @@ class EndToEndTest {
             if (code != HttpURLConnection.HTTP_OK) {
                 throw AssertionError("harness send-wall failed with HTTP $code")
             }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun advanceWallClockViaHarness(milliseconds: Long) {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/advance-wall-clock")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            connection.sslSocketFactory = trustContextFor(testConfig.caPem).socketFactory
+        }
+        try {
+            connection.outputStream.use { it.write(org.json.JSONObject().put("milliseconds", milliseconds).toString().toByteArray()) }
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) throw AssertionError("harness refused controlled wall-clock advancement")
         } finally {
             connection.disconnect()
         }

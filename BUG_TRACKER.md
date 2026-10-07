@@ -29,6 +29,15 @@ Required status values:
 
 ## Active Items
 
+### B-189 Android wall-inactivity tab-switch regression fails full sweep setup
+
+- Status: `needs_verification`
+- Repro: Full serial rehearsal at `ac4083a` passes all Go/integration and Android unit/compile gates, plus the first seven-test, late-host and 62-test Android batches. The isolated `tab_switch_does_not_rearm_wall_inactivity_without_terminal_input` case then fails waiting for enabled status with a `250ms` label (`build/lifecycle/prerelease-4248568043.log`, instrumented line 3317). The attempt is stopped and retained; no artifacts were built.
+- Constraint: Diagnose the actual status transition; preserve explicit no-rearm behavior and positive terminal-input rearming. Timing proof must use an injected clock and controlled advancement rather than the current wall-clock sleep. Exact Android-visible instrumentation proof is required.
+- Diagnosis/readback: The shared semantics tag selected an offscreen settings action; repeated failures retained disabled state and forwarded no command (`build/resume-wall-tab-{android-before,status-diagnostic,trace-final}.log`). The fixture now scrolls the uniquely named settings action into view before clicking it. The same correction applies to the banner fixture. Production wall behavior is unchanged.
+- Timing proof: The quiet-host case injects the relay's existing `clock.Clock` and explicitly advances it through a bounded harness HTTP control. The relay's existing minimum timer is one second even with the harness's `250ms` level: assert no event at 999 ms, one at 1000 ms, no second event after tab switches and another 1500 ms, then a second event after verified shell input and another 1000 ms. Shell output uses a marker absent from the echoed command. No wall-clock sleep supplies timing proof.
+- Verification: Exact controlled Android instrumentation passes (`build/resume-wall-tab-controlled-final.log`); banner dismissal and background inactivity notification companions both pass (`build/resume-wall-companions-final.log`). Harness clock/HTTP validation and bounded advancement tests pass under the race detector (`build/resume-wall-harness-clock-race-final.log`). Root Go tests, standard vet/golint/golangci-lint, Android unit/compile gates and shell syntax checks pass (`build/resume-wall-{go-test,lint-final,android-build-final}.log`). Owned emulator/harness teardown completes. Intermediate clock-deadline and shell-helper diagnostic failures are retained; they are not claimed as passing proof. Clean prescribed review and fresh complete serial rehearsal remain required.
+
 ### B-188 Local session startup races control/resize geometry
 
 - Status: `needs_verification`

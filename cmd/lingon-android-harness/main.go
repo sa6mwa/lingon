@@ -29,6 +29,7 @@ import (
 
 	"pkt.systems/lingon"
 	"pkt.systems/lingon/internal/cliwall"
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/headlessd"
 	"pkt.systems/lingon/internal/protocolpb"
@@ -60,21 +61,23 @@ type harnessUser struct {
 }
 
 type harness struct {
-	config     harnessConfig
-	server     *httptest.Server
-	sessions   []sessionHandle
-	sessionsMu sync.Mutex
-	ctx        context.Context
-	baseDir    string
-	configDir  string
-	selfPath   string
-	endpoint   string
-	access     string
-	authPath   string
-	hostIndex  int
-	headlessIx int
-	cols       int
-	rows       int
+	wallClock   clock.Clock
+	wallClockMu sync.Mutex
+	config      harnessConfig
+	server      *httptest.Server
+	sessions    []sessionHandle
+	sessionsMu  sync.Mutex
+	ctx         context.Context
+	baseDir     string
+	configDir   string
+	selfPath    string
+	endpoint    string
+	access      string
+	authPath    string
+	hostIndex   int
+	headlessIx  int
+	cols        int
+	rows        int
 }
 
 type harnessWallRequest struct {
@@ -154,6 +157,7 @@ func main() {
 }
 
 type harnessOptions struct {
+	wallClock    clock.Clock
 	sessionCount int
 	port         int
 	cleartext    bool
@@ -257,10 +261,18 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	hub := relay.NewHub(nil)
 	auth := relay.NewAuthenticator(users)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
+	wallClock := opts.wallClock
+	if wallClock == nil && os.Getenv("LINGON_ANDROID_HARNESS_WALL_CLOCK") == "mock" {
+		mock := clock.NewMock()
+		mock.Add(time.Since(mock.Now()))
+		wallClock = mock
+	}
+	relayServer.WallClock = wallClock
 	relayServer.ConfigureWall(harnessWallTimeout(), harnessWallLevels())
 	relayServer.UsersFile = usersPath
 	relayServer.DataDir = configDir
 	h := &harness{
+		wallClock: wallClock,
 		config: harnessConfig{
 			Endpoint:    endpoint,
 			CACertPath:  filepath.Join(tlsDir, "ca.pem"),
@@ -292,6 +304,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	stopHostPath := ensureBasePath(opts.basePath) + "/__harness/stop-host"
 	wallPath := ensureBasePath(opts.basePath) + "/__harness/send-wall"
 	wallInactivityPath := ensureBasePath(opts.basePath) + "/__harness/wall-inactivity"
+	wallClockPath := ensureBasePath(opts.basePath) + "/__harness/advance-wall-clock"
 	startHeadlessPath := ensureBasePath(opts.basePath) + "/__harness/start-headless"
 	detachHeadlessPath := ensureBasePath(opts.basePath) + "/__harness/detach-headless"
 	headlessSizePath := ensureBasePath(opts.basePath) + "/__harness/headless-size"
@@ -383,6 +396,26 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "sent"})
+			return
+		case wallClockPath:
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				Milliseconds int64 `json:"milliseconds"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := h.advanceWallClock(req.Milliseconds); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "advanced"})
 			return
 		case wallInactivityPath:
 			if r.Method != http.MethodPost {
@@ -587,6 +620,20 @@ func (h *harness) setWallInactivity(sessions []string, enabled bool) error {
 			return fmt.Errorf("set wall inactivity for %s: %w", sessionID, err)
 		}
 	}
+	return nil
+}
+
+func (h *harness) advanceWallClock(milliseconds int64) error {
+	advancing, ok := h.wallClock.(interface{ Add(time.Duration) })
+	if !ok {
+		return fmt.Errorf("wall clock is not controlled")
+	}
+	if milliseconds < 0 || milliseconds > int64(time.Hour/time.Millisecond) {
+		return fmt.Errorf("wall clock advance must be between zero and one hour")
+	}
+	h.wallClockMu.Lock()
+	defer h.wallClockMu.Unlock()
+	advancing.Add(time.Duration(milliseconds) * time.Millisecond)
 	return nil
 }
 

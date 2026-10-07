@@ -736,12 +736,13 @@ set +e
       flush_batch || break
       stop_harness
       export LINGON_ANDROID_HARNESS_HOST_SHELL=/bin/sh
+      export LINGON_ANDROID_HARNESS_WALL_CLOCK=mock
       start_harness 2
       ensure_adb_reverse
-      unset LINGON_ANDROID_HARNESS_HOST_SHELL
+      unset LINGON_ANDROID_HARNESS_HOST_SHELL LINGON_ANDROID_HARNESS_WALL_CLOCK
       run_test_batch "${test_name}" || break
       stop_harness
-      unset LINGON_ANDROID_HARNESS_HOST_SHELL
+      unset LINGON_ANDROID_HARNESS_HOST_SHELL LINGON_ANDROID_HARNESS_WALL_CLOCK
       start_harness 2
       ensure_adb_reverse
       continue
