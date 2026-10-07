@@ -713,10 +713,11 @@ func TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverl
 	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
 	const sessionA = "local-headless-detach-survivor"
 	const sessionB = "local-headless-detach-active"
+	const survivorReady = "LOCAL_SURVIVOR_READY"
 	stopA := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
 		SessionID: sessionA,
-		Shell:     fixedPromptEmitRowsBash(t),
+		Shell:     markedHeadlessPromptShell(t, survivorReady),
 	})
 	t.Cleanup(stopA)
 	stopB := startHeadlessDaemon(t, headlessDaemonSpec{
@@ -753,8 +754,8 @@ func TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverl
 		if strings.Contains(row0, sessionB) {
 			return fmt.Errorf("detached local headless tab %q still present: %q", sessionB, row0)
 		}
-		if !screen.Contains("PROMPT>") {
-			return fmt.Errorf("surviving local headless prompt missing after detach:\n%s", screen.String())
+		if !strings.Contains(row0, sessionA) || !screen.Contains(survivorReady) || !screen.Contains("PROMPT>") {
+			return fmt.Errorf("surviving local headless snapshot/prompt missing after detach:\n%s", screen.String())
 		}
 		return nil
 	})
@@ -1001,4 +1002,16 @@ func shortHomeDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
+}
+
+// markedHeadlessPromptShell emits identity inside the daemon's owned child PTY.
+// A closed view's preserved framebuffer cannot satisfy survivor readiness.
+func markedHeadlessPromptShell(t *testing.T, marker string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "marked-headless-shell.sh")
+	script := "#!/bin/sh\nprintf '\\n%s\\n' " + shellQuote(marker) + "\nexec " + shellQuote(fixedPromptEmitRowsBash(t)) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

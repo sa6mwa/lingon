@@ -29,6 +29,22 @@ Required status values:
 
 ## Active Items
 
+### B-203 Headless discovery fixture reads labels at top-row auto-hide boundary
+
+- Status: `needs_verification`
+- Repro: Clean `7443f84` full rehearsal fails `TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh`: row 1 contains the child shell prompt instead of both labels (`multi_headless_local_integration_test.go:150`). The fixture neither establishes a terminal snapshot/cursor below the auto-hide boundary nor injects its timing clock. Preserve default event-driven discovery and the two-second visibility bound.
+- Evidence: `build/native-prerelease-full.log`, lifecycle `build/lifecycle/prerelease-1564723225.log`. All Go normal/race/tool gates pass; session PTY (440.006s) and browser (90.476s) pass. Attach (458.042s) fails B-202/B-203. Exit 2, unchanged candidate, no Android/artifact/tag/publication reached. Investigate separately from the stopped attempt.
+
+- Regression/fix: Ten paired race repetitions reproduce both original failures (`build/headless-readiness-before.log`). Discovery uses an injected mock clock, the real state watcher/default refresh, explicit snapshot readiness and observed shell output with the cursor below row 1. The existing two-second bound and real tab-switch assertion remain. Ten paired race repetitions pass (`build/headless-readiness-after-visible-marker.log`). No production renderer or permanent flicker assertion changes.
+
+### B-202 Local detach fixture accepts the closed session's stale prompt
+
+- Status: `needs_verification`
+- Repro: The same full rehearsal fails `TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverlay`: survivor input produces no expected token (`headless_cli_regression_integration_test.go:765`). The readiness predicate permits a blank tab row plus the old session's identical `PROMPT>` before the survivor's snapshot is ready. Preserve real CLI/PTY input and all stale-overlay/dead-tab assertions; establish distinct survivor readiness before sending input.
+- Evidence: `build/lifecycle/prerelease-1564723225.log`, preceding real relay close/connect trace and failed screen. This diagnosis remains to be verified by focused regressions.
+
+- Regression/fix: The original failure reproduces in the paired baseline. The survivor shell now emits distinct identity below the tab overlay inside its owned child PTY; the predicate requires that identity, its full surviving tab label and its prompt before sending the original real keypress/echo probe. All stale status, reconnect, dead-tab and interaction assertions remain. A first marker prototype was hidden under row-1 tabs and failed (`build/headless-readiness-after.log`); moving the marker below the overlay yields ten paired race passes (`build/headless-readiness-after-visible-marker.log`). Standard uncached root Go tests, vet/golint/golangci-lint and integration-tagged attach vet/lint pass (`build/headless-readiness-standard-checks.log`). Fresh full rehearsal remains required.
+
 ### B-201 View-only resize instrumentation races transient blocked-input status
 
 - Status: `needs_verification`
