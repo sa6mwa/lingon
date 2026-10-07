@@ -94,7 +94,8 @@ type harnessHeadlessRequest struct {
 }
 
 type harnessHeadlessResponse struct {
-	ID string `json:"id"`
+	ID        string `json:"id"`
+	ViewToken string `json:"view_token"`
 }
 
 type harnessHeadlessSizeResponse struct {
@@ -458,8 +459,16 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			share, err := lingon.ShareCreate(r.Context(), lingon.ShareCreateOptions{
+				Endpoint: h.endpoint, AccessToken: h.access, SessionID: id,
+				Scope: lingon.ShareScopeView, TTL: time.Hour, TLSDir: filepath.Dir(h.config.CACertPath),
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(harnessHeadlessResponse{ID: id})
+			_ = json.NewEncoder(w).Encode(harnessHeadlessResponse{ID: id, ViewToken: share.Token})
 			return
 		case detachHeadlessPath:
 			if r.Method != http.MethodPost {

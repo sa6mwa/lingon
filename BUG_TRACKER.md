@@ -29,6 +29,21 @@ Required status values:
 
 ## Active Items
 
+### B-194 Long data-directory paths prevent relay administration startup
+
+- Status: `in_progress`
+- Report: Prescribed review of clean `068bb3d` against pinned trunk finds `ListenUsers` binding the absolute data-directory socket path directly. Valid paths beyond the OS Unix-domain address length cause relay startup to fail (`build/resume-review.normal-trunk.Mj1xjl.log`, P2).
+- Scope: Preserve authoritative ownership, private socket permissions and the actual `.admin/socket` location. Prove startup and administrative mutations with a long data directory, use bounded private pathname addressing, and verify cleanup and existing security/ownership boundaries. No new transport or persistence format.
+
+### B-193 New Android share inherits reconnect suppression from a closed session
+
+- Status: `needs_verification`
+- Report: The same prescribed review finds `handleExplicitSessionClosed` leaving suppression enabled after the last session closes; a new share starts HTTP authentication before suppression is cleared. Transient authentication failures therefore cannot schedule reconnect (`build/resume-review.normal-trunk.Mj1xjl.log`, P2).
+- Scope: Clear old-session suppression when beginning the new share connection. Add failing-before unit and exact Android instrumentation coverage for closure followed by transient share authentication and recovery; preserve obsolete-result guards.
+- Before/after proof: The new unit regression closes the last authenticated share and opens another; explicit coroutine-time advancement finds one attempt instead of the required retry (`build/resume-share-close-retry-unit-before.log`). Real relay/emulator instrumentation creates a disposable headless share, closes it, then submits one replacement share with two injected transient failures. Before repair it remains idle at the placeholder (`build/resume-share-close-retry-e2e-before-ready.log`). The initial diagnostic expected a tick from a headless child that does not emit ticks; that setup failure is not claimed as bug proof.
+- Fix/readback: Clear suppression in `handleSharedToken` after invalidating/closing the previous WebSocket and before starting the new authentication context. Existing generation/token/endpoint guards remain intact. The harness obtains a read-only token for disposable headless fixtures through the real SDK share-create API, so closure tests do not destroy the original harness sessions.
+- Verification: Complete Android unit/compile gates pass, including explicit-time tests for IOException, 429 and 503 after closure (`build/resume-share-close-retry-build-after.log`). Five owned-emulator cases pass the exact closure/retry regression, ordinary transient retries, obsolete-result isolation, persisted shared zoom and headless detach (`build/resume-share-close-retry-e2e-after.log`, no failures/skips). Complete affected relay/CLI/harness/lifecycle races, root Go tests and standard vet/golint/golangci-lint pass (`build/resume-share-and-admin-{affected-race,go-gates}.log`). Owned teardown completes. Clean prescribed review and a fresh complete serial rehearsal remain required.
+
 ### B-192 Headless inactivity race-gate regression times out
 
 - Status: `needs_verification`

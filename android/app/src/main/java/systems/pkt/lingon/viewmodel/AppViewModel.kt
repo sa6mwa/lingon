@@ -612,6 +612,7 @@ class AppViewModel(
         stopReconnect()
         stopWallPoll(resetCursor = true)
         closeWebSocket("share token")
+        suppressReconnect = false
         clearSessionCaches()
         resetCurrentSessionState()
         lastBackgroundAtMs = null

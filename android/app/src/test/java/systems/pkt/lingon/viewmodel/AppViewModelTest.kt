@@ -277,6 +277,47 @@ class AppViewModelTest {
     }
 
     @Test
+    fun newShareRetriesTransientAuthenticationAfterLastSharedSessionCloses() = runTest {
+        for (failure in listOf(
+            java.io.IOException("offline"),
+            ApiException("rate limited", statusCode = 429),
+            ApiException("relay restarting", statusCode = 503),
+        )) {
+            val wsClient = FakeWsClient()
+            wsClient.shareSession = RelayShareSession(sessionId = "old-share", name = "Old", scope = "view")
+            val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+            viewModel.handleSharedToken("old-token", "https://example")
+            runCurrent()
+            wsClient.fireFrame(Frame.newBuilder().setSessionId("old-share")
+                .setSessionClosed(SessionClosed.newBuilder().setReason("closed")).build())
+            runCurrent()
+            assertNull(viewModel.state.value.activeSessionId)
+            assertTrue(viewModel.state.value.sessions.isEmpty())
+
+            var attempts = 0
+            wsClient.onAuthenticateShareSession = { _, _ ->
+                attempts += 1
+                if (attempts == 1) throw failure
+                RelayShareSession(sessionId = "new-share", name = "New", scope = "view")
+            }
+            viewModel.handleSharedToken("new-token", "https://example")
+            runCurrent()
+            assertEquals(1, attempts)
+            advanceTimeBy(999)
+            runCurrent()
+            assertEquals(1, attempts)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals("retry suppressed after ${failure.message}", 2, attempts)
+            assertEquals("new-share", viewModel.state.value.activeSessionId)
+            assertEquals(2, wsClient.connectCount)
+            assertNull(viewModel.state.value.shareTokenError)
+            viewModel.logout()
+            runCurrent()
+        }
+    }
+
+    @Test
     fun reconnectSessionFetchIsIgnoredAfterEndpointChange() = runTest {
         assertSupersededReconnectFetch(logout = false)
     }

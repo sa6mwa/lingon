@@ -4589,6 +4589,37 @@ class EndToEndTest {
         }
     }
 
+    @Test
+    fun new_share_retries_authentication_after_last_shared_session_closes() {
+        val replacementToken = testConfig.viewToken ?: throw AssertionError("missing replacement share")
+        val replacementSession = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        val temporary = startHeadlessWithShareViaHarness()
+        try {
+            attachViaShareToken(temporary.second)
+            waitUntilNoError(10_000L) {
+                val state = appViewModel().state.value
+                state.activeSessionId == temporary.first && state.connectionState == ConnectionState.Connected
+            }
+            waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+            detachHeadlessViaHarness(temporary.first)
+            waitUntilNoError(20_000L) {
+                val state = appViewModel().state.value
+                state.activeSessionId == null && state.sessions.isEmpty()
+            }
+            assertEquals(2, shareAuthFailuresViaHarness(2))
+            // One new share request must recover automatically after closure.
+            attachViaShareToken(replacementToken)
+            waitForSessionTick(replacementSession)
+            assertEquals(0, shareAuthFailuresViaHarness())
+            assertEquals(ConnectionState.Connected, appViewModel().state.value.connectionState)
+            assertNull(appViewModel().state.value.shareTokenError)
+        } finally {
+            shareAuthFailuresViaHarness(0)
+        }
+    }
+
     private fun shareAuthFailuresViaHarness(count: Int? = null): Int {
         val query = count?.let { "?count=$it" }.orEmpty()
         val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/share-auth-failures$query")
@@ -6596,6 +6627,10 @@ class EndToEndTest {
     }
 
     private fun startHeadlessViaHarness(cols: Int = 120, rows: Int = 50): String {
+        return startHeadlessWithShareViaHarness(cols, rows).first
+    }
+
+    private fun startHeadlessWithShareViaHarness(cols: Int = 120, rows: Int = 50): Pair<String, String> {
         val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless?cols=$cols&rows=$rows")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -6613,9 +6648,10 @@ class EndToEndTest {
                 throw AssertionError("harness start-headless failed with HTTP $code")
             }
             val body = InputStreamReader(connection.inputStream).use { it.readText() }
-            val id = org.json.JSONObject(body).getString("id")
+            val response = org.json.JSONObject(body)
+            val id = response.getString("id")
             startedHeadlessSessions += id
-            return id
+            return id to response.getString("view_token")
         } finally {
             connection.disconnect()
         }
