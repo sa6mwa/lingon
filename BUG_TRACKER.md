@@ -29,6 +29,23 @@ Required status values:
 
 ## Active Items
 
+Complete prerelease closeout (2026-10-09): clean `2e1a6c5ba33c810dbe48e6c951d65e613a7ffc62`
+passes one complete `make prerelease` after the B-210 fixture repair is proved
+in isolation and committed. Evidence: `build/scrollback-stable-prerelease.log`
+and `build/lifecycle/prerelease-2649486881.log`. Root/tool tests, race and lint
+gates, attach PTY (295.552s), session PTY (291.843s), browser (59.186s), Android
+unit/compile, all 107 end-to-end methods (106 passes and the expected TLS-only
+cleartext skip), the separate HTTP cleartext pass, all 16 additional instrumentation
+methods, and performance observations pass. The same attempt builds and verifies
+all six Unix-layout CLI archives, signed APK, Podman amd64/arm64 manifest/native
+smoke, exact checksums and privacy constraints. Independent `make package-verify`
+also passes (`build/lifecycle/package-verify-3990506820.log`). The worktree is
+clean and the owned verification slice has zero tasks at completion, with the
+unchanged 4 CPUs/4 GiB/zero-swap ceiling. `dist/v0.0.0` and the receipt identify
+the tested commit above; `FullProof=false` is deliberate for an untagged
+prerelease rehearsal. No merge, tag, push or publication occurred. This evidence
+entry is a later documentation-only commit, not a rebuild of those bytes.
+
 Verification closeout (2026-10-08): B-187 through B-207 now have their complete
 relevant-suite evidence in `build/lifecycle/prerelease-53352114.log`, tested at
 `8450be7`: root/tool normal and race gates, lint, actual owned-PTY attach
@@ -54,7 +71,7 @@ zero owned tasks. Artifact proof predates this documentation-only closeout commi
 - Status: `resolved`
 - Repro: After manual native build, lifecycle boundary/state-machine checks, current artifact matrix and package verification pass, the full prerelease at clean `6da9b6b` fails `TestAttachScrollbackModifiedArrowKeysMoveImmediately`: unchanged screen after Alt+Down at `scrollback_down_integration_test.go:82`. The test sends repeated Up keys and then samples after one blind mock-clock advance.
 - Evidence: `build/manual-stable-current-prerelease.log`, lifecycle `build/lifecycle/prerelease-859621191.log`; attach package fails at 295.452s. The failed attempt is stopped before unrelated remaining packages complete, preserving logs. No release/tag/push/publication occurs. Reproduce the real owned-PTY case alone; keep immediate movement bounds and permanent flicker invariants intact.
-- Isolated confirmation: The original case fails twice in 30 race-detector repetitions (`build/scrollback-modified-arrows-before.log`). Replace uncontrolled shell startup and queued Up input with the existing test-owned fixed-prompt Bash fixture, wait for the observable scrollback-mode indicator before sending `g`, and wait for the actual top position. Alt+Down must show exactly the next line and Alt+Up restore the original line, each within the unchanged 120 ms mock-clock bound. The repaired case passes 30 race repetitions (`build/scrollback-modified-arrows-after-ready.log`); related scrollback PTY cases pass three repetitions, input mapping cases ten repetitions, and focused integration vet/golint/golangci-lint and diff checks pass (`build/scrollback-modified-arrows-focused.log`). Readback confirms only this fixture changed; production behavior and permanent flicker assertions are untouched. A new complete prerelease remains pending.
+- Isolated confirmation: The original case fails twice in 30 race-detector repetitions (`build/scrollback-modified-arrows-before.log`). Replace uncontrolled shell startup and queued Up input with the existing test-owned fixed-prompt Bash fixture, wait for the observable scrollback-mode indicator before sending `g`, and wait for the actual top position. Alt+Down must show exactly the next line and Alt+Up restore the original line, each within the unchanged 120 ms mock-clock bound. The repaired case passes 30 race repetitions (`build/scrollback-modified-arrows-after-ready.log`); related scrollback PTY cases pass three repetitions, input mapping cases ten repetitions, and focused integration vet/golint/golangci-lint and diff checks pass (`build/scrollback-modified-arrows-focused.log`). Readback confirms only this fixture changed; production behavior and permanent flicker assertions are untouched. Committed as `2e1a6c5`; the subsequent complete prerelease passes, as recorded above.
 
 ### B-209 Release APK dex merge exhausts the 512 MiB Gradle heap
 
