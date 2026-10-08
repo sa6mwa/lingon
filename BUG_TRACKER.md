@@ -49,6 +49,12 @@ still requires the normal tagged release proof. No merge/tag/push/publication
 occurred. The enforced aggregate ceiling is 4 CPUs/4 GiB/zero swap; cleanup leaves
 zero owned tasks. Artifact proof predates this documentation-only closeout commit.
 
+### B-210 Modified-arrow scrollback PTY test observes no Alt+Down movement
+
+- Status: `resolved`
+- Repro: After manual native build, lifecycle boundary/state-machine checks, current artifact matrix and package verification pass, the full prerelease at clean `6da9b6b` fails `TestAttachScrollbackModifiedArrowKeysMoveImmediately`: unchanged screen after Alt+Down at `scrollback_down_integration_test.go:82`. The test sends repeated Up keys and then samples after one blind mock-clock advance.
+- Evidence: `build/manual-stable-current-prerelease.log`, lifecycle `build/lifecycle/prerelease-859621191.log`; attach package fails at 295.452s. The failed attempt is stopped before unrelated remaining packages complete, preserving logs. No release/tag/push/publication occurs. Reproduce the real owned-PTY case alone; keep immediate movement bounds and permanent flicker invariants intact.
+- Isolated confirmation: The original case fails twice in 30 race-detector repetitions (`build/scrollback-modified-arrows-before.log`). Replace uncontrolled shell startup and queued Up input with the existing test-owned fixed-prompt Bash fixture, wait for the observable scrollback-mode indicator before sending `g`, and wait for the actual top position. Alt+Down must show exactly the next line and Alt+Up restore the original line, each within the unchanged 120 ms mock-clock bound. The repaired case passes 30 race repetitions (`build/scrollback-modified-arrows-after-ready.log`); related scrollback PTY cases pass three repetitions, input mapping cases ten repetitions, and focused integration vet/golint/golangci-lint and diff checks pass (`build/scrollback-modified-arrows-focused.log`). Readback confirms only this fixture changed; production behavior and permanent flicker assertions are untouched. A new complete prerelease remains pending.
 
 ### B-209 Release APK dex merge exhausts the 512 MiB Gradle heap
 

@@ -19,74 +19,37 @@ var attachWheelDownSeq = []byte{0x1b, '[', '<', '6', '5', ';', '1', ';', '1', 'M
 var attachVisibleLinePattern = regexp.MustCompile(`LINE-(\d{2,3})`)
 
 func TestAttachScrollbackModifiedArrowKeysMoveImmediately(t *testing.T) {
-	t.Setenv("PS1", "PROMPT> ")
-	shell := "/bin/sh"
-	if _, err := os.Stat("/bin/bash"); err == nil {
-		shell = "/bin/bash"
-	}
-
 	h := newHarness(t)
-	sessionID := "scroll_attach_down"
+	const sessionID = "scroll_attach_down"
 	host := h.StartHost(ptytest.HostOptions{
-		SessionID:   sessionID,
-		SessionName: sessionID,
-		Shell:       shell,
-		Cols:        80,
-		Rows:        20,
+		SessionID: sessionID, SessionName: sessionID,
+		Shell: fixedPromptEmitRowsBash(t), Cols: 80, Rows: 20,
 	})
-	_ = host
-
 	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionID})
-	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
-		SessionID: sessionID,
-		Cols:      80,
-		Rows:      20,
-	})
-
+	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{SessionID: sessionID, Cols: 80, Rows: 20})
 	waitForClientCount(t, h, sessionID, 1, 3*time.Second)
-
-	host.Send("i=1; while [ $i -le 80 ]; do printf 'LINE-%02d\\n' $i; i=$((i+1)); done\n")
+	// A controlled prompt and short command keep the content's first row
+	// unambiguous; user shell startup and wrapped command echo are not fixtures.
+	host.Send("printf 'LINE-%02d\\n' {1..80}\r")
 	attach.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
 		if !screen.Contains("LINE-80") {
 			return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
 		}
 		return nil
 	})
-
 	attach.SendBytes([]byte{0x0c, '['})
-	h.Advance(150 * time.Millisecond)
-
-	foundTop := false
-	for i := 0; i < 80; i++ {
-		attach.SendBytes([]byte{0x1b, '[', 'A'})
-		h.Advance(30 * time.Millisecond)
-		if attach.Screen().Contains("LINE-01") {
-			foundTop = true
-			break
-		}
-	}
-	if !foundTop {
-		t.Fatalf("expected scrollback to reveal LINE-01; got:\n%s", attach.Screen().String())
-	}
-
-	for i := 0; i < 5; i++ {
-		attach.SendBytes([]byte{0x1b, '[', 'A'})
-		h.Advance(20 * time.Millisecond)
-	}
-
-	top := attach.Screen().String()
+	waitForAttachScrollbackPercent(t, h, attach, 2*time.Second, func(pct int) bool { return pct == 100 })
+	attach.Send("g")
+	waitForAttachScrollbackPercent(t, h, attach, 2*time.Second, func(pct int) bool { return pct == 0 })
+	topLine := waitForAttachVisibleTopLine(t, h, attach, 2*time.Second, func(line int) bool { return line == 1 })
+	// Observe each key's result before sending the next one. The original
+	// 120-ms virtual-time bounds remain, with exact direction/row assertions.
 	attach.SendBytes([]byte{0x1b, '[', '1', ';', '3', 'B'})
-	h.Advance(120 * time.Millisecond)
-	afterAltDown := attach.Screen().String()
-	if afterAltDown == top {
-		t.Fatalf("expected Alt+Down to move scrollback immediately from top; got unchanged screen:\n%s", afterAltDown)
-	}
-
+	afterDown := waitForAttachVisibleTopLine(t, h, attach, 120*time.Millisecond, func(line int) bool { return line == topLine+1 })
 	attach.SendBytes([]byte{0x1b, '[', '1', ';', '3', 'A'})
-	h.Advance(120 * time.Millisecond)
-	afterAltUp := attach.Screen().String()
-	if afterAltUp == afterAltDown {
-		t.Fatalf("expected Alt+Up to move scrollback immediately; got unchanged screen:\n%s", afterAltUp)
+	afterUp := waitForAttachVisibleTopLine(t, h, attach, 120*time.Millisecond, func(line int) bool { return line == afterDown-1 })
+	if afterUp != topLine {
+		t.Fatalf("Alt+Up restored line %d, want %d", afterUp, topLine)
 	}
 }
 
