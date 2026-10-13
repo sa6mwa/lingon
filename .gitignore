@@ -4,8 +4,14 @@ testdata/
 bin/
 /stash/
 /podman.yaml
+# Generated logs, reviews, verification evidence and release artifacts stay local.
 /build/
 /dist/
+# Guard legacy root locations; put new output under build/ instead.
+/BUG_TRACKER.md
+/.codex-review*
+/codex-review.*
+/review-*
 \#*\#
 .vscode/
 .idea/

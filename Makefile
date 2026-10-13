@@ -1,5 +1,5 @@
 .NOTPARALLEL:
-.PHONY: help generate build test test-short test-webui test-last-fail test-android test-all lint fmt vet golangci-lint install release prerelease release-matrix package-verify publish print-release-version clean container push-container dev-up dev-down dev-ps dev-logs dev-reset \
+.PHONY: help hygiene generate build test test-short test-webui test-last-fail test-android test-all lint fmt vet golangci-lint install release prerelease release-matrix package-verify publish print-release-version clean container push-container dev-up dev-down dev-ps dev-logs dev-reset \
 	android-clean android-sdk android-avd android-emulator android-build android-release android-install android-install-release android-integration-test
 
 GO ?= go
@@ -30,6 +30,7 @@ APK_PATH ?= $(ANDROID_DIR)/app/build/outputs/apk/release/app-release.apk
 help:
 	@echo "Targets:"
 	@echo "  make                # show this help"
+	@echo "  make hygiene        # reject tracked evidence and root-level review/log clutter"
 	@echo "  make generate       # run: go generate ./..."
 	@echo "  make build          # build the lingon binary"
 	@echo "  make test           # run tests with coverage"
@@ -84,7 +85,10 @@ help:
 generate:
 	$(GO) generate ./...
 
-build:
+hygiene:
+	$(VERIFY) bash scripts/check-hygiene.sh
+
+build: hygiene
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build -buildvcs=true $(GOFLAGS) $(BUILD_FLAGS) -ldflags="$(LD_FLAGS)" -o $(BIN) ./cmd/lingon
 
 fmt:
@@ -96,19 +100,19 @@ vet:
 golangci-lint:
 	$(VERIFY) golangci-lint run --concurrency=1 ./...
 
-lint: vet
+lint: hygiene vet
 	$(VERIFY) golint ./...
 	$(MAKE) golangci-lint
 
-test:
+test: hygiene
 	@mkdir -p $(dir $(TEST_LOG))
 	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
 
-test-short:
+test-short: hygiene
 	@mkdir -p $(dir $(TEST_LOG))
 	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -short -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
 
-test-webui:
+test-webui: hygiene
 	@mkdir -p $(dir $(TEST_LOG))
 	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -count=1 -tags integration -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
 

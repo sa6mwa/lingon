@@ -7,6 +7,15 @@ under `make -j`. Child commands have null stdin and their own process sessions;
 interactive tests retain their test-owned PTYs. Full logs and bounded command
 tails are retained under ignored `build/lifecycle/`.
 
+Generated review output belongs under ignored `build/review/`; verification
+reports, transcripts and the local bug ledger belong under ignored
+`build/verification/`. They are never tracked documentation or evidence-only
+commits. `make hygiene` checks required ignore rules, rejects generated files
+in the Git index (including force-added files), and rejects root-level log/review
+clutter. Run it before staging changes. Build, test and lint targets include this
+check; the full proof runs it before expensive gates. Keep validation summaries
+in the final response or commit message, rather than adding reports to source.
+
 ## Release preparation
 
 Commit intended source and documentation changes on a feature/fix branch. Resolve

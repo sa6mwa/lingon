@@ -35,6 +35,7 @@ func gradleGate(name string, tasks ...string) gate {
 
 func proofGates() []gate {
 	return []gate{
+		{name: "repository hygiene", tool: "bash", args: []string{"scripts/check-hygiene.sh"}},
 		{name: "PTY shell prerequisite", tool: "/bin/bash", args: []string{"--version"}},
 		{name: "PTY pager prerequisite", tool: "less", args: []string{"--version"}},
 		{name: "module integrity", tool: "go", args: []string{"mod", "verify"}},

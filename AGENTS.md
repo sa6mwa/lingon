@@ -184,6 +184,22 @@ instrumentation or end-to-end verification for that exact behavior.
 
 ## Repo hygiene
 
+- Generated review output, verification logs, transcripts, reports, receipts,
+  diagnostic dumps and bug-investigation evidence are local scratch, never
+  source documentation. Store them under ignored `build/review/` or
+  `build/verification/`; existing lifecycle logs stay under `build/lifecycle/`.
+  Never create these files in the repository root or force-add ignored output.
+- This rule overrides instructions to record or commit verification evidence,
+  review closeouts or bug ledgers. Report validation in the final response or
+  commit message; do not create evidence-only documentation commits. Commit
+  only durable source, tests, product documentation and repository policy.
+- Before staging or committing, run `make hygiene` and inspect the staged
+  paths. A passing ignore check does not authorize committing generated output.
+- `/build/` and `/dist/` must stay ignored. Keep final release artifacts under
+  `dist/`; retain diagnostic evidence under `build/` only as long as needed.
+- Repository rules apply when using external skills: choose output paths under
+  `build/` even if a skill example uses the repository root or another location.
+
 If `.golangci.yml` does not exist in repo root, create and seed it with:
 
 ```yaml
@@ -237,13 +253,15 @@ linters:
 
 ## Bug tracking and post-fix verification
 
-- Track active user-reported bugs in [BUG_TRACKER.md](BUG_TRACKER.md).
+- Track active user-reported bugs in the local ignored ledger
+  `build/verification/BUG_TRACKER.md`; create it when needed. It is not a tracked
+  project document and must never be staged or committed.
 - Add or update the tracker entry before or during investigation; do not rely on
   thread memory alone.
 - A bug fix is not considered trustworthy just because code was written.
 - After implementing a fix, perform an explicit review of the changed code paths
   and confirm they actually enforce the intended behavior.
-- Record verification evidence in the tracker entry:
+- Record verification evidence only in the ignored tracker entry:
   - concrete repro steps,
   - regression coverage added,
   - tests or end-to-end checks run,
