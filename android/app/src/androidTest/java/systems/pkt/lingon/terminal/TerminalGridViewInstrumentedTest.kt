@@ -23,6 +23,8 @@ class TerminalGridViewInstrumentedTest {
         instrumentation.runOnMainSync {
             val snapshot = terminalSnapshot(listOf("日\u0000本\u0000 \u0000\u0000 ok"), 10)
             snapshot.runes[5] = 0x1f642
+            val originalBackground = android.graphics.Color.rgb(34, 68, 102)
+            snapshot.bg.fill(COLOR_TRUE or 0x224466)
             val view = TerminalGridView(instrumentation.targetContext).apply {
                 measure(exactlyMeasureSpec(720), exactlyMeasureSpec(240))
                 layout(0, 0, 720, 240)
@@ -41,12 +43,42 @@ class TerminalGridViewInstrumentedTest {
                 view.dispatchTouchEvent(MotionEvent.obtain(time, time + 16, MotionEvent.ACTION_MOVE, cellWidth * (lastCol + 0.5f), y, 0))
                 view.dispatchTouchEvent(MotionEvent.obtain(time, time + 32, MotionEvent.ACTION_UP, cellWidth * (lastCol + 0.5f), y, 0))
             }
+            fun assertHighlight(firstCol: Int, lastCol: Int) {
+                val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+                try {
+                    view.draw(Canvas(bitmap))
+                    val cellWidth = view.getScaledCellWidthForTesting()
+                    for (col in 0 until snapshot.cols) {
+                        val expected = if (col in firstCol..lastCol) android.graphics.Color.WHITE else originalBackground
+                        assertEquals("selection $firstCol..$lastCol background at cell $col", expected,
+                            bitmap.getPixel((cellWidth * col + 1f).toInt(), 1))
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
+            }
             select(0, 9)
             assertEquals("日本 🙂 ok", view.selectedText())
+            assertHighlight(0, 9)
             select(3, 6)
             assertEquals("本 🙂", view.selectedText())
+            assertHighlight(2, 6)
             select(6, 3)
             assertEquals("本 🙂", view.selectedText())
+            assertHighlight(2, 6)
+            for (col in 0..1) {
+                select(col, col)
+                assertEquals("日", view.selectedText())
+                assertHighlight(0, 1)
+            }
+            for (col in 5..6) {
+                select(col, col)
+                assertEquals("🙂", view.selectedText())
+                assertHighlight(5, 6)
+            }
+            select(9, 9)
+            assertEquals("k", view.selectedText())
+            assertHighlight(9, 9)
         }
     }
 

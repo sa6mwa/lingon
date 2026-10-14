@@ -846,8 +846,7 @@ class TerminalGridView @JvmOverloads constructor(
                 )
                 val grapheme = snap.graphemes?.getOrElse(idx) { "" } ?: ""
                 val rune = snap.runes.getOrElse(idx) { 32 }
-                val width = cellWidth(grapheme)
-                val skipNext = width > 1 && x + 1 < endColExclusive && isContinuationCell(snap, idx + 1, attr)
+                val skipNext = x + 1 < endColExclusive && snap.isWideContinuation(y, x + 1)
 
                 val text = if (attr.mode and MODE_HIDDEN != 0) {
                     ""
@@ -877,7 +876,7 @@ class TerminalGridView @JvmOverloads constructor(
                 val left = x * cellW
                 val top = y * cellH
                 bgPaint.color = bg.toArgb()
-                val paintedCells = if (selected && skipNext) 2 else 1
+                val paintedCells = if (skipNext) 2 else 1
                 canvas.drawRect(left, top, left + cellW * paintedCells, top + cellH, bgPaint)
 
                 if (text.isNotEmpty()) {
@@ -1292,19 +1291,6 @@ class TerminalGridView @JvmOverloads constructor(
         val fg: Int,
         val bg: Int,
     )
-
-    private fun cellWidth(grapheme: String): Int = if (grapheme.isNotEmpty()) 2 else 1
-
-    private fun isContinuationCell(snapshot: TerminalSnapshot, idx: Int, attr: CellAttr): Boolean {
-        if (idx < 0 || idx >= snapshot.runes.size) return false
-        if (!snapshot.graphemes.isNullOrEmpty() && snapshot.graphemes[idx].isNotEmpty()) return false
-        val rune = snapshot.runes[idx]
-        if (rune != 0) return false
-        val mode = snapshot.modes[idx]
-        val fg = snapshot.fg[idx]
-        val bg = snapshot.bg[idx]
-        return mode == attr.mode && fg == attr.fg && bg == attr.bg
-    }
 
     private companion object {
         const val zoomEpsilon = 0.001f
