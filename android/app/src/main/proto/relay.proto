@@ -27,6 +27,7 @@ message Frame {
     Command command = 23;
     WallInactivityStatus wall_inactivity_status = 24;
     Activity activity = 25;
+    SessionManagement management = 26;
   }
 }
 
@@ -172,3 +173,14 @@ message SessionClosed {
 }
 
 message Activity {}
+
+// Sent only between authenticated relay and host, never in terminal replay history.
+message SessionManagement {
+  string correlation_id = 1;
+  string request_id = 2;
+  string kind = 3;
+  string name = 4;
+  string result_session_id = 5;
+  string error = 6;
+  bool completed = 7;
+}

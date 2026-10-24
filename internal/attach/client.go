@@ -110,12 +110,14 @@ type Client struct {
 	writeMu                   sync.Mutex
 	renderReqMu               sync.Mutex
 	renderReqCh               chan struct{}
+	renderStopped             bool
 	renderDirty               atomic.Uint32
 	lastActivity              atomic.Int64
 	stdin                     io.Reader
 	stdout                    io.Writer
 	stderr                    io.Writer
 	stdinCloser               io.Closer
+	scrollbackMouse           *terminalMouseMode
 	errOnce                   sync.Once
 	runErr                    error
 	readErrMu                 sync.Mutex
@@ -123,6 +125,7 @@ type Client struct {
 	controlCh                 chan struct{}
 	ws                        *websocket.Conn
 	compositor                *mvu.Runtime
+	effectsMu                 sync.RWMutex
 	runCtx                    context.Context
 	readyMu                   sync.Mutex
 	ready                     bool
@@ -211,22 +214,12 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	if c.Endpoint == "" && c.UnixSocket == "" {
 		return fmt.Errorf("endpoint is required")
 	}
-	compositor := c.ensureCompositor()
-	endpointLabel := c.Endpoint
-	if endpointLabel == "" {
-		endpointLabel = "local://headless"
-	}
-	compositor.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
-		Clock:     c.clock(),
-		SessionID: c.SessionID,
-		Endpoint:  endpointLabel,
-		Theme:     theme.TUI(resolveThemeName(c.Theme)),
-	}})
+	c.ensureCompositor()
 	c.setTheme(resolveThemeName(c.Theme))
-	c.runCtx = ctx
-	c.effects = mvu.NewEffectScheduler(c.clock())
-	defer c.effects.StopAll()
-	c.startRenderLoop(ctx)
+	stopEffects := c.startEffects(ctx)
+	defer stopEffects()
+	stopRender := c.startRenderLoop(ctx)
+	defer stopRender()
 	c.resetReady()
 	c.scrollbackMu.Lock()
 	if c.scrollbackBuffer == nil {
@@ -246,12 +239,13 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 		}
 	}
 
+	c.mu.Lock()
 	if c.ClientID == "" {
 		c.ClientID = c.newClientID()
 	}
+	c.mu.Unlock()
 
 	c.stdin = c.stdinReader()
-	c.stdout = c.stdoutWriter()
 	c.stderr = c.stderrWriter()
 	ownsStdin := c.Stdin != nil
 	if closer, ok := c.stdin.(io.Closer); ok {
@@ -259,20 +253,25 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	}
 	if opts.input {
 		if stdinFile, ok := c.stdin.(*os.File); ok {
-			stdinState, err := term.MakeRaw(int(stdinFile.Fd()))
+			stdinState, err := terminal.MakeRaw(stdinFile)
 			if err != nil {
-				if term.IsTerminal(int(stdinFile.Fd())) {
+				if terminal.IsTerminal(stdinFile) {
 					return err
 				}
 			} else {
 				defer func() {
-					_ = term.Restore(int(stdinFile.Fd()), stdinState)
+					_ = terminal.WithFileDescriptor(stdinFile, func(fd uintptr) {
+						_ = term.Restore(int(fd), stdinState)
+					})
 				}()
 			}
 		}
 	}
 	if opts.restore {
-		defer restoreCursor(c.clock(), c.stdoutWriter())
+		defer func() {
+			stopRender()
+			restoreCursor(c.clock(), c.stdoutWriter())
+		}()
 	}
 
 	cols, rows := c.terminalSize()
@@ -313,10 +312,10 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 				return authExpiredError(c.Endpoint, err)
 			}
 		}
-		if c.AccessToken == "" {
+		if c.accessToken() == "" {
 			return fmt.Errorf("access token is required")
 		}
-		setDialAuthHeader(dialOptions, c.AccessToken)
+		setDialAuthHeader(dialOptions, c.accessToken())
 	} else {
 		parsed, parseErr := url.Parse(wsEndpoint)
 		if parseErr == nil {
@@ -343,12 +342,10 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	if err != nil {
 		return err
 	}
-	c.ws = ws
+	c.setWebSocket(ws)
 	c.touchActivity()
 	defer func() {
-		c.mu.Lock()
-		c.ws = nil
-		c.mu.Unlock()
+		c.clearWebSocket(ws)
 	}()
 	if c.controlCh == nil {
 		c.controlCh = make(chan struct{}, 1)
@@ -374,22 +371,32 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 
 	if opts.raw {
 		if enterAltScreen(c.clock(), c.stdoutWriter()) {
-			defer exitAltScreen(c.clock(), c.stdoutWriter())
+			defer func() {
+				stopRender()
+				exitAltScreen(c.clock(), c.stdoutWriter())
+			}()
 		}
-		if enableMouseReporting(c.clock(), c.stdoutWriter()) {
-			defer disableMouseReporting(c.clock(), c.stdoutWriter())
-		}
-		if stdinFile, ok := c.stdin.(*os.File); ok && term.IsTerminal(int(stdinFile.Fd())) {
-			stdinState, err := term.MakeRaw(int(stdinFile.Fd()))
+		mouseMode := newTerminalMouseMode(c.clock(), c.stdoutWriter())
+		c.scrollbackMouse = mouseMode
+		defer func() {
+			stopRender()
+			mouseMode.Set(false)
+		}()
+		if stdinFile, ok := c.stdin.(*os.File); ok && terminal.IsTerminal(stdinFile) {
+			stdinState, err := terminal.MakeRaw(stdinFile)
 			if err != nil {
 				return err
 			}
 			defer func() {
-				_ = term.Restore(int(stdinFile.Fd()), stdinState)
+				_ = terminal.WithFileDescriptor(stdinFile, func(fd uintptr) {
+					_ = term.Restore(int(fd), stdinState)
+				})
 			}()
 		}
 	}
 
+	// Closing stdin must not change whether input shutdown needs a bounded wait.
+	inputIsTerminal := c.shouldWaitForSignals()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -434,16 +441,16 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 	})
 	defer readyTimer.Stop()
 
-	if opts.input && c.shouldWaitForSignals() {
+	if opts.input && inputIsTerminal {
 		waitForSignals(ctx, cancel)
 	} else {
 		<-ctx.Done()
 	}
-	if c.stdinCloser != nil && (ownsStdin || !c.shouldWaitForSignals()) {
+	if c.stdinCloser != nil && (ownsStdin || !inputIsTerminal) {
 		_ = c.stdinCloser.Close()
 	}
 	<-wsDone
-	if opts.input && c.shouldWaitForSignals() {
+	if opts.input && inputIsTerminal {
 		select {
 		case <-inputDone:
 		case <-c.clock().After(200 * time.Millisecond):
@@ -454,6 +461,20 @@ func (c *Client) run(ctx context.Context, opts runOptions) error {
 
 	_ = httpURL
 	return c.error()
+}
+
+func (c *Client) setWebSocket(ws *websocket.Conn) {
+	c.mu.Lock()
+	c.ws = ws
+	c.mu.Unlock()
+}
+
+func (c *Client) clearWebSocket(ws *websocket.Conn) {
+	c.mu.Lock()
+	if c.ws == ws {
+		c.ws = nil
+	}
+	c.mu.Unlock()
 }
 
 func (c *Client) clock() clock.Clock {
@@ -468,10 +489,14 @@ func (c *Client) ensureCompositor() *mvu.Runtime {
 		return c.compositor
 	}
 	ui := mvu.NewRuntime()
+	endpoint := c.Endpoint
+	if endpoint == "" {
+		endpoint = "local://headless"
+	}
 	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
 		Clock:     c.clock(),
 		SessionID: c.SessionID,
-		Endpoint:  c.Endpoint,
+		Endpoint:  endpoint,
 		Theme:     theme.TUI(resolveThemeName(c.Theme)),
 	}})
 	c.compositor = ui
@@ -495,7 +520,7 @@ func (c *Client) dialWithRefresh(ctx context.Context, url string, opts *websocke
 						if resp.Body != nil {
 							_ = resp.Body.Close()
 						}
-						setDialAuthHeader(opts, c.AccessToken)
+						setDialAuthHeader(opts, c.accessToken())
 						continue
 					} else {
 						if resp.Body != nil {
@@ -527,6 +552,19 @@ func (c *Client) dialWithRefresh(ctx context.Context, url string, opts *websocke
 	return nil, authExpiredError(c.Endpoint, fmt.Errorf("unauthorized"))
 }
 
+// SetAccessToken updates credentials used by subsequent owner requests.
+func (c *Client) SetAccessToken(token string) {
+	c.mu.Lock()
+	c.AccessToken = token
+	c.mu.Unlock()
+}
+
+func (c *Client) accessToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AccessToken
+}
+
 func (c *Client) refreshToken(ctx context.Context) (string, error) {
 	if c.TokenRefresher == nil {
 		return "", fmt.Errorf("token refresh unavailable")
@@ -538,7 +576,7 @@ func (c *Client) refreshToken(ctx context.Context) (string, error) {
 	if token == "" {
 		return "", fmt.Errorf("refresh returned empty token")
 	}
-	c.AccessToken = token
+	c.SetAccessToken(token)
 	return token, nil
 }
 
@@ -643,18 +681,13 @@ func (c *Client) SetStdout(w io.Writer) {
 	c.renderMu.Unlock()
 }
 
-// SetCompositor sets the overlay compositor for rendering.
+// SetCompositor shares an owner-managed overlay compositor for rendering.
+// A nil compositor creates a client-owned runtime with this client's context.
 func (c *Client) SetCompositor(ui *mvu.Runtime) {
-	if ui == nil {
-		ui = mvu.NewRuntime()
-	}
-	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{
-		Clock:     c.clock(),
-		SessionID: c.SessionID,
-		Endpoint:  c.Endpoint,
-		Theme:     theme.TUI(resolveThemeName(c.Theme)),
-	}})
 	c.compositor = ui
+	if ui == nil {
+		c.ensureCompositor()
+	}
 }
 
 // Compositor returns the overlay compositor in use.
@@ -681,26 +714,66 @@ func (c *Client) SeedFrom(prev *Client) {
 	if prev == nil {
 		return
 	}
-	c.ClientID = prev.ClientID
+	prev.mu.RLock()
+	clientID := prev.ClientID
+	var seq uint64
+	var snap *protocolpb.Snapshot
+	if prev.SessionID == c.SessionID {
+		seq = prev.lastSeq
+		snap = cloneSnapshot(prev.lastSnapshot)
+	}
+	prev.mu.RUnlock()
+	c.mu.Lock()
+	c.ClientID = clientID
+	c.mu.Unlock()
 	if prev.SessionID != c.SessionID {
 		return
 	}
-	prev.mu.RLock()
-	snap := cloneSnapshot(prev.lastSnapshot)
-	prev.mu.RUnlock()
 	prev.renderMu.Lock()
 	renderCache := prev.renderCache
 	renderCache.PrevSnapshot = cloneSnapshot(renderCache.PrevSnapshot)
 	prev.renderMu.Unlock()
 	c.mu.Lock()
 	c.lastSnapshot = snap
-	c.lastSeq = prev.lastSeq
+	c.lastSeq = seq
 	c.needsResync = false
 	c.resyncRequested = false
 	c.mu.Unlock()
 	c.renderMu.Lock()
 	c.renderCache = renderCache
 	c.renderMu.Unlock()
+}
+
+// seedLoadingRender transfers only the displayed framebuffer, never another
+// session's snapshot or sequence. Keep the old display under the loading banner
+// until this view receives its first snapshot.
+func (c *Client) seedLoadingRender(prev *Client) {
+	if prev == nil || prev == c {
+		return
+	}
+	prev.renderMu.Lock()
+	cache := prev.renderCache
+	cache.PrevSnapshot = cloneSnapshot(cache.PrevSnapshot)
+	prev.renderMu.Unlock()
+	c.renderMu.Lock()
+	c.renderCache = cache
+	c.renderMu.Unlock()
+}
+
+func (c *Client) renderLoading() {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
+	// A snapshot may arrive while the loading action is being processed.
+	// Select and render under the same lock so a stale placeholder cannot
+	// overwrite the first real frame.
+	snap := c.Snapshot()
+	if snap == nil {
+		snap = c.renderCache.PrevSnapshot
+	}
+	if snap == nil {
+		snap = c.snapshotOrBlank()
+	}
+	c.renderSnapshotLocked(snap)
 }
 
 // SendInput forwards input bytes to the server.
@@ -789,9 +862,9 @@ func (c *Client) SuppressTabsUntilCursorLeavesTopRow() {
 // PrepareForCtrlLClear hides tabs for the upcoming clear redraw and forces the
 // next snapshot render to repaint from a clean framebuffer baseline.
 func (c *Client) PrepareForCtrlLClear() {
-	if c.effects != nil {
-		c.effects.Stop(mvu.EffectKeyTabAutoHide)
-		c.effects.Stop(mvu.EffectKeyStateExpiry)
+	if scheduler, _ := c.effectRuntime(); scheduler != nil {
+		scheduler.Stop(mvu.EffectKeyTabAutoHide)
+		scheduler.Stop(mvu.EffectKeyStateExpiry)
 	}
 	c.tabSuppress.Start()
 	c.renderMu.Lock()
@@ -807,13 +880,13 @@ func (c *Client) ForceTabsVisibleOnce() {
 	atomic.StoreUint32(&c.forceTabsVisible, 2)
 }
 
-// RenderCurrentFull re-renders the last snapshot with a full clear.
+// RenderCurrentFull re-renders the composed snapshot without clearing the screen.
 func (c *Client) RenderCurrentFull() {
 	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
 	c.renderCache.Reset()
 	c.forceClear = false
-	c.renderMu.Unlock()
-	c.renderCurrent()
+	c.renderSnapshotLocked(c.snapshotOrBlank())
 }
 
 // RenderCurrentClear re-renders the last snapshot with a full clear.
@@ -1014,6 +1087,7 @@ func (c *Client) setScrollbackActive(active bool) {
 	defer c.scrollbackMu.Unlock()
 	if !active {
 		c.scrollbackView.SetActive(false)
+		c.setScrollbackMouseActive(false)
 		return
 	}
 	snap := c.snapshotOrBlank()
@@ -1037,6 +1111,14 @@ func (c *Client) setScrollbackActive(active bool) {
 		rowOffset = 0
 	}
 	c.scrollbackView.EnterAt(totalRows, viewRows, rowOffset, contentCols, viewCols, colOffset)
+	c.setScrollbackMouseActive(true)
+}
+
+func (c *Client) setScrollbackMouseActive(active bool) {
+	if c == nil || c.scrollbackMouse == nil {
+		return
+	}
+	c.scrollbackMouse.Set(active)
 }
 
 func (c *Client) scrollbackPage(delta int, stepRows int) bool {
@@ -1229,6 +1311,10 @@ func (c *Client) applyDiff(diff *protocolpb.Diff) *protocolpb.Snapshot {
 func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 	c.renderMu.Lock()
 	defer c.renderMu.Unlock()
+	c.renderSnapshotLocked(snap)
+}
+
+func (c *Client) renderSnapshotLocked(snap *protocolpb.Snapshot) {
 	forceFull := c.forceClear
 	c.forceClear = false
 	cols, rows := c.terminalSize()
@@ -1247,6 +1333,7 @@ func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 	scrollCol := c.scrollbackView.Column()
 	scrollActive := c.scrollbackView.Active()
 	scrollbackVisible := c.scrollbackView.Visible()
+	scrollPercent := c.scrollbackView.Percent(totalRows, rows)
 	c.scrollbackMu.Unlock()
 	viewSnap := snap
 	if scrollActive || scrollOffset > 0 {
@@ -1254,8 +1341,7 @@ func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 	}
 	compositor := c.ensureCompositor()
 	if scrollbackVisible {
-		percent := c.scrollbackView.Percent(len(scrollRows)+int(snap.Rows), rows)
-		compositor.ApplyAction(mvu.ScrollbackPercentAction{Visible: true, Percent: percent})
+		compositor.ApplyAction(mvu.ScrollbackPercentAction{Visible: true, Percent: scrollPercent})
 	} else {
 		compositor.ApplyAction(mvu.ScrollbackPercentAction{Visible: false})
 	}
@@ -1317,21 +1403,25 @@ func (c *Client) renderSnapshot(snap *protocolpb.Snapshot) {
 		})
 	}
 	_ = writeAll(c.clock(), c.stdoutWriter(), rendered.Bytes)
-	c.scheduleRedrawEffect(mvu.EffectKeyTabAutoHide, frame.TabDelay, false)
-	c.scheduleRedrawEffect(mvu.EffectKeyStateExpiry, frame.StateDelay, true)
+	c.scheduleRedrawEffect(mvu.EffectKeyTabAutoHide, now, frame.TabDelay, false)
+	c.scheduleRedrawEffect(mvu.EffectKeyStateExpiry, now, frame.StateDelay, true)
 }
 
-func (c *Client) startRenderLoop(ctx context.Context) {
+func (c *Client) startRenderLoop(ctx context.Context) func() {
 	c.renderReqMu.Lock()
 	if c.renderReqCh != nil {
 		c.renderReqMu.Unlock()
-		return
+		return func() {}
 	}
 	ch := make(chan struct{}, 1)
 	c.renderReqCh = ch
+	c.renderStopped = false
 	c.renderReqMu.Unlock()
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		for {
 			select {
 			case <-ctx.Done():
@@ -1339,6 +1429,9 @@ func (c *Client) startRenderLoop(ctx context.Context) {
 			case <-ch:
 			}
 			for {
+				if ctx.Err() != nil {
+					return
+				}
 				c.renderDirty.Store(0)
 				c.renderCurrent()
 				if c.renderDirty.Load() == 0 {
@@ -1347,12 +1440,31 @@ func (c *Client) startRenderLoop(ctx context.Context) {
 			}
 		}
 	}()
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			c.renderReqMu.Lock()
+			c.renderStopped = true
+			c.renderReqMu.Unlock()
+			cancel()
+			<-done
+			c.renderReqMu.Lock()
+			if c.renderReqCh == ch {
+				c.renderReqCh = nil
+			}
+			c.renderReqMu.Unlock()
+		})
+	}
 }
 
 func (c *Client) requestRenderCurrent() {
 	c.renderReqMu.Lock()
 	ch := c.renderReqCh
+	stopped := c.renderStopped
 	c.renderReqMu.Unlock()
+	if stopped {
+		return
+	}
 	if ch == nil {
 		c.renderCurrent()
 		return
@@ -1535,12 +1647,13 @@ func (c *Client) renderDisabledSnapshot(snap *protocolpb.Snapshot) {
 	}
 	cursor := mvu.CursorFromSnapshot(snap, cols, rows)
 	cursor.Visible = false
+	now := c.clock().Now()
 	frame, err := compositor.RenderDisabledFrame(mvu.RuntimeDisabledFrameInput{
 		Snapshot:          snap,
 		Cols:              cols,
 		Rows:              rows,
 		Cursor:            cursor,
-		Now:               c.clock().Now(),
+		Now:               now,
 		ScrollbackVisible: c.ScrollbackActive(),
 		Cache:             &c.renderCache,
 	})
@@ -1549,7 +1662,7 @@ func (c *Client) renderDisabledSnapshot(snap *protocolpb.Snapshot) {
 	}
 	rendered := frame.Rendered
 	_ = writeAll(c.clock(), c.stdoutWriter(), rendered.Bytes)
-	c.scheduleRedrawEffect(mvu.EffectKeyTabAutoHide, frame.TabDelay, false)
+	c.scheduleRedrawEffect(mvu.EffectKeyTabAutoHide, now, frame.TabDelay, false)
 }
 
 func (c *Client) snapshotOrBlank() *protocolpb.Snapshot {
@@ -1574,13 +1687,18 @@ func cloneSnapshot(snap *protocolpb.Snapshot) *protocolpb.Snapshot {
 	return snap
 }
 
-func (c *Client) scheduleRedrawEffect(key string, d time.Duration, notifyOverlayChange bool) {
+func (c *Client) scheduleRedrawEffect(key string, sampledAt time.Time, d time.Duration, notifyOverlayChange bool) {
+	var deadline time.Time
+	if d > 0 {
+		deadline = sampledAt.Add(d)
+	}
+	scheduler, ctx := c.effectRuntime()
 	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
-		Scheduler: c.effects,
-		Ctx:       c.runCtx,
+		Scheduler: scheduler,
+		Ctx:       ctx,
 		Key:       key,
 		Result: mvu.ActionResult{
-			Delay: d,
+			Delay: d, Deadline: deadline,
 		},
 		Callback: func(_ bool) {
 			if notifyOverlayChange {
@@ -1718,9 +1836,10 @@ func (c *Client) handleWall(wall *protocolpb.Wall) {
 		Duration: timeout,
 	}})
 	c.RenderCurrent()
+	scheduler, ctx := c.effectRuntime()
 	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
-		Scheduler: c.effects,
-		Ctx:       c.runCtx,
+		Scheduler: scheduler,
+		Ctx:       ctx,
 		Key:       mvu.EffectKeyStateExpiry,
 		Result:    effect,
 		Callback: func(_ bool) {
@@ -1764,7 +1883,8 @@ func (c *Client) notifyDesktop(wall *protocolpb.Wall) {
 	if label == "" {
 		label = "Lingon"
 	}
-	_ = notifier.Notify(c.runCtx, desktopnotify.Request{
+	_, ctx := c.effectRuntime()
+	_ = notifier.Notify(ctx, desktopnotify.Request{
 		Title: label,
 		Body:  "inactive",
 	})
@@ -1873,7 +1993,7 @@ func (c *Client) toggleWallInactivity(ctx context.Context) {
 		c.showViewOnlyBanner("wall inactivity toggle unavailable")
 		return
 	}
-	token := strings.TrimSpace(c.AccessToken)
+	token := strings.TrimSpace(c.accessToken())
 	if token == "" && c.TokenRefresher != nil {
 		refreshed, err := c.TokenRefresher(ctx)
 		if err != nil {
@@ -1882,7 +2002,7 @@ func (c *Client) toggleWallInactivity(ctx context.Context) {
 		}
 		token = strings.TrimSpace(refreshed)
 		if token != "" {
-			c.AccessToken = token
+			c.SetAccessToken(token)
 		}
 	}
 	if token == "" {
@@ -1943,9 +2063,10 @@ func (c *Client) showStatusBanner(input mvu.StatusInput) {
 	}
 	effect := c.applyCompositorAction(mvu.StatusAction{Input: input})
 	c.RenderCurrent()
+	scheduler, ctx := c.effectRuntime()
 	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
-		Scheduler: c.effects,
-		Ctx:       c.runCtx,
+		Scheduler: scheduler,
+		Ctx:       ctx,
 		Key:       mvu.EffectKeyStateExpiry,
 		Result:    effect,
 		Callback: func(_ bool) {
@@ -2075,7 +2196,6 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 	var prefix control.Prefix
 	pending := make([]byte, 0, 2048)
 	var scrollState scrollInputState
-	var mouseFilter mouseReportFilter
 	for {
 		select {
 		case <-ctx.Done():
@@ -2228,7 +2348,6 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 			}
 			return true
 		}
-		filtered := make([]byte, 0, 8)
 		for _, b := range data {
 			if c.ScrollbackActive() {
 				cmd := scrollState.feed(b)
@@ -2282,13 +2401,9 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 				}
 				continue
 			}
-			filtered = filterMouseByte(&mouseFilter, b, filtered)
-			for _, fb := range filtered {
-				if !processNormalByte(fb) {
-					return
-				}
+			if !processNormalByte(b) {
+				return
 			}
-			filtered = filtered[:0]
 		}
 		if !flushPending() {
 			return
@@ -2330,6 +2445,39 @@ func restoreCursor(clk clock.Clock, w io.Writer) {
 	_ = writeAll(clk, w, []byte("\x1b[0m\x1b[?25h"))
 }
 
+type terminalMouseMode struct {
+	mu      sync.Mutex
+	clk     clock.Clock
+	w       io.Writer
+	enabled bool
+}
+
+func newTerminalMouseMode(clk clock.Clock, w io.Writer) *terminalMouseMode {
+	if !isTerminalWriter(w) {
+		return &terminalMouseMode{}
+	}
+	return &terminalMouseMode{clk: clk, w: w}
+}
+
+func (m *terminalMouseMode) Set(enabled bool) {
+	if m == nil || m.w == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.enabled == enabled {
+		return
+	}
+	if enabled {
+		if enableMouseReporting(m.clk, m.w) {
+			m.enabled = true
+		}
+		return
+	}
+	disableMouseReporting(m.clk, m.w)
+	m.enabled = false
+}
+
 func enterAltScreen(clk clock.Clock, w io.Writer) bool {
 	if !isTerminalWriter(w) {
 		return false
@@ -2365,7 +2513,7 @@ func isTerminalWriter(w io.Writer) bool {
 	if !ok || outFile == nil {
 		return false
 	}
-	return term.IsTerminal(int(outFile.Fd()))
+	return terminal.IsTerminal(outFile)
 }
 
 func normalizeEndpoint(endpoint string) (string, string, error) {
@@ -2552,18 +2700,22 @@ func (c *Client) terminalSize() (int, int) {
 	if c.TermSize != nil {
 		return c.TermSize()
 	}
-	if outFile, ok := c.stdoutWriter().(*os.File); ok && term.IsTerminal(int(outFile.Fd())) {
-		cols, rows, err := term.GetSize(int(outFile.Fd()))
+	if outFile, ok := c.stdoutWriter().(*os.File); ok {
+		size, err := terminal.GetSize(outFile)
 		if err == nil {
-			return cols, rows
+			return size.Cols, size.Rows
 		}
 	}
 	return 0, 0
 }
 
 func (c *Client) shouldWaitForSignals() bool {
-	if inFile, ok := c.stdinReader().(*os.File); ok && term.IsTerminal(int(inFile.Fd())) {
-		return true
+	if inFile, ok := c.stdinReader().(*os.File); ok {
+		var isTerminal bool
+		_ = terminal.WithFileDescriptor(inFile, func(fd uintptr) {
+			isTerminal = term.IsTerminal(int(fd))
+		})
+		return isTerminal
 	}
 	return false
 }

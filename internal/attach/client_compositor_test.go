@@ -1,6 +1,24 @@
 package attach
 
-import "testing"
+import (
+	"testing"
+
+	"pkt.systems/lingon/internal/mvu"
+)
+
+func TestClientSetCompositorPreservesOwnerContext(t *testing.T) {
+	ui := mvu.NewRuntime()
+	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{SessionID: "active-owner", Endpoint: "https://owner.example/v1"}})
+	c := &Client{SessionID: "hidden-client", Endpoint: "https://client.example/v1"}
+	c.SetCompositor(ui)
+	if c.Compositor() != ui {
+		t.Fatal("client did not retain shared compositor")
+	}
+	state := ui.Read()
+	if state.SessionID != "active-owner" || state.Endpoint != "https://owner.example/v1" {
+		t.Fatalf("client overwrote owner context: %+v", state)
+	}
+}
 
 func TestClientCompositorEnsuresRuntime(t *testing.T) {
 	c := &Client{}

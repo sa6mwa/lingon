@@ -2,13 +2,16 @@ package attach_test
 
 import (
 	"context"
-	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/session"
+	"pkt.systems/lingon/internal/testclock"
 )
 
 type attachRecordingNotifier struct {
@@ -29,37 +32,90 @@ func (n *attachRecordingNotifier) count() int {
 	return len(n.requests)
 }
 
+func startInactivityHost(t *testing.T, h *ptytest.Harness, opts ptytest.HostOptions) *ptytest.PTYSession {
+	t.Helper()
+	// This fixture needs line input and observable output, with no dependence
+	// on the engineer's shell profile or its startup probes.
+	path := filepath.Join(t.TempDir(), "inactivity-shell.sh")
+	script := `#!/bin/sh
+set -eu
+stty -echo
+printf '\nINACTIVITY-SHELL-READY\n'
+while IFS= read -r line; do
+  case "$line" in
+    'echo '*) printf '%s\n' "${line#echo }" ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	opts.Shell = path
+	connected := make(chan struct{})
+	var once sync.Once
+	onPublishStatus := opts.OnPublishStatus
+	opts.OnPublishStatus = func(status session.PublishStatus) {
+		if onPublishStatus != nil {
+			onPublishStatus(status)
+		}
+		if status.Kind == session.PublishStatusConnected {
+			once.Do(func() { close(connected) })
+		}
+	}
+	host := h.StartHost(opts)
+	t.Cleanup(host.Cancel)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	select {
+	case <-connected:
+	case <-ctx.Done():
+		t.Fatal("owned inactivity host did not connect:", ctx.Err())
+	}
+	waitInactivityScreen(t, host, "INACTIVITY-SHELL-READY")
+	return host
+}
+
+func waitInactivityScreen(t *testing.T, sess *ptytest.PTYSession, marker string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	before := sess.Clock().Now()
+	if err := sess.WaitForScreen(ctx, func(screen ptytest.Screen) bool { return screen.Contains(marker) }); err != nil {
+		t.Fatalf("waiting for %q: %v; screen:\n%s", marker, err, sess.Screen().String())
+	}
+	if !sess.Clock().Now().Equal(before) {
+		t.Fatal("waiting for rendered output advanced the inactivity clock")
+	}
+}
+
+func advanceInactivityClocks(hostClock, wallClock testclock.Mock, duration time.Duration) {
+	wallClock.Add(duration)
+	hostClock.Add(duration)
+}
+
 func TestAttachConnectDoesNotRearmWallInactivityWithoutTerminalInput(t *testing.T) {
-	h := newHarness(t, ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
+	wallClock, hostClock := testclock.New(), testclock.New()
+	h := newHarness(t, ptytest.WithClock(hostClock), ptytest.WithWallClock(wallClock), ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
 	notifier := &attachRecordingNotifier{}
 
-	host := h.StartHost(ptytest.HostOptions{
+	host := startInactivityHost(t, h, ptytest.HostOptions{
 		SessionID:       "attach-wall-connect",
 		SessionName:     "attach-wall-connect",
 		Cols:            100,
 		Rows:            30,
 		DesktopNotifier: notifier,
 	})
-	t.Cleanup(host.Cancel)
 
-	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-wall-connect"})
 	host.Send("echo ATTACH_WALL_CONNECT_READY\n")
-	if !screenContainsWithin(host, "ATTACH_WALL_CONNECT_READY", 2*time.Second) {
-		t.Fatalf("expected source session marker before enabling inactivity")
-	}
+	waitInactivityScreen(t, host, "ATTACH_WALL_CONNECT_READY")
 
 	host.SendCtrlL()
 	host.Send("w")
-	if !screenContainsWithin(host, "wall inactivity 250ms", 2*time.Second) {
-		t.Fatalf("expected wall inactivity status banner on source tab")
+	waitInactivityScreen(t, host, "wall inactivity 250ms")
+	advanceInactivityClocks(hostClock, wallClock, time.Second)
+	if got := notifier.count(); got != 1 {
+		t.Fatalf("first inactivity produced %d notifications, want 1", got)
 	}
-
-	host.Eventually(3*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
-		if notifier.count() != 1 {
-			return fmt.Errorf("waiting for first inactivity notification")
-		}
-		return nil
-	})
 
 	attachSess := h.StartAttach(ptytest.AttachOptions{
 		SessionID: "attach-wall-connect",
@@ -68,59 +124,52 @@ func TestAttachConnectDoesNotRearmWallInactivityWithoutTerminalInput(t *testing.
 	})
 	t.Cleanup(attachSess.Cancel)
 
-	if !screenContainsWithin(attachSess, "ATTACH_WALL_CONNECT_READY", 3*time.Second) {
-		t.Fatalf("expected attach to render source session after connect")
-	}
+	waitInactivityScreen(t, attachSess, "ATTACH_WALL_CONNECT_READY")
 
-	time.Sleep(1500 * time.Millisecond)
+	advanceInactivityClocks(hostClock, wallClock, 1500*time.Millisecond)
 	if got := notifier.count(); got != 1 {
 		t.Fatalf("expected attach connect/replay to avoid rearming inactivity, got %d notifications", got)
+	}
+	host.Send("echo ATTACH_INPUT_REARMS\n")
+	waitInactivityScreen(t, host, "ATTACH_INPUT_REARMS")
+	advanceInactivityClocks(hostClock, wallClock, 1500*time.Millisecond)
+	if got := notifier.count(); got != 2 {
+		t.Fatalf("actual input must rearm inactivity, got %d notifications", got)
 	}
 }
 
 func TestMultiAttachTabSwitchDoesNotRearmWallInactivityWithoutTerminalInput(t *testing.T) {
-	h := newHarness(t, ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
+	wallClock, hostClock := testclock.New(), testclock.New()
+	h := newHarness(t, ptytest.WithClock(hostClock), ptytest.WithWallClock(wallClock), ptytest.WithWallConfig(1*time.Second, []time.Duration{250 * time.Millisecond}))
 	notifier := &attachRecordingNotifier{}
 
-	hostA := h.StartHost(ptytest.HostOptions{
+	hostA := startInactivityHost(t, h, ptytest.HostOptions{
 		SessionID:       "attach-wall-switch-a",
 		SessionName:     "attach-wall-switch-a",
 		Cols:            100,
 		Rows:            30,
 		DesktopNotifier: notifier,
 	})
-	t.Cleanup(hostA.Cancel)
 
-	hostB := h.StartHost(ptytest.HostOptions{
+	hostB := startInactivityHost(t, h, ptytest.HostOptions{
 		SessionID:   "attach-wall-switch-b",
 		SessionName: "attach-wall-switch-b",
 		Cols:        100,
 		Rows:        30,
 	})
-	t.Cleanup(hostB.Cancel)
 
-	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"attach-wall-switch-a", "attach-wall-switch-b"})
 	hostA.Send("echo ATTACH_WALL_SWITCH_A\n")
 	hostB.Send("echo ATTACH_WALL_SWITCH_B\n")
-	if !screenContainsWithin(hostA, "ATTACH_WALL_SWITCH_A", 2*time.Second) {
-		t.Fatalf("expected source session marker before enabling inactivity")
-	}
-	if !screenContainsWithin(hostB, "ATTACH_WALL_SWITCH_B", 2*time.Second) {
-		t.Fatalf("expected peer session marker before attach")
-	}
+	waitInactivityScreen(t, hostA, "ATTACH_WALL_SWITCH_A")
+	waitInactivityScreen(t, hostB, "ATTACH_WALL_SWITCH_B")
 
 	hostA.SendCtrlL()
 	hostA.Send("w")
-	if !screenContainsWithin(hostA, "wall inactivity 250ms", 2*time.Second) {
-		t.Fatalf("expected wall inactivity status banner on source tab")
+	waitInactivityScreen(t, hostA, "wall inactivity 250ms")
+	advanceInactivityClocks(hostClock, wallClock, time.Second)
+	if got := notifier.count(); got != 1 {
+		t.Fatalf("first inactivity produced %d notifications, want 1", got)
 	}
-
-	hostA.Eventually(3*time.Second, 50*time.Millisecond, func(_ ptytest.Screen) error {
-		if notifier.count() != 1 {
-			return fmt.Errorf("waiting for first inactivity notification")
-		}
-		return nil
-	})
 
 	attachSess := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: "attach-wall-switch-b",
@@ -129,18 +178,20 @@ func TestMultiAttachTabSwitchDoesNotRearmWallInactivityWithoutTerminalInput(t *t
 	})
 	t.Cleanup(attachSess.Cancel)
 
-	if !screenContainsWithin(attachSess, "ATTACH_WALL_SWITCH_B", 3*time.Second) {
-		t.Fatalf("expected multi-attach to render initial session before tab switch")
-	}
+	waitInactivityScreen(t, attachSess, "ATTACH_WALL_SWITCH_B")
 
 	attachSess.SendCtrlL()
 	attachSess.Send("n")
-	if !screenContainsWithin(attachSess, "ATTACH_WALL_SWITCH_A", 3*time.Second) {
-		t.Fatalf("expected multi-attach tab switch to render monitored session")
-	}
+	waitInactivityScreen(t, attachSess, "ATTACH_WALL_SWITCH_A")
 
-	time.Sleep(1500 * time.Millisecond)
+	advanceInactivityClocks(hostClock, wallClock, 1500*time.Millisecond)
 	if got := notifier.count(); got != 1 {
 		t.Fatalf("expected multi-attach tab switch to avoid rearming inactivity, got %d notifications", got)
+	}
+	hostA.Send("echo TAB_INPUT_REARMS\n")
+	waitInactivityScreen(t, hostA, "TAB_INPUT_REARMS")
+	advanceInactivityClocks(hostClock, wallClock, 1500*time.Millisecond)
+	if got := notifier.count(); got != 2 {
+		t.Fatalf("actual input must rearm inactivity, got %d notifications", got)
 	}
 }

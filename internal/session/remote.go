@@ -58,6 +58,7 @@ type remoteView struct {
 	disabled        bool
 	awaiting        bool
 	running         bool
+	starting        bool
 	sessionClosed   bool
 	restart         bool
 	needsFullRender bool
@@ -224,7 +225,7 @@ func (m *remoteManager) setToken(token string) {
 	m.token = token
 	for _, view := range m.views {
 		if view != nil && view.client != nil {
-			view.client.AccessToken = token
+			view.client.SetAccessToken(token)
 		}
 	}
 }
@@ -237,18 +238,21 @@ func (m *remoteManager) logViewState(event string, view *remoteView, err error) 
 		m.logger.Trace("session.remote.view.state", "event", event, "view", "nil")
 		return
 	}
+	m.mu.Lock()
+	id, visible, awaiting, disabled, running, restart, runID, hiddenAt, hasClient := view.id, view.visible, view.awaiting, view.disabled, view.running, view.restart, view.runID, view.hiddenAt, view.client != nil
+	m.mu.Unlock()
 	m.logger.Trace(
 		"session.remote.view.state",
 		"event", event,
-		"session", view.id,
-		"visible", view.visible,
-		"awaiting", view.awaiting,
-		"disabled", view.disabled,
-		"running", view.running,
-		"restart", view.restart,
-		"run_id", view.runID,
-		"hidden_at", view.hiddenAt,
-		"has_client", view.client != nil,
+		"session", id,
+		"visible", visible,
+		"awaiting", awaiting,
+		"disabled", disabled,
+		"running", running,
+		"restart", restart,
+		"run_id", runID,
+		"hidden_at", hiddenAt,
+		"has_client", hasClient,
 		"err", err,
 	)
 }
@@ -368,6 +372,7 @@ func (m *remoteManager) Disable(sessionID string) {
 		return
 	}
 	var view *remoteView
+	var client *attach.Client
 	var callback func([]remoteSessionInfo)
 	var sessions []remoteSessionInfo
 	m.mu.Lock()
@@ -376,6 +381,7 @@ func (m *remoteManager) Disable(sessionID string) {
 	sessions = copySessions(m.sessions)
 	callback = m.onSessions
 	if view != nil {
+		client = view.client
 		view.disabled = true
 		view.awaiting = false
 		view.restart = false
@@ -390,9 +396,9 @@ func (m *remoteManager) Disable(sessionID string) {
 		}
 	}
 	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.Close("disabled")
-		view.client.SetStdout(io.Discard)
+	if client != nil {
+		client.Close("disabled")
+		client.SetStdout(io.Discard)
 	}
 	m.logViewState("disable", view, nil)
 	if callback != nil && len(sessions) > 0 {
@@ -453,7 +459,10 @@ func (m *remoteManager) Enable(ctx context.Context, sessionID string, stdout io.
 	}); err != nil {
 		m.logger.Debug("session.remote.reconnect.failed", "session", view.id, "err", err)
 	}
-	if view != nil && view.client != nil {
+	m.mu.Lock()
+	client := view.client
+	m.mu.Unlock()
+	if client != nil {
 		go func(id string, client *attach.Client, waitCtx context.Context) {
 			timer := m.clock.NewTimer(750 * time.Millisecond)
 			defer timer.Stop()
@@ -465,7 +474,7 @@ func (m *remoteManager) Enable(ctx context.Context, sessionID string, stdout io.
 			if client.Connected() {
 				m.markReady(id)
 			}
-		}(view.id, view.client, ctx)
+		}(view.id, client, ctx)
 	}
 
 	if callback != nil && len(sessions) > 0 {
@@ -475,6 +484,7 @@ func (m *remoteManager) Enable(ctx context.Context, sessionID string, stdout io.
 
 func (m *remoteManager) markReady(sessionID string) {
 	var view *remoteView
+	var client *attach.Client
 	var stdout io.Writer
 	var callback func([]remoteSessionInfo)
 	var sessions []remoteSessionInfo
@@ -491,6 +501,7 @@ func (m *remoteManager) markReady(sessionID string) {
 	view.restart = false
 	delete(m.disabled, sessionID)
 	stdout = view.stdout
+	client = view.client
 	sessions = copySessions(m.sessions)
 	callback = m.onSessions
 	showConnected = func() {
@@ -504,12 +515,12 @@ func (m *remoteManager) markReady(sessionID string) {
 	m.mu.Unlock()
 	m.logViewState("mark_ready", view, nil)
 
-	if view.client != nil {
+	if client != nil {
 		showConnected()
 		if stdout != nil {
-			view.client.SetStdout(stdout)
+			client.SetStdout(stdout)
 		}
-		view.client.RenderCurrent()
+		client.RenderCurrent()
 		if connectedDelay > 0 {
 			m.scheduleConnectedClear(view, connectedDelay)
 		}
@@ -628,10 +639,11 @@ func (m *remoteManager) Show(ctx context.Context, sessionID string, stdout io.Wr
 		}
 		view.visible = true
 		view.hiddenAt = time.Time{}
+		client := view.client
 		m.mu.Unlock()
-		if view.client != nil {
-			view.client.SetStdout(stdout)
-			view.client.RenderDisabled()
+		if client != nil {
+			client.SetStdout(stdout)
+			client.RenderDisabled()
 		}
 		return view, nil
 	}
@@ -642,9 +654,10 @@ func (m *remoteManager) Show(ctx context.Context, sessionID string, stdout io.Wr
 			view.visible = true
 			view.hiddenAt = time.Time{}
 			view.needsFullRender = true
+			client := view.client
 			m.mu.Unlock()
 			m.logViewState("show_existing", view, nil)
-			view.client.SetStdout(stdout)
+			client.SetStdout(stdout)
 			return view, nil
 		} else {
 			view.awaiting = true
@@ -663,12 +676,12 @@ func (m *remoteManager) Show(ctx context.Context, sessionID string, stdout io.Wr
 	if view == nil {
 		view = &remoteView{id: session.ID}
 	}
+	m.mu.Lock()
 	view.name = mvu.SessionLabel(session.ID, session.Name)
 	view.visible = true
 	view.pending = pending
 	view.needsFullRender = true
 
-	m.mu.Lock()
 	m.views[session.ID] = view
 	m.mu.Unlock()
 	m.logViewState("show_connect", view, nil)
@@ -695,6 +708,10 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		return nil
 	}
 	m.mu.Lock()
+	if view.starting {
+		m.mu.Unlock()
+		return nil
+	}
 	view.ctx = ctx
 	viewRunning := view.running
 	var seedFrom *attach.Client
@@ -716,33 +733,47 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		m.mu.Unlock()
 		return nil
 	}
+	view.starting = true
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		view.starting = false
+		m.mu.Unlock()
+	}()
 	m.logViewState("connect_view", view, nil)
 
+	m.mu.Lock()
 	session, ok := sessionByID(m.sessions, view.id)
+	m.mu.Unlock()
 	if !ok {
 		_ = m.refreshSessions(ctx)
+		m.mu.Lock()
 		session, ok = sessionByID(m.sessions, view.id)
+		m.mu.Unlock()
 	}
+	m.mu.Lock()
 	if !ok {
 		session = remoteSessionInfo{ID: view.id, Name: view.name}
 	}
-	if view.client == nil {
+	client := view.client
+	token, themeName := m.token, m.themeName
+	m.mu.Unlock()
+	if client == nil {
 		var tokenRefresher func(context.Context) (string, error)
 		if m.tokenRefresher != nil {
 			tokenRefresher = m.refreshTokenErr
 		}
-		client := &attach.Client{
+		client = &attach.Client{
 			Endpoint:                    m.endpoint,
 			SessionID:                   session.ID,
-			AccessToken:                 m.token,
+			AccessToken:                 token,
 			RequestControl:              true,
 			DisableResizePropagation:    true,
 			DisableDesktopNotifications: m.disableDesktopNotifications,
 			DesktopNotifier:             m.desktopNotifier,
 			TLSDir:                      m.tlsDir,
 			TermSize:                    m.termSize,
-			Theme:                       m.themeName,
+			Theme:                       themeName,
 			Logger:                      m.logger,
 			TokenRefresher:              tokenRefresher,
 			Clock:                       m.clock,
@@ -767,20 +798,20 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 			m.handleExplicitSessionClosed(session.ID)
 		}
 		client.SetCompositor(m.compositor)
-		view.client = client
 	}
-	view.name = mvu.SessionLabel(session.ID, session.Name)
-	view.client.OnReady = onReady
-	view.client.OnSessions = func(updated []attach.SessionInfo) {
+	client.OnReady = onReady
+	client.OnSessions = func(updated []attach.SessionInfo) {
 		if len(updated) > 0 {
 			m.applySessions(toRemoteSessions(updated))
 		} else {
 			m.applySessions(nil)
 		}
 	}
-	view.client.SetStdout(stdout)
+	client.SetStdout(stdout)
 
 	m.mu.Lock()
+	view.client = client
+	view.name = mvu.SessionLabel(session.ID, session.Name)
 	if view.cancel == nil {
 		view.runID++
 		runID := view.runID
@@ -788,12 +819,13 @@ func (m *remoteManager) connectView(ctx context.Context, view *remoteView, stdou
 		view.cancel = cancel
 		view.running = true
 		go func(v *remoteView, id uint64) {
-			err := v.client.RunDetached(cctx)
+			err := client.RunDetached(cctx)
 			m.handleViewClosed(v, id, err)
 		}(view, runID)
 	}
+	visible := view.visible
 	m.mu.Unlock()
-	if seedFrom != nil && view.client != nil && view.visible {
+	if seedFrom != nil && client != nil && visible {
 		m.clock.AfterFunc(250*time.Millisecond, func() {
 			m.mu.Lock()
 			current := m.views[view.id]
@@ -817,9 +849,13 @@ func (m *remoteManager) Hide(sessionID string) {
 		view.hiddenAt = m.clock.Now()
 		view.needsFullRender = true
 	}
+	var client *attach.Client
+	if view != nil {
+		client = view.client
+	}
 	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.SetStdout(io.Discard)
+	if client != nil {
+		client.SetStdout(io.Discard)
 	}
 	m.logViewState("hide", view, nil)
 }
@@ -827,13 +863,21 @@ func (m *remoteManager) Hide(sessionID string) {
 func (m *remoteManager) Render(sessionID string) {
 	m.mu.Lock()
 	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		if view.needsFullRender {
+	var client *attach.Client
+	full := false
+	if view != nil {
+		client = view.client
+		if client != nil {
+			full = view.needsFullRender
 			view.needsFullRender = false
-			view.client.RenderCurrentFull()
+		}
+	}
+	m.mu.Unlock()
+	if client != nil {
+		if full {
+			client.RenderCurrentFull()
 		} else {
-			view.client.RenderCurrent()
+			client.RenderCurrent()
 		}
 	}
 	m.logViewState("render", view, nil)
@@ -842,9 +886,13 @@ func (m *remoteManager) Render(sessionID string) {
 func (m *remoteManager) RenderFull(sessionID string) {
 	m.mu.Lock()
 	view := m.views[sessionID]
+	var client *attach.Client
+	if view != nil {
+		client = view.client
+	}
 	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.RenderCurrentFull()
+	if client != nil {
+		client.RenderCurrentFull()
 	}
 	m.logViewState("render_full", view, nil)
 }
@@ -852,10 +900,14 @@ func (m *remoteManager) RenderFull(sessionID string) {
 func (m *remoteManager) RenderClear(sessionID string) {
 	m.mu.Lock()
 	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.RenderCurrentClear()
+	var client *attach.Client
+	if view != nil {
+		client = view.client
 		view.needsFullRender = false
+	}
+	m.mu.Unlock()
+	if client != nil {
+		client.RenderCurrentClear()
 	}
 	m.logViewState("render_clear", view, nil)
 }
@@ -866,91 +918,91 @@ func (m *remoteManager) RenderDisabled(sessionID string, stdout io.Writer) {
 	if view != nil {
 		view.visible = true
 		view.hiddenAt = time.Time{}
+		view.needsFullRender = true
+	}
+	var client *attach.Client
+	if view != nil {
+		client = view.client
 	}
 	m.mu.Unlock()
-	if view == nil || view.client == nil {
+	if client == nil {
 		return
 	}
 	m.logViewState("render_disabled", view, nil)
-	view.client.SetStdout(stdout)
-	view.needsFullRender = true
-	view.client.RenderDisabled()
+	client.SetStdout(stdout)
+	client.RenderDisabled()
+}
+
+func (m *remoteManager) viewClient(sessionID string) (*remoteView, *attach.Client) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	view := m.views[sessionID]
+	if view == nil {
+		return nil, nil
+	}
+	return view, view.client
 }
 
 func (m *remoteManager) SetScrollbackActive(sessionID string, active bool) {
-	m.mu.Lock()
-	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.SetScrollbackActive(active)
-		view.client.RenderCurrent()
+	view, client := m.viewClient(sessionID)
+	if client != nil {
+		client.SetScrollbackActive(active)
+		client.RenderCurrent()
 	}
 	m.logViewState("scrollback_active", view, nil)
 }
 
 func (m *remoteManager) ScrollbackPage(sessionID string, delta int, viewRows int) {
-	m.mu.Lock()
-	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		if view.client.ScrollbackPage(delta, viewRows) {
-			view.client.RenderCurrent()
+	view, client := m.viewClient(sessionID)
+	if client != nil {
+		if client.ScrollbackPage(delta, viewRows) {
+			client.RenderCurrent()
 		}
 	}
 	m.logViewState("scrollback_page", view, nil)
 }
 
 func (m *remoteManager) ScrollbackPanX(sessionID string, delta int) bool {
-	m.mu.Lock()
-	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		return view.client.ScrollbackPanX(delta)
+	_, client := m.viewClient(sessionID)
+	if client != nil {
+		return client.ScrollbackPanX(delta)
 	}
 	return false
 }
 
 func (m *remoteManager) ScrollbackTop(sessionID string, viewRows int) {
-	m.mu.Lock()
-	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.ScrollbackTop(viewRows)
-		view.client.RenderCurrent()
+	view, client := m.viewClient(sessionID)
+	if client != nil {
+		client.ScrollbackTop(viewRows)
+		client.RenderCurrent()
 	}
 	m.logViewState("scrollback_top", view, nil)
 }
 
 func (m *remoteManager) ScrollbackBottom(sessionID string) {
-	m.mu.Lock()
-	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.ScrollbackBottom()
-		view.client.RenderCurrent()
+	view, client := m.viewClient(sessionID)
+	if client != nil {
+		client.ScrollbackBottom()
+		client.RenderCurrent()
 	}
 	m.logViewState("scrollback_bottom", view, nil)
 }
 
 func (m *remoteManager) ResetScrollback(sessionID string) {
-	m.mu.Lock()
-	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view != nil && view.client != nil {
-		view.client.ScrollbackReset()
-		view.client.RenderCurrent()
+	view, client := m.viewClient(sessionID)
+	if client != nil {
+		client.ScrollbackReset()
+		client.RenderCurrent()
 	}
 	m.logViewState("scrollback_reset", view, nil)
 }
 
 func (m *remoteManager) ScrollbackOffset(sessionID string) int {
-	m.mu.Lock()
-	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view == nil || view.client == nil {
+	_, client := m.viewClient(sessionID)
+	if client == nil {
 		return 0
 	}
-	return view.client.ScrollbackOffset()
+	return client.ScrollbackOffset()
 }
 
 func (m *remoteManager) SendInput(ctx context.Context, sessionID string, data []byte, stdout io.Writer) error {
@@ -964,18 +1016,22 @@ func (m *remoteManager) SendInput(ctx context.Context, sessionID string, data []
 		disabled = true
 	}
 	awaiting := view != nil && view.awaiting
+	var client *attach.Client
+	if view != nil {
+		client = view.client
+	}
 	m.mu.Unlock()
 	if disabled || awaiting {
 		m.queueInput(sessionID, data)
 		m.Enable(ctx, sessionID, stdout)
 		return nil
 	}
-	if view == nil || view.client == nil {
+	if client == nil {
 		m.queueInput(sessionID, data)
 		m.Enable(ctx, sessionID, stdout)
 		return nil
 	}
-	if err := view.client.SendInput(ctx, data); err != nil {
+	if err := client.SendInput(ctx, data); err != nil {
 		m.queueInput(sessionID, data)
 		m.Enable(ctx, sessionID, stdout)
 		return nil
@@ -995,16 +1051,20 @@ func (m *remoteManager) SendCommand(ctx context.Context, sessionID string, kind 
 		disabled = true
 	}
 	awaiting := view != nil && view.awaiting
+	var client *attach.Client
+	if view != nil {
+		client = view.client
+	}
 	m.mu.Unlock()
 	if disabled || awaiting {
 		m.Enable(ctx, sessionID, stdout)
 		return nil
 	}
-	if view == nil || view.client == nil {
+	if client == nil {
 		m.Enable(ctx, sessionID, stdout)
 		return nil
 	}
-	if err := view.client.SendCommand(ctx, kind); err != nil {
+	if err := client.SendCommand(ctx, kind); err != nil {
 		m.Enable(ctx, sessionID, stdout)
 		return nil
 	}
@@ -1055,13 +1115,11 @@ func (m *remoteManager) SendResize(ctx context.Context, sessionID string, cols, 
 	if !m.sessionAllowsResize(sessionID) {
 		return nil
 	}
-	m.mu.Lock()
-	view := m.views[sessionID]
-	m.mu.Unlock()
-	if view == nil || view.client == nil {
+	_, client := m.viewClient(sessionID)
+	if client == nil {
 		return fmt.Errorf("session %q not connected", sessionID)
 	}
-	return view.client.SendResize(ctx, cols, rows)
+	return client.SendResize(ctx, cols, rows)
 }
 
 func (m *remoteManager) sessionAllowsResize(sessionID string) bool {
@@ -1150,6 +1208,7 @@ func (m *remoteManager) handleViewClosed(view *remoteView, runID uint64, err err
 	}
 	var restart bool
 	var ctx context.Context
+	var refreshCtx context.Context
 	m.mu.Lock()
 	current := m.views[view.id]
 	if current == view && view.runID == runID {
@@ -1174,11 +1233,14 @@ func (m *remoteManager) handleViewClosed(view *remoteView, runID uint64, err err
 			delete(m.retained, view.id)
 			delete(m.views, view.id)
 		}
+		if !view.sessionClosed && err != nil {
+			refreshCtx = view.ctx
+		}
 	}
 	m.mu.Unlock()
 	m.logViewState("view_closed", view, err)
-	if view.ctx != nil && view.ctx.Err() == nil && !view.sessionClosed && err != nil {
-		_ = m.refreshSessions(view.ctx)
+	if refreshCtx != nil && refreshCtx.Err() == nil {
+		_ = m.refreshSessions(refreshCtx)
 	}
 	if restart && ctx != nil && ctx.Err() == nil {
 		_ = m.connectView(ctx, view, io.Discard, func() {
@@ -1214,17 +1276,18 @@ func (m *remoteManager) Refresh(ctx context.Context) error {
 
 func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 	rawCount := len(sessions)
+	m.mu.Lock()
+	now := m.clock.Now()
 	if rawCount == 0 && len(m.sessions) > 0 {
-		if m.clock.Now().Sub(m.lastNonEmpty) < 5*time.Second {
+		if now.Sub(m.lastNonEmpty) < 5*time.Second {
+			m.mu.Unlock()
 			m.logger.Debug("session.remote.sessions.empty.ignored")
 			return
 		}
 	}
-	sessions = ensureLocalSession(sessions, m.localID, m.localName, m.clock.Now().UTC())
+	sessions = ensureLocalSession(sessions, m.localID, m.localName, now.UTC())
 	mvu.SortSessionsByName(sessions)
 
-	m.mu.Lock()
-	now := m.clock.Now()
 	if rawCount > 0 {
 		m.lastNonEmpty = now
 	}
@@ -1238,7 +1301,12 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 		prevSessions[session.ID] = session
 	}
 	retainedSessions := make([]remoteSessionInfo, 0)
-	reconnectViews := make([]*remoteView, 0)
+	type reconnectRequest struct {
+		view   *remoteView
+		ctx    context.Context
+		stdout io.Writer
+	}
+	reconnectViews := make([]reconnectRequest, 0)
 	for id, view := range m.views {
 		if _, ok := allIDs[id]; ok {
 			delete(m.retained, id)
@@ -1246,7 +1314,7 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 			view.sessionClosed = false
 			if view.visible && view.cancel == nil && !view.awaiting && !view.disabled && !view.running {
 				view.awaiting = true
-				reconnectViews = append(reconnectViews, view)
+				reconnectViews = append(reconnectViews, reconnectRequest{view: view, ctx: view.ctx, stdout: view.stdout})
 			}
 			continue
 		}
@@ -1300,11 +1368,12 @@ func (m *remoteManager) applySessions(sessions []remoteSessionInfo) {
 	nextSessions := copySessions(m.sessions)
 	m.mu.Unlock()
 
-	for _, view := range reconnectViews {
-		if view == nil || view.ctx == nil {
+	for _, request := range reconnectViews {
+		view := request.view
+		if request.ctx == nil {
 			continue
 		}
-		if err := m.connectView(view.ctx, view, view.stdout, func() {
+		if err := m.connectView(request.ctx, view, request.stdout, func() {
 			m.markReady(view.id)
 		}); err != nil {
 			m.logger.Debug("session.remote.reconnect.failed", "session", view.id, "err", err)
@@ -1323,9 +1392,11 @@ func (m *remoteManager) handleExplicitSessionClosed(sessionID string) {
 	m.mu.Lock()
 	view := m.views[sessionID]
 	var cancel context.CancelFunc
+	var client *attach.Client
 	if view != nil {
 		view.sessionClosed = true
 		cancel = view.cancel
+		client = view.client
 		delete(m.views, sessionID)
 	}
 	delete(m.retained, sessionID)
@@ -1344,6 +1415,11 @@ func (m *remoteManager) handleExplicitSessionClosed(sessionID string) {
 	copied := copySessions(m.sessions)
 	m.mu.Unlock()
 
+	// Join any in-flight render and detach output before the owner activates
+	// and paints another session. Cancellation alone does not join rendering.
+	if client != nil {
+		client.SetStdout(io.Discard)
+	}
 	if cancel != nil {
 		cancel()
 	}

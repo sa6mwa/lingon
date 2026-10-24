@@ -1,0 +1,191 @@
+package systems.pkt.lingon.terminal
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class TerminalLinksTest {
+    @Test
+    fun findHttpsLinksRecognizesHttpsOnly() {
+        val links = TerminalLinks.findHttpsLinks("see http://plain.test and https://secure.test/path")
+
+        assertEquals(listOf("https://secure.test/path"), links.map { it.url })
+    }
+
+    @Test
+    fun findHttpsLinksStopsAtWhitespaceAndTrimsTerminalPunctuation() {
+        val links = TerminalLinks.findHttpsLinks("open (https://example.test/path?q=1), then go")
+
+        assertEquals(1, links.size)
+        assertEquals("https://example.test/path?q=1", links.single().url)
+    }
+
+    @Test
+    fun findHttpsLinksTrimsClosingFormatDelimiters() {
+        val links = TerminalLinks.findHttpsLinks(
+            "open <https://angle.example/test> \"https://quote.example/test\" 'https://single.example/test'",
+        )
+
+        assertEquals(
+            listOf(
+                "https://angle.example/test",
+                "https://quote.example/test",
+                "https://single.example/test",
+            ),
+            links.map { it.url },
+        )
+    }
+
+    @Test
+    fun findHttpsLinksKeepsBalancedClosingPunctuation() {
+        val links = TerminalLinks.findHttpsLinks("open https://example.test/a_(b)")
+
+        assertEquals("https://example.test/a_(b)", links.single().url)
+    }
+
+    @Test
+    fun findHttpsLinksMapsSnapshotCells() {
+        val snapshot = snapshot(
+            cols = 32,
+            rows = listOf("open https://example.test now"),
+        )
+
+        val links = TerminalLinks.findHttpsLinks(snapshot)
+
+        assertEquals(1, links.size)
+        val link = links.single()
+        assertEquals("https://example.test", link.url)
+        assertEquals(0, link.startRow)
+        assertEquals(5, link.startCol)
+        assertEquals(0, link.endRow)
+        assertEquals(25, link.endColExclusive)
+        assertTrue(link.contains(row = 0, col = 5))
+        assertTrue(link.contains(row = 0, col = 24))
+    }
+
+    @Test
+    fun wideUnicodeLinksKeepFullUrlAndContinuationHitArea() {
+        for (suffix in listOf("日本", "🦊", "a\u0301")) {
+            val prefix = "https://example.test/"
+            val runes = mutableListOf<Int>()
+            prefix.forEach { runes.add(it.code) }
+            val graphemes = mutableMapOf<Int, String>()
+            if (suffix == "a\u0301") {
+                graphemes[runes.size] = suffix
+                runes.add('a'.code)
+            } else {
+                suffix.codePoints().forEach { rune -> runes.add(rune); runes.add(0) }
+            }
+            val end = runes.size
+            runes.add(' '.code)
+            runes.add('x'.code)
+            val snapshot = TerminalSnapshot(runes.size, 1, runes.toIntArray(), IntArray(runes.size), IntArray(runes.size), IntArray(runes.size), Array(runes.size) { graphemes[it].orEmpty() }, 0, 0, false, 0, "")
+            val link = TerminalLinks.findHttpsLinks(snapshot).single()
+            assertEquals(prefix + suffix, link.url)
+            assertEquals(0, link.startCol)
+            assertEquals(end, link.endColExclusive)
+            for (col in 0 until end) assertTrue("missing hit at $col for $suffix", link.contains(0, col))
+            assertEquals(false, link.contains(0, end))
+        }
+    }
+
+    @Test
+    fun findHttpsLinksDoesNotJoinRowsWithoutWrapMetadata() {
+        val snapshot = snapshot(
+            cols = 10,
+            rows = listOf(
+                "xx https:/",
+                "/example.t",
+                "est done",
+            ),
+        )
+
+        assertEquals(emptyList<TerminalLinkRange>(), TerminalLinks.findHttpsLinks(snapshot))
+    }
+
+    @Test
+    fun findHttpsLinksDoesNotJoinHardLineBreaksAtLastColumn() {
+        val snapshot = snapshot(
+            cols = 20,
+            rows = listOf(
+                "https://example.test",
+                "/prompt",
+            ),
+        )
+
+        val link = TerminalLinks.findHttpsLinks(snapshot).single()
+
+        assertEquals("https://example.test", link.url)
+        assertEquals(0, link.startRow)
+        assertEquals(0, link.startCol)
+        assertEquals(0, link.endRow)
+        assertEquals(20, link.endColExclusive)
+    }
+
+    @Test
+    fun refreshForUpdateScansOnceWhenSnapshotAndFrameSeqChange() {
+        val snapshot = snapshot(
+            cols = 32,
+            rows = listOf("open https://example.test now"),
+        )
+        var scans = 0
+
+        val links = TerminalLinks.refreshForUpdate(
+            snapshot = snapshot,
+            snapshotChanged = true,
+            frameSeqChanged = true,
+        ) {
+            scans += 1
+            TerminalLinks.findHttpsLinks(it)
+        }
+
+        assertEquals(1, scans)
+        assertEquals(listOf("https://example.test"), links?.map { it.url })
+    }
+
+    @Test
+    fun refreshForUpdateSkipsScanWhenSnapshotAndFrameSeqAreUnchanged() {
+        val snapshot = snapshot(
+            cols = 32,
+            rows = listOf("open https://example.test now"),
+        )
+        var scans = 0
+
+        val links = TerminalLinks.refreshForUpdate(
+            snapshot = snapshot,
+            snapshotChanged = false,
+            frameSeqChanged = false,
+        ) {
+            scans += 1
+            TerminalLinks.findHttpsLinks(it)
+        }
+
+        assertEquals(0, scans)
+        assertEquals(null, links)
+    }
+
+    private fun snapshot(cols: Int, rows: List<String>): TerminalSnapshot {
+        val runes = IntArray(cols * rows.size) { ' '.code }
+        rows.forEachIndexed { row, text ->
+            text.forEachIndexed { col, char ->
+                if (col < cols) {
+                    runes[row * cols + col] = char.code
+                }
+            }
+        }
+        return TerminalSnapshot(
+            cols = cols,
+            rows = rows.size,
+            runes = runes,
+            modes = IntArray(cols * rows.size),
+            fg = IntArray(cols * rows.size),
+            bg = IntArray(cols * rows.size),
+            graphemes = null,
+            cursorX = 0,
+            cursorY = 0,
+            cursorVisible = false,
+            mode = 0,
+            title = "",
+        )
+    }
+}

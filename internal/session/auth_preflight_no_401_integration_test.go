@@ -116,24 +116,39 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		_ = outR.Close()
 		_ = outW.Close()
 	})
+	// These are fixture-owned output pipes, not screen assertions. Drain them
+	// so rendering cannot block reconnect or cancellation on a full pipe.
+	drainOutput := func(reader *os.File) {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = io.Copy(io.Discard, reader)
+		}()
+		t.Cleanup(func() {
+			_ = reader.Close()
+			<-done
+		})
+	}
+	drainOutput(outR)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	sessionID := "session_auth_preflight"
 	runner := New(Options{
-		Endpoint:   endpoint,
-		TLSDir:     tlsDir,
-		Token:      access.Token,
-		AuthFile:   authPath,
-		SessionID:  sessionID,
-		Cols:       80,
-		Rows:       24,
-		Shell:      "/bin/sh",
-		Publish:    true,
-		Stdin:      inR,
-		Stdout:     outW,
-		DisableRaw: true,
+		Endpoint:        endpoint,
+		TLSDir:          tlsDir,
+		Token:           access.Token,
+		AuthFile:        authPath,
+		SessionID:       sessionID,
+		Cols:            80,
+		Rows:            24,
+		Shell:           "/bin/sh",
+		Publish:         true,
+		Stdin:           inR,
+		Stdout:          outW,
+		DisableRaw:      true,
+		ReconnectJitter: func(time.Duration) time.Duration { return 0 },
 	})
 	runErr := make(chan error, 1)
 	go func() {
@@ -160,6 +175,7 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		_ = attachOutR.Close()
 		_ = attachOutW.Close()
 	})
+	drainOutput(attachOutR)
 
 	size := func() (int, int) { return 80, 24 }
 	multi := &attach.MultiClient{
@@ -174,6 +190,7 @@ func TestNo401OnExpiredAuthAfterRelayRestart(t *testing.T) {
 		Stderr:              io.Discard,
 		TermSize:            size,
 		DisableSignalResize: true,
+		ReconnectJitter:     func(time.Duration) time.Duration { return 0 },
 		RefreshInterval:     200 * time.Millisecond,
 		BackoffPolicy: backoff.Policy{
 			Base:   50 * time.Millisecond,

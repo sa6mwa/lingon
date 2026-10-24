@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import systems.pkt.lingon.data.LingonJson
 
 class CertificateStore(
@@ -28,19 +29,25 @@ class CertificateStore(
             emptyMap()
         } else {
             runCatching {
-                LingonJson.decodeFromString(CertificateState.serializer(), raw).endpoints
+                normalizeCertificateEndpoints(
+                    LingonJson.decodeFromString(CertificateState.serializer(), raw).endpoints,
+                )
             }.getOrElse { emptyMap() }
         }
     }
 
     suspend fun list(endpoint: String): List<StoredCert> {
         val state = loadState()
-        return state.endpoints[endpoint].orEmpty()
+        val key = normalizeCertificateEndpointKey(endpoint)
+        val rawKey = endpoint.trim()
+        return (state.endpoints[key].orEmpty() + state.endpoints[rawKey].orEmpty()).distinctBy { it.id }
     }
 
     fun listBlocking(endpoint: String): List<StoredCert> = runBlocking { list(endpoint) }
 
     suspend fun addCertificates(endpoint: String, pem: String): List<StoredCert> {
+        val key = normalizeCertificateEndpointKey(endpoint)
+        val rawKey = endpoint.trim()
         val certs = parseCertificates(pem)
         if (certs.isEmpty()) {
             throw CertificateException("no certificates found")
@@ -58,26 +65,30 @@ class CertificateStore(
             )
         }
         val state = loadState()
-        val existing = state.endpoints[endpoint].orEmpty().associateBy { it.id }
+        val existing = (state.endpoints[key].orEmpty() + state.endpoints[rawKey].orEmpty()).associateBy { it.id }
         val merged = LinkedHashMap<String, StoredCert>(existing)
         additions.forEach { cert ->
             merged.putIfAbsent(cert.id, cert)
         }
         val updated = state.endpoints.toMutableMap()
-        updated[endpoint] = merged.values.toList()
+        updated.remove(rawKey)
+        updated[key] = merged.values.toList()
         persistState(CertificateState(updated))
         return merged.values.toList()
     }
 
     suspend fun removeCertificate(endpoint: String, certId: String) {
+        val key = normalizeCertificateEndpointKey(endpoint)
+        val rawKey = endpoint.trim()
         val state = loadState()
-        val existing = state.endpoints[endpoint].orEmpty()
+        val existing = (state.endpoints[key].orEmpty() + state.endpoints[rawKey].orEmpty()).distinctBy { it.id }
         val updatedList = existing.filterNot { it.id == certId }
         val updated = state.endpoints.toMutableMap()
+        updated.remove(rawKey)
         if (updatedList.isEmpty()) {
-            updated.remove(endpoint)
+            updated.remove(key)
         } else {
-            updated[endpoint] = updatedList
+            updated[key] = updatedList
         }
         persistState(CertificateState(updated))
     }
@@ -89,7 +100,8 @@ class CertificateStore(
             return CertificateState(emptyMap())
         }
         return runCatching {
-            LingonJson.decodeFromString(CertificateState.serializer(), raw)
+            val decoded = LingonJson.decodeFromString(CertificateState.serializer(), raw)
+            CertificateState(normalizeCertificateEndpoints(decoded.endpoints))
         }.getOrElse { CertificateState(emptyMap()) }
     }
 
@@ -117,6 +129,23 @@ class CertificateStore(
         val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
         return digest.joinToString("") { b -> "%02x".format(b) }
     }
+
+}
+
+internal fun normalizeCertificateEndpointKey(endpoint: String): String {
+    val trimmed = endpoint.trim()
+    return trimmed.toHttpUrlOrNull()?.toString() ?: trimmed
+}
+
+private fun normalizeCertificateEndpoints(
+    endpoints: Map<String, List<StoredCert>>,
+): Map<String, List<StoredCert>> {
+    val normalized = LinkedHashMap<String, LinkedHashMap<String, StoredCert>>()
+    endpoints.forEach { (endpoint, certs) ->
+        val merged = normalized.getOrPut(normalizeCertificateEndpointKey(endpoint)) { LinkedHashMap() }
+        certs.forEach { cert -> merged.putIfAbsent(cert.id, cert) }
+    }
+    return normalized.mapValues { (_, certs) -> certs.values.toList() }
 }
 
 @Serializable

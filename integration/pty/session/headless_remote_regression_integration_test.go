@@ -100,28 +100,42 @@ func TestHostRemoteHeadlessExitRemovesSessionWithoutReconnectOverlay(t *testing.
 	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 8*time.Second)
 	switchHostToHeadlessRemote(t, h, viewer, "HREMOTE>")
 
+	beforeExit := h.Clock().Now()
 	viewer.Send("exit\n")
-	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 1, 8*time.Second)
 
-	viewer.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
+	// Await actual render events with mock time frozen: advancing timers while
+	// waiting could hide an incomplete output handoff behind a later redraw.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := viewer.WaitForScreen(ctx, func(screen ptytest.Screen) bool {
 		row0 := screen.Row(0)
 		if strings.Contains(screen.String(), "Not connected") || strings.Contains(row0, "connection lost") || strings.Contains(row0, "reconnecting") {
-			return fmt.Errorf("unexpected reconnect overlay after explicit remote headless exit:\n%s", screen.String())
+			return false
 		}
 		if strings.Contains(row0, "host-remote-headless-exit-target") {
-			return fmt.Errorf("terminated remote headless tab still present: %q", row0)
+			return false
 		}
 		if strings.Contains(screen.String(), "HREMOTE>") {
-			return fmt.Errorf("stale remote headless prompt remained after exit:\n%s", screen.String())
+			return false
 		}
-		return nil
-	})
+		return true
+	}); err != nil {
+		t.Fatalf("remote headless exit did not restore the local screen: %v\n%s", err, viewer.Screen().String())
+	}
 
 	const token = "HOST_REMOTE_HEADLESS_EXIT_LOCAL_OK"
-	viewer.Send("echo " + token + "\n")
-	if !screenContainsWithin(viewer, token, 2*time.Second) {
-		t.Fatalf("local host session was not interactive after remote headless exit:\n%s", viewer.Screen().String())
+	// The expected marker never appears contiguously in the typed command.
+	// Only execution in the restored local shell can produce it.
+	viewer.Send("printf '%s%s\\n' 'HOST_REMOTE_HEADLESS_' 'EXIT_LOCAL_OK'\n")
+	if err := viewer.WaitForScreen(ctx, func(screen ptytest.Screen) bool { return screen.Contains(token) }); err != nil {
+		t.Fatalf("local host session was not interactive after remote headless exit: %v\n%s", err, viewer.Screen().String())
 	}
+	if !h.Clock().Now().Equal(beforeExit) {
+		t.Fatal("remote exit required timer advancement to restore local rendering and input")
+	}
+	// Check relay cleanup after proving the UI handoff; API polling must not
+	// advance timers and accidentally repair the screen before that proof.
+	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 1, 8*time.Second)
 }
 
 func TestHostRemoteHeadlessDetachRemovesSessionWithoutReconnectOverlay(t *testing.T) {

@@ -63,7 +63,7 @@ class AndroidWallNotifier(
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(pendingIntent)
             .build()
         val notificationTag = wallNotificationTag(notification)
@@ -167,12 +167,9 @@ internal fun isWallNotificationStatusBarEntry(
 
 private fun wallNotificationKey(notification: WallNotification): String {
     val cleanEndpoint = notification.endpoint.trim()
-    if (notification.eventId > 0L) {
-        return listOf(cleanEndpoint, notification.eventId.toString()).joinToString(separator = "\u001f")
-    }
     return listOf(
         cleanEndpoint,
-        "fallback",
+        "content",
         notification.sender.trim(),
         notification.sourceSessionName.trim(),
         notification.message.trim(),

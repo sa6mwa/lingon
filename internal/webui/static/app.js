@@ -54,6 +54,9 @@ let termPadding = null;
 let graphemeProviderSet = false;
 let sessions = [];
 let activeSessionId = "";
+let createdSessionId = "";
+let managementBusy = false;
+let renameSessionId = "";
 let sessionRefreshTimer = null;
 let wallPollTimer = null;
 let wallPollInFlight = false;
@@ -223,6 +226,7 @@ function createView(sessionId) {
     connectionState: "offline",
     statusLevel: "error",
     statusText: "",
+    managementError: "",
     queuedInput: "",
   };
 }
@@ -947,6 +951,18 @@ function updateActiveTileClasses() {
   }
 }
 
+function updateStatusBanner(view) {
+  if (view.managementError) {
+    setStatusBanner(view.managementError, "error");
+  } else if (view.statusText) {
+    setStatusBanner(view.statusText, view.statusLevel || "error");
+  } else if (view.loadingVisible) {
+    setStatusBanner(view.loadingText || "loading from relay", "loading");
+  } else {
+    setStatusBanner("");
+  }
+}
+
 function updateActiveStatus() {
   const view = getActiveView();
   if (!view) {
@@ -962,13 +978,7 @@ function updateActiveStatus() {
     window.__bifrons.term = view.term || null;
   }
   setConnectionPill(view.connectionState || "offline");
-  if (view.statusText) {
-    setStatusBanner(view.statusText, view.statusLevel || "error");
-  } else if (view.loadingVisible) {
-    setStatusBanner(view.loadingText || "loading from relay", "loading");
-  } else {
-    setStatusBanner("");
-  }
+  updateStatusBanner(view);
   const showEmpty = view.noHost || !view.snapshot;
   setEmptyState(showEmpty);
   updateScrollbar(view);
@@ -1061,7 +1071,7 @@ function scheduleReconnect(view, reason, retryAfterSeconds = 0) {
   view.statusLevel = "error";
   view.connectionState = "waiting";
   if (view === getActiveView()) {
-    setStatusBanner(view.statusText, "error");
+    updateStatusBanner(view);
     setEmptyState(true);
     setConnectionPill("waiting");
   }
@@ -1075,7 +1085,7 @@ function scheduleReconnect(view, reason, retryAfterSeconds = 0) {
     }
     view.statusText = `${reason} (reconnecting ${remaining}s)`;
     if (view === getActiveView()) {
-      setStatusBanner(view.statusText, "error");
+      updateStatusBanner(view);
     }
   }, 1000);
 
@@ -1109,7 +1119,6 @@ function resetReconnect(view) {
   view.statusText = "";
   view.statusLevel = "error";
   if (view === getActiveView()) {
-    setStatusBanner("");
     updateActiveStatus();
   }
 }
@@ -1867,7 +1876,7 @@ function clearLoadingBanner(view) {
   view.loadingVisible = false;
   view.loadingText = "";
   if (view === getActiveView() && !view.statusText) {
-    setStatusBanner("");
+    updateStatusBanner(view);
   }
 }
 
@@ -2005,6 +2014,7 @@ function openViewWS(view) {
       },
     });
     ws.send(hello);
+    updateManagementActions();
   };
 
   ws.onmessage = (event) => {
@@ -2027,6 +2037,7 @@ function openViewWS(view) {
       return;
     }
     view.ws = null;
+    updateManagementActions();
     if (typeof window !== "undefined" && window.__bifrons && window.__bifrons.debug) {
       window.__bifrons.debug.lastWsClose = {
         code: event && event.code ? event.code : 0,
@@ -2185,6 +2196,7 @@ function applySessionsList(list) {
     destroyView(view);
     views.delete(id);
   }
+  const created = sessions.find((s) => s.id === createdSessionId);
   const current = sessions.find((s) => s.id === activeSessionId);
   if (!current) {
     activeSessionId = pickSessionId(sessions);
@@ -2197,7 +2209,10 @@ function applySessionsList(list) {
     }
   }
   renderTabs();
-  if (activeSessionId) {
+  if (created) {
+    createdSessionId = "";
+    switchSession(created.id);
+  } else if (activeSessionId) {
     switchSession(activeSessionId);
     if (sessions.length === 1) {
       requestFocusActiveView();
@@ -2371,6 +2386,7 @@ function cycleActiveSession(direction) {
 }
 
 function handleSessionShortcut(event) {
+  if (document.getElementById("rename-session-dialog").open) return;
   if (!event || !event.ctrlKey) {
     return;
   }
@@ -2991,3 +3007,72 @@ window.addEventListener("resize", () => {
     positionMenu();
   }
 });
+
+const managementMenu = document.getElementById("session-management-menu");
+const newTerminalButton = document.getElementById("new-terminal-btn");
+const renameSessionButton = document.getElementById("rename-session-btn");
+const renameDialog = document.getElementById("rename-session-dialog");
+const renameInput = document.getElementById("rename-session-input");
+
+function updateManagementActions() {
+  const view = getActiveView();
+  const available = !!(view && !view.shareSession && activeSessionId);
+  managementMenu.classList.toggle("hidden", !available);
+  newTerminalButton.disabled = managementBusy || !view || !view.ws || view.ws.readyState !== WebSocket.OPEN;
+  renameSessionButton.disabled = newTerminalButton.disabled;
+}
+
+async function manageSession(kind, sessionId, name = "") {
+  const view = getActiveView();
+  if (managementBusy || !view || view.shareSession || !sessionId) return;
+  managementBusy = true;
+  view.managementError = "";
+  updateStatusBanner(view);
+  updateManagementActions();
+  try {
+    // A lost response has an uncertain outcome. Only an explicit authentication
+    // rejection may be retried, once, using the same operation identity.
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const requestId = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+    const options = {
+      method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId, session_id: sessionId, kind, name }),
+    };
+    let response = await fetch("sessions/manage", options);
+    if (response.status === 401 && await attemptRefresh()) {
+      if (getActiveView() !== view || view.shareSession || terminalView.classList.contains("hidden")) return;
+      response = await fetch("sessions/manage", options);
+    }
+    const result = await response.json();
+    if (!response.ok || result.error) throw new Error(result.error || "Session operation failed");
+    if (getActiveView()?.shareSession || terminalView.classList.contains("hidden")) return;
+    if (kind === "create") createdSessionId = result.session_id;
+    await refreshSessionsWithAuth();
+  } catch (error) {
+    view.managementError = error instanceof TypeError || error instanceof SyntaxError ? "Session operation outcome unknown; refresh sessions before trying again" : error.message;
+    if (getActiveView() === view) updateStatusBanner(view);
+  } finally {
+    managementBusy = false;
+    updateManagementActions();
+  }
+}
+
+newTerminalButton.addEventListener("click", () => manageSession("create", activeSessionId));
+renameSessionButton.addEventListener("click", () => {
+  renameSessionId = activeSessionId;
+  renameInput.value = sessionLabelById(renameSessionId);
+  renameDialog.showModal();
+  renameInput.focus();
+  renameInput.select();
+});
+document.getElementById("rename-session-cancel").addEventListener("click", () => renameDialog.close());
+document.getElementById("rename-session-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const name = renameInput.value.trim();
+  if (!name || [...name].length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) { renameInput.setCustomValidity("Use 1–80 characters without control characters"); renameInput.reportValidity(); return; }
+  renameDialog.close();
+  manageSession("rename", renameSessionId, name);
+});
+renameInput.addEventListener("input", () => renameInput.setCustomValidity(""));
+menuToggle.addEventListener("click", updateManagementActions);

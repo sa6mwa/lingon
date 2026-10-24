@@ -188,14 +188,9 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 		return activeID == "session_b" && !activeLocal
 	}, runErrA, runErrB)
 	waitUntilAll(t, 5*time.Second, func() bool {
-		view := runnerA.remoteSessions.views["session_b"]
-		if view == nil || view.client == nil {
-			return false
-		}
-		if view.client.ClientID == "" {
-			return false
-		}
-		return hub.HasClientID("session_b", view.client.ClientID)
+		// This harness has only one viewer of B. Observe relay registration
+		// rather than reading a client's ID while its startup assigns it.
+		return hub.ClientCount("session_b") == 1
 	}, runErrA, runErrB)
 
 	_, _ = uiMasterA.Write([]byte("echo READY_B\n"))
@@ -218,10 +213,8 @@ func TestHostTabBarToggleDoesNotStallInput(t *testing.T) {
 		activeID, activeLocal := runnerA.activeSession()
 		return activeID == "session_b" && !activeLocal
 	}, runErrA, runErrB)
-	waitUntilAll(t, 5*time.Second, func() bool {
-		view := runnerA.remoteSessions.views["session_b"]
-		return view != nil && !view.needsFullRender
-	}, runErrA, runErrB)
+	// The following remote echo is the observable readiness/routing barrier;
+	// internal render flags are owned by the renderer, not by this observer.
 	_, _ = uiMasterA.Write([]byte("echo REMOTE_OK\n"))
 	waitUntilAll(t, 5*time.Second, func() bool {
 		return strings.Contains(outB.String(), "REMOTE_OK")

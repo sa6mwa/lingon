@@ -5,6 +5,10 @@ import systems.pkt.lingon.protocol.Diff
 import systems.pkt.lingon.protocol.DiffRow
 import systems.pkt.lingon.protocol.Snapshot
 
+private const val MaxTerminalCols = 1000
+private const val MaxTerminalRows = 1000
+private const val MaxTerminalCells = 250_000
+
 class TerminalSnapshot(
     val cols: Int,
     val rows: Int,
@@ -19,11 +23,22 @@ class TerminalSnapshot(
     var mode: Int,
     var title: String,
 ) {
+    internal fun isWideContinuation(row: Int, col: Int): Boolean {
+        if (row !in 0 until rows || col !in 1 until cols) return false
+        val index = row * cols + col
+        val previous = index - 1
+        // The host stores a wide single-code-point glyph as a rune with an
+        // empty grapheme. Its second cell has rune zero and matching attributes.
+        return runes[index] == 0 && graphemes?.getOrNull(index).isNullOrEmpty() &&
+            (runes[previous] != 0 || graphemes?.getOrNull(previous)?.isNotEmpty() == true) &&
+            modes[index] == modes[previous] && fg[index] == fg[previous] && bg[index] == bg[previous]
+    }
+
     companion object {
         fun fromProto(snapshot: Snapshot): TerminalSnapshot {
             val cols = snapshot.cols
             val rows = snapshot.rows
-            val cellCount = cols * rows
+            val cellCount = checkedCellCount(cols, rows)
             val runes = IntArray(cellCount)
             val modes = IntArray(cellCount)
             val fg = IntArray(cellCount)
@@ -66,7 +81,7 @@ class TerminalSnapshot(
         fun applyDiff(snapshot: TerminalSnapshot?, diff: Diff): TerminalSnapshot {
             val cols = if (diff.cols > 0) diff.cols else snapshot?.cols ?: 0
             val rows = if (diff.rows > 0) diff.rows else snapshot?.rows ?: 0
-            val cellCount = cols * rows
+            val cellCount = checkedCellCount(cols, rows)
             val hasGraphemes = diff.diffRowsList.any { it.graphemesCount > 0 }
 
             val current = if (snapshot == null || snapshot.cols != cols || snapshot.rows != rows) {
@@ -119,6 +134,17 @@ class TerminalSnapshot(
             return current
         }
 
+        private fun checkedCellCount(cols: Int, rows: Int): Int {
+            if (cols <= 0 || rows <= 0 || cols > MaxTerminalCols || rows > MaxTerminalRows) {
+                throw IllegalArgumentException("invalid terminal size ${cols}x${rows}")
+            }
+            val cells = cols.toLong() * rows.toLong()
+            if (cells > MaxTerminalCells) {
+                throw IllegalArgumentException("terminal size ${cols}x${rows} exceeds supported cell limit")
+            }
+            return cells.toInt()
+        }
+
         private fun applyRow(snapshot: TerminalSnapshot, row: DiffRow) {
             val y = row.row
             if (y < 0 || y >= snapshot.rows) return
@@ -136,6 +162,8 @@ class TerminalSnapshot(
                 if (x < bgList.size) snapshot.bg[idx] = bgList[x]
                 if (snapshot.graphemes != null && x < graphemeList.size) {
                     snapshot.graphemes[idx] = graphemeList[x]
+                } else if (snapshot.graphemes != null && x < runesList.size) {
+                    snapshot.graphemes[idx] = ""
                 }
             }
         }

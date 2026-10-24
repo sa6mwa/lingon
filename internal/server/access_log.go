@@ -45,7 +45,7 @@ func AccessLog(logger pslog.Logger, handler http.Handler) http.Handler {
 		case rec.status >= 400:
 			logger.Warn("server.http.request.done", fields...)
 		default:
-			logger.Info("server.http.request.done", fields...)
+			logger.Trace("server.http.request.done", fields...)
 		}
 	})
 }

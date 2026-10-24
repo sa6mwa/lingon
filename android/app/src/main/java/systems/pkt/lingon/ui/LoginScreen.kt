@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -43,8 +44,8 @@ import systems.pkt.lingon.viewmodel.UiState
 @Composable
 fun LoginScreen(state: UiState, viewModel: AppViewModel) {
     var username by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
-    var totp by rememberSaveable { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var totp by remember { mutableStateOf("") }
     val config = LocalConfiguration.current
     val isCompact = config.screenWidthDp < 360 || config.screenHeightDp < 700
     val outerPadding = if (isCompact) 12.dp else 16.dp

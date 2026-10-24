@@ -4,17 +4,19 @@
 package integrationptysession_test
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/testutil"
 )
 
 func TestHostSIGWINCHResizesLocalPTY(t *testing.T) {
@@ -486,15 +488,12 @@ func TestHostResizePreservesScrolledWideOutputWithTabBarVisible(t *testing.T) {
 
 	waitForSessionCountSession(t, h.Clock(), h.Endpoint(), h.AccessToken(), h.AuthFile(), 2, 6*time.Second)
 	eventuallyWithClock(t, h.Clock(), 10*time.Second, 50*time.Millisecond, func() error {
-		row := host.Screen().Row(0)
-		if strings.Contains(row, "connected to ") {
-			return fmt.Errorf("waiting for transient connection banner to clear, row=%q", row)
+		screen := host.Screen()
+		if err := requireViewportResizeTabRow(screen, "viewport-preserve-wide-scroll-output-"); err != nil {
+			return fmt.Errorf("expected tab bar visible before resize: %w", err)
 		}
-		if !strings.Contains(row, "viewport-preserve-wide-scroll-output-tabs") {
-			return fmt.Errorf("expected tab bar visible before resize, got row=%q\nscreen:\n%s", row, host.Screen().String())
-		}
-		if !host.Screen().Contains("RIGHT-30") || !host.Screen().Contains("PROMPT>") {
-			return fmt.Errorf("expected initial scrolled wide output with prompt, got:\n%s", host.Screen().String())
+		if !screen.Contains("RIGHT-30") || !screen.Contains("PROMPT>") {
+			return fmt.Errorf("expected initial scrolled wide output with prompt, got:\n%s", screen.String())
 		}
 		return nil
 	})
@@ -732,7 +731,7 @@ func TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar(t *tes
 	t.Setenv("PS1", "PROMPT> ")
 	shell := countingPromptBash(t)
 	const wideCommand = "clear; for i in $(seq 1 30); do printf 'ROW-%02d-LEFT-1234567890-MID-abcdefghijklmnopqrstuvwxyz0123456789-RIGHT-%02d-END\\n' \"$i\" \"$i\"; done\n"
-	var hostPTY bytes.Buffer
+	var hostPTY testutil.OutputBuffer
 
 	h := newHarness(t)
 	host := h.StartHost(ptytest.HostOptions{
@@ -799,8 +798,8 @@ func TestHostResizePromptAdvanceWhileShrunkRestoresExpandedRowsWithTabBar(t *tes
 		if !strings.Contains(screen.String(), "RIGHT-30-END") {
 			return fmt.Errorf("expected expanded screen to restore right tail after shrunk prompt advance, got:\n%s", screen.String())
 		}
-		if !strings.Contains(screen.Row(0), "viewport-resize-prompt-advance-host") {
-			return fmt.Errorf("expected tab bar visible after expand, got row=%q\nscreen:\n%s", screen.Row(0), screen.String())
+		if err := requireViewportResizeTabRow(screen, "viewport-resize-prompt-advance-"); err != nil {
+			return fmt.Errorf("expected tab bar visible after expand: %w", err)
 		}
 		if err := compareScreensWithNormalizedTabTitles(
 			screen,
@@ -2013,7 +2012,7 @@ func TestHostResizeLargeViewportClearWhileShrunkThenExpandMatchesControl(t *test
 	const rows = 62
 
 	h := newHarness(t)
-	var hostPTY bytes.Buffer
+	var hostPTY testutil.OutputBuffer
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "viewport-resize-large-clear-while-shrunk-host",
 		SessionName: "viewport-resize-large-clear-while-shrunk-host",
@@ -2098,7 +2097,7 @@ func TestHostResizeLargeViewportClearWhileShrunkThenExpandPsAuxMatchesControl(t 
 	const rows = 62
 
 	h := newHarness(t)
-	var hostPTY bytes.Buffer
+	var hostPTY testutil.OutputBuffer
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "viewport-resize-large-clear-while-shrunk-ps-host",
 		SessionName: "viewport-resize-large-clear-while-shrunk-ps-host",
@@ -2398,6 +2397,16 @@ func compareScreensWithNormalizedTabTitles(got, want ptytest.Screen, gotTitle, w
 
 var viewportResizeTabTokenRe = regexp.MustCompile(`viewport-resize[^ ]*`)
 
+func requireViewportResizeTabRow(screen ptytest.Screen, tokens ...string) error {
+	row := screen.Row(0)
+	for _, token := range tokens {
+		if strings.Contains(row, token) {
+			return nil
+		}
+	}
+	return fmt.Errorf("got row=%q\nscreen:\n%s", row, screen.String())
+}
+
 func normalizeViewportResizeTabRow(line string, titles ...string) string {
 	const banner = "connected to "
 	prefix := line
@@ -2410,6 +2419,7 @@ func normalizeViewportResizeTabRow(line string, titles ...string) string {
 		prefix = strings.ReplaceAll(prefix, title, "<SESSION>")
 	}
 	prefix = viewportResizeTabTokenRe.ReplaceAllString(prefix, "<SESSION>")
+	prefix = strings.ReplaceAll(prefix, "*<SESSION>", "<SESSION>")
 	return prefix + suffix
 }
 
@@ -2659,21 +2669,39 @@ func TestHostResizePreservesLowerViewportContentAcrossShrinkAndExpand(t *testing
 	shell := scrollbackShell(t)
 
 	h := newHarness(t)
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	var startupOutput testutil.OutputBuffer
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "viewport-preserve-lower-content",
 		SessionName: "viewport-preserve-lower-content",
 		Shell:       shell,
 		Cols:        40,
 		Rows:        12,
+		OnPTYRead: func(data []byte) {
+			_, _ = startupOutput.Write(data)
+			if strings.Contains(startupOutput.String(), "PROMPT> ") {
+				readyOnce.Do(func() { close(ready) })
+			}
+		},
 	})
 	t.Cleanup(host.Cancel)
 
 	waitForHost(t, h, "viewport-preserve-lower-content", 3*time.Second)
-	waitForConnectedBannerClear(t, host, 4*time.Second)
-	waitForHostPromptIdle(t, host, 3*time.Second, 50*time.Millisecond, 3)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("child shell did not acknowledge readiness:", ctx.Err())
+	}
 
 	host.Send("emit-lines KEEP 1 12\n")
-	waitForStableSeededHostOutput(t, host, "KEEP-12", 3*time.Second)
+	if err := host.WaitForScreen(ctx, func(screen ptytest.Screen) bool {
+		return screen.Contains("KEEP-12") && screen.Contains("PROMPT> ")
+	}); err != nil {
+		t.Fatalf("child output was not rendered: %v\n%s", err, host.Screen().String())
+	}
 
 	host.Resize(40, 6)
 	advanceTestClock(host.Clock(), 200*time.Millisecond)

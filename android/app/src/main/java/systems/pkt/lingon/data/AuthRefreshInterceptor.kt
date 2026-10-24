@@ -29,7 +29,7 @@ private class AuthRefreshInterceptor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        if (isAuthEndpoint(request.url) || isShareTokenWsEndpoint(request.url)) {
+        if (isAuthEndpoint(request.url) || isShareSessionWsEndpoint(request)) {
             return chain.proceed(request)
         }
 
@@ -102,13 +102,16 @@ private class AuthRefreshInterceptor(
             url.encodedPath.endsWith("/auth/refresh") -> true
             url.encodedPath.endsWith("/auth/logout") -> true
             url.encodedPath.endsWith("/auth/logout/clients") -> true
+            url.encodedPath.endsWith("/auth/share") -> true
             else -> false
         }
     }
 
-
-    private fun isShareTokenWsEndpoint(url: HttpUrl): Boolean {
-        return url.encodedPath.endsWith("/ws/client") && !url.queryParameter("token").isNullOrBlank()
+    private fun isShareSessionWsEndpoint(request: Request): Boolean {
+        // Share credentials belong to the connection's private jar. The relay
+        // authenticates them; never refresh or substitute account authority.
+        return request.url.encodedPath.endsWith("/ws/client") &&
+            request.header("X-Lingon-Share-Session") == "1"
     }
 
     private fun canRetry(request: Request): Boolean {

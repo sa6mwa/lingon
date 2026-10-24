@@ -1,6 +1,10 @@
 package systems.pkt.lingon.ui
 
 object TestTags {
+    const val NewTerminalButton = "new_terminal"
+    const val RenameSessionButton = "rename_session"
+    const val RenameSessionInput = "rename_session_input"
+    const val RenameSessionSave = "rename_session_save"
     const val TopBarTitle = "topbar_title"
     const val TopBarSettingsButton = "topbar_settings"
     const val SettingsScreen = "settings_screen"

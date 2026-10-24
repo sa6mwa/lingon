@@ -3,6 +3,8 @@ package systems.pkt.lingon
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.service.notification.StatusBarNotification
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -24,6 +26,7 @@ import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
@@ -34,6 +37,8 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.joinAll
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
@@ -46,13 +51,14 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.FrameLayout
 import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Base64
@@ -62,11 +68,24 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.InputStreamReader
 import systems.pkt.lingon.viewmodel.ConnectionState
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.WebSocket
+import systems.pkt.lingon.data.relay.RelayWebSocketClient
+import systems.pkt.lingon.protocol.Frame
 import java.io.FileOutputStream
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -103,6 +122,7 @@ class EndToEndTest {
     private val testConfig = TestConfig.fromArgs()
     private val screenshotRunId = UUID.randomUUID().toString().take(8)
     private val startedHeadlessSessions = linkedSetOf<String>()
+    private val startedHostSessions = linkedSetOf<String>()
 
     @Before
     fun ensureBackendReachable() {
@@ -118,6 +138,7 @@ class EndToEndTest {
         runCatching { restoreSoftInputAdjustResize() }
         runCatching { resumeActivity() }
         runCatching { detachStartedHeadlessSessions() }
+        runCatching { stopHostsViaHarness(startedHostSessions.toList()) }
         runCatching {
             composeRule.runOnUiThread {
                 appViewModel().setBackgroundWallEnabled(false)
@@ -289,6 +310,340 @@ class EndToEndTest {
     }
 
     @Test
+    fun reopened_shared_session_restores_persisted_zoom() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        attachViaShareToken(token)
+        val state = appViewModel().state.value
+        val sessionId = state.activeSessionId ?: throw AssertionError("missing authenticated share session")
+        val app = composeRule.activity.application as LingonApplication
+        try {
+            setZoomFactor(1.7f)
+            val zoomed = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == sessionId && kotlin.math.abs(info.zoomFactor - 1.7f) < 0.001f
+            } ?: throw AssertionError("shared terminal did not apply initial zoom")
+            waitUntil(10_000L) {
+                runBlocking { kotlin.math.abs(app.repository.loadSessionZoom(state.endpoint, sessionId) - 1.7f) < 0.001f }
+            }
+            ensureLoggedOut()
+            attachViaShareToken(token)
+            val restored = waitForTerminalDebugInfo(SHORT_UI_TIMEOUT_MS) { info ->
+                info.activeSessionId == sessionId && kotlin.math.abs(info.zoomFactor - 1.7f) < 0.001f
+            } ?: throw AssertionError("reopened authenticated share did not restore persisted 1.7x zoom; state=${appViewModel().state.value.zoomFactor}")
+            assertEquals(1.7f, restored.zoomFactor, 0.001f)
+            assertEquals(zoomed.renderScaleX, restored.renderScaleX, 0.03f)
+            assertEquals(zoomed.renderScaleY, restored.renderScaleY, 0.03f)
+        } finally {
+            resetZoomPan()
+        }
+    }
+
+    @Test
+    fun settings_session_management_hidden_for_share() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        attachViaShareToken(token)
+        openSettings()
+        composeRule.onAllNodesWithTag(TestTags.NewTerminalButton).assertCountEquals(0)
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionButton).assertCountEquals(0)
+    }
+
+    @Test
+    fun rename_dialog_lock_hides_and_discards_private_draft() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val viewModel = appViewModel()
+        val initial = viewModel.state.value
+        val sessionId = initial.activeSessionId ?: throw AssertionError("missing active session")
+        val originalName = initial.sessions.first { it.id == sessionId }.name.orEmpty()
+        val draft = "Private draft before lock"
+        val displayed = mutableStateOf(initial)
+        val viewportCache = mutableStateMapOf<String, TerminalViewportState>()
+        fun assertRenameText(expected: String) {
+            val input = composeRule.onNodeWithTag(TestTags.RenameSessionInput).fetchSemanticsNode()
+            assertEquals(expected, input.config[SemanticsProperties.EditableText].text)
+        }
+        composeRule.runOnUiThread {
+            composeRule.activity.setContent {
+                LingonAppContent(state = displayed.value, viewModel = viewModel, viewportCache = viewportCache)
+            }
+        }
+        composeRule.waitForIdle()
+        openSettings()
+        composeRule.onNodeWithTag(TestTags.RenameSessionButton).performClick()
+        waitForTag(TestTags.RenameSessionInput)
+        assertRenameText(originalName)
+        composeRule.onNodeWithTag(TestTags.RenameSessionInput).performTextReplacement(draft)
+        assertRenameText(draft)
+
+        // This is the state after timeout and cancellation of credential unlock.
+        // Exercise the real composition without depending on device credentials
+        // or sleeping through a wall-clock lock timeout.
+        composeRule.runOnIdle {
+            displayed.value = displayed.value.copy(requiresAppUnlock = true, unlockPromptPending = false)
+        }
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionInput).assertCountEquals(0)
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionSave).assertCountEquals(0)
+        composeRule.onAllNodesWithText(draft).assertCountEquals(0)
+        composeRule.onAllNodesWithText("App locked").assertCountEquals(1)
+
+        composeRule.runOnIdle { displayed.value = displayed.value.copy(requiresAppUnlock = false) }
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionInput).assertCountEquals(0)
+        composeRule.onAllNodesWithTag(TestTags.RenameSessionSave).assertCountEquals(0)
+        composeRule.onAllNodesWithText(draft).assertCountEquals(0)
+        composeRule.onNodeWithTag(TestTags.RenameSessionButton).performClick()
+        waitForTag(TestTags.RenameSessionInput)
+        assertRenameText(originalName)
+    }
+
+    @Test
+    fun settings_create_terminal_and_rename_session() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val original = appViewModel().state.value.activeSessionId
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.NewTerminalButton)
+        composeRule.onNodeWithTag(TestTags.NewTerminalButton).performClick()
+        waitUntilNoError(15_000) {
+            val state = appViewModel().state.value
+            state.activeSessionId != original && state.activeSessionHeadless && state.connectionState == ConnectionState.Connected
+        }
+        val created = appViewModel().state.value.activeSessionId!!
+        startedHeadlessSessions += created
+        // The configured harness script retains its echo label when re-executed.
+        assertTerminalResponsive(sessionId = original)
+        composeRule.onNodeWithTag(TestTags.TopBarSettingsButton).performClick()
+        waitForTag(TestTags.RenameSessionButton)
+        composeRule.onNodeWithTag(TestTags.RenameSessionButton).performClick()
+        waitForTag(TestTags.RenameSessionInput)
+        composeRule.onNodeWithTag(TestTags.RenameSessionInput).performTextReplacement("Android build 🦊")
+        composeRule.onNodeWithTag(TestTags.RenameSessionSave).performClick()
+        waitUntilNoError(10_000) {
+            appViewModel().state.value.sessions.any { it.id == created && it.name == "Android build 🦊" }
+        }
+        assertEquals(created, appViewModel().state.value.activeSessionId)
+        assertTerminalResponsive(sessionId = original)
+    }
+
+    @Test
+    fun reconnect_session_fetch_does_not_restore_old_endpoint_sessions() {
+        assertSupersededReconnectResult(unauthorized = false)
+    }
+
+    @Test
+    fun stale_reconnect_authentication_failure_preserves_new_account_frames() {
+        assertSupersededReconnectResult(unauthorized = true)
+    }
+
+    private fun assertSupersededReconnectResult(unauthorized: Boolean) {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val viewModel = appViewModel()
+        val application = composeRule.activity.application as LingonApplication
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        val gated = object : systems.pkt.lingon.data.LingonClient by application.repository {
+            override suspend fun listSessions(): List<systems.pkt.lingon.data.relay.RelaySession> {
+                fetches += 1
+                if (fetches > 1) return application.repository.listSessions()
+                val sessions = application.repository.listSessions()
+                entered.complete(Unit)
+                release.await()
+                if (unauthorized) throw systems.pkt.lingon.data.ApiException("obsolete owner expired", 401)
+                return sessions
+            }
+            override suspend fun refreshAuth(): Boolean = false
+        }
+        val repositoryField = AppViewModel::class.java.getDeclaredField("repository").apply { isAccessible = true }
+        val refreshField = AppViewModel::class.java.getDeclaredField("refreshJob").apply { isAccessible = true }
+        lateinit var oldJob: Job
+        composeRule.runOnIdle {
+            repositoryField.set(viewModel, gated)
+            // Manual recovery shares the exact refresh path used by timed reconnects;
+            // the unit regression drives their backoff through mock time.
+            viewModel.manualRefresh()
+            oldJob = refreshField.get(viewModel) as Job
+        }
+        try {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { entered.isCompleted }
+            val expectedSessions: List<systems.pkt.lingon.data.relay.RelaySession>
+            val expectedSession: String?
+            if (unauthorized) {
+                val secondary = testConfig.secondaryUser() ?: throw AssertionError("missing second account")
+                ensureLoggedOut()
+                loginWithUser(secondary)
+                waitForSessionTick(secondary.sessions.first())
+                expectedSessions = viewModel.state.value.sessions
+                expectedSession = viewModel.state.value.activeSessionId
+                assertEquals(secondary.username, viewModel.state.value.username)
+            } else {
+                composeRule.runOnIdle { viewModel.updateEndpoint("https://new.example/v1") }
+                waitForTagNoError(TestTags.LoginUsername)
+                expectedSessions = emptyList()
+                expectedSession = null
+            }
+            release.complete(Unit)
+            runBlocking { kotlinx.coroutines.withTimeout(15_000) { oldJob.join() } }
+            composeRule.runOnIdle {
+                assertEquals(expectedSessions, viewModel.state.value.sessions)
+                assertEquals(expectedSession, viewModel.state.value.activeSessionId)
+                assertEquals(unauthorized, viewModel.state.value.loggedIn)
+            }
+            if (unauthorized) {
+                assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+                waitForTagNoError(TestTags.TerminalInput)
+                val seq = viewModel.state.value.lastFrameSeq
+                waitUntilNoError(SHORT_UI_TIMEOUT_MS) { viewModel.state.value.lastFrameSeq > seq }
+            } else {
+                waitForTagNoError(TestTags.LoginUsername)
+            }
+        } finally {
+            release.complete(Unit)
+            composeRule.runOnIdle { repositoryField.set(viewModel, application.repository) }
+        }
+    }
+
+    @Test
+    fun management_session_fetch_does_not_restore_old_endpoint_sessions() {
+        assertSessionFetchDiscardedAfterEndpointChange(management = true)
+    }
+
+    @Test
+    fun cold_bootstrap_restores_authenticated_terminal_after_delayed_endpoint() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val originalModel = appViewModel()
+        val expectedSession = originalModel.state.value.activeSessionId
+            ?: throw AssertionError("missing persisted session")
+        val application = composeRule.activity.application as LingonApplication
+        val endpointCollectorStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val releaseEndpoint = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val store = androidx.lifecycle.ViewModelStore()
+        lateinit var restoredModel: AppViewModel
+        val gated = object : systems.pkt.lingon.data.LingonClient by application.repository {
+            override val endpointFlow = flow {
+                endpointCollectorStarted.complete(Unit)
+                releaseEndpoint.await()
+                application.repository.endpointFlow.collect { emit(it) }
+            }
+            override suspend fun listSessions(): List<systems.pkt.lingon.data.relay.RelaySession> {
+                releaseEndpoint.await()
+                // Reproduce a successful response arriving after the UI's first
+                // endpoint emission, without depending on disk/network timing.
+                restoredModel.state.first { it.endpoint == testConfig.endpoint }
+                return application.repository.listSessions()
+            }
+        }
+        try {
+            composeRule.runOnIdle {
+                restoredModel = AppViewModel(gated, application.wsClient)
+                store.put("cold-start", restoredModel)
+                composeRule.activity.setContent { systems.pkt.lingon.ui.LingonApp(restoredModel) }
+            }
+            runBlocking {
+                kotlinx.coroutines.withTimeout(15_000) { endpointCollectorStarted.await() }
+            }
+            composeRule.runOnIdle {
+                assertEquals("", restoredModel.state.value.endpoint)
+                assertFalse(restoredModel.state.value.loggedIn)
+            }
+            composeRule.onNodeWithTag(TestTags.LoginUsername).assertExists()
+            releaseEndpoint.complete(Unit)
+            runBlocking {
+                kotlinx.coroutines.withTimeout(15_000) {
+                    restoredModel.state.first {
+                        it.loggedIn && it.activeSessionId == expectedSession && it.activeSnapshot != null
+                    }
+                }
+            }
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag(TestTags.TerminalInput).assertExists()
+            composeRule.onAllNodesWithTag(TestTags.LoginUsername).assertCountEquals(0)
+            assertTrue(restoredModel.state.value.sessions.any { it.id == expectedSession })
+        } finally {
+            releaseEndpoint.complete(Unit)
+            composeRule.runOnUiThread {
+                store.clear()
+                composeRule.activity.setContent { systems.pkt.lingon.ui.LingonApp(originalModel) }
+            }
+        }
+    }
+
+    @Test
+    fun bootstrap_session_fetch_does_not_restore_old_endpoint_sessions() {
+        assertSessionFetchDiscardedAfterEndpointChange(management = false)
+    }
+
+    private fun assertSessionFetchDiscardedAfterEndpointChange(management: Boolean) {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val viewModel = appViewModel()
+        val application = composeRule.activity.application as LingonApplication
+        val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val finished = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        val gated = object : systems.pkt.lingon.data.LingonClient by application.repository {
+            override suspend fun listSessions(): List<systems.pkt.lingon.data.relay.RelaySession> {
+                fetches += 1
+                if (fetches > 1) throw systems.pkt.lingon.data.ApiException("new context is unauthenticated", 401)
+                val sessions = application.repository.listSessions()
+                ready.complete(Unit)
+                release.await()
+                finished.complete(Unit)
+                return sessions
+            }
+        }
+        val field = AppViewModel::class.java.getDeclaredField("repository").apply { isAccessible = true }
+        composeRule.runOnIdle { field.set(viewModel, gated) }
+        try {
+            if (management) {
+                openSettings()
+                composeRule.onNodeWithTag(TestTags.RenameSessionButton).performClick()
+                waitForTag(TestTags.RenameSessionInput)
+                composeRule.onNodeWithTag(TestTags.RenameSessionInput).performTextReplacement("Superseded rename")
+                composeRule.onNodeWithTag(TestTags.RenameSessionSave).performClick()
+            } else {
+                composeRule.runOnIdle { viewModel.updateEndpoint(testConfig.endpoint) }
+            }
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { ready.isCompleted }
+            composeRule.runOnIdle { viewModel.updateEndpoint("https://new.example/v1") }
+            release.complete(Unit)
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { finished.isCompleted }
+            composeRule.runOnIdle {
+                val state = viewModel.state.value
+                assertEquals("https://new.example/v1", state.endpoint)
+                assertTrue(state.sessions.isEmpty())
+                assertNull(state.activeSessionId)
+                assertFalse(state.loggedIn)
+                assertFalse(state.sessionManagementBusy)
+                assertFalse(state.status?.message == "Session renamed")
+            }
+            closeSettingsIfOpen()
+            waitForTagNoError(TestTags.LoginUsername)
+        } finally {
+            release.complete(Unit)
+            composeRule.runOnIdle { field.set(viewModel, application.repository) }
+        }
+    }
+
+    @Test
     fun terminal_updates_live() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -340,6 +695,426 @@ class EndToEndTest {
             val cr = "ECHO_${sessionId} 0d"
             val lf = "ECHO_${sessionId} 0a"
             snapshotContainsToken(cr) || snapshotContainsToken(lf)
+        }
+    }
+
+    @Test
+    fun keyboard_input_forwards_ctrl_alt_and_modified_arrows() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_DPAD_UP, alt = true)
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_DPAD_DOWN, ctrl = true, alt = true, shift = true)
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_D, ctrl = true, alt = true, shift = true)
+
+        waitUntilNoError(20_000L) {
+            snapshotContainsSequence(
+                "ECHO_${sessionId} 1b",
+                "ECHO_${sessionId} 5b",
+                "ECHO_${sessionId} 31",
+                "ECHO_${sessionId} 3b",
+                "ECHO_${sessionId} 33",
+                "ECHO_${sessionId} 41",
+                "ECHO_${sessionId} 1b",
+                "ECHO_${sessionId} 5b",
+                "ECHO_${sessionId} 31",
+                "ECHO_${sessionId} 3b",
+                "ECHO_${sessionId} 38",
+                "ECHO_${sessionId} 42",
+                "ECHO_${sessionId} 1b",
+                "ECHO_${sessionId} 04",
+            )
+        }
+    }
+
+    @Test
+    fun touch_modifiers_forward_all_arrows_and_fn_keys_stay_active() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+
+        val arrows = listOf("↑" to "41", "↓" to "42", "→" to "43", "←" to "44")
+        for ((label, finalHex) in arrows) {
+            for ((ctrl, alt, modifierHex) in listOf(Triple(false, true, "33"), Triple(true, false, "35"), Triple(true, true, "37"))) {
+                if (ctrl) composeRule.onNodeWithText("CTRL").performClick()
+                if (alt) composeRule.onNodeWithText("ALT").performClick()
+                composeRule.onNodeWithText(label).performClick()
+                waitUntilNoError(10_000L) {
+                    snapshotContainsSequence(
+                        "ECHO_${sessionId} 1b", "ECHO_${sessionId} 5b", "ECHO_${sessionId} 31",
+                        "ECHO_${sessionId} 3b", "ECHO_${sessionId} $modifierHex", "ECHO_${sessionId} $finalHex",
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        waitUntilNoError(10_000L) { hasTextNode("FN") }
+        val functionKeys = listOf(
+            KeyEvent.KEYCODE_1 to listOf("1b", "4f", "50"),
+            KeyEvent.KEYCODE_2 to listOf("1b", "4f", "51"),
+            KeyEvent.KEYCODE_0 to listOf("1b", "5b", "32", "31", "7e"),
+        )
+        for ((keyCode, encoded) in functionKeys) {
+            sendKeyStroke(keyCode)
+            waitUntilNoError(10_000L) { snapshotContainsSequence(*encoded.map { "ECHO_${sessionId} $it" }.toTypedArray()) }
+            assertTrue("FN was reset by a function key", hasTextNode("FN"))
+        }
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_2, shift = true)
+        waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sessionId} 40") }
+        sendModifiedKeyStroke(KeyEvent.KEYCODE_3, shift = true)
+        waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sessionId} 23") }
+        composeRule.onNodeWithText("FN").performClick()
+        waitUntilNoError(10_000L) { hasTextNode("ALT") && !hasTextNode("FN") }
+    }
+
+    @Test
+    fun soft_ime_preserves_supplementary_unicode_in_fn_and_modifier_modes() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("FN"))
+        fun commitImeText(text: String) = composeRule.runOnUiThread {
+            fun findInput(view: View): View? {
+                if (view.javaClass.simpleName == "TerminalInputView") return view
+                if (view is ViewGroup) {
+                    for (index in 0 until view.childCount) {
+                        findInput(view.getChildAt(index))?.let { return it }
+                    }
+                }
+                return null
+            }
+            val input = checkNotNull(findInput(composeRule.activity.window.decorView))
+            assertTrue(input.onCreateInputConnection(EditorInfo()).commitText(text, 1))
+        }
+        commitImeText("😀𠮷e\u0301")
+        val expected = "😀𠮷e\u0301".encodeToByteArray().map { "%02x".format(it.toInt() and 0xff) }
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(expected.size) == expected }
+        assertTrue("FN was reset by literal input", hasTextNode("FN"))
+        composeRule.onNodeWithText("FN").performClick()
+        composeRule.onNodeWithText("CTRL").performClick()
+        commitImeText("🌍𠮷")
+        val ctrlExpected = "🌍𠮷".encodeToByteArray().map { "%02x".format(it.toInt() and 0xff) }
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(ctrlExpected.size) == ctrlExpected }
+        composeRule.onNodeWithText("ALT").performClick()
+        commitImeText("😀𠮷")
+        val altExpected = "\u001b😀\u001b𠮷".encodeToByteArray().map { "%02x".format(it.toInt() and 0xff) }
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(altExpected.size) == altExpected }
+    }
+
+    @Test
+    fun soft_ime_enter_respects_alt_modifier() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+
+        fun sendImeEnter(asKeyEvent: Boolean) {
+            composeRule.runOnUiThread {
+                fun findInput(view: View): View? {
+                    if (view.javaClass.simpleName == "TerminalInputView") return view
+                    if (view is ViewGroup) {
+                        for (index in 0 until view.childCount) {
+                            findInput(view.getChildAt(index))?.let { return it }
+                        }
+                    }
+                    return null
+                }
+                val input = checkNotNull(findInput(composeRule.activity.window.decorView))
+                val connection = input.onCreateInputConnection(EditorInfo())
+                assertTrue(if (asKeyEvent) {
+                    connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                } else {
+                    connection.commitText("\n", 1)
+                })
+            }
+        }
+
+        composeRule.onNodeWithText("ALT").performClick()
+        sendImeEnter(asKeyEvent = true)
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(2) == listOf("1b", "0d") }
+
+        composeRule.onNodeWithText("ALT").performClick()
+        sendImeEnter(asKeyEvent = false)
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(4) == listOf("1b", "0d", "1b", "0d") }
+
+        sendImeEnter(asKeyEvent = true)
+        waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(3) == listOf("1b", "0d", "0d") }
+    }
+
+    @Test
+    fun touch_navigation_long_press_sends_shift_with_active_modifiers() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+
+        val beforeShortHold = terminalEchoTail(sessionId)
+        val upNode = composeRule.onNodeWithText("↑")
+        upNode.performTouchInput { down(center) }
+        composeRule.mainClock.advanceTimeBy(1_900L)
+        upNode.performTouchInput { up() }
+        waitUntilNoError(10_000L) {
+            val tail = terminalEchoTail(sessionId)
+            tail != beforeShortHold && tail.takeLast(3) == listOf("1b", "5b", "41")
+        }
+
+        fun holdAndAssert(label: String, modifier: Int, finalHex: String, keyParameter: String = "31") {
+            val expected = listOf("1b", "5b", keyParameter, "3b", (0x30 + modifier).toString(16), finalHex)
+            val node = composeRule.onNodeWithText(label)
+            node.performTouchInput { down(center) }
+            composeRule.mainClock.advanceTimeBy(2_100L)
+            node.performTouchInput { up() }
+            waitUntilNoError(10_000L) {
+                terminalEchoTail(sessionId).takeLast(expected.size) == expected
+            }
+            assertFalse("$label hold sent more than one key", terminalEchoTail(sessionId).takeLast(expected.size * 2) == expected + expected)
+        }
+
+        holdAndAssert("↑", 2, "41")
+        composeRule.onNodeWithText("ALT").performClick()
+        holdAndAssert("←", 4, "44")
+        composeRule.onNodeWithText("CTRL").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        holdAndAssert("↓", 8, "42")
+        holdAndAssert("HOME", 2, "48")
+        holdAndAssert("END", 2, "46")
+        holdAndAssert("PGUP", 2, "7e", "35")
+        holdAndAssert("PGDN", 2, "7e", "36")
+    }
+
+    @Test
+    fun fn_mode_replaces_page_keys_with_f11_and_f12() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+
+        assertTrue(hasTextNode("PGUP"))
+        assertTrue(hasTextNode("PGDN"))
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("FN"))
+        assertTrue(hasTextNode("F11"))
+        assertTrue(hasTextNode("F12"))
+        assertTrue(hasTextNode("SHFT"))
+        assertFalse(hasTextNode("/"))
+        assertFalse(hasTextNode("PGUP"))
+        assertFalse(hasTextNode("PGDN"))
+
+        composeRule.onNodeWithText("F11").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(5) == listOf("1b", "5b", "32", "33", "7e")
+        }
+        assertTrue(hasTextNode("FN"))
+        composeRule.onNodeWithText("F12").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(5) == listOf("1b", "5b", "32", "34", "7e")
+        }
+        assertTrue(hasTextNode("FN"))
+
+        composeRule.onNodeWithText("SHFT").performClick()
+        sendKeyStroke(KeyEvent.KEYCODE_1)
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(6) == listOf("1b", "5b", "31", "3b", "32", "50")
+        }
+        composeRule.onNodeWithText("F11").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(7) == listOf("1b", "5b", "32", "33", "3b", "32", "7e")
+        }
+        composeRule.onNodeWithText("SHFT").performClick()
+        sendKeyStroke(KeyEvent.KEYCODE_2)
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(3) == listOf("1b", "4f", "51")
+        }
+        composeRule.onNodeWithText("SHFT").performClick()
+        composeRule.onNodeWithText("FN").performClick()
+        assertTrue(hasTextNode("/"))
+        assertFalse(hasTextNode("SHFT"))
+        assertTrue(hasTextNode("PGUP"))
+        assertTrue(hasTextNode("PGDN"))
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("SHFT"))
+        sendKeyStroke(KeyEvent.KEYCODE_1)
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(3) == listOf("1b", "4f", "50")
+        }
+    }
+
+    @Test
+    fun fn_modifier_button_cycles_ctrl_alt_and_both_without_consuming_them() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sessionId = activeSessionId()
+        focusTerminalInput()
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("FN"))
+        composeRule.onNodeWithText("CTRL").assertIsEnabled()
+
+        fun expectFunctionKey(keyCode: Int, vararg bytes: String) {
+            sendKeyStroke(keyCode)
+            waitUntilNoError(10_000L) { terminalEchoTail(sessionId).takeLast(bytes.size) == bytes.toList() }
+            assertTrue("FN was reset by a function key", hasTextNode("FN"))
+        }
+
+        composeRule.onNodeWithText("CTRL").performClick()
+        expectFunctionKey(KeyEvent.KEYCODE_1, "1b", "5b", "31", "3b", "35", "50")
+        expectFunctionKey(KeyEvent.KEYCODE_2, "1b", "5b", "31", "3b", "35", "51")
+
+        composeRule.onNodeWithText("CTRL").performClick()
+        assertTrue(hasTextNode("ALT"))
+        expectFunctionKey(KeyEvent.KEYCODE_1, "1b", "5b", "31", "3b", "33", "50")
+        expectFunctionKey(KeyEvent.KEYCODE_2, "1b", "5b", "31", "3b", "33", "51")
+
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("C+A"))
+        expectFunctionKey(KeyEvent.KEYCODE_0, "1b", "5b", "32", "31", "3b", "37", "7e")
+        composeRule.onNodeWithText("SHFT").performClick()
+        composeRule.onNodeWithText("F11").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(7) == listOf("1b", "5b", "32", "33", "3b", "38", "7e")
+        }
+
+        composeRule.onNodeWithText("C+A").performClick()
+        assertTrue(hasTextNode("CTRL"))
+        composeRule.onNodeWithText("F12").performClick()
+        waitUntilNoError(10_000L) {
+            terminalEchoTail(sessionId).takeLast(7) == listOf("1b", "5b", "32", "34", "3b", "32", "7e")
+        }
+
+        composeRule.onNodeWithText("CTRL").performClick()
+        composeRule.onNodeWithText("FN").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        composeRule.onNodeWithText("ALT").performClick()
+        assertTrue(hasTextNode("CTRL"))
+        expectFunctionKey(KeyEvent.KEYCODE_1, "1b", "4f", "50")
+    }
+
+    @Test
+    fun fn_selection_copies_visible_cells_and_pastes_current_clipboard_in_another_session() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTagNoError(TestTags.TerminalInput)
+        assertTerminalResponsive()
+        val sourceSession = activeSessionId()
+        val destinationSession = testConfig.primaryUser().sessions.firstOrNull { it != sourceSession }
+            ?: throw AssertionError("selection paste test needs a second host session")
+        val clipboard = composeRule.activity.getSystemService(ClipboardManager::class.java)
+        val previousClip = clipboard.primaryClip
+        fun selectEchoPrefix(sessionId: String) {
+            waitUntilNoError(10_000L) {
+                var visible = false
+                composeRule.runOnIdle {
+                    val view = findTerminalView() as? TerminalGridView
+                    val snapshot = stateForTest().activeSnapshot
+                    if (view != null && snapshot != null) {
+                        visible = (view.getVisibleStartRow() until view.getVisibleEndRowExclusive()).any { row ->
+                            snapshotRow(snapshot, row).contains("ECHO_${sessionId} 61")
+                        }
+                    }
+                }
+                visible
+            }
+            composeRule.runOnIdle {
+                val view = findTerminalView() as? TerminalGridView ?: throw AssertionError("missing terminal grid")
+                val snapshot = stateForTest().activeSnapshot ?: throw AssertionError("missing terminal snapshot")
+                val row = (view.getVisibleStartRow() until view.getVisibleEndRowExclusive())
+                    .lastOrNull { snapshotRow(snapshot, it).contains("ECHO_${sessionId} 61") }
+                    ?: throw AssertionError(
+                        "echo line is not visible for selection: session=$sessionId " +
+                            "visible=${view.getVisibleStartRow()}-${view.getVisibleEndRowExclusive()} " +
+                            "camera=${view.getCameraOffsetYForTesting()} " +
+                            "matchingRows=${(0 until snapshot.rows).filter { snapshotRow(snapshot, it).contains("ECHO_${sessionId} 61") }}",
+                    )
+                val col = snapshotRow(snapshot, row).indexOf("ECHO_${sessionId} 61")
+                val cellWidth = view.getScaledCellWidthForTesting()
+                val cellHeight = view.getScaledCellHeightForTesting()
+                val x1 = (col + 0.5f) * cellWidth - view.getCameraOffsetXForTesting()
+                val x2 = (col + 3.5f) * cellWidth - view.getCameraOffsetXForTesting()
+                val y = (row + 0.5f) * cellHeight - view.getCameraOffsetYForTesting()
+                val time = SystemClock.uptimeMillis()
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, x1, y, 0))
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time + 16, MotionEvent.ACTION_MOVE, x2, y, 0))
+                view.dispatchTouchEvent(MotionEvent.obtain(time, time + 32, MotionEvent.ACTION_UP, x2, y, 0))
+                assertEquals("ECHO", view.selectedText())
+            }
+        }
+        try {
+            sendTerminalInput("a")
+            waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sourceSession} 61") }
+            composeRule.onNodeWithText("ALT").performClick()
+            composeRule.onNodeWithText("ALT").performClick()
+            assertTrue(hasTextNode("FN"))
+
+            selectEchoPrefix(sourceSession)
+            sendKeyStroke(KeyEvent.KEYCODE_C)
+            waitUntilNoError(10_000L) {
+                clipboard.primaryClip?.getItemAt(0)?.coerceToText(composeRule.activity)?.toString() == "ECHO"
+            }
+            assertTrue("FN was reset after copy", hasTextNode("FN"))
+
+            composeRule.onNodeWithText("FN").performClick()
+            composeRule.runOnIdle {
+                assertNull((findTerminalView() as TerminalGridView).selectedText())
+            }
+            composeRule.onNodeWithText("ALT").performClick()
+            composeRule.onNodeWithText("ALT").performClick()
+
+            selectSessionTab(destinationSession, timeoutMs = 10_000L)
+            focusTerminalInput()
+            assertTrue("FN was reset on session switch", hasTextNode("FN"))
+            sendKeyStroke(KeyEvent.KEYCODE_V)
+            waitUntilNoError(10_000L) {
+                snapshotContainsSequence(*listOf("45", "43", "48", "4f").map { "ECHO_${destinationSession} $it" }.toTypedArray())
+            }
+
+            clipboard.setPrimaryClip(ClipData.newPlainText("external", "NOW"))
+            sendKeyStroke(KeyEvent.KEYCODE_V)
+            waitUntilNoError(10_000L) {
+                snapshotContainsSequence(*listOf("4e", "4f", "57").map { "ECHO_${destinationSession} $it" }.toTypedArray())
+            }
+
+            sendKeyStroke(KeyEvent.KEYCODE_A)
+            waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${destinationSession} 61") }
+            selectEchoPrefix(destinationSession)
+            sendKeyStroke(KeyEvent.KEYCODE_C)
+            waitUntilNoError(10_000L) {
+                clipboard.primaryClip?.getItemAt(0)?.coerceToText(composeRule.activity)?.toString() == "ECHO"
+            }
+        } finally {
+            if (previousClip != null) clipboard.setPrimaryClip(previousClip) else clipboard.clearPrimaryClip()
         }
     }
 
@@ -565,6 +1340,7 @@ class EndToEndTest {
                     viewportHeightPx = view.height,
                     scaledCellHeightPx = cellHeight,
                     totalRows = 30,
+                    mode = systems.pkt.lingon.terminal.TerminalViewportMode.LiveBottom,
                 ),
             )
             assertEquals(0f, view.getCameraOffsetYForTesting(), 0.01f)
@@ -2452,7 +3228,7 @@ class EndToEndTest {
     }
 
     @Test
-    fun headless_resize_action_disabled_and_input_remains_blocked_without_control() {
+    fun owner_typing_reclaims_control_after_real_handoff() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
         setResizeHostEnabled(false)
@@ -2460,10 +3236,55 @@ class EndToEndTest {
         loginWithConfiguredUser()
         openSettings()
         composeRule.onNodeWithTag(TestTags.HeadlessResizeButton, useUnmergedTree = true).assertIsNotEnabled()
-        composeRule.runOnIdle {
-            appViewModel().setHasControlForTesting(false)
+        closeSettingsIfOpen()
+        assertFirstInputReclaimsControl()
+    }
+
+    @Test
+    fun control_share_typing_reclaims_control_after_real_handoff() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        val token = testConfig.controlToken ?: throw AssertionError("missing control share token")
+        attachViaShareToken(token)
+        assertFirstInputReclaimsControl()
+    }
+
+    private fun assertFirstInputReclaimsControl() {
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        waitUntilNoError(SHORT_UI_TIMEOUT_MS) { appViewModel().state.value.hasControl }
+        val application = composeRule.activity.application as LingonApplication
+        val sessionId = activeSessionId()
+        val epoch = appViewModel().state.value.terminalConnectionEpoch
+        val token = appViewModel().state.value.shareToken
+        val shareAuthentication = token?.let {
+            runBlocking(Dispatchers.IO) { application.wsClient.authenticateShareSession(testConfig.endpoint.toHttpUrl(), it) }
         }
-        assertTerminalInputBlocked()
+        val peer = application.wsClient.connect(
+            RelayWebSocketClient.ConnectOptions(
+                baseUrl = testConfig.endpoint.toHttpUrl(), sessionId = sessionId,
+                shareToken = token, shareAuthentication = shareAuthentication,
+                clientId = "handoff-${UUID.randomUUID()}", cols = 0, rows = 0, wantsControl = true,
+            ),
+            object : RelayWebSocketClient.Listener {
+                override fun onFrame(webSocket: WebSocket, frame: Frame) {}
+            },
+        )
+        try {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { !appViewModel().state.value.hasControl }
+            val echo = "ECHO_${sessionId} 71"
+            val before = snapshotTokenCount(echo)
+            val inputNonce = appViewModel().state.value.localInputNonce
+            // One actual hardware key, without the retry helper: this very key must reach the host.
+            sendTerminalInput("q")
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) {
+                appViewModel().state.value.hasControl && snapshotTokenCount(echo) == before + 1
+            }
+            assertEquals(epoch, appViewModel().state.value.terminalConnectionEpoch)
+            assertEquals(inputNonce + 1, appViewModel().state.value.localInputNonce)
+            assertEquals(before + 1, snapshotTokenCount(echo))
+        } finally {
+            peer.close(1000, "handoff test finished")
+        }
     }
 
     @Test
@@ -2509,6 +3330,7 @@ class EndToEndTest {
             ?: throw AssertionError("missing terminal debug info")
         assertTrue("view cols=${info.viewCols}", info.viewCols > 0)
         assertTrue("view rows=${info.viewRows}", info.viewRows > 0)
+        closeSettingsIfOpen()
         assertTerminalInputBlocked()
     }
 
@@ -2557,10 +3379,19 @@ class EndToEndTest {
 
         val baselineWalls = wallEventCount()
         clickSettingsWallInactivity()
-        waitUntilNoError(5_000L) {
-            appViewModel().state.value.wallInactivityEnabled &&
-                appViewModel().state.value.wallInactivityLabel == "250ms"
+        try {
+            waitUntilNoError(5_000L) {
+                appViewModel().state.value.wallInactivityEnabled &&
+                    appViewModel().state.value.wallInactivityLabel == "250ms"
+            }
+        } catch (err: AssertionError) {
+            throw AssertionError("wall enable setup: baseline=$baselineWalls, actual=${wallEventCount()}, status=${readStatusBanner()}; ${err.message}", err)
         }
+        assertEquals("wall must wait for controlled time", baselineWalls, wallEventCount())
+        // The relay schedules inactivity timers with a one-second minimum.
+        advanceWallClockViaHarness(999)
+        assertEquals("wall fired before its exact deadline", baselineWalls, wallEventCount())
+        advanceWallClockViaHarness(1)
         waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
 
         selectSessionTab(second, timeoutMs = 10_000L)
@@ -2569,8 +3400,15 @@ class EndToEndTest {
         waitUntilNoError(10_000L) { activeSessionId() == first }
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
 
-        SystemClock.sleep(1500L)
-        assertEquals(baselineWalls + 1, wallEventCount())
+        advanceWallClockViaHarness(1500)
+        assertEquals("tab switches must not rearm inactivity", baselineWalls + 1, wallEventCount())
+        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+        sendTerminalInput("echo WALLINPUT$(echo ACK)")
+        sendTerminalEnter()
+        // The marker appears only in shell output, not in the command's echo.
+        waitUntilNoError(5_000L) { snapshotContainsToken("WALLINPUTACK") }
+        advanceWallClockViaHarness(1000)
+        waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 2 }
     }
 
     @Test
@@ -2582,12 +3420,25 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureAllWallInactivityOff()
 
-        clickSettingsWallInactivity()
-        waitUntilNoError(5_000L) {
-            readStatusBanner()?.message == "wall 250ms"
+        val observedBanner = AtomicBoolean(false)
+        lateinit var observer: Job
+        composeRule.runOnUiThread {
+            observer = CoroutineScope(Dispatchers.Main.immediate).launch(start = CoroutineStart.UNDISPATCHED) {
+                appViewModel().state.collect { current ->
+                    if (current.transientStatus?.message == "wall 250ms") observedBanner.set(true)
+                }
+            }
         }
-        waitUntilNoError(6_000L) {
-            readStatusBanner() == null
+        try {
+            openSettings()
+            composeRule.onNodeWithText("Wall inactivity")
+                .performScrollTo()
+                .performClick()
+            waitUntilNoError(5_000L) { observedBanner.get() }
+            closeSettingsIfOpen()
+            waitUntilNoError(6_000L) { readStatusBanner() == null }
+        } finally {
+            observer.cancel()
         }
     }
 
@@ -2753,14 +3604,19 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
-        val tallHosts = startHostsViaHarness(count = 2, rows = 240, initialLines = 260)
+        // Static geometry checks need the complete tall payload, without an
+        // unrelated periodic echo producer keeping Compose continuously busy.
+        val tallHosts = startHostsViaHarness(count = 2, rows = 240, shell = "/bin/sh", initialLines = 260)
         val first = tallHosts[0]
         val second = tallHosts[1]
         val sessions = listOf(first, second)
         sessions.forEach { sessionId ->
             waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
             selectSessionTab(sessionId, timeoutMs = 10_000L)
-            waitUntilNoError(10_000L) { activeSessionId() == sessionId && !stateForTest().sessionSyncing }
+            waitUntilNoError(10_000L) {
+                activeSessionId() == sessionId && !stateForTest().sessionSyncing &&
+                    snapshotContainsToken("LINE_${sessionId} 259")
+            }
             composeRule.runOnIdle {
                 appViewModel().resetZoomAndPan()
             }
@@ -2937,7 +3793,7 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         val headlessId = startHeadlessViaHarness(rows = 240)
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
-        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        selectSessionForFixture(headlessId)
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
         composeRule.runOnIdle {
             appViewModel().resetZoomAndPan()
@@ -2955,6 +3811,16 @@ class EndToEndTest {
         val outputRows = (visibleRows - 3).coerceAtLeast(1)
         sendTerminalInput("clear; seq 1 $outputRows")
         sendTerminalEnter()
+        waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
+            info.lastFrameSeq > beforeLoad.lastFrameSeq && info.hash != beforeLoad.hash
+        } ?: throw AssertionError("terminal fixture did not render before positioning the camera")
+        composeRule.runOnIdle {
+            val view = findTerminalView() as? TerminalGridView ?: throw AssertionError("missing terminal grid")
+            view.restoreViewportState(view.captureViewportState().copy(
+                cameraOffsetYPx = 0f,
+                mode = systems.pkt.lingon.terminal.TerminalViewportMode.Manual,
+            ))
+        }
         val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
             info.lastFrameSeq > beforeLoad.lastFrameSeq &&
                 info.hash != beforeLoad.hash &&
@@ -2967,6 +3833,10 @@ class EndToEndTest {
             loaded.cameraOffsetYPx,
             0.01f,
         )
+        var beforeViewport: systems.pkt.lingon.terminal.TerminalViewportState? = null
+        composeRule.runOnIdle {
+            beforeViewport = (findTerminalView() as? TerminalGridView)?.captureViewportState()
+        }
 
         backgroundAndResumeActivity()
         waitForTagNoError(TestTags.TerminalInput, timeoutMs = SHORT_UI_TIMEOUT_MS)
@@ -2975,7 +3845,15 @@ class EndToEndTest {
                 info.viewRows > 0 &&
                 !stateForTest().sessionSyncing
         } ?: throw AssertionError("focused lifecycle refocus moved the live camera without new terminal output")
-        assertEquals("focused lifecycle refocus changed visible start row", loaded.visibleStartRow, resumed.visibleStartRow)
+        var afterViewport: systems.pkt.lingon.terminal.TerminalViewportState? = null
+        composeRule.runOnIdle {
+            afterViewport = (findTerminalView() as? TerminalGridView)?.captureViewportState()
+        }
+        assertEquals(
+            "focused lifecycle refocus changed visible start row (before=$beforeViewport after=$afterViewport)",
+            loaded.visibleStartRow,
+            resumed.visibleStartRow,
+        )
         assertEquals(
             "focused lifecycle refocus moved camera without new terminal output",
             loaded.cameraOffsetYPx,
@@ -3015,11 +3893,11 @@ class EndToEndTest {
                 info.visibleEndRowExclusive > info.visibleStartRow
         } ?: throw AssertionError("zoomed keyboard-visible terminal debug info did not settle")
 
-        val stepRows = 0.35f
+        val stepRows = maxOf(0.35f, (zoomed.liveTopRows() + 3f) / 55f)
         val stepPx = (zoomed.scaledCellHeightPx * stepRows).coerceAtLeast(8f)
         val olderMoveCount = kotlin.math.ceil((zoomed.liveTopRows() + 3f) / stepRows)
             .toInt()
-            .coerceIn(20, 60)
+            .coerceAtLeast(20)
         val moves = List(olderMoveCount) { stepPx } + List(olderMoveCount + 8) { -stepPx }
         val samples = dispatchTerminalDragPulses(moves)
         assertTrue(
@@ -3239,7 +4117,7 @@ class EndToEndTest {
 
         val headlessId = startHeadlessViaHarness()
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
-        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        selectSessionForFixture(headlessId)
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
 
         openSettings()
@@ -3257,7 +4135,7 @@ class EndToEndTest {
 
         val headlessId = startHeadlessViaHarness()
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
-        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        selectSessionForFixture(headlessId)
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
         waitUntilNoError(10_000L) {
             val info = readTerminalDebugInfo()
@@ -3289,7 +4167,7 @@ class EndToEndTest {
 
         val headlessId = startHeadlessViaHarness()
         waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == headlessId } }
-        composeRule.onNodeWithTag(TestTags.tabTag(headlessId)).performClick()
+        selectSessionForFixture(headlessId)
         waitUntilNoError(10_000L) { activeSessionId() == headlessId && !stateForTest().sessionSyncing }
 
         detachHeadlessViaHarness(headlessId)
@@ -3297,12 +4175,30 @@ class EndToEndTest {
         waitUntilNoError(20_000L) {
             val state = stateForTest()
             state.sessions.none { it.id == headlessId } &&
+                !state.activeSessionId.isNullOrBlank() &&
+                state.sessions.any { it.id == state.activeSessionId } &&
                 state.activeSessionId != headlessId &&
                 !state.sessionSyncing
         }
+        assertTerminalResponsive(requireNotNull(activeSessionId()))
         val banner = readStatusBanner()?.message.orEmpty()
         assertFalse("unexpected reconnect/not-connected banner: $banner", banner.contains("Not connected", ignoreCase = true))
         assertFalse("unexpected reconnect/not-connected banner: $banner", banner.contains("connection lost", ignoreCase = true))
+    }
+
+    @Test
+    fun wall_event_count_includes_all_relay_pages() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        composeRule.runOnUiThread { appViewModel().setBackgroundWallEnabled(false) }
+        composeRule.waitForIdle()
+        ensureAllWallInactivityOff()
+        val before = wallEventCount()
+        val nonce = System.currentTimeMillis()
+        repeat(34) { index -> sendWallViaHarness("page boundary $nonce $index") }
+        assertEquals("wall count must include every relay page", before + 34, wallEventCount())
     }
 
     @Test
@@ -3323,19 +4219,31 @@ class EndToEndTest {
         val baselineWalls = wallEventCount()
 
         val message = "manual wall ${System.currentTimeMillis()}"
-        sendWallViaHarness(message)
-
-        waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
-        waitUntilNoError(5_000L) {
-            readStatusBanner()?.message?.contains(message) == true
+        val observedBanner = AtomicBoolean(false)
+        lateinit var observer: Job
+        composeRule.runOnUiThread {
+            observer = CoroutineScope(Dispatchers.Main.immediate).launch(start = CoroutineStart.UNDISPATCHED) {
+                appViewModel().state.collect { current ->
+                    if (current.bannerStatus?.message?.contains(message) == true) observedBanner.set(true)
+                }
+            }
         }
-        SystemClock.sleep(3_000L)
-        assertNoWallNotificationAutogroupSummary()
-        val visibleMessages = wallNotifications().map { wallNotificationFullText(it) }
-        assertFalse(
-            "foreground wall notification appeared while background wall was disabled: $visibleMessages",
-            visibleMessages.contains(message),
-        )
+        try {
+            sendWallViaHarness(message)
+            waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 1 }
+            // Count queries may span several pages while live frames clear
+            // status; the exact fresh banner must have been delivered meanwhile.
+            waitUntilNoError(5_000L) { observedBanner.get() }
+            SystemClock.sleep(3_000L)
+            assertNoWallNotificationAutogroupSummary()
+            val visibleMessages = wallNotifications().map { wallNotificationFullText(it) }
+            assertFalse(
+                "foreground wall notification appeared while background wall was disabled: $visibleMessages",
+                visibleMessages.contains(message),
+            )
+        } finally {
+            observer.cancel()
+        }
     }
 
     @Test
@@ -3593,15 +4501,33 @@ class EndToEndTest {
             activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
         }
 
-        assumeTrue(
-            "runtime notification gating toggle unsupported on this device",
-            setNotificationDeliveryEnabled(false),
+        val deliveryDisabled = setNotificationDeliveryEnabled(false)
+        assertTrue(
+            "notification gating failed: enabled=${notificationsEnabled()}, appops=" +
+                shellCommandOutput("cmd appops get --uid systems.pkt.lingon POST_NOTIFICATION"),
+            deliveryDisabled,
+        )
+        assertEquals(
+            android.content.pm.PackageManager.PERMISSION_DENIED,
+            InstrumentationRegistry.getInstrumentation().targetContext
+                .checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS),
         )
         clearWallNotifications()
 
         val blockedMessage = "permission blocked wall ${System.currentTimeMillis()}"
         sendWallViaHarness(blockedMessage)
-        Thread.sleep(3_000L)
+        val app = composeRule.activity.application as LingonApplication
+        var fetchedBlockedEvent = false
+        val blockedPoll = runBlocking {
+            app.wallDeliveryCoordinator.pollOnce(testConfig.endpoint, 100) { since, limit ->
+                app.repository.listWallEvents(sinceId = since, limit = limit).also { page ->
+                    fetchedBlockedEvent = page.events.any { it.message == blockedMessage }
+                }
+            }
+        }
+        assertTrue("blocked relay message was not fetched", fetchedBlockedEvent)
+        assertEquals(systems.pkt.lingon.notifications.WallPollStatus.Blocked, blockedPoll.status)
+        assertEquals("blocked delivery must retain its cursor", blockedPoll.since, blockedPoll.cursor)
         assertFalse(
             "wall notification should be suppressed when POST_NOTIFICATIONS is revoked",
             activeNotifications().any { it.notification.channelId == "lingon_wall" },
@@ -3610,12 +4536,14 @@ class EndToEndTest {
         assertTrue("failed to re-enable notifications", setNotificationDeliveryEnabled(true))
         val recoveredMessage = "permission restored wall ${System.currentTimeMillis()}"
         sendWallViaHarness(recoveredMessage)
-        waitUntilDeviceCondition(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS, "permission restored wall notification") {
-            wallNotifications().isNotEmpty()
-        }
+        waitForWallNotificationBody(
+            recoveredMessage,
+            "permission restored wall notification",
+            clearUnexpectedWallNotifications = false,
+        )
         assertNoWallNotificationAutogroupSummary()
         val wallNotification = wallNotifications()
-            .firstOrNull()
+            .firstOrNull { wallNotificationFullText(it) == recoveredMessage }
             ?: throw AssertionError("missing lingon_wall notification after restoring permission")
         val title = wallNotification.notification.extras
             .getCharSequence(Notification.EXTRA_TITLE)
@@ -3644,6 +4572,169 @@ class EndToEndTest {
         waitForTag(TestTags.ShareTokenError)
         composeRule.onNodeWithText("Cancel").performClick()
         waitForTagToDisappear(TestTags.ShareTokenInput)
+    }
+
+    @Test
+    fun obsolete_share_authentication_failure_preserves_new_connection_frames() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        val viewModel = appViewModel()
+        val application = composeRule.activity.application as LingonApplication
+        val original = application.wsClient
+        val providerField = RelayWebSocketClient::class.java.getDeclaredField("httpClientProvider").apply { isAccessible = true }
+        val provider = providerField.get(original) as systems.pkt.lingon.data.HttpClientProvider
+        val field = AppViewModel::class.java.getDeclaredField("wsClient").apply { isAccessible = true }
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val connects = java.util.concurrent.atomic.AtomicInteger()
+        val gated = object : RelayWebSocketClient(provider) {
+            override fun authenticateShareSession(baseUrl: okhttp3.HttpUrl, shareToken: String): systems.pkt.lingon.data.relay.AuthenticatedShareSession {
+                if (attempts.incrementAndGet() == 1) {
+                    entered.complete(Unit)
+                    runBlocking { release.await() }
+                    throw java.io.IOException("obsolete authentication failure")
+                }
+                return original.authenticateShareSession(baseUrl, shareToken)
+            }
+            override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
+                connects.incrementAndGet()
+                return original.connect(options, listener)
+            }
+        }
+        lateinit var initialJobs: Set<Job>
+        lateinit var oldJobs: List<Job>
+        composeRule.runOnIdle {
+            initialJobs = viewModel.viewModelScope.coroutineContext[Job]!!.children.toSet()
+            field.set(viewModel, gated)
+            viewModel.handleSharedToken(token, endpointOverride = null)
+        }
+        try {
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { entered.isCompleted }
+            composeRule.runOnIdle {
+                oldJobs = viewModel.viewModelScope.coroutineContext[Job]!!.children.filter { it !in initialJobs }.toList()
+                viewModel.onAppForeground()
+            }
+            waitForSessionTick(session)
+            val epoch = viewModel.state.value.terminalConnectionEpoch
+            release.complete(Unit)
+            runBlocking { kotlinx.coroutines.withTimeout(15_000) { oldJobs.joinAll() } }
+            composeRule.runOnIdle {
+                assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+                assertEquals(epoch, viewModel.state.value.terminalConnectionEpoch)
+                assertNull(viewModel.state.value.shareTokenError)
+                assertEquals(2, attempts.get())
+                assertEquals(1, connects.get())
+            }
+            val previousSeq = viewModel.state.value.lastFrameSeq
+            waitUntilNoError(SHORT_UI_TIMEOUT_MS) { viewModel.state.value.lastFrameSeq > previousSeq }
+            assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+        } finally {
+            release.complete(Unit)
+            composeRule.runOnIdle { field.set(viewModel, original) }
+        }
+    }
+
+    @Test
+    fun shared_text_finds_wrapped_valid_token_after_invalid_candidate() {
+        assertSharedTextOpensWrappedToken("LGBinvalid\n")
+    }
+
+    @Test
+    fun shared_text_with_many_invalid_prefixes_opens_wrapped_token() {
+        assertSharedTextOpensWrappedToken("LGE".repeat(1000) + "\n")
+    }
+
+    private fun assertSharedTextOpensWrappedToken(prefix: String) {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
+        val parsed = systems.pkt.lingon.share.ShareTokens.parse(token) ?: throw AssertionError("invalid harness token")
+        val embedded = systems.pkt.lingon.share.ShareTokens.encodeEmbedded(parsed.random, testConfig.endpoint) ?: throw AssertionError("cannot encode fixture")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        val intent = android.content.Intent(composeRule.activity, ShareReceiverActivity::class.java).apply {
+            action = android.content.Intent.ACTION_SEND
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_TEXT, prefix + embedded.chunked(17).joinToString("\n") + "\nShared from chat")
+        }
+        composeRule.runOnIdle { composeRule.activity.startActivity(intent) }
+        waitForSessionTick(session)
+        assertEquals(token, appViewModel().state.value.shareToken)
+        assertEquals(session, appViewModel().state.value.activeSessionId)
+        assertEquals(ConnectionState.Connected, appViewModel().state.value.connectionState)
+    }
+
+    @Test
+    fun share_authentication_recovers_after_two_transient_failures() {
+        val token = testConfig.viewToken ?: throw AssertionError("missing share token")
+        val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        assertEquals(2, shareAuthFailuresViaHarness(2))
+        try {
+            // This is the only attach request. Subsequent authentication must
+            // come from automatic reconnect, without foreground/manual recovery.
+            attachViaShareToken(token)
+            waitForSessionTick(session)
+            assertEquals(0, shareAuthFailuresViaHarness())
+            assertNull(appViewModel().state.value.shareTokenError)
+            assertEquals(ConnectionState.Connected, appViewModel().state.value.connectionState)
+        } finally {
+            shareAuthFailuresViaHarness(0)
+        }
+    }
+
+    @Test
+    fun new_share_retries_authentication_after_last_shared_session_closes() {
+        val replacementToken = testConfig.viewToken ?: throw AssertionError("missing replacement share")
+        val replacementSession = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing host")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        val temporary = startHeadlessWithShareViaHarness()
+        try {
+            attachViaShareToken(temporary.second)
+            waitUntilNoError(10_000L) {
+                val state = appViewModel().state.value
+                state.activeSessionId == temporary.first && state.connectionState == ConnectionState.Connected
+            }
+            waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+            detachHeadlessViaHarness(temporary.first)
+            waitUntilNoError(20_000L) {
+                val state = appViewModel().state.value
+                state.activeSessionId == null && state.sessions.isEmpty()
+            }
+            assertEquals(2, shareAuthFailuresViaHarness(2))
+            // One new share request must recover automatically after closure.
+            attachViaShareToken(replacementToken)
+            waitForSessionTick(replacementSession)
+            assertEquals(0, shareAuthFailuresViaHarness())
+            assertEquals(ConnectionState.Connected, appViewModel().state.value.connectionState)
+            assertNull(appViewModel().state.value.shareTokenError)
+        } finally {
+            shareAuthFailuresViaHarness(0)
+        }
+    }
+
+    private fun shareAuthFailuresViaHarness(count: Int? = null): Int {
+        val query = count?.let { "?count=$it" }.orEmpty()
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/share-auth-failures$query")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = if (count == null) "GET" else "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            connection.sslSocketFactory = trustContextFor(testConfig.caPem).socketFactory
+        }
+        try {
+            assertEquals(HttpURLConnection.HTTP_OK, connection.responseCode)
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            return org.json.JSONObject(body).getInt("remaining")
+        } finally {
+            connection.disconnect()
+        }
     }
 
     @Test
@@ -3693,6 +4784,21 @@ class EndToEndTest {
         if (snapshotContainsToken("TICK_$primarySession")) {
             throw AssertionError("share token leaked primary output")
         }
+    }
+
+    @Test
+    fun cleartext_share_authentication_uses_token_fallback() {
+        org.junit.Assume.assumeTrue("requires LINGON_IT_CLEARTEXT=1", testConfig.endpoint.startsWith("http://"))
+        val token = testConfig.viewToken ?: throw AssertionError("missing view token")
+        val session = testConfig.primaryUser().sessions.firstOrNull() ?: throw AssertionError("missing shared host")
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        attachViaShareToken(token)
+        waitForSessionTick(session)
+        assertEquals(ConnectionState.Connected, appViewModel().state.value.connectionState)
+        assertEquals(session, appViewModel().state.value.activeSessionId)
+        assertNull(appViewModel().state.value.shareTokenError)
+        assertFalse(appViewModel().state.value.shareCanControl)
     }
 
     private fun selectSessionTab(sessionId: String, timeoutMs: Long = 6_000L) {
@@ -3848,9 +4954,10 @@ class EndToEndTest {
                     "shareErr=${state.shareTokenError.orEmpty()} " +
                     "status=${state.status?.message.orEmpty()} " +
                     "rows=${info?.rows ?: 0} cols=${info?.cols ?: 0} " +
-                    "active=${info?.activeSessionId.orEmpty()}",
+                "active=${info?.activeSessionId.orEmpty()}",
             )
         }
+        closeSettingsIfOpen()
     }
 
     private fun setEndpoint(endpoint: String) {
@@ -3867,12 +4974,27 @@ class EndToEndTest {
     private fun wallEventCount(): Int {
         val app = composeRule.activity.application as LingonApplication
         return runBlocking {
-            app.repository.listWallEvents(sinceId = 0, limit = 32).events.size
+            var total = 0
+            var since = 0L
+            var more = true
+            while (more) {
+                val page = app.repository.listWallEvents(sinceId = since, limit = 32)
+                total += page.events.size
+                more = page.hasMore
+                if (more) {
+                    assertTrue("wall pagination made no progress", page.nextId > since)
+                    since = page.nextId
+                }
+            }
+            total
         }
     }
 
     private fun clearAppNotifications() {
         notificationManager()?.cancelAll()
+        waitUntilDeviceCondition(5_000L, "wall notifications cleared") {
+            activeNotifications().none { it.notification.channelId == "lingon_wall" }
+        }
     }
 
     private fun clearWallNotifications() {
@@ -3998,15 +5120,16 @@ class EndToEndTest {
 
     private fun setNotificationDeliveryEnabled(enabled: Boolean): Boolean {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        consumeShellCommand(
-            instrumentation.uiAutomation.executeShellCommand(
-                if (enabled) {
-                    "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION allow"
-                } else {
-                    "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION deny"
-                },
-            ),
-        )
+        if (enabled) {
+            consumeShellCommand(instrumentation.uiAutomation.executeShellCommand(
+                "pm grant systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
+            ))
+            consumeShellCommand(instrumentation.uiAutomation.executeShellCommand(
+                "cmd appops set --uid systems.pkt.lingon POST_NOTIFICATION allow",
+            ))
+        } else {
+            revokeNotificationPermissionWithoutKillingInstrumentation()
+        }
         val deadline = System.currentTimeMillis() + 5_000L
         while (System.currentTimeMillis() < deadline) {
             if (notificationsEnabled() == enabled) {
@@ -4018,15 +5141,32 @@ class EndToEndTest {
         return notificationsEnabled() == enabled
     }
 
-    private fun restoreNotificationDelivery(): Boolean {
+    private fun revokeNotificationPermissionWithoutKillingInstrumentation() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        consumeShellCommand(
-            instrumentation.uiAutomation.executeShellCommand(
-                "pm grant systems.pkt.lingon android.permission.POST_NOTIFICATIONS",
-            ),
+        val automation = instrumentation.uiAutomation
+        // Android CTS uses this TestApi; regular revocation kills the test's UID.
+        // Reflection keeps this instrumentation-only API out of production SDK code.
+        val managerClass = Class.forName("android.permission.PermissionManager")
+        val manager = instrumentation.targetContext.getSystemService(managerClass)
+            ?: throw AssertionError("platform permission manager missing")
+        val user = android.os.Process.myUserHandle()
+        val userId = user.javaClass.getMethod("getIdentifier").invoke(user) as Int
+        automation.adoptShellPermissionIdentity(
+            "android.permission.REVOKE_POST_NOTIFICATIONS_WITHOUT_KILL",
+            "android.permission.REVOKE_RUNTIME_PERMISSIONS",
         )
-        return setNotificationDeliveryEnabled(true)
+        try {
+            managerClass.getMethod(
+                "revokePostNotificationPermissionWithoutKillForTest",
+                String::class.java,
+                Integer.TYPE,
+            ).invoke(manager, instrumentation.targetContext.packageName, userId)
+        } finally {
+            automation.dropShellPermissionIdentity()
+        }
     }
+
+    private fun restoreNotificationDelivery(): Boolean = setNotificationDeliveryEnabled(true)
 
     private fun notificationsEnabled(): Boolean {
         return NotificationManagerCompat.from(InstrumentationRegistry.getInstrumentation().targetContext)
@@ -4055,8 +5195,8 @@ class EndToEndTest {
 
     private fun clickSettingsWallInactivity() {
         openSettings()
-        composeRule.onAllNodesWithTag(TestTags.WallInactivityButton, useUnmergedTree = true)
-            .onFirst()
+        composeRule.onNodeWithText("Wall inactivity")
+            .performScrollTo()
             .performClick()
         closeSettingsIfOpen()
     }
@@ -4125,7 +5265,10 @@ class EndToEndTest {
                 ?.toString()
                 ?.trim()
                 .orEmpty()
-            throw AssertionError("unexpected lingon_wall auto-group summary title=$title text=$text")
+            val notifications = activeNotifications()
+                .filter { it.notification.channelId == "lingon_wall" }
+                .joinToString { "${it.tag}:${it.id}:${wallNotificationFullText(it)}" }
+            throw AssertionError("unexpected lingon_wall auto-group summary title=$title text=$text active=$notifications")
         }
     }
 
@@ -4184,22 +5327,34 @@ class EndToEndTest {
     }
 
     private fun assertTerminalInputBlocked() {
-        val echoChar = "Z"
-        val echoHex = echoChar[0].code.toString(16).padStart(2, '0')
-        composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
-        sendTerminalInput(echoChar)
-        sendTerminalEnter()
-        val deadline = System.currentTimeMillis() + 1_000
-        while (System.currentTimeMillis() < deadline) {
-            val info = readTerminalDebugInfo()
-            if (info != null) {
-                val lines = listOf(info.row0, info.prevLine, info.tail, info.cursorLine)
-                if (lines.any { it.contains("ECHO_") && it.contains(echoHex) }) {
-                    throw AssertionError("unexpected terminal echo while input is disabled")
+        val nonce = appViewModel().state.value.localInputNonce
+        val observedBlockedStatus = AtomicBoolean(false)
+        val observedInputOrControl = AtomicBoolean(false)
+        lateinit var observer: Job
+        composeRule.runOnUiThread {
+            // Discard attachment feedback: the attempted keys must produce a
+            // fresh warning. Live terminal frames may then clear that warning.
+            appViewModel().dismissStatus()
+            observer = CoroutineScope(Dispatchers.Main.immediate).launch(start = CoroutineStart.UNDISPATCHED) {
+                appViewModel().state.collect { current ->
+                    if (current.status?.message == "view-only session") observedBlockedStatus.set(true)
+                    if (current.localInputNonce != nonce || current.hasControl) observedInputOrControl.set(true)
                 }
             }
-            composeRule.waitForIdle()
-            Thread.sleep(POLL_INTERVAL_MS)
+        }
+        try {
+            composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
+            sendTerminalInput("Z")
+            sendTerminalEnter()
+            composeRule.runOnIdle {
+                val state = appViewModel().state.value
+                assertEquals(nonce, state.localInputNonce)
+                assertFalse(state.hasControl)
+                assertTrue("attempted input produced no view-only warning", observedBlockedStatus.get())
+                assertFalse("view-only input changed nonce or gained control", observedInputOrControl.get())
+            }
+        } finally {
+            observer.cancel()
         }
     }
 
@@ -4265,14 +5420,39 @@ class EndToEndTest {
     }
 
     private fun sendKeyStroke(keyCode: Int, shift: Boolean = false) {
+        sendModifiedKeyStroke(keyCode, shift = shift)
+    }
+
+    private fun sendModifiedKeyStroke(
+        keyCode: Int,
+        ctrl: Boolean = false,
+        alt: Boolean = false,
+        shift: Boolean = false,
+    ) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val metaState = (if (ctrl) KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON else 0) or
+            (if (alt) KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON else 0) or
+            (if (shift) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0)
+        if (ctrl) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT))
+        }
+        if (alt) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ALT_LEFT))
+        }
         if (shift) {
             instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SHIFT_LEFT))
         }
-        instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-        instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        val downTime = SystemClock.uptimeMillis()
+        instrumentation.sendKeySync(KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN, keyCode, 0, metaState))
+        instrumentation.sendKeySync(KeyEvent(downTime, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, 0, metaState))
         if (shift) {
             instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SHIFT_LEFT))
+        }
+        if (alt) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ALT_LEFT))
+        }
+        if (ctrl) {
+            instrumentation.sendKeySync(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT))
         }
     }
 
@@ -4298,6 +5478,7 @@ class EndToEndTest {
         composeRule.onNodeWithTag(TestTags.EndpointInput).performTextReplacement(endpoint)
         composeRule.onNodeWithTag(TestTags.EndpointSave).performClick()
         waitForTagToDisappear(TestTags.EndpointInput)
+        closeSettingsIfOpen()
     }
 
     private fun configureEndpointAndCerts() {
@@ -4427,9 +5608,16 @@ class EndToEndTest {
     private fun assertLiveBottomAnchored(label: String) {
         val info = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info for $label")
+        var viewport: TerminalViewportState? = null
+        var diagnostics: String? = null
+        composeRule.runOnIdle {
+            val view = findTerminalView() as? TerminalGridView
+            viewport = view?.captureViewportState()
+            diagnostics = view?.getCameraDiagnosticsForTesting()
+        }
         assertTrue(
             "$label should align live bottom: visible=${info.visibleStartRow}-${info.visibleEndRowExclusive} rows=${info.rows} " +
-                "camera=${info.cameraOffsetYPx} viewport=${info.viewportHeightPx} cell=${info.scaledCellHeightPx}",
+                "camera=${info.cameraOffsetYPx} viewport=${info.viewportHeightPx} cell=${info.scaledCellHeightPx} saved=$viewport $diagnostics",
             info.isLiveBottomAnchored(),
         )
     }
@@ -4839,6 +6027,18 @@ class EndToEndTest {
         return count
     }
 
+    private fun terminalEchoTail(sessionId: String): List<String> {
+        var tail = emptyList<String>()
+        composeRule.runOnIdle {
+            val snap = appViewModel().state.value.activeSnapshot ?: return@runOnIdle
+            val echo = Regex("ECHO_${Regex.escape(sessionId)} ([0-9a-f]{2})")
+            tail = (0 until snap.rows).flatMap { row ->
+                echo.findAll(snapshotRow(snap, row)).map { it.groupValues[1] }.toList()
+            }
+        }
+        return tail
+    }
+
     private fun snapshotContainsSequence(vararg tokens: String): Boolean {
         var found = false
         composeRule.runOnIdle {
@@ -5079,7 +6279,8 @@ class EndToEndTest {
                 "renderScaleX=${debug?.renderScaleX ?: 0f}, renderScaleY=${debug?.renderScaleY ?: 0f}, " +
                 "visibleStartRow=${debug?.visibleStartRow ?: 0}, " +
                 "visibleEndRowExclusive=${debug?.visibleEndRowExclusive ?: 0}, " +
-                "zoomFactor=${debug?.zoomFactor ?: 0f})",
+                "zoomFactor=${debug?.zoomFactor ?: 0f}, " +
+                "wallInactivityEnabled=${state.wallInactivityEnabled}, wallInactivityLabel=${state.wallInactivityLabel})",
         )
     }
 
@@ -5155,9 +6356,17 @@ class EndToEndTest {
         }
     }
 
+    private fun shellCommandOutput(command: String): String {
+        val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation
+            .executeShellCommand(command)
+        return ParcelFileDescriptor.AutoCloseInputStream(descriptor)
+            .bufferedReader().use { it.readText() }
+    }
+
     private fun resetZoomPan() {
         openSettings()
         composeRule.onNodeWithTag(TestTags.ZoomResetButton).performClick()
+        closeSettingsIfOpen()
     }
 
     private fun setZoomFactor(value: Float) {
@@ -5509,7 +6718,7 @@ class EndToEndTest {
             }
             val body = InputStreamReader(connection.inputStream).use { it.readText() }
             val ids = org.json.JSONObject(body).getJSONArray("ids")
-            return List(ids.length()) { index -> ids.getString(index) }
+            return List(ids.length()) { index -> ids.getString(index) }.also { startedHostSessions.addAll(it) }
         } finally {
             connection.disconnect()
         }
@@ -5546,6 +6755,10 @@ class EndToEndTest {
     }
 
     private fun startHeadlessViaHarness(cols: Int = 120, rows: Int = 50): String {
+        return startHeadlessWithShareViaHarness(cols, rows).first
+    }
+
+    private fun startHeadlessWithShareViaHarness(cols: Int = 120, rows: Int = 50): Pair<String, String> {
         val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/start-headless?cols=$cols&rows=$rows")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -5563,9 +6776,10 @@ class EndToEndTest {
                 throw AssertionError("harness start-headless failed with HTTP $code")
             }
             val body = InputStreamReader(connection.inputStream).use { it.readText() }
-            val id = org.json.JSONObject(body).getString("id")
+            val response = org.json.JSONObject(body)
+            val id = response.getString("id")
             startedHeadlessSessions += id
-            return id
+            return id to response.getString("view_token")
         } finally {
             connection.disconnect()
         }
@@ -5655,6 +6869,26 @@ class EndToEndTest {
             if (code != HttpURLConnection.HTTP_OK) {
                 throw AssertionError("harness send-wall failed with HTTP $code")
             }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun advanceWallClockViaHarness(milliseconds: Long) {
+        val url = URL("${testConfig.endpoint.trimEnd('/')}/__harness/advance-wall-clock")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        if (connection is javax.net.ssl.HttpsURLConnection && !testConfig.caPem.isNullOrBlank()) {
+            connection.sslSocketFactory = trustContextFor(testConfig.caPem).socketFactory
+        }
+        try {
+            connection.outputStream.use { it.write(org.json.JSONObject().put("milliseconds", milliseconds).toString().toByteArray()) }
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) throw AssertionError("harness refused controlled wall-clock advancement")
         } finally {
             connection.disconnect()
         }
@@ -5784,6 +7018,7 @@ class EndToEndTest {
         val sessions: List<String>,
         val viewToken: String?,
         val hostCols: Int,
+        val controlToken: String?,
         val hostRows: Int,
         val username2: String?,
         val password2: String?,
@@ -5845,6 +7080,7 @@ class EndToEndTest {
                     caPem = caPem,
                     sessions = sessions,
                     viewToken = viewToken,
+                    controlToken = args.getString("control_token")?.trim()?.takeIf { it.isNotBlank() },
                     hostCols = hostCols,
                     hostRows = hostRows,
                     username2 = username2,

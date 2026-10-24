@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/session"
 )
 
 func TestCtrlLClearAutoHideTabBarWithBanner(t *testing.T) {
@@ -252,18 +254,37 @@ func TestReconnectBannerPreservesLeftContentOnTopRowDuringLocalOutput(t *testing
 	shell := ctrlLShell(t)
 
 	h := newHarness(t)
+	var publishMu sync.Mutex
+	var publishStatuses []session.PublishStatusKind
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "host-disconnect-live-output",
 		SessionName: "host-disconnect-live-output",
 		Shell:       shell,
 		Cols:        140,
 		Rows:        30,
+		OnPublishStatus: func(status session.PublishStatus) {
+			publishMu.Lock()
+			publishStatuses = append(publishStatuses, status.Kind)
+			publishMu.Unlock()
+		},
 	})
 	t.Cleanup(host.Cancel)
 
+	host.Eventually(3*time.Second, 10*time.Millisecond, func(screen ptytest.Screen) error {
+		publishMu.Lock()
+		connected := false
+		for _, status := range publishStatuses {
+			connected = connected || status == session.PublishStatusConnected
+		}
+		publishMu.Unlock()
+		if !screen.Contains("PROMPT>") || !connected {
+			return fmt.Errorf("waiting for owned shell and publisher readiness; screen:\n%s", screen.String())
+		}
+		return nil
+	})
 	host.Send("echo READY\n")
 	if !screenContainsWithin(host, "READY", 2*time.Second) {
-		t.Fatalf("expected READY output before disconnect")
+		t.Fatalf("expected READY output before disconnect; screen:\n%s; raw:\n%s", host.Screen().String(), host.DrainRaw())
 	}
 
 	h.StopServer()
@@ -274,7 +295,10 @@ func TestReconnectBannerPreservesLeftContentOnTopRowDuringLocalOutput(t *testing
 	eventuallyWithClock(t, h.Clock(), 6*time.Second, 50*time.Millisecond, func() error {
 		row := host.Screen().Row(0)
 		if !strings.Contains(row, "connection lost") && !strings.Contains(row, "reconnecting") {
-			return fmt.Errorf("expected reconnect banner on row 1, got %q", row)
+			publishMu.Lock()
+			statuses := append([]session.PublishStatusKind(nil), publishStatuses...)
+			publishMu.Unlock()
+			return fmt.Errorf("expected reconnect banner on row 1, got %q; publish statuses: %v", row, statuses)
 		}
 		return nil
 	})
@@ -299,18 +323,37 @@ func TestReconnectBannerPreservesLeftContentOnTopRowDuringRapidOutput(t *testing
 	shell := ctrlLShell(t)
 
 	h := newHarness(t)
+	var publishMu sync.Mutex
+	var publishStatuses []session.PublishStatusKind
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "host-disconnect-rapid-output",
 		SessionName: "host-disconnect-rapid-output",
 		Shell:       shell,
 		Cols:        140,
 		Rows:        30,
+		OnPublishStatus: func(status session.PublishStatus) {
+			publishMu.Lock()
+			publishStatuses = append(publishStatuses, status.Kind)
+			publishMu.Unlock()
+		},
 	})
 	t.Cleanup(host.Cancel)
 
+	host.Eventually(3*time.Second, 10*time.Millisecond, func(screen ptytest.Screen) error {
+		publishMu.Lock()
+		connected := false
+		for _, status := range publishStatuses {
+			connected = connected || status == session.PublishStatusConnected
+		}
+		publishMu.Unlock()
+		if !screen.Contains("PROMPT>") || !connected {
+			return fmt.Errorf("waiting for owned shell and publisher readiness; screen:\n%s", screen.String())
+		}
+		return nil
+	})
 	host.Send("echo READY\n")
 	if !screenContainsWithin(host, "READY", 2*time.Second) {
-		t.Fatalf("expected READY output before disconnect")
+		t.Fatalf("expected READY output before disconnect; screen:\n%s; raw:\n%s", host.Screen().String(), host.DrainRaw())
 	}
 
 	h.StopServer()

@@ -74,6 +74,33 @@ func (s *EffectScheduler) Schedule(ctx context.Context, key string, delay time.D
 		return
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scheduleLocked(ctx, key, delay, fn)
+}
+
+// ScheduleAt preserves an absolute deadline even when installation is delayed.
+// Already due callbacks run on the next clock turn, without extending expiry.
+func (s *EffectScheduler) ScheduleAt(ctx context.Context, key string, deadline time.Time, fn func()) {
+	if s == nil || key == "" {
+		return
+	}
+	if deadline.IsZero() || fn == nil {
+		s.Stop(key)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clock == nil {
+		s.clock = clock.New()
+	}
+	delay := deadline.Sub(s.clock.Now())
+	if delay < 0 {
+		delay = 0
+	}
+	s.scheduleLocked(ctx, key, delay, fn)
+}
+
+func (s *EffectScheduler) scheduleLocked(ctx context.Context, key string, delay time.Duration, fn func()) {
 	if t := s.timers[key]; t != nil {
 		_ = t.Stop()
 	}
@@ -92,7 +119,6 @@ func (s *EffectScheduler) Schedule(ctx context.Context, key string, delay time.D
 		}
 		fn()
 	})
-	s.mu.Unlock()
 }
 
 // Stop cancels a scheduled effect.

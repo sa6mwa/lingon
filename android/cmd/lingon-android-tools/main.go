@@ -26,11 +26,12 @@ type harnessConfig struct {
 }
 
 type harnessUser struct {
-	Username   string   `json:"username"`
-	Password   string   `json:"password"`
-	TOTPSecret string   `json:"totp_secret"`
-	Sessions   []string `json:"sessions"`
-	ViewToken  string   `json:"view_token"`
+	Username     string   `json:"username"`
+	Password     string   `json:"password"`
+	TOTPSecret   string   `json:"totp_secret"`
+	Sessions     []string `json:"sessions"`
+	ViewToken    string   `json:"view_token"`
+	ControlToken string   `json:"control_token"`
 }
 
 func main() {
@@ -40,6 +41,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "instrument":
+		os.Exit(runInstrument(os.Args[2:]))
 	case "config-env":
 		os.Exit(runConfigEnv(os.Args[2:]))
 	case "test-times":
@@ -58,6 +61,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "lingon-android-tools commands:")
+	fmt.Fprintln(os.Stderr, "  instrument --adb <path> --serial <serial> --config <path> --classes <class#method,...> --report <path>  run native AndroidJUnit and verify results")
 	fmt.Fprintln(os.Stderr, "  config-env --config <path>   emit shell assignments from harness JSON config")
 	fmt.Fprintln(os.Stderr, "  test-times --dir <path>      emit Android JUnit test times sorted by descending duration")
 	fmt.Fprintln(os.Stderr, "  test-names --file <path>     emit Kotlin @Test function names, one per line")
@@ -107,6 +111,7 @@ func runConfigEnv(args []string) int {
 	writeEnv(&buf, "CA_PEM_B64", base64.StdEncoding.EncodeToString(caPem))
 	writeEnv(&buf, "SESSIONS", strings.Join(userFieldList(cfg.Users, 0, func(u harnessUser) []string { return u.Sessions }), ","))
 	writeEnv(&buf, "VIEW_TOKEN", userField(cfg.Users, 0, func(u harnessUser) string { return u.ViewToken }))
+	writeEnv(&buf, "CONTROL_TOKEN", userField(cfg.Users, 0, func(u harnessUser) string { return u.ControlToken }))
 	writeEnv(&buf, "USERNAME2", userField(cfg.Users, 1, func(u harnessUser) string { return u.Username }))
 	writeEnv(&buf, "PASSWORD2", userField(cfg.Users, 1, func(u harnessUser) string { return u.Password }))
 	writeEnv(&buf, "TOTP_SECRET2", userField(cfg.Users, 1, func(u harnessUser) string { return u.TOTPSecret }))

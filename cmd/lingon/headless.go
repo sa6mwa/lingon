@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +18,14 @@ import (
 	"pkt.systems/lingon/internal/session"
 	"pkt.systems/pslog"
 )
+
+const headlessStartupStatusEnv = headless.StartupStatusEnv
+
+type headlessStartupStatus = headless.StartupStatus
+
+type headlessStartupReporter struct {
+	file *os.File
+}
 
 func headlessAliasEnabled(argv0 string) bool {
 	name := strings.TrimSpace(filepath.Base(argv0))
@@ -33,12 +43,18 @@ func configDirForLoader(loader *lingon.Loader) string {
 	return filepath.Dir(used)
 }
 
-func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
-	if err := os.MkdirAll(headless.BaseDir(configDir), 0o700); err != nil {
-		return err
+func existingConfigFileForLoader(loader *lingon.Loader) string {
+	path := loader.ConfigFileUsed()
+	// Viper also reports an optional default path that was never read.
+	// Passing that path explicitly would make the child's config mandatory.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return ""
 	}
-	exePath, err := os.Executable()
-	if err != nil {
+	return path
+}
+
+func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
+	if err := validateHeadlessReexecFlags(cmd); err != nil {
 		return err
 	}
 	args := append([]string(nil), os.Args[1:]...)
@@ -46,8 +62,7 @@ func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 	if err != nil {
 		return err
 	}
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
+	if strings.TrimSpace(sessionID) == "" {
 		generated, _ := session.DefaultSessionIdentity()
 		sessionID, err = headless.NormalizeSessionID(generated)
 		if err != nil {
@@ -55,80 +70,57 @@ func startHeadlessReexec(cmd *cobra.Command, configDir string) error {
 		}
 		args = append(args, "--session", sessionID)
 	}
-	socketPath, err := headless.SocketPath(configDir, sessionID)
+	launched, err := headless.Launch(cmd.Context(), headless.LaunchRequest{ConfigDir: configDir, SessionID: sessionID, Args: args})
 	if err != nil {
 		return err
 	}
-	child := exec.Command(exePath, args...)
-	configureDetachedProcess(child)
-	child.Env = withEnv(os.Environ(), headless.EnvForeground, headless.ForegroundValue)
-	nullIn, err := os.Open(os.DevNull)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = nullIn.Close()
-	}()
-	nullOut, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = nullOut.Close()
-	}()
-	child.Stdin = nullIn
-	child.Stdout = nullOut
-	child.Stderr = nullOut
-	if err := child.Start(); err != nil {
-		return err
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "headless session starting in background (session=%s pid=%d socket=%s)\n", sessionID, child.Process.Pid, socketPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "headless session starting in background (session=%s pid=%d socket=%s)\n", launched.SessionID, launched.PID, launched.SocketPath)
 	return nil
 }
 
-func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir string, cfg lingon.Config) error {
+func validateHeadlessReexecFlags(cmd *cobra.Command) error {
+	if cmd == nil || !cmd.Flags().Changed(geometryFlagName) {
+		return nil
+	}
+	raw, err := cmd.Flags().GetString(geometryFlagName)
+	if err != nil {
+		return err
+	}
+	_, _, err = parseGeometry(raw)
+	return err
+}
+
+func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir string, cfg lingon.Config) (retErr error) {
+	startupReporter := headlessStartupReporterFromEnv()
+	if startupReporter != nil {
+		_ = os.Unsetenv(headlessStartupStatusEnv)
+	}
+	startupReady := false
+	defer func() {
+		if startupReporter == nil {
+			return
+		}
+		defer startupReporter.Close()
+		if retErr != nil && !startupReady {
+			_ = startupReporter.Failed(retErr)
+		}
+	}()
+	launchToken, err := headless.ReadLaunchTokenFromEnv()
+	if err != nil {
+		return err
+	}
+	if launchToken != "" {
+		if err := cmd.Flags().Set("token", launchToken); err != nil {
+			return err
+		}
+	}
 	insecure, err := cmd.Flags().GetBool("insecure")
 	if err != nil {
 		return err
 	}
-	authPath, err := cmd.Flags().GetString("auth-file")
+	relay, err := resolveHeadlessRelayConfig(cmd, loader, cfg, insecure)
 	if err != nil {
 		return err
-	}
-	if !cmd.Flags().Changed("auth-file") {
-		authPath = cfg.Client.AuthFile
-	}
-	endpointValue, err := cmd.Flags().GetString("endpoint")
-	if err != nil {
-		return err
-	}
-	endpointValue, err = resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointValue, authPath)
-	if err != nil {
-		return err
-	}
-	if endpointValue == "" {
-		return fmt.Errorf("endpoint is required")
-	}
-	tokenValue, err := cmd.Flags().GetString("token")
-	if err != nil {
-		return err
-	}
-	if !cmd.Flags().Changed("token") {
-		resolved, resolveErr := resolveAccessToken(cmd.Context(), endpointValue, authPath, cfg.Server.TLS.Dir, insecure)
-		if resolveErr != nil {
-			ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
-			if refreshErr != nil || !ok {
-				return resolveErr
-			}
-		} else {
-			tokenValue = resolved
-		}
-	}
-	if tokenValue == "" && authPath == "" {
-		return fmt.Errorf("access token is required")
-	}
-	if cmd.Flags().Changed("token") && !cmd.Flags().Changed("auth-file") {
-		authPath = ""
 	}
 	sessionID, err := cmd.Flags().GetString("session")
 	if err != nil {
@@ -159,10 +151,6 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	}
 	if !cmd.Flags().Changed("respawn") {
 		respawnValue = cfg.Terminal.Respawn
-	}
-	offlineValue, err := cmd.Flags().GetBool("offline")
-	if err != nil {
-		return err
 	}
 	hostnameOnlyValue, err := cmd.Flags().GetBool("hostname-only")
 	if err != nil {
@@ -217,18 +205,19 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 	}
 	daemon := headlessd.New(headlessd.Options{
 		ConfigDir:               configDir,
-		Endpoint:                endpointValue,
-		Token:                   tokenValue,
-		AuthFile:                authPath,
+		ConfigFile:              existingConfigFileForLoader(loader),
+		Endpoint:                relay.Endpoint,
+		Token:                   relay.Token,
+		AuthFile:                relay.AuthPath,
 		SessionID:               sessionID,
 		Cols:                    colsValue,
 		Rows:                    rowsValue,
 		Shell:                   shellPath,
 		Term:                    termValue,
 		Respawn:                 respawnValue,
-		Offline:                 offlineValue,
+		Offline:                 relay.Offline,
 		WallInactiveAfterLevels: wallInactiveAfterLevels,
-		Publish:                 endpointValue != "",
+		Publish:                 relay.Endpoint != "",
 		PublishControl:          true,
 		HostnameOnly:            hostnameOnlyValue,
 		ScrollbackLines:         scrollbackValue,
@@ -236,31 +225,148 @@ func runHeadlessForeground(cmd *cobra.Command, loader *lingon.Loader, configDir 
 		Insecure:                insecure,
 		Logger:                  logger,
 		Trace:                   traceWriter,
+		OnStartupReady: func(ready headlessd.StartupReady) {
+			startupReady = true
+			if startupReporter != nil {
+				_ = startupReporter.Ready(ready)
+				startupReporter.Close()
+				startupReporter = nil
+			}
+		},
 	})
 	return daemon.Run(ctx)
 }
 
-func resolveHeadlessSize(cmd *cobra.Command) (int, int, error) {
+func headlessStartupReporterFromEnv() *headlessStartupReporter {
+	raw := strings.TrimSpace(os.Getenv(headlessStartupStatusEnv))
+	if raw == "" {
+		return nil
+	}
+	fd, err := strconv.Atoi(raw)
+	if err != nil || fd < 0 {
+		return nil
+	}
+	return &headlessStartupReporter{file: os.NewFile(uintptr(fd), "headless-startup-status")}
+}
+
+func (r *headlessStartupReporter) Ready(ready headlessd.StartupReady) error {
+	if r == nil || r.file == nil {
+		return nil
+	}
+	return json.NewEncoder(r.file).Encode(headlessStartupStatus{
+		Status:  "ready",
+		Session: ready.SessionID,
+		Socket:  ready.SocketPath,
+	})
+}
+
+func (r *headlessStartupReporter) Failed(err error) error {
+	if r == nil || r.file == nil || err == nil {
+		return nil
+	}
+	return json.NewEncoder(r.file).Encode(headlessStartupStatus{
+		Status: "error",
+		Error:  headlessStartupErrorMessage(err),
+	})
+}
+
+func (r *headlessStartupReporter) Close() {
+	if r == nil || r.file == nil {
+		return
+	}
+	_ = r.file.Close()
+	r.file = nil
+}
+
+func headlessStartupErrorMessage(err error) string {
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "unknown error"
+	}
+	if strings.Contains(msg, "auth file not found") && !strings.Contains(msg, "--offline") {
+		msg += "; use `--offline` for local-only headless startup"
+	}
+	return msg
+}
+
+type headlessRelayConfig struct {
+	Endpoint string
+	Token    string
+	AuthPath string
+	Offline  bool
+}
+
+func resolveHeadlessRelayConfig(cmd *cobra.Command, loader *lingon.Loader, cfg lingon.Config, insecure bool) (headlessRelayConfig, error) {
+	offlineValue, err := cmd.Flags().GetBool("offline")
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	authPath, err := cmd.Flags().GetString("auth-file")
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	if !cmd.Flags().Changed("auth-file") {
+		authPath = cfg.Client.AuthFile
+	}
+	tokenValue, err := cmd.Flags().GetString("token")
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	endpointFlag, err := cmd.Flags().GetString("endpoint")
+	if err != nil {
+		return headlessRelayConfig{}, err
+	}
+	endpointValue, err := resolveEndpointValue(cmd, loader, cfg.Client.Endpoint, endpointFlag, authPath)
+	if err != nil {
+		if headlessLocalOnlyOfflineRequested(cmd, offlineValue) && errors.Is(err, errEndpointAmbiguous) {
+			return headlessRelayConfig{
+				Offline: true,
+			}, nil
+		}
+		return headlessRelayConfig{}, err
+	}
+	if endpointValue == "" {
+		return headlessRelayConfig{}, fmt.Errorf("endpoint is required")
+	}
+	if !cmd.Flags().Changed("token") {
+		resolved, resolveErr := resolveAccessToken(cmd.Context(), endpointValue, authPath, cfg.Server.TLS.Dir, insecure)
+		if resolveErr != nil {
+			ok, refreshErr := hasValidRefreshToken(endpointValue, authPath, timeNowUTC())
+			if refreshErr != nil || !ok {
+				if !headlessLocalOnlyOfflineRequested(cmd, offlineValue) {
+					return headlessRelayConfig{}, resolveErr
+				}
+				endpointValue = ""
+				authPath = ""
+				offlineValue = true
+			}
+		} else {
+			tokenValue = resolved
+		}
+	}
+	if endpointValue != "" && tokenValue == "" && authPath == "" {
+		return headlessRelayConfig{}, fmt.Errorf("access token is required")
+	}
+	if cmd.Flags().Changed("token") && !cmd.Flags().Changed("auth-file") {
+		authPath = ""
+	}
+	return headlessRelayConfig{
+		Endpoint: endpointValue,
+		Token:    tokenValue,
+		AuthPath: authPath,
+		Offline:  offlineValue,
+	}, nil
+}
+
+func headlessRelayCLIExplicit(cmd *cobra.Command) bool {
 	if cmd == nil {
-		return lingon.DefaultTerminalCols, lingon.DefaultTerminalRows, nil
+		return false
 	}
-	colsValue := lingon.DefaultTerminalCols
-	rowsValue := lingon.DefaultTerminalRows
-	if cmd.Flags().Changed("cols") {
-		value, err := cmd.Flags().GetInt("cols")
-		if err != nil {
-			return 0, 0, err
-		}
-		colsValue = value
-	}
-	if cmd.Flags().Changed("rows") {
-		value, err := cmd.Flags().GetInt("rows")
-		if err != nil {
-			return 0, 0, err
-		}
-		rowsValue = value
-	}
-	return colsValue, rowsValue, nil
+	return cmd.Flags().Changed("endpoint") || cmd.Flags().Changed("token") || cmd.Flags().Changed("auth-file")
+}
+
+func headlessLocalOnlyOfflineRequested(cmd *cobra.Command, offline bool) bool {
+	return offline && !headlessRelayCLIExplicit(cmd)
 }
 
 func resolveHeadlessWallInactiveAfterLevels(cmd *cobra.Command, cfg lingon.Config) ([]time.Duration, error) {
@@ -284,17 +390,4 @@ func resolveHeadlessWallInactiveAfterLevels(cmd *cobra.Command, cfg lingon.Confi
 
 func timeNowUTC() time.Time {
 	return time.Now().UTC()
-}
-
-func withEnv(env []string, key, value string) []string {
-	prefix := key + "="
-	out := make([]string, 0, len(env)+1)
-	for _, entry := range env {
-		if strings.HasPrefix(entry, prefix) {
-			continue
-		}
-		out = append(out, entry)
-	}
-	out = append(out, prefix+value)
-	return out
 }

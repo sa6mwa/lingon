@@ -65,7 +65,7 @@ func (r *Runtime) RenderHostFrame(in RuntimeHostFrameInput) (RuntimeHostFrameOut
 	}
 	out.Rendered = rendered
 	out.TabDelay = tabDelay
-	out.StateDelay = r.ExpiryDelay(now)
+	out.StateDelay = NextExpiryDelay(renderState, now)
 	return out, nil
 }
 
@@ -131,7 +131,7 @@ func (r *Runtime) RenderAttachFrame(in RuntimeAttachFrameInput) (RuntimeAttachFr
 	}
 	out.Rendered = rendered
 	out.TabDelay = tabDelay
-	out.StateDelay = r.ExpiryDelay(now)
+	out.StateDelay = NextExpiryDelay(renderState, now)
 	return out, nil
 }
 

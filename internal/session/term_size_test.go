@@ -35,9 +35,9 @@ func TestTermSizeAnyFallsBackToStdin(t *testing.T) {
 	}
 }
 
-func TestTermSizeAnyWithNoFilesDoesNotPanic(t *testing.T) {
+func TestTermSizeAnyWithNoFilesReturnsZero(t *testing.T) {
 	cols, rows := termSizeAny()
-	if cols < 0 || rows < 0 {
-		t.Fatalf("termSizeAny returned negative size")
+	if cols != 0 || rows != 0 {
+		t.Fatalf("termSizeAny = %dx%d, want 0x0", cols, rows)
 	}
 }

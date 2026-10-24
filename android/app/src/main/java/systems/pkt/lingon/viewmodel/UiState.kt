@@ -36,6 +36,7 @@ data class UiState(
     val transientStatus: StatusMessage? = null,
     val theme: String? = null,
     val isBusy: Boolean = false,
+    val sessionManagementBusy: Boolean = false,
     val showSettings: Boolean = false,
     val showThemePicker: Boolean = false,
     val showAppLockTimeoutDialog: Boolean = false,
@@ -49,6 +50,7 @@ data class UiState(
     val wallInactivityEnabled: Boolean = false,
     val wallInactivityLabel: String? = null,
     val shareToken: String? = null,
+    val shareCanControl: Boolean = false,
     val shareTokenError: String? = null,
     val certificateError: String? = null,
     val savedEndpoints: List<String> = emptyList(),
@@ -80,11 +82,19 @@ data class UiState(
     val canAttach: Boolean
         get() = loggedIn || !shareToken.isNullOrBlank()
 
+    // Authorization survives a lease handoff; hasControl describes only the current holder.
+    val canSendInput: Boolean
+        get() = if (shareToken == null) loggedIn else shareCanControl
+
     val showsSyncingIndicator: Boolean
         get() = sessionSyncing ||
             connectionState == ConnectionState.Connecting ||
             connectionState == ConnectionState.Waiting ||
             connectionState == ConnectionState.Disconnected
+
+    val sessionManagementAvailable: Boolean
+        get() = loggedIn && shareToken == null && !requiresAppUnlock && !sessionManagementBusy &&
+            connectionState == ConnectionState.Connected && !activeSessionId.isNullOrBlank()
 
     val activeSessionHeadless: Boolean
         get() = activeSessionId?.let { id -> sessions.firstOrNull { it.id == id }?.headless == true } ?: false

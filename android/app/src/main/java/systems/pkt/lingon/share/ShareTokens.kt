@@ -11,6 +11,10 @@ object ShareTokens {
     private const val versionByte: Byte = 1
     private const val randomSize = 20
     private const val maxEndpointLen = 2048
+    private const val maxBareBodyChars = 37
+    private const val maxEmbeddedBodyChars = 3317
+    private const val maxCandidateChars = 3 + maxEmbeddedBodyChars * 2
+    private val candidatePattern = Regex("LGB|LGE", RegexOption.IGNORE_CASE)
     private const val alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     private val decodeTable = IntArray(128) { -1 }.apply {
         for (i in alphabet.indices) {
@@ -33,6 +37,7 @@ object ShareTokens {
     fun parse(raw: String): Parsed? {
         val trimmed = raw.trim()
         if (trimmed.length < 4) return null
+        if (trimmed.length > maxCandidateChars) return null
         val prefix = trimmed.substring(0, 3).uppercase(Locale.US)
         val body = trimmed.substring(3)
         return when (prefix) {
@@ -43,12 +48,8 @@ object ShareTokens {
     }
 
     fun findInText(text: String): Parsed? {
-        val regex = Regex("(LGB|LGE)[0-9A-Za-z\\-]+", RegexOption.IGNORE_CASE)
-        for (match in regex.findAll(text)) {
-            val parsed = parse(match.value)
-            if (parsed != null) {
-                return parsed
-            }
+        for (match in candidatePattern.findAll(text)) {
+            parseCandidate(text, match.range.first)?.let { return it }
         }
         return null
     }
@@ -70,20 +71,21 @@ object ShareTokens {
 
     fun encodeEmbedded(random: ByteArray, endpoint: String): String? {
         val trimmed = endpoint.trim()
-        if (random.size != randomSize || trimmed.isEmpty() || trimmed.length > maxEndpointLen) return null
-        val payload = ByteArrayOutputStream(1 + randomSize + 2 + trimmed.length + 2)
+        val endpointBytes = trimmed.toByteArray(Charsets.UTF_8)
+        if (random.size != randomSize || endpointBytes.isEmpty() || endpointBytes.size > maxEndpointLen) return null
+        val payload = ByteArrayOutputStream(1 + randomSize + 2 + endpointBytes.size + 2)
         payload.write(byteArrayOf(versionByte))
         payload.write(random)
-        val lenBuf = ByteBuffer.allocate(2).order(ByteOrder.BIG_ENDIAN).putShort(trimmed.length.toShort())
+        val lenBuf = ByteBuffer.allocate(2).order(ByteOrder.BIG_ENDIAN).putShort(endpointBytes.size.toShort())
         payload.write(lenBuf.array())
-        payload.write(trimmed.toByteArray())
+        payload.write(endpointBytes)
         val crc = crc16(payload.toByteArray())
         payload.write(byteArrayOf((crc.toInt() shr 8).toByte(), crc.toByte()))
         return prefixEmbedded + encodeCrockford(payload.toByteArray())
     }
 
     private fun parseBare(body: String): Parsed? {
-        val raw = decodeCrockford(body) ?: return null
+        val raw = decodeCrockford(body, maxBareBodyChars) ?: return null
         val expected = 1 + randomSize + 2
         if (raw.size != expected) return null
         val version = raw[0]
@@ -96,7 +98,7 @@ object ShareTokens {
     }
 
     private fun parseEmbedded(body: String): Parsed? {
-        val raw = decodeCrockford(body) ?: return null
+        val raw = decodeCrockford(body, maxEmbeddedBodyChars) ?: return null
         val minLen = 1 + randomSize + 2 + 2
         if (raw.size < minLen) return null
         val version = raw[0]
@@ -113,6 +115,44 @@ object ShareTokens {
         if (crc16(payload) != crc.toShort()) return null
         val random = raw.copyOfRange(1, 1 + randomSize)
         return Parsed(kind = Kind.Embedded, version = version, random = random, endpoint = endpoint)
+    }
+
+    private fun parseCandidate(text: String, start: Int): Parsed? {
+        val embedded = text.regionMatches(start, prefixEmbedded, 0, 3, ignoreCase = true)
+        val headerSize = 1 + randomSize + 2
+        val header = ByteArray(headerSize)
+        var decodedBytes = 0
+        var cleanedChars = 0
+        var expectedChars = if (embedded) 0 else maxBareBodyChars
+        var buffer = 0
+        var bitsLeft = 0
+        val limit = start + minOf(text.length - start, maxCandidateChars)
+        for (index in start + 3 until limit) {
+            val cleaned = cleanCrockfordChar(text[index]) ?: continue
+            if (cleaned.code >= decodeTable.size) return null
+            val value = decodeTable[cleaned.code]
+            if (value < 0) return null
+            cleanedChars++
+            buffer = (buffer shl 5) or value
+            bitsLeft += 5
+            while (bitsLeft >= 8) {
+                bitsLeft -= 8
+                if (decodedBytes < headerSize) header[decodedBytes] = (buffer shr bitsLeft).toByte()
+                decodedBytes++
+                if (decodedBytes == 1 && header[0] != versionByte) return null
+                if (embedded && decodedBytes == headerSize) {
+                    val endpointLength = ((header[randomSize + 1].toInt() and 0xff) shl 8) or
+                        (header[randomSize + 2].toInt() and 0xff)
+                    if (endpointLength !in 1..maxEndpointLen) return null
+                    expectedChars = ((headerSize + endpointLength + 2) * 8 + 4) / 5
+                }
+            }
+            if (expectedChars > 0 && cleanedChars == expectedChars) {
+                // Decode and validate exactly one complete payload, including CRC.
+                return parse(text.substring(start, index + 1))
+            }
+        }
+        return null
     }
 
     private fun encodeCrockford(data: ByteArray): String {
@@ -135,15 +175,17 @@ object ShareTokens {
         return out.toString()
     }
 
-    private fun decodeCrockford(input: String): ByteArray? {
-        val cleaned = sanitize(input)
-        if (cleaned.isEmpty()) return null
+    private fun decodeCrockford(input: String, maxCleanedChars: Int): ByteArray? {
         var buffer = 0
         var bitsLeft = 0
+        var cleanedChars = 0
         val out = ByteArrayOutputStream()
-        for (ch in cleaned) {
-            if (ch.code >= decodeTable.size) return null
-            val value = decodeTable[ch.code]
+        for (ch in input) {
+            val cleaned = cleanCrockfordChar(ch) ?: continue
+            cleanedChars++
+            if (cleanedChars > maxCleanedChars) return null
+            if (cleaned.code >= decodeTable.size) return null
+            val value = decodeTable[cleaned.code]
             if (value < 0) return null
             buffer = (buffer shl 5) or value
             bitsLeft += 5
@@ -153,20 +195,17 @@ object ShareTokens {
                 out.write(byteVal)
             }
         }
+        if (cleanedChars == 0) return null
         return out.toByteArray()
     }
 
-    private fun sanitize(input: String): String {
-        val out = StringBuilder(input.length)
-        for (ch in input) {
-            when (ch) {
-                '-', ' ', '\n', '\r', '\t' -> continue
-                'o', 'O' -> out.append('0')
-                'i', 'I', 'l', 'L' -> out.append('1')
-                else -> out.append(ch.uppercaseChar())
-            }
+    private fun cleanCrockfordChar(ch: Char): Char? {
+        return when (ch) {
+            '-', ' ', '\n', '\r', '\t' -> null
+            'o', 'O' -> '0'
+            'i', 'I', 'l', 'L' -> '1'
+            else -> ch.uppercaseChar()
         }
-        return out.toString()
     }
 
     private fun crc16(data: ByteArray): Short {

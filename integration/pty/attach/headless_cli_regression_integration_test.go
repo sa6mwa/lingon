@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -108,24 +109,25 @@ func TestRelayHeadlessMultiAttachReceivesInitialSnapshot(t *testing.T) {
 	waitForSessionsWithTimeout(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionID}, 8*time.Second)
 	waitForHeadlessFlags(t, h.Clock(), h.Endpoint(), h.AccessToken(), map[string]bool{sessionID: true}, 8*time.Second)
 
-	var captured *attach.Client
+	var captured atomic.Pointer[attach.Client]
 	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: sessionID,
 		Cols:      40,
 		Rows:      10,
 		OnView: func(id string, client *attach.Client) {
 			if id == sessionID {
-				captured = client
+				captured.Store(client)
 			}
 		},
 	})
 	t.Cleanup(attach.Cancel)
 
 	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
-		if captured == nil {
+		client := captured.Load()
+		if client == nil {
 			return fmt.Errorf("attach view not created yet")
 		}
-		if !captured.HasSnapshot() {
+		if !client.HasSnapshot() {
 			return fmt.Errorf("attach client still has no snapshot:\n%s", screen.String())
 		}
 		if !screen.Contains("PROMPT>") {
@@ -165,24 +167,25 @@ func TestRelayHeadlessMultiAttachExplicitSessionReceivesInitialSnapshotWithPeers
 	waitForSessionsWithTimeout(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{sessionA, sessionB}, 8*time.Second)
 	waitForHeadlessFlags(t, h.Clock(), h.Endpoint(), h.AccessToken(), map[string]bool{sessionA: true, sessionB: true}, 8*time.Second)
 
-	var captured *attach.Client
+	var captured atomic.Pointer[attach.Client]
 	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: sessionB,
 		Cols:      40,
 		Rows:      10,
 		OnView: func(id string, client *attach.Client) {
 			if id == sessionB {
-				captured = client
+				captured.Store(client)
 			}
 		},
 	})
 	t.Cleanup(attach.Cancel)
 
 	attach.Eventually(8*time.Second, 100*time.Millisecond, func(screen ptytest.Screen) error {
-		if captured == nil {
+		client := captured.Load()
+		if client == nil {
 			return fmt.Errorf("attach view for %s not created yet", sessionB)
 		}
-		if !captured.HasSnapshot() {
+		if !client.HasSnapshot() {
 			return fmt.Errorf("attach client for %s still has no snapshot:\n%s", sessionB, screen.String())
 		}
 		if !screen.Contains("PROMPT>") {
@@ -217,6 +220,225 @@ func TestRealCLILocalHeadlessResizeMatrixRendersExpectedViewport(t *testing.T) {
 
 	waitForPromptVisible(t, attach, 8*time.Second)
 	runMultiHeadlessResizeMatrix(t, attach, func(cols, rows int) { attach.Resize(cols, rows) })
+}
+
+func TestRealCLILingonXAttachLocalHeadlessRendersPrompt(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
+	const sessionID = "local-headless-lingonx-attach"
+	stop := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: cfgDir,
+		SessionID: sessionID,
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stop)
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionCount(cfgDir) >= 1
+	})
+
+	attach := startLingonXAttachHeadlessCLI(t, homeDir, sessionID, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+}
+
+func TestRealCLILingonXAttachWithoutSessionIDRendersSingleLocalHeadlessPrompt(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
+	const sessionID = "local-headless-lingonx-default"
+	stop := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: cfgDir,
+		SessionID: sessionID,
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stop)
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionCount(cfgDir) >= 1
+	})
+
+	attach := startLingonXAttachHeadlessCLI(t, homeDir, "", 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+}
+
+func TestRealCLILingonXStartedHeadlessThenLingonXAttachRendersPrompt(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
+	const sessionID = "local-headless-real-lingonx-start"
+	startLingonXHeadlessSessionCLI(t, homeDir, sessionID)
+	t.Cleanup(func() {
+		_ = headless.DetachSession(context.Background(), cfgDir, sessionID)
+	})
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionCount(cfgDir) >= 1
+	})
+
+	attach := startLingonXAttachHeadlessCLI(t, homeDir, sessionID, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+}
+
+func TestRealCLILingonXOfflineStartsLocalHeadlessWithConfiguredEndpointLoggedOut(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(cfgDir, lingon.DefaultConfigFileName)
+	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example/v1\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	const sessionID = "local-headless-lingonx-offline-configured"
+	aliasPath := lingonXAliasPath(t)
+	cmd := exec.Command(
+		aliasPath,
+		"-o",
+		"--session", sessionID,
+		"--shell", fixedPromptEmitRowsBash(t),
+		"--geometry", "40x10",
+		"--disable-desktop-notifications",
+	)
+	cmd.Env = testAttachCLIEnv(homeDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start lingonx -o headless session: %v\n%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "headless session starting in background") {
+		t.Fatalf("unexpected lingonx -o start output: %s", string(output))
+	}
+	t.Cleanup(func() {
+		_ = headless.DetachSession(context.Background(), cfgDir, sessionID)
+	})
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionCount(cfgDir) >= 1
+	})
+
+	attach := startLingonXAttachHeadlessCLI(t, homeDir, sessionID, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
+}
+
+func TestRealCLILingonXReportsMissingRelayAuthBeforeDetachedExit(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	aliasPath := lingonXAliasPath(t)
+	missingAuth := filepath.Join(homeDir, "missing-auth.json")
+	cmd := exec.Command(
+		aliasPath,
+		"--session", "headless-missing-relay-auth",
+		"--shell", fixedPromptEmitRowsBash(t),
+		"--endpoint", "https://relay.example/v1",
+		"--auth-file", missingAuth,
+		"--disable-desktop-notifications",
+	)
+	cmd.Env = testAttachCLIEnv(homeDir)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected lingonx startup to fail without relay auth, output:\n%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "headless startup failed") {
+		t.Fatalf("startup failure did not name headless startup:\n%s", text)
+	}
+	if !strings.Contains(text, "auth file not found") {
+		t.Fatalf("startup failure did not report missing auth:\n%s", text)
+	}
+	if !strings.Contains(text, "--offline") {
+		t.Fatalf("startup failure did not suggest local-only offline startup:\n%s", text)
+	}
+	if strings.Contains(text, "headless session starting in background") {
+		t.Fatalf("startup reported background success despite missing auth:\n%s", text)
+	}
+}
+
+func TestRealCLILingonXDefaultMissingRelayAuthRequiresOffline(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	aliasPath := lingonXAliasPath(t)
+	cmd := exec.Command(
+		aliasPath,
+		"--session", "headless-default-missing-relay-auth",
+		"--shell", fixedPromptEmitRowsBash(t),
+		"--disable-desktop-notifications",
+	)
+	cmd.Env = testAttachCLIEnv(homeDir)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected default lingonx startup to fail without relay auth, output:\n%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "headless startup failed") {
+		t.Fatalf("startup failure did not name headless startup:\n%s", text)
+	}
+	if !strings.Contains(text, "auth file not found") {
+		t.Fatalf("startup failure did not report missing auth:\n%s", text)
+	}
+	if !strings.Contains(text, "--offline") {
+		t.Fatalf("startup failure did not suggest local-only offline startup:\n%s", text)
+	}
+	if strings.Contains(text, "headless session starting in background") {
+		t.Fatalf("startup reported background success despite missing auth:\n%s", text)
+	}
+}
+
+func TestRealCLIRootHeadlessAttachLocalHeadlessRendersPrompt(t *testing.T) {
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	homeDir := shortHomeDir(t)
+	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
+	const sessionID = "local-headless-root-x-attach"
+	stop := startHeadlessDaemon(t, headlessDaemonSpec{
+		ConfigDir: cfgDir,
+		SessionID: sessionID,
+		Shell:     fixedPromptEmitRowsBash(t),
+	})
+	t.Cleanup(stop)
+
+	waitUntilLocal(t, 8*time.Second, func() bool {
+		return localSessionCount(cfgDir) >= 1
+	})
+
+	attach := startLingonRootHeadlessAttachCLI(t, homeDir, sessionID, 40, 10)
+	defer attach.Cancel()
+	t.Cleanup(attach.Cancel)
+
+	waitForPromptVisible(t, attach, 8*time.Second)
 }
 
 func TestRealCLIRelayHeadlessDeadActiveSessionTabIsRemovedAndRemainingSessionStaysUsable(t *testing.T) {
@@ -491,10 +713,11 @@ func TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverl
 	cfgDir := filepath.Join(homeDir, lingon.DefaultConfigDirName)
 	const sessionA = "local-headless-detach-survivor"
 	const sessionB = "local-headless-detach-active"
+	const survivorReady = "LOCAL_SURVIVOR_READY"
 	stopA := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
 		SessionID: sessionA,
-		Shell:     fixedPromptEmitRowsBash(t),
+		Shell:     markedHeadlessPromptShell(t, survivorReady),
 	})
 	t.Cleanup(stopA)
 	stopB := startHeadlessDaemon(t, headlessDaemonSpec{
@@ -531,8 +754,8 @@ func TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverl
 		if strings.Contains(row0, sessionB) {
 			return fmt.Errorf("detached local headless tab %q still present: %q", sessionB, row0)
 		}
-		if !screen.Contains("PROMPT>") {
-			return fmt.Errorf("surviving local headless prompt missing after detach:\n%s", screen.String())
+		if !strings.Contains(row0, sessionA) || !screen.Contains(survivorReady) || !screen.Contains("PROMPT>") {
+			return fmt.Errorf("surviving local headless snapshot/prompt missing after detach:\n%s", screen.String())
 		}
 		return nil
 	})
@@ -584,6 +807,103 @@ func startLingonAttachHeadlessCLI(t *testing.T, homeDir, sessionID string, cols,
 	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start lingon attach --headless cli: %v", err)
+	}
+	_ = slave.Close()
+	go func() {
+		<-sess.Context().Done()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
+	go func() {
+		err := cmd.Wait()
+		if sess.Context().Err() != nil && (err == nil || errors.Is(err, os.ErrProcessDone) || strings.Contains(err.Error(), "signal: killed")) {
+			err = nil
+		}
+		sess.SetRunErr(err)
+	}()
+	return sess
+}
+
+func startLingonRootHeadlessAttachCLI(t *testing.T, homeDir, sessionID string, cols, rows int) *ptytest.PTYSession {
+	t.Helper()
+	return startLingonLocalHeadlessAttachCLI(t, homeDir, sessionID, cols, rows, buildLingonAttachBinary(t), "-x", "attach")
+}
+
+func startLingonXHeadlessSessionCLI(t *testing.T, homeDir, sessionID string) {
+	t.Helper()
+	aliasPath := lingonXAliasPath(t)
+	cmd := exec.Command(
+		aliasPath,
+		"--offline", // This local-only fixture has no relay credentials.
+		"--session", sessionID,
+		"--shell", fixedPromptEmitRowsBash(t),
+		"--geometry", "40x10",
+		"--disable-desktop-notifications",
+	)
+	cmd.Env = testAttachCLIEnv(homeDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start lingonx headless session: %v\n%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "headless session starting in background") {
+		t.Fatalf("unexpected lingonx start output: %s", string(output))
+	}
+}
+
+func startLingonXAttachHeadlessCLI(t *testing.T, homeDir, sessionID string, cols, rows int) *ptytest.PTYSession {
+	t.Helper()
+	aliasPath := lingonXAliasPath(t)
+	return startLingonLocalHeadlessAttachCLI(t, homeDir, sessionID, cols, rows, aliasPath, "attach")
+}
+
+func lingonXAliasPath(t *testing.T) string {
+	t.Helper()
+	aliasDir := t.TempDir()
+	aliasPath := filepath.Join(aliasDir, "lingonx")
+	if err := os.Symlink(buildLingonAttachBinary(t), aliasPath); err != nil {
+		t.Fatalf("symlink lingonx alias: %v", err)
+	}
+	return aliasPath
+}
+
+func startLingonLocalHeadlessAttachCLI(t *testing.T, homeDir, sessionID string, cols, rows int, bin string, prefixArgs ...string) *ptytest.PTYSession {
+	t.Helper()
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	master, slave := ptytest.OpenPTY(t, cols, rows)
+	resizeFD, err := syscall.Dup(int(slave.Fd()))
+	if err != nil {
+		t.Fatalf("dup lingonx attach slave pty: %v", err)
+	}
+	resizeSlave := os.NewFile(uintptr(resizeFD), slave.Name()+"-resize")
+	sess := ptytest.NewPTYSession(t, master, resizeSlave, cols, rows)
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = resizeSlave.Close()
+	})
+
+	args := append([]string(nil), prefixArgs...)
+	if sessionID != "" {
+		args = append(args, sessionID)
+	}
+	args = append(args, "--request-control", "--disable-desktop-notifications")
+	cmd := exec.Command(bin, args...)
+	cmd.Env = testAttachCLIEnv(homeDir)
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start local headless attach cli: %v", err)
 	}
 	_ = slave.Close()
 	go func() {
@@ -682,4 +1002,16 @@ func shortHomeDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
+}
+
+// markedHeadlessPromptShell emits identity inside the daemon's owned child PTY.
+// A closed view's preserved framebuffer cannot satisfy survivor readiness.
+func markedHeadlessPromptShell(t *testing.T, marker string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "marked-headless-shell.sh")
+	script := "#!/bin/sh\nprintf '\\n%s\\n' " + shellQuote(marker) + "\nexec " + shellQuote(fixedPromptEmitRowsBash(t)) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

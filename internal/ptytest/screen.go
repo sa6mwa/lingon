@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -92,8 +93,9 @@ type PTYSession struct {
 	cleanup func()
 	closeMu sync.Once
 
-	mu     sync.Mutex
-	rawBuf bytes.Buffer
+	mu      sync.Mutex
+	rawBuf  bytes.Buffer
+	updated chan struct{}
 
 	errMu   sync.Mutex
 	errSet  bool
@@ -103,7 +105,8 @@ type PTYSession struct {
 	readErrSet  bool
 	lastReadErr error
 
-	clock clock.Clock
+	clock      clock.Clock
+	readerDone chan struct{}
 
 	onResize func()
 }
@@ -111,13 +114,15 @@ type PTYSession struct {
 func newPTYSession(t *testing.T, master, slave *os.File, emu terminal.Emulator) *PTYSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &PTYSession{
-		t:      t,
-		master: master,
-		slave:  slave,
-		emu:    emu,
-		ctx:    ctx,
-		cancel: cancel,
-		runErr: make(chan error, 1),
+		t:          t,
+		master:     master,
+		slave:      slave,
+		emu:        emu,
+		ctx:        ctx,
+		cancel:     cancel,
+		runErr:     make(chan error, 1),
+		readerDone: make(chan struct{}),
+		updated:    make(chan struct{}),
 	}
 	go s.readLoop()
 	t.Cleanup(s.Close)
@@ -165,6 +170,7 @@ func OpenPTY(t *testing.T, cols, rows int) (*os.File, *os.File) {
 }
 
 func (s *PTYSession) readLoop() {
+	defer close(s.readerDone)
 	buf := make([]byte, 4096)
 	pfd := []unix.PollFd{{Fd: int32(s.master.Fd()), Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR}}
 	for {
@@ -194,6 +200,8 @@ func (s *PTYSession) readLoop() {
 			s.mu.Lock()
 			_, _ = s.rawBuf.Write(buf[:n])
 			_ = s.emu.Write(buf[:n])
+			close(s.updated)
+			s.updated = make(chan struct{})
 			s.mu.Unlock()
 		}
 		if err != nil {
@@ -242,6 +250,9 @@ func (s *PTYSession) shutdown() {
 	s.closeMu.Do(func() {
 		if s.cancel != nil {
 			s.cancel()
+		}
+		if s.readerDone != nil {
+			<-s.readerDone
 		}
 		if s.cleanup != nil {
 			s.cleanup()
@@ -312,6 +323,34 @@ func (s *PTYSession) Screen() Screen {
 		s.t.Fatalf("snapshot: %v", err)
 	}
 	return screenFromSnapshot(snap)
+}
+
+// WaitForScreen waits for rendered output satisfying check without advancing the
+// session clock. The context bounds a stalled transport; it does not drive time.
+func (s *PTYSession) WaitForScreen(ctx context.Context, check func(Screen) bool) error {
+	stopped := false
+	for {
+		s.mu.Lock()
+		snap, err := s.emu.Snapshot()
+		updated := s.updated
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		if check(screenFromSnapshot(snap)) {
+			return nil
+		}
+		if stopped {
+			return io.EOF
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-updated:
+		case <-s.readerDone:
+			stopped = true
+		}
+	}
 }
 
 // Snapshot returns the raw terminal snapshot.

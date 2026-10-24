@@ -48,8 +48,8 @@ yes | "${sdkmanager}" --sdk_root="${ANDROID_SDK_ROOT}" \
   "platform-tools" \
   "emulator" \
   "platforms;android-35" \
-  "platforms;android-36" \
-  "build-tools;35.0.0" \
+  "platforms;android-37.0" \
+  "build-tools;36.0.0" \
   "system-images;android-35;default;x86_64"
 sdk_status=${PIPESTATUS[1]}
 set -o pipefail

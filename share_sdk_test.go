@@ -3,6 +3,7 @@ package lingon
 import (
 	"context"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,5 +61,18 @@ func TestShareCreateAndRevoke(t *testing.T) {
 	}
 	if revokeResp.Status == "" {
 		t.Fatalf("expected status")
+	}
+}
+
+func TestShareCreateRejectsNegativeTTL(t *testing.T) {
+	_, err := ShareCreate(context.Background(), ShareCreateOptions{
+		Endpoint:    "https://relay.example/v1",
+		AccessToken: "access",
+		SessionID:   "s1",
+		Scope:       ShareScopeView,
+		TTL:         -time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "ttl must be non-negative") {
+		t.Fatalf("ShareCreate err = %v, want non-negative ttl error", err)
 	}
 }

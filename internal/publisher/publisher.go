@@ -43,6 +43,9 @@ type Options struct {
 	Insecure         bool
 	Logger           pslog.Logger
 	BackoffPolicy    *backoff.Policy
+	// ReconnectJitter overrides the random jitter sampler for reconnect delays.
+	// A nil value uses crypto-secure randomness.
+	ReconnectJitter backoff.Jitter
 }
 
 // Publisher publishes terminal updates to the relay and receives remote input.
@@ -53,6 +56,8 @@ type Publisher struct {
 	OnInput                func([]byte)
 	OnResize               func(cols, rows int)
 	OnCommand              func(kind protocolpb.CommandKind)
+	OnManagement           func(context.Context, *protocolpb.SessionManagement) *protocolpb.SessionManagement
+	management             chan *protocolpb.SessionManagement
 	OnControl              func(holderID string)
 	OnFrame                func(*protocolpb.Frame)
 	OnSessions             func([]*protocolpb.SessionInfo)
@@ -78,8 +83,9 @@ type Publisher struct {
 	scrollbackSnapshot   func() []terminal.ScrollbackRow
 	wallInactivityStatus func() *protocolpb.WallInactivityStatus
 
-	backoffPolicy  backoff.Policy
-	backoffAttempt int
+	backoffPolicy   backoff.Policy
+	reconnectJitter backoff.Jitter
+	backoffAttempt  int
 
 	tokenRefresher func(context.Context) (string, error)
 	clock          clock.Clock
@@ -93,8 +99,8 @@ type Publisher struct {
 const HostControlID = "host"
 
 var publisherWSDialTimeout = 12 * time.Second
-var publisherPingInterval = durationFromEnv("LINGON_HOST_PUBLISHER_PING_INTERVAL", 2*time.Second)
-var publisherPingTimeout = durationFromEnv("LINGON_HOST_PUBLISHER_PING_TIMEOUT", 2*time.Second)
+var publisherPingInterval = durationFromEnv("LINGON_HOST_PUBLISHER_PING_INTERVAL", 5*time.Second)
+var publisherPingTimeout = durationFromEnv("LINGON_HOST_PUBLISHER_PING_TIMEOUT", 10*time.Second)
 var publisherSessionCloseTimeout = 1500 * time.Millisecond
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
@@ -126,14 +132,16 @@ func New(opts Options) *Publisher {
 		maxScreens = 10
 	}
 	return &Publisher{
-		opts:           opts,
-		Logger:         opts.Logger,
-		backoffPolicy:  policy,
-		outputQueue:    relaywire.NewFrameQueue(0),
-		maxScreens:     maxScreens,
-		tokenRefresher: opts.TokenRefresher,
-		clock:          opts.Clock,
-		stateChangeCh:  make(chan struct{}, 1),
+		opts:            opts,
+		Logger:          opts.Logger,
+		backoffPolicy:   policy,
+		reconnectJitter: opts.ReconnectJitter,
+		outputQueue:     relaywire.NewFrameQueue(0),
+		maxScreens:      maxScreens,
+		tokenRefresher:  opts.TokenRefresher,
+		clock:           opts.Clock,
+		stateChangeCh:   make(chan struct{}, 1),
+		management:      make(chan *protocolpb.SessionManagement, 8),
 	}
 }
 
@@ -148,6 +156,9 @@ func (p *Publisher) Run(ctx context.Context) error {
 	if p.opts.SessionID == "" {
 		return fmt.Errorf("session id is required")
 	}
+	managementCtx, cancelManagement := context.WithCancel(ctx)
+	defer cancelManagement()
+	go p.managementLoop(managementCtx)
 	defer p.closeHTTPClient()
 
 	for {
@@ -194,12 +205,10 @@ func (p *Publisher) Run(ctx context.Context) error {
 			continue
 		}
 
-		delay := p.backoffPolicy.Next(p.backoffAttempt)
+		delay := p.reconnectDelay(err)
 		if retryDelay, ok := retryafter.FromError(err); ok && retryDelay > 0 {
-			delay = retryDelay
 			p.backoffAttempt = 0
 		}
-		delay = p.normalizeReconnectDelay(delay)
 		p.backoffAttempt++
 		if err := p.waitBackoff(ctx, delay); err != nil {
 			if errors.Is(err, errPublisherOffline) {
@@ -295,6 +304,15 @@ func (p *Publisher) normalizeReconnectDelay(delay time.Duration) time.Duration {
 		fallback = backoff.DefaultPolicy.Base
 	}
 	return fallback
+}
+
+func (p *Publisher) reconnectDelay(err error) time.Duration {
+	delay := p.backoffPolicy.Next(p.backoffAttempt)
+	if retryDelay, ok := retryafter.FromError(err); ok && retryDelay > 0 {
+		delay = retryDelay
+	}
+	delay = p.normalizeReconnectDelay(delay)
+	return p.backoffPolicy.WithJitter(delay, p.reconnectJitter)
 }
 
 // SetOffline toggles relay connectivity for this publisher.
@@ -434,9 +452,24 @@ func (p *Publisher) Publish(data []byte, snap *protocolpb.Snapshot) {
 
 // Resize records a resized snapshot and publishes it.
 func (p *Publisher) Resize(cols, rows int, snap *protocolpb.Snapshot) {
+	p.mu.Lock()
 	p.opts.Cols = cols
 	p.opts.Rows = rows
+	p.mu.Unlock()
 	p.Publish(nil, snap)
+}
+
+func (p *Publisher) helloFrame() *protocolpb.Frame {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return &protocolpb.Frame{
+		SessionId: p.opts.SessionID,
+		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
+			ClientId: strings.TrimSpace(p.opts.SessionName),
+			Cols:     uint32(p.opts.Cols), Rows: uint32(p.opts.Rows),
+			WantsControl: p.opts.PublishControl, ClientType: "host", Headless: p.opts.Headless,
+		}},
+	}
 }
 
 func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
@@ -482,17 +515,7 @@ func (p *Publisher) connectAndServe(ctx context.Context) (bool, error) {
 		_ = ws.Close(websocket.StatusNormalClosure, "closing")
 	}()
 
-	hello := &protocolpb.Frame{
-		SessionId: p.opts.SessionID,
-		Payload: &protocolpb.Frame_Hello{Hello: &protocolpb.Hello{
-			ClientId:     strings.TrimSpace(p.opts.SessionName),
-			Cols:         uint32(p.opts.Cols),
-			Rows:         uint32(p.opts.Rows),
-			WantsControl: p.opts.PublishControl,
-			ClientType:   "host",
-			Headless:     p.opts.Headless,
-		}},
-	}
+	hello := p.helloFrame()
 	if err := relaywire.WriteFrame(ctx, ws, hello); err != nil {
 		return false, err
 	}
@@ -577,6 +600,14 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 			return err
 		}
 		p.touchActivity()
+		if request := frame.GetManagement(); request != nil {
+			select {
+			case p.management <- request:
+			default:
+				p.SendManagement(&protocolpb.SessionManagement{CorrelationId: request.CorrelationId, RequestId: request.RequestId, Kind: request.Kind, Completed: true, Error: "session management busy"})
+			}
+			continue
+		}
 		if hello := frame.GetHello(); hello != nil {
 			p.sendScrollbackSnapshot()
 			p.sendSnapshot()
@@ -673,8 +704,8 @@ func (p *Publisher) sendScrollbackSnapshot() {
 	if len(rows) == 0 {
 		return
 	}
-	cols := p.opts.Cols
 	p.mu.Lock()
+	cols := p.opts.Cols
 	if p.lastSnap != nil {
 		cols = int(p.lastSnap.Cols)
 	}
@@ -785,8 +816,9 @@ func (p *Publisher) SendSessionClosed(reason string) {
 func (p *Publisher) TakeControl() {
 	p.mu.Lock()
 	p.wantControl = true
+	alreadyHeld := p.holderID == HostControlID
 	p.mu.Unlock()
-	if p.holderID == HostControlID {
+	if alreadyHeld {
 		return
 	}
 	_ = p.sendControl(context.Background(), HostControlID)
@@ -885,16 +917,25 @@ func (p *Publisher) pingLoop(ctx context.Context, ws *websocket.Conn, cancel con
 			return nil
 		case <-ticker.C:
 		}
+		if ctx.Err() != nil {
+			return nil
+		}
 		if p.idleFor() < interval {
 			continue
 		}
 		if !p.writeMu.TryLock() {
 			continue
 		}
+		// Ping waits for readWS to consume pong. That reader may first need
+		// to answer hello with a snapshot, so it must remain able to write.
+		// websocket.Conn serializes its concurrent control/data writes.
+		p.writeMu.Unlock()
 		pingCtx, pingCancel := context.WithTimeout(ctx, timeout)
 		err := ws.Ping(pingCtx)
 		pingCancel()
-		p.writeMu.Unlock()
+		if ctx.Err() != nil {
+			return nil
+		}
 		if err == nil {
 			p.touchActivity()
 			continue

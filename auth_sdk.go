@@ -176,12 +176,16 @@ func LoadAuthForEndpoint(path, endpoint string) (AuthState, error) {
 
 // SaveAuth saves auth state to disk.
 func SaveAuth(path string, state AuthState) error {
-	return authstore.Save(path, state)
+	return authstore.WithLock(path, func() error {
+		return authstore.Save(path, state)
+	})
 }
 
 // DeleteAuthForEndpoint deletes auth state for a specific endpoint from disk.
 func DeleteAuthForEndpoint(path, endpoint string) error {
-	return authstore.Delete(path, endpoint)
+	return authstore.WithLock(path, func() error {
+		return authstore.Delete(path, endpoint)
+	})
 }
 
 // EnsureAccessToken loads auth state and refreshes if needed.

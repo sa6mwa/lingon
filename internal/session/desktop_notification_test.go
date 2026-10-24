@@ -3,9 +3,11 @@ package session
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +23,65 @@ type recordingNotifier struct {
 	requests []desktopnotify.Request
 }
 
+// wallTestClock invokes expired callbacks synchronously after explicit mock
+// advancement. Timer channels preserve Stop/Reset; there is no scheduler sleep
+// between the test's assertions and a notification/modal callback finishing.
+type wallTestClock struct {
+	*clock.MockClock
+	callbacks []wallTestCallback
+}
+
+type wallTestCallback struct {
+	timer *clock.Timer
+	fn    func()
+}
+
+func newWallTestClock() *wallTestClock {
+	return &wallTestClock{MockClock: clock.NewMock()}
+}
+
+func (c *wallTestClock) AfterFunc(d time.Duration, fn func()) *clock.Timer {
+	timer := c.NewTimer(d)
+	c.callbacks = append(c.callbacks, wallTestCallback{timer: timer, fn: fn})
+	return timer
+}
+
+func (c *wallTestClock) Add(d time.Duration) {
+	c.MockClock.Add(d)
+	for {
+		ran := false
+		for _, callback := range c.callbacks {
+			select {
+			case <-callback.timer.C:
+				callback.fn()
+				ran = true
+			default:
+			}
+		}
+		if !ran {
+			return
+		}
+	}
+}
+
+type ownedTTYOutput struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	marker  string
+	arrived chan struct{}
+}
+
+func (o *ownedTTYOutput) Write(data []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	n, err := o.buf.Write(data)
+	if o.marker != "" && bytes.Contains(o.buf.Bytes(), []byte(o.marker)) {
+		close(o.arrived)
+		o.marker = ""
+	}
+	return n, err
+}
+
 func (n *recordingNotifier) Notify(_ context.Context, req desktopnotify.Request) error {
 	n.requests = append(n.requests, req)
 	return nil
@@ -31,7 +92,7 @@ func TestRunnerLocalWallNotificationUsesNotifierFactoryWhenUnset(t *testing.T) {
 	restore := desktopnotify.SetFactoryForTesting(func() desktopnotify.Notifier { return notifier })
 	defer restore()
 
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	r := &Runner{
 		opts:   Options{},
 		runCtx: context.Background(),
@@ -54,7 +115,7 @@ func TestRunnerLocalWallNotificationUsesNotifierFactoryWhenUnset(t *testing.T) {
 
 func TestRunnerLocalWallNotificationFiresOnceUntilActivityResets(t *testing.T) {
 	notifier := &recordingNotifier{}
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	r := &Runner{
 		opts:   Options{DesktopNotifier: notifier},
 		runCtx: context.Background(),
@@ -91,7 +152,7 @@ func TestRunnerLocalWallNotificationFiresOnceUntilActivityResets(t *testing.T) {
 
 func TestRunnerLocalWallNotificationSkipsWhenDisabled(t *testing.T) {
 	notifier := &recordingNotifier{}
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	r := &Runner{
 		opts: Options{
 			DesktopNotifier:             notifier,
@@ -114,7 +175,7 @@ func TestRunnerLocalWallNotificationSkipsWhenDisabled(t *testing.T) {
 
 func TestRunnerLocalWallNotificationIsPerSession(t *testing.T) {
 	notifier := &recordingNotifier{}
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	r := &Runner{
 		opts:   Options{DesktopNotifier: notifier},
 		runCtx: context.Background(),
@@ -148,7 +209,7 @@ func TestRunnerLocalWallNotificationIsPerSession(t *testing.T) {
 
 func TestRunnerDisableLocalWallNotificationCancelsPendingTimer(t *testing.T) {
 	notifier := &recordingNotifier{}
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	r := &Runner{
 		opts:   Options{DesktopNotifier: notifier},
 		runCtx: context.Background(),
@@ -169,7 +230,7 @@ func TestRunnerDisableLocalWallNotificationCancelsPendingTimer(t *testing.T) {
 
 func TestRunnerToggleWallInactivityFallbackArmsLocalWallNotification(t *testing.T) {
 	notifier := &recordingNotifier{}
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	stdout, err := os.CreateTemp(t.TempDir(), "stdout-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -246,7 +307,7 @@ func TestRunnerShowWallKeepsModalVisibleWhenDesktopNotifierConfigured(t *testing
 
 func TestRunnerShowWallPreservesScrollbackViewport(t *testing.T) {
 	const cols, rows = 80, 8
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	live := makeSnapshot(cols, rows, 0, rows-1, 0, -1, -1)
 	setRow(live, 0, "LIVE-END-TOKEN")
 	local := &localSession{
@@ -308,7 +369,7 @@ func TestRunnerShowWallPreservesScrollbackViewport(t *testing.T) {
 
 func TestRunnerShowWallPreservesMixedScrollbackAndLiveViewport(t *testing.T) {
 	const cols, rows = 80, 8
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	live := makeSnapshot(cols, rows, 0, rows-1, 0, -1, -1)
 	setRow(live, 0, "LIVE-VISIBLE-TOKEN")
 	setRow(live, rows-1, "LIVE-END-TOKEN")
@@ -380,10 +441,10 @@ func openTestTTY(t *testing.T, cols, rows int) (*os.File, func() string) {
 		_ = slave.Close()
 		t.Fatalf("pty.Setsize: %v", err)
 	}
-	var buf bytes.Buffer
+	output := &ownedTTYOutput{}
 	readDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(&buf, master)
+		_, _ = io.Copy(output, master)
 		close(readDone)
 	}()
 	t.Cleanup(func() {
@@ -391,11 +452,29 @@ func openTestTTY(t *testing.T, cols, rows int) (*os.File, func() string) {
 		_ = master.Close()
 		<-readDone
 	})
+	var sequence int
 	return slave, func() string {
 		t.Helper()
-		time.Sleep(10 * time.Millisecond)
-		out := buf.String()
-		buf.Reset()
+		sequence++
+		marker := fmt.Sprintf("\x00__LINGON_TEST_BARRIER_%d__\x00", sequence)
+		arrived := make(chan struct{})
+		output.mu.Lock()
+		output.marker, output.arrived = marker, arrived
+		output.mu.Unlock()
+		if _, err := slave.Write([]byte(marker)); err != nil {
+			t.Fatalf("owned TTY barrier: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		select {
+		case <-arrived:
+		case <-ctx.Done():
+			t.Fatal("owned TTY reader did not consume its barrier")
+		}
+		output.mu.Lock()
+		defer output.mu.Unlock()
+		out := strings.ReplaceAll(output.buf.String(), marker, "")
+		output.buf.Reset()
 		return out
 	}
 }
@@ -414,7 +493,7 @@ func scrollbackTestRow(cols int, content string) terminal.ScrollbackRow {
 
 func TestRunnerRelayBackedLocalWallNotificationSuppressesDuplicateRelayWall(t *testing.T) {
 	notifier := &recordingNotifier{}
-	clk := clock.NewMock()
+	clk := newWallTestClock()
 	r := &Runner{
 		opts:   Options{DesktopNotifier: notifier},
 		runCtx: context.Background(),

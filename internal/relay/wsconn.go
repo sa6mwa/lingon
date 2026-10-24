@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -15,17 +16,31 @@ import (
 	"pkt.systems/pslog"
 )
 
+const wsWriteTimeout = 5 * time.Second
+
+var errSendQueueFull = errors.New("connection send queue full")
+
+// A replay occupies one FIFO slot. Its immutable frames are already bounded by
+// the hub's history budget. A connection retains at most one active replay and
+// one queued replay, including when a peer sends another hello during delivery.
+type outboundFrames struct {
+	frame  *protocolpb.Frame
+	replay []*protocolpb.Frame
+}
+
 type wsConn struct {
-	id        string
-	role      Role
-	sessionID string
-	scope     ShareScope
-	conn      *websocket.Conn
-	logger    pslog.Logger
+	id         string
+	role       Role
+	sessionID  string
+	scope      ShareScope
+	shareToken string
+	conn       *websocket.Conn
+	logger     pslog.Logger
 
 	sendMu       sync.Mutex
 	lastActivity atomic.Int64
-	sendCh       chan *protocolpb.Frame
+	sendCh       chan outboundFrames
+	replayQueued atomic.Bool
 	done         chan struct{}
 	closed       sync.Once
 }
@@ -41,7 +56,7 @@ func newWSConn(id string, role Role, sessionID string, scope ShareScope, conn *w
 		scope:     scope,
 		conn:      conn,
 		logger:    logger,
-		sendCh:    make(chan *protocolpb.Frame, 128),
+		sendCh:    make(chan outboundFrames, 128),
 		done:      make(chan struct{}),
 	}
 	ws.touchActivity()
@@ -49,26 +64,49 @@ func newWSConn(id string, role Role, sessionID string, scope ShareScope, conn *w
 	return ws
 }
 
-func (c *wsConn) ID() string        { return c.id }
-func (c *wsConn) Role() Role        { return c.role }
-func (c *wsConn) Scope() ShareScope { return c.scope }
-func (c *wsConn) SessionID() string { return c.sessionID }
+func (c *wsConn) ID() string         { return c.id }
+func (c *wsConn) Role() Role         { return c.role }
+func (c *wsConn) Scope() ShareScope  { return c.scope }
+func (c *wsConn) SessionID() string  { return c.sessionID }
+func (c *wsConn) ShareToken() string { return c.shareToken }
 
 func (c *wsConn) Send(ctx context.Context, frame *protocolpb.Frame) error {
 	if frame == nil {
 		return nil
 	}
-	return c.enqueue(ctx, c.sendCh, frame)
+	return c.enqueue(ctx, outboundFrames{frame: frame})
+}
+
+// SendReplay transfers a bounded, immutable history slice to the FIFO writer.
+// Admission never waits for transport I/O while the hub holds its replay lock.
+func (c *wsConn) SendReplay(ctx context.Context, frames []*protocolpb.Frame) error {
+	if len(frames) == 0 {
+		return nil
+	}
+	if !c.replayQueued.CompareAndSwap(false, true) {
+		c.closeNow()
+		return errSendQueueFull
+	}
+	if err := c.enqueue(ctx, outboundFrames{replay: frames}); err != nil {
+		c.replayQueued.Store(false)
+		return err
+	}
+	return nil
 }
 
 func (c *wsConn) SendImmediate(ctx context.Context, frame *protocolpb.Frame) error {
 	if frame == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	data, err := proto.Marshal(frame)
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, wsWriteTimeout)
+	defer cancel()
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if err := c.conn.Write(ctx, websocket.MessageBinary, data); err != nil {
@@ -132,14 +170,37 @@ func (c *wsConn) idleFor() time.Duration {
 	return 0
 }
 
-func (c *wsConn) enqueue(ctx context.Context, ch chan *protocolpb.Frame, frame *protocolpb.Frame) error {
+func (c *wsConn) enqueue(ctx context.Context, frames outboundFrames) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Prefer cancellation over accepting more output on a closed connection.
 	select {
 	case <-c.done:
 		return fmt.Errorf("connection closed")
 	case <-ctx.Done():
 		return ctx.Err()
-	case ch <- frame:
+	default:
+	}
+	select {
+	case <-c.done:
+		return fmt.Errorf("connection closed")
+	case <-ctx.Done():
+		return ctx.Err()
+	case c.sendCh <- frames:
 		return nil
+	default:
+		c.closeNow()
+		return errSendQueueFull
+	}
+}
+
+func (c *wsConn) closeNow() {
+	c.closed.Do(func() {
+		close(c.done)
+	})
+	if c.conn != nil {
+		_ = c.conn.CloseNow()
 	}
 }
 
@@ -148,12 +209,33 @@ func (c *wsConn) writeLoop() {
 		select {
 		case <-c.done:
 			return
-		case frame := <-c.sendCh:
-			if frame != nil {
-				_ = c.writeFrame(frame)
+		case frames := <-c.sendCh:
+			if frames.replay != nil {
+				c.replayQueued.Store(false)
+			}
+			if err := c.writeFrames(frames); err != nil {
+				c.closeNow()
+				return
 			}
 		}
 	}
+}
+
+func (c *wsConn) writeFrames(frames outboundFrames) error {
+	if frames.frame != nil {
+		return c.writeFrame(frames.frame)
+	}
+	for _, frame := range frames.replay {
+		select {
+		case <-c.done:
+			return fmt.Errorf("connection closed")
+		default:
+		}
+		if err := c.writeFrame(frame); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *wsConn) writeFrame(frame *protocolpb.Frame) error {
@@ -161,9 +243,11 @@ func (c *wsConn) writeFrame(frame *protocolpb.Frame) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), wsWriteTimeout)
+	defer cancel()
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	if err := c.conn.Write(context.Background(), websocket.MessageBinary, data); err != nil {
+	if err := c.conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 		return err
 	}
 	c.touchActivity()

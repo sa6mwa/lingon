@@ -22,10 +22,12 @@ import (
 	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/desktopnotify"
+	"pkt.systems/lingon/internal/netgate"
 	"pkt.systems/lingon/internal/relay"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/server"
 	"pkt.systems/lingon/internal/session"
+	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/terminal/emu"
 	"pkt.systems/lingon/internal/testutil"
 	"pkt.systems/lingon/internal/tlsmgr"
@@ -57,6 +59,7 @@ type Harness struct {
 	connectLimit *relay.ConnectLimitConfig
 	wallTimeout  time.Duration
 	wallLevels   []time.Duration
+	wallClock    clock.Clock
 	clock        clock.Clock
 	tracePath    string
 	trace        *trace.Writer
@@ -116,6 +119,12 @@ func WithWallConfig(timeout time.Duration, inactiveAfterLevels []time.Duration) 
 		}
 		h.wallLevels = append([]time.Duration(nil), inactiveAfterLevels...)
 	}
+}
+
+// WithWallClock controls relay wall timestamps and inactivity timers separately
+// from session timing. The default is the system clock.
+func WithWallClock(clk clock.Clock) HarnessOption {
+	return func(h *Harness) { h.wallClock = clk }
 }
 
 // WithClock sets the harness clock used by sessions.
@@ -400,6 +409,7 @@ func (h *Harness) startServer(listener net.Listener) {
 	relayServer := relay.NewHTTPServer(h.store, h.users, h.auth, nil, hub)
 	relayServer.UsersFile = h.usersPath
 	relayServer.DataDir = h.dataDir
+	relayServer.WallClock = h.wallClock
 	if h.wallTimeout > 0 || len(h.wallLevels) > 0 {
 		relayServer.ConfigureWall(h.wallTimeout, h.wallLevels)
 	}
@@ -448,6 +458,7 @@ type HostOptions struct {
 	Rows                        int
 	Clock                       clock.Clock
 	OnPTYRead                   func([]byte)
+	OnPublishStatus             func(session.PublishStatus)
 	DisableRaw                  bool
 	DisablePublish              bool
 	DisableDesktopNotifications bool
@@ -542,7 +553,9 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 		Stdout:                      slave,
 		DisableRaw:                  opts.DisableRaw,
 		Clock:                       clk,
+		ReconnectJitter:             func(time.Duration) time.Duration { return 0 },
 		OnPTYRead:                   opts.OnPTYRead,
+		OnPublishStatus:             opts.OnPublishStatus,
 		DisableDesktopNotifications: disableDesktopNotifications,
 		DesktopNotifier:             desktopNotifier,
 		Trace:                       h.trace,
@@ -688,7 +701,9 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 
 	sess.cleanup = func() {
 		if stdinState != nil {
-			_ = term.Restore(int(slave.Fd()), stdinState)
+			_ = terminal.WithFileDescriptor(slave, func(fd uintptr) {
+				_ = term.Restore(int(fd), stdinState)
+			})
 		}
 		_ = master.Close()
 		_ = slave.Close()
@@ -728,6 +743,8 @@ type MultiAttachOptions struct {
 	SessionEvents <-chan struct{}
 	// Clock controls attach time in tests.
 	Clock clock.Clock
+	// Gate overrides the network gate for deterministic backoff tests.
+	Gate *netgate.Gate
 	// OnView is called when a session view is created.
 	OnView func(sessionID string, client *attach.Client)
 	// OnReconnect is called before a view attempts to reconnect.
@@ -809,12 +826,14 @@ func (h *Harness) StartMultiAttach(opts MultiAttachOptions) *PTYSession {
 		SessionSource:               opts.SessionSource,
 		SocketResolver:              opts.SocketResolver,
 		SessionEvents:               opts.SessionEvents,
+		Gate:                        opts.Gate,
 		Clock:                       clk,
 		OnView:                      opts.OnView,
 		OnReconnect:                 opts.OnReconnect,
 		OnViewClosed:                opts.OnViewClosed,
 		OnActive:                    opts.OnActive,
 		BackoffPolicy:               opts.BackoffPolicy,
+		ReconnectJitter:             func(time.Duration) time.Duration { return 0 },
 		InactiveTTL:                 opts.InactiveTTL,
 		RefreshInterval:             opts.RefreshInterval,
 	}

@@ -1,3 +1,4 @@
+.NOTPARALLEL:
 ANDROID_SDK_ROOT ?= $(HOME)/Android/Sdk
 ANDROID_HOME ?= $(ANDROID_SDK_ROOT)
 CMDLINE_TOOLS := $(ANDROID_SDK_ROOT)/cmdline-tools/latest
@@ -13,6 +14,8 @@ SYSTEM_IMAGE ?= system-images;android-35;default;x86_64
 DEVICE_PROFILE ?= small_phone
 APP_ID := systems.pkt.lingon
 UI_TEST_FLAGS ?= --rerun-tasks --no-build-cache
+GRADLE_HEAP := 512m
+GRADLE = bash ../scripts/verify-contained.sh ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process "-Dorg.gradle.jvmargs=-Xmx$(GRADLE_HEAP) -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8"
 
 PRESET_LC := $(shell printf '%s' '$(PRESET)' | tr '[:upper:]' '[:lower:]')
 
@@ -42,12 +45,13 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-install adb-push integration-test
-VERSION_CMD := cd .. && go run -buildvcs=true ./cmd/lingon version --version
+.PHONY: help sdk licenses avd avd-clean-snapshots emulator build release install install-release run clean local-properties list-presets cleanup-managed-devices cleanup-offline-emulators adb-push integration-test
+VERSION_CMD := cd .. && bash scripts/verify-contained.sh go run -buildvcs=true ./cmd/lingon version --version
+RELEASE_IDENTITY_CMD := cd .. && bash scripts/verify-contained.sh go run ./cmd/lingon-lifecycle android-version
 
 help:
 	@echo "lingon android make targets:"
-	@echo "  make sdk          - install Android SDK + emulator (API 35 target + API 36 compile)"
+	@echo "  make sdk          - install SDK platform 37.0, Build Tools 36.0.0 + API 35 emulator"
 	@echo "  make licenses     - accept Android SDK licenses"
 	@echo "  make avd          - create AVD $(AVD_NAME) under ~/.android/avd (perf tune: GPU/RAM/cores; hardware keyboard enabled)"
 	@echo "  make emulator     - start emulator for $(AVD_NAME) (-gpu host -no-snapshot + adb reverse + debug endpoint)"
@@ -57,7 +61,7 @@ help:
 	@echo "  make build        - assemble debug APK"
 	@echo "  make release      - assemble release APK (auto-generates a local dev keystore if needed)"
 	@echo "  make install      - install debug APK"
-	@echo "  make adb-install  - install release APK via adb (uses APK=... and ADB_SERIAL=... overrides)"
+	@echo "  make install-release - build and install release APK on a connected phone (APK=... skips build)"
 	@echo "  make adb-push     - push FILE to emulator Downloads (defaults to $$HOME/.lingon/tls/ca.pem)"
 	@echo "  make integration-test - run Android integration tests (harness + emulator, PRESET=medium)"
 	@echo "  make run          - launch the app on a device/emulator"
@@ -76,10 +80,11 @@ help:
 	@echo "Overrides:"
 	@echo "  make avd AVD_NAME=... DEVICE_PROFILE=... SYSTEM_IMAGE=..."
 	@echo "  make emulator PRESET=medium AVD_RAM_MB=2048   - lower emulator RAM when needed"
-	@echo "  make adb-install ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
-	@echo "  make integration-test LINGON_IT_CPU_QUOTA_PERCENT=400 LINGON_IT_MEMORY_MAX=6G"
-	@echo "                      (default: systemd cgroup, CPUQuota=min(half of online CPUs, 200%), MemoryMax=7G, fresh managed emulator)"
-	@echo "                      set LINGON_IT_REUSE_DEVICE=1 only when deliberately using an existing device/emulator"
+	@echo "  make install-release ADB_SERIAL=<device-serial> APK=/path/to/app.apk"
+	@echo "  make integration-test - mandatory shared 4 CPUs / 4 GiB ceiling, zero swap"
+	@echo "                      (systemd cgroup; 2 vCPUs / 1024 MiB guest RAM, 720x1600 / 280 dpi)"
+	@echo "                      integration verification requires an owned emulator; existing devices are not reused"
+	@echo "                      integration emulator uses host GPU rendering without a host window or Vulkan"
 
 list-presets:
 	@echo "Available PRESET values:"
@@ -107,10 +112,11 @@ local-properties:
 	@printf "sdk.dir=%s\n" "$(ANDROID_SDK_ROOT)" > local.properties
 
 avd:
-	@if [ -d "$(HOME)/.android/avd/$(AVD_NAME).avd" ]; then \
+	@AVD_HOME="$${ANDROID_AVD_HOME:-$${ANDROID_USER_HOME:-$(HOME)/.android}/avd}"; \
+	if [ -d "$$AVD_HOME/$(AVD_NAME).avd" ]; then \
 		echo "AVD $(AVD_NAME) already exists."; \
 	else \
-		mkdir -p "$(HOME)/.android/avd"; \
+		mkdir -p "$$AVD_HOME"; \
 		echo "no" | $(AVDMANAGER) create avd -n "$(AVD_NAME)" -k "$(SYSTEM_IMAGE)" -d "$(DEVICE_PROFILE)"; \
 	fi
 	@AVD_NAME=$(AVD_NAME) AVD_RAM_MB="$${AVD_RAM_MB:-}" ./scripts/configure-avd.sh
@@ -131,11 +137,10 @@ emulator:
 	ADB=$(ADB) ADB_SERIAL="emulator-$${EMU_PORT}" ./scripts/ensure-emu-keyboard.sh & \
 	$(EMULATOR) -avd $(AVD_NAME) -port "$${EMU_PORT}" $(EMULATOR_FLAGS)
 
+build: GRADLE_HEAP := 1536m
 build: local-properties
 	@VERSION="$$($(VERSION_CMD))"; \
-	sed -i.bak -E "s/^([[:space:]]*versionName[[:space:]]*=[[:space:]]*\").*(\".*)/\\1$${VERSION}\\2/" app/build.gradle.kts; \
-	rm -f app/build.gradle.kts.bak; \
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleDebug
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) :app:assembleDebug -Plingon.versionName="$$VERSION"
 	@APK_PATH="$(CURDIR)/app/build/outputs/apk/debug/app-debug.apk"; \
 	if [ -f "$$APK_PATH" ]; then \
 		echo "APK built: $$APK_PATH"; \
@@ -144,12 +149,13 @@ build: local-properties
 		exit 1; \
 	fi
 
+release: GRADLE_HEAP := 1536m
 release: local-properties
-	@VERSION="$$($(VERSION_CMD))"; \
-	sed -i.bak -E "s/^([[:space:]]*versionName[[:space:]]*=[[:space:]]*\").*(\".*)/\\1$${VERSION}\\2/" app/build.gradle.kts; \
-	rm -f app/build.gradle.kts.bak
 	@./scripts/generate-release-keystore.sh
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:assembleRelease
+	@set -e; \
+	IDENTITY="$$($(RELEASE_IDENTITY_CMD))"; \
+	VERSION="$${IDENTITY% *}"; VERSION_CODE="$${IDENTITY##* }"; \
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) :app:assembleRelease -Plingon.versionName="$$VERSION" -Plingon.versionCode="$$VERSION_CODE"
 	@APK_PATH="$(CURDIR)/app/build/outputs/apk/release/app-release.apk"; \
 	if [ -f "$$APK_PATH" ]; then \
 		echo "APK built: $$APK_PATH"; \
@@ -164,10 +170,14 @@ release: local-properties
 	fi; \
 	APKSIGNER_BIN="$$APK_SIGNER" EXPECTED_CERT_PATH="$(CURDIR)/lingon-release-cert.pem" ./scripts/verify-release-cert.sh "$$APK_PATH"
 
+install: GRADLE_HEAP := 1536m
 install: local-properties
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew :app:installDebug
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) :app:installDebug
 
-adb-install:
+ifeq ($(strip $(APK)),)
+install-release: release
+endif
+install-release:
 	@set -e; \
 	ADB_BIN="$(ADB)"; \
 	if [ ! -x "$$ADB_BIN" ]; then \
@@ -201,7 +211,7 @@ adb-install:
 		DEVICE_COUNT="$$(printf '%s\n' "$$DEVICES" | sed '/^$$/d' | wc -l | tr -d ' ')"; \
 		if [ "$$DEVICE_COUNT" -gt 1 ]; then \
 			echo "Error: multiple devices detected. Set ADB_SERIAL=<device-serial>." >&2; \
-			echo "Example: make adb-install ADB_SERIAL=$$(printf '%s\n' "$$DEVICES" | head -n 1)" >&2; \
+			echo "Example: make install-release ADB_SERIAL=$$(printf '%s\n' "$$DEVICES" | head -n 1)" >&2; \
 			exit 1; \
 		fi; \
 		TARGET_SERIAL="$$(printf '%s\n' "$$DEVICES" | head -n 1)"; \
@@ -244,7 +254,7 @@ run: install
 ui-test: local-properties
 	@set -e; \
 	trap './scripts/cleanup-managed-devices.sh' EXIT; \
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew $(UI_TEST_FLAGS) :app:phoneApi35DebugAndroidTest
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) $(UI_TEST_FLAGS) :app:phoneApi35DebugAndroidTest
 
 clean: local-properties
-	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) ./gradlew clean
+	ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ANDROID_HOME=$(ANDROID_HOME) $(GRADLE) clean

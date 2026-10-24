@@ -12,6 +12,8 @@ import (
 	"pkt.systems/lingon/internal/authstore"
 )
 
+var errEndpointAmbiguous = errors.New("endpoint is ambiguous")
+
 func resolveEndpointValue(cmd *cobra.Command, loader *lingon.Loader, configuredEndpoint, flagEndpoint, authPath string) (string, error) {
 	endpointValue := resolveConfiguredEndpointValue(cmd, loader, configuredEndpoint, flagEndpoint)
 	if cmd != nil && cmd.Flags().Changed("endpoint") {
@@ -69,7 +71,7 @@ func inferEndpointFromAuth(authPath string) (string, error) {
 	case 1:
 		return endpoints[0], nil
 	default:
-		return "", fmt.Errorf("endpoint is ambiguous; pass --endpoint or set client.endpoint (stored endpoints: %s)", strings.Join(endpoints, ", "))
+		return "", fmt.Errorf("%w; pass --endpoint or set client.endpoint (stored endpoints: %s)", errEndpointAmbiguous, strings.Join(endpoints, ", "))
 	}
 }
 

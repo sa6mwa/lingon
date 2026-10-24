@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="systems.pkt.lingon">
 
-    <application>
+    <application android:usesCleartextTraffic="true">
         <receiver
             android:name="systems.pkt.lingon.debug.DebugEndpointReceiver"
             android:exported="true">

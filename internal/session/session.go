@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/term"
 
+	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
@@ -30,6 +31,7 @@ import (
 	"pkt.systems/lingon/internal/publisher"
 	"pkt.systems/lingon/internal/relayclient"
 	"pkt.systems/lingon/internal/render"
+	"pkt.systems/lingon/internal/sessionmanage"
 	"pkt.systems/lingon/internal/sessionorder"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/theme"
@@ -39,29 +41,40 @@ import (
 
 // Options configures a local interactive session.
 type Options struct {
-	Endpoint         string
-	Token            string
-	AuthFile         string
-	SessionID        string
-	SessionName      string
-	Cols             int
-	Rows             int
-	Shell            string
-	Term             string
-	Respawn          bool
-	Offline          bool
-	Theme            string
-	Publish          bool
-	PublishControl   bool
-	HostnameOnly     bool
-	ScrollbackLines  int
-	MaxReplayScreens int
-	TLSDir           string
-	Insecure         bool
-	Stdin            *os.File
-	Stdout           *os.File
-	DisableRaw       bool
-	Logger           pslog.Logger
+	// ConfigFile preserves host configuration defaults when starting detached terminals.
+	ConfigFile string
+	// HeadlessExecutable overrides the Lingon executable for embedded hosts.
+	HeadlessExecutable string
+	ConfigDir          string
+	// OnRename persists a display name before it is announced to clients.
+	OnRename              func(sessionID, name string) error
+	Endpoint              string
+	Token                 string
+	AuthFile              string
+	SessionID             string
+	SessionName           string
+	Cols                  int
+	Rows                  int
+	Shell                 string
+	Term                  string
+	Respawn               bool
+	Offline               bool
+	Theme                 string
+	Publish               bool
+	PublishControl        bool
+	DisableRemoteSessions bool
+	HostnameOnly          bool
+	ScrollbackLines       int
+	MaxReplayScreens      int
+	// ReconnectJitter overrides the publisher reconnect jitter sampler.
+	// A nil value uses crypto-secure randomness.
+	ReconnectJitter backoff.Jitter
+	TLSDir          string
+	Insecure        bool
+	Stdin           *os.File
+	Stdout          *os.File
+	DisableRaw      bool
+	Logger          pslog.Logger
 	// Clock controls time-based behavior (reconnects, overlays).
 	Clock           clock.Clock
 	OnPTYRead       func([]byte)
@@ -69,6 +82,10 @@ type Options struct {
 	OnPublishStatus func(PublishStatus)
 	OnPublishWall   func(*protocolpb.Wall)
 	OnStatus        func(StatusUpdate)
+	// OnInitialSessionReady reports whether the first local PTY launched.
+	// It is called once before Run enters its steady state, or with the startup
+	// error that prevents it from doing so.
+	OnInitialSessionReady func(error)
 	// DisableDesktopNotifications suppresses best-effort desktop notifications for inactivity walls.
 	DisableDesktopNotifications bool
 	DesktopNotifier             desktopnotify.Notifier
@@ -138,7 +155,12 @@ type WallInactivityToggleResult struct {
 
 // Runner executes a local interactive session with optional relay publishing.
 type Runner struct {
+	credentialMu sync.RWMutex
+	currentToken string
+
+	management  *sessionmanage.Manager
 	opts        Options
+	geometryMu  sync.RWMutex
 	logger      pslog.Logger
 	runCtx      context.Context
 	stdoutMu    sync.Mutex
@@ -189,6 +211,9 @@ type Runner struct {
 	outerOscGraceUntil time.Time
 	outerOscParser     oscStreamParser
 
+	desktopNotifierOnce sync.Once
+	desktopNotifier     desktopnotify.Notifier
+
 	scrollbackMu      sync.Mutex
 	scrollbackView    mvu.ScrollbackViewport
 	scrollbackSession string
@@ -218,10 +243,12 @@ func New(opts Options) *Runner {
 		Theme:    theme.TUI(resolveThemeName(opts.Theme)),
 	}})
 	return &Runner{
-		opts:       opts,
-		clock:      opts.Clock,
-		trace:      opts.Trace,
-		compositor: compositor,
+		opts:         opts,
+		currentToken: opts.Token,
+		management:   sessionmanage.New(),
+		clock:        opts.Clock,
+		trace:        opts.Trace,
+		compositor:   compositor,
 	}
 }
 
@@ -293,15 +320,22 @@ func (r *Runner) initializeSessionIdentity() {
 }
 
 // Run starts the local terminal session and blocks until exit.
-func (r *Runner) Run(ctx context.Context) error {
+func (r *Runner) Run(ctx context.Context) (retErr error) {
+	startupReported := false
+	reportInitialSessionReady := func(err error) {
+		if startupReported || r.opts.OnInitialSessionReady == nil {
+			return
+		}
+		startupReported = true
+		r.opts.OnInitialSessionReady(err)
+	}
+	defer func() {
+		reportInitialSessionReady(retErr)
+	}()
 	if r.opts.Logger == nil {
 		r.opts.Logger = logging.Default()
 	}
 	r.logger = r.opts.Logger
-	if r.opts.Clock == nil {
-		r.opts.Clock = clock.New()
-	}
-	r.clock = r.opts.Clock
 	r.initializeSessionIdentity()
 	ui := r.runtime()
 	ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{Clock: r.clock, Endpoint: r.opts.Endpoint}})
@@ -309,18 +343,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer r.effects.StopAll()
 	defer r.stopLocalWallNotifications()
 	r.applyTheme(resolveThemeName(r.opts.Theme))
-	if r.opts.Cols <= 0 || r.opts.Rows <= 0 {
-		cols, rows := termSizeAny(r.stdout(), r.stdin())
-		if cols > 0 && rows > 0 {
-			r.opts.Cols, r.opts.Rows = cols, rows
-		}
-	}
-	if r.opts.Cols <= 0 {
-		r.opts.Cols = config.DefaultTerminalCols
-	}
-	if r.opts.Rows <= 0 {
-		r.opts.Rows = config.DefaultTerminalRows
-	}
+	r.initializeTerminalGeometry()
 	if r.opts.MaxReplayScreens <= 0 {
 		r.opts.MaxReplayScreens = 10
 	}
@@ -335,10 +358,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	var tokenRefresher func(context.Context) (string, error)
 	if r.opts.Publish && r.opts.AuthFile != "" && r.opts.Endpoint != "" {
 		tokenRefresher = relayclient.TokenRefresher(r.opts.Endpoint, r.opts.AuthFile, r.opts.TLSDir, r.opts.Insecure, func(token string) {
-			r.opts.Token = token
+			r.setAccessToken(token)
 		})
 	}
-	if r.opts.Publish && r.opts.Token == "" && tokenRefresher == nil {
+	if r.opts.Publish && r.accessToken() == "" && tokenRefresher == nil {
 		return fmt.Errorf("access token is required when publishing")
 	}
 	r.tokenRefresher = tokenRefresher
@@ -369,7 +392,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}()
 	}
 
-	if isTerminalWriter(stdout) && term.IsTerminal(int(stdin.Fd())) {
+	if isTerminalWriter(stdout) && terminal.IsTerminal(stdin) {
 		defaults, prefill := probeOuterColors(ctx, stdout, stdin, r.clock, r.trace)
 		r.outerDefaultFg = defaults.fg
 		r.outerDefaultBg = defaults.bg
@@ -399,16 +422,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		gate = netgate.New(r.clock)
 	}
 
+	r.localMu.Lock()
 	r.localSessions = make(map[string]*localSession)
 	r.localClosed = make(map[string]bool)
-	if err := r.startInitialLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput); err != nil {
-		return err
-	}
-
-	if r.opts.Publish {
+	r.localMu.Unlock()
+	// Initialize the manager before local publishers can invoke OnSessions.
+	if r.opts.Publish && !r.opts.DisableRemoteSessions {
 		r.remoteSessions = newRemoteManager(remoteOptions{
 			Endpoint:                    r.opts.Endpoint,
-			Token:                       r.opts.Token,
+			Token:                       r.accessToken(),
 			TokenRefresher:              tokenRefresher,
 			HostnameOnly:                r.opts.HostnameOnly,
 			TLSDir:                      r.opts.TLSDir,
@@ -466,6 +488,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.remoteSessions.Render(activeID)
 			},
 		})
+	}
+	if err := r.startInitialLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput); err != nil {
+		return err
+	}
+	reportInitialSessionReady(nil)
+
+	if r.remoteSessions != nil {
 		r.remoteSessions.Start(sigCtx)
 		r.handleSessionListUpdate(r.remoteSessions.Sessions(), stdout, stdin)
 	}
@@ -476,6 +505,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer wg.Done()
 		buf := make([]byte, 4096)
 		var prefix control.Prefix
+		var rename control.RenamePrompt
 		pending := make([]byte, 0, 4096)
 		var scrollState scrollInputState
 		for {
@@ -580,6 +610,33 @@ func (r *Runner) Run(ctx context.Context) error {
 				return true
 			}
 			processNormalByte := func(b byte) bool {
+				if rename.DiscardEscapeTail(b) {
+					return true
+				}
+				if rename.Active {
+					name, done := rename.Feed(b)
+					if !done {
+						r.showStatus(rename.Label(), stdout, 24*time.Hour)
+						return true
+					}
+					r.runtime().ApplyAction(mvu.StatusAction{Input: mvu.StatusInput{Kind: mvu.StatusClear}})
+					r.forceRedraw(stdout)
+					if name != "" {
+						req := sessionmanage.Request{RequestID: managementRequestID(), SessionID: rename.SessionID, Kind: "rename", Name: name}
+						go func() {
+							result := sessionmanage.Result{}
+							if r.localSession(req.SessionID) != nil {
+								result = r.Manage(sigCtx, req)
+							} else if r.remoteSessions != nil {
+								result = r.remoteSessions.Manage(sigCtx, req)
+							}
+							if result.Error != "" {
+								r.showErrorStatus(result.Error, stdout, 5*time.Second)
+							}
+						}()
+					}
+					return true
+				}
 				helpVisible := r.runtime().Read().HelpVisible
 				if uiAction, ok := mvu.ActionForHelpDismissKey(helpVisible, b); ok {
 					r.runtime().ApplyAction(uiAction)
@@ -654,6 +711,9 @@ func (r *Runner) Run(ctx context.Context) error {
 								r.logger.Debug("session.remote.command.failed", "session", activeID, "kind", protocolpb.CommandKind_COMMAND_KIND_SEND_EOF.String(), "err", err)
 							}
 						}
+					case control.ActionRename:
+						rename.Begin(activeID, r.clock)
+						r.showStatus(rename.Label(), stdout, 24*time.Hour)
 					case control.ActionNewPTY:
 						r.createLocalSession(sigCtx, tokenRefresher, gate, stdout, stdin, debugRemoteInput)
 					case control.ActionScrollback:
@@ -847,7 +907,7 @@ func (r *Runner) makeRaw(file *os.File) error {
 	if file == nil {
 		return fmt.Errorf("stdin is nil")
 	}
-	state, err := term.MakeRaw(int(file.Fd()))
+	state, err := terminal.MakeRaw(file)
 	if err != nil {
 		return fmt.Errorf("stdin is not a terminal")
 	}
@@ -858,7 +918,9 @@ func (r *Runner) makeRaw(file *os.File) error {
 func (r *Runner) restoreTerminal(file *os.File) {
 	state := loadTerminalState()
 	if state != nil {
-		_ = term.Restore(int(file.Fd()), state)
+		_ = terminal.WithFileDescriptor(file, func(fd uintptr) {
+			_ = term.Restore(int(fd), state)
+		})
 	}
 }
 
@@ -897,7 +959,7 @@ func (r *Runner) forceRedrawWithMode(stdout *os.File, forceFull bool) {
 	if snap == nil {
 		cols, rows := termSizeAny(stdout, r.stdin())
 		if cols <= 0 || rows <= 0 {
-			cols, rows = r.opts.Cols, r.opts.Rows
+			cols, rows = r.terminalGeometry()
 		}
 		snap = mvu.BlankSnapshot(cols, rows)
 	}
@@ -1187,7 +1249,7 @@ func (r *Runner) renderSnapshotWithOverlays(ctx context.Context, stdout, stdin *
 	suppressTabs := r.tabSuppressed(activeID)
 	cols, rows := termSizeAny(stdout, stdin)
 	if cols <= 0 || rows <= 0 {
-		cols, rows = r.opts.Cols, r.opts.Rows
+		cols, rows = r.terminalGeometry()
 	}
 	return r.renderHostMVU(ctx, stdout, snap, cols, rows, false, suppressTabs)
 }
@@ -1197,10 +1259,10 @@ func (r *Runner) renderHostMVU(ctx context.Context, stdout *os.File, snap *proto
 		return nil
 	}
 	ui := r.runtime()
-	now := r.clock.Now()
 	cursor := mvu.CursorFromSnapshot(snap, cols, rows)
 	r.stdoutMu.Lock()
 	defer r.stdoutMu.Unlock()
+	now := r.clock.Now()
 	frame, err := ui.RenderHostFrame(mvu.RuntimeHostFrameInput{
 		Snapshot:     snap,
 		Cols:         cols,
@@ -1251,9 +1313,9 @@ func (r *Runner) renderHostMVU(ctx context.Context, stdout *os.File, snap *proto
 	}
 	runCtx := r.runCtx
 	if runCtx != nil {
-		r.scheduleRedrawEffect(runCtx, mvu.EffectKeyTabAutoHide, stdout, frame.TabDelay, false)
+		r.scheduleRedrawEffect(runCtx, mvu.EffectKeyTabAutoHide, stdout, now, frame.TabDelay, false)
 		stateFull := rendered.Resolved.DisconnectVisible
-		r.scheduleRedrawEffect(runCtx, mvu.EffectKeyStateExpiry, stdout, frame.StateDelay, stateFull)
+		r.scheduleRedrawEffect(runCtx, mvu.EffectKeyStateExpiry, stdout, now, frame.StateDelay, stateFull)
 	}
 	return nil
 }
@@ -1289,6 +1351,8 @@ func (r *Runner) clearOverlays(stdout *os.File, stdin *os.File) {
 		cols, rows = int(snap.Cols), int(snap.Rows)
 	}
 	cursor := mvu.CursorFromSnapshot(snap, cols, rows)
+	r.stdoutMu.Lock()
+	defer r.stdoutMu.Unlock()
 	frame, err := ui.RenderHostFrame(mvu.RuntimeHostFrameInput{
 		Snapshot:  snap,
 		Cols:      cols,
@@ -1302,18 +1366,21 @@ func (r *Runner) clearOverlays(stdout *os.File, stdin *os.File) {
 		return
 	}
 	rendered := frame.Rendered
-	r.stdoutMu.Lock()
-	defer r.stdoutMu.Unlock()
 	_ = writeAll(context.Background(), stdout, rendered.Bytes, r.clock)
 }
 
-func (r *Runner) scheduleRedrawEffect(ctx context.Context, key string, stdout *os.File, d time.Duration, forceFull bool) {
+func (r *Runner) scheduleRedrawEffect(ctx context.Context, key string, stdout *os.File, sampledAt time.Time, d time.Duration, forceFull bool) {
+	var deadline time.Time
+	if d > 0 {
+		deadline = sampledAt.Add(d)
+	}
 	mvu.ScheduleActionEffect(mvu.ActionEffectPlan{
 		Scheduler: r.effects,
 		Ctx:       ctx,
 		Key:       key,
 		Result: mvu.ActionResult{
 			Delay:     d,
+			Deadline:  deadline,
 			ForceFull: forceFull,
 		},
 		Callback: func(full bool) {
@@ -1344,7 +1411,14 @@ func termSize(file *os.File) (int, int) {
 	if file == nil {
 		return 0, 0
 	}
-	cols, rows, err := term.GetSize(int(file.Fd()))
+	var cols, rows int
+	err := terminal.WithFileDescriptor(file, func(fd uintptr) {
+		var sizeErr error
+		cols, rows, sizeErr = term.GetSize(int(fd))
+		if sizeErr != nil {
+			cols, rows = 0, 0
+		}
+	})
 	if err != nil {
 		return 0, 0
 	}
@@ -1355,7 +1429,12 @@ func setNonblock(file *os.File, on bool) error {
 	if file == nil {
 		return nil
 	}
-	return syscall.SetNonblock(int(file.Fd()), on)
+	var setErr error
+	err := terminal.WithFileDescriptor(file, func(fd uintptr) { setErr = syscall.SetNonblock(int(fd), on) })
+	if err != nil {
+		return err
+	}
+	return setErr
 }
 
 func waitProcess(cmd *exec.Cmd) <-chan struct{} {
@@ -1466,7 +1545,8 @@ func (r *Runner) updateTabs(sessions []remoteSessionInfo) {
 			// Keep the active remote tab selected while it is transiently missing.
 		} else if localID := r.firstLocalID(); localID != "" {
 			activeID = localID
-			r.setActiveSession(activeID, true)
+			// Select a display fallback without bypassing the activation path,
+			// which owns output handoff and render-baseline invalidation.
 		}
 	}
 	var disabled map[string]bool
@@ -1768,6 +1848,9 @@ func (r *Runner) startInitialLocalSession(ctx context.Context, tokenRefresher fu
 	if err != nil {
 		return err
 	}
+	if err := session.waitForStartup(ctx); err != nil {
+		return err
+	}
 	r.setActiveSession(session.ID(), true)
 	r.updateTabs(nil)
 	r.forceRedraw(stdout)
@@ -1819,13 +1902,14 @@ func parseSessionSequenceSuffix(name string) int {
 }
 
 func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, offline bool, tokenRefresher func(context.Context) (string, error), gate *netgate.Gate, stdout, stdin *os.File, debugRemoteInput bool) (*localSession, error) {
+	cols, rows := r.terminalGeometry()
 	session := newLocalSession(ctx, localSessionOptions{
 		ID:                id,
 		Name:              name,
 		Shell:             r.opts.Shell,
 		Term:              r.opts.Term,
-		Cols:              r.opts.Cols,
-		Rows:              r.opts.Rows,
+		Cols:              cols,
+		Rows:              rows,
 		ScrollbackLines:   r.opts.ScrollbackLines,
 		Respawn:           respawn,
 		Offline:           offline,
@@ -1858,16 +1942,17 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 	if r.opts.Publish {
 		pub := publisher.New(publisher.Options{
 			Endpoint:         r.opts.Endpoint,
-			Token:            r.opts.Token,
+			Token:            r.accessToken(),
 			TokenRefresher:   tokenRefresher,
 			Clock:            r.clock,
 			SessionID:        session.ID(),
 			SessionName:      session.Name(),
 			Headless:         r.opts.AllowRemoteResize,
-			Cols:             r.opts.Cols,
-			Rows:             r.opts.Rows,
+			Cols:             cols,
+			Rows:             rows,
 			PublishControl:   r.opts.PublishControl,
 			MaxReplayScreens: r.opts.MaxReplayScreens,
+			ReconnectJitter:  r.opts.ReconnectJitter,
 			TLSDir:           r.opts.TLSDir,
 			Insecure:         r.opts.Insecure,
 			Logger:           r.logger,
@@ -1952,6 +2037,10 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 		pub.OnInput = func(data []byte) {
 			r.handleRemoteInput(session, data, debugRemoteInput)
 		}
+		pub.OnManagement = func(ctx context.Context, request *protocolpb.SessionManagement) *protocolpb.SessionManagement {
+			result := r.Manage(ctx, sessionmanage.Request{RequestID: request.RequestId, SessionID: session.ID(), Kind: request.Kind, Name: request.Name})
+			return &protocolpb.SessionManagement{ResultSessionId: result.SessionID, Name: result.Name, Error: result.Error}
+		}
 		pub.OnCommand = func(kind protocolpb.CommandKind) {
 			r.HandleSessionCommand(session.ctx, session.ID(), kind)
 		}
@@ -2026,7 +2115,7 @@ func (r *Runner) handleLocalOutput(stdout, stdin *os.File) func(id string, data 
 		suppressTabs := r.tabSuppressed(activeID)
 		cols, rows := termSizeAny(stdout, stdin)
 		if cols <= 0 || rows <= 0 {
-			cols, rows = r.opts.Cols, r.opts.Rows
+			cols, rows = r.terminalGeometry()
 		}
 		if err := r.renderHostMVU(context.Background(), stdout, snap, cols, rows, forceFull, suppressTabs); err != nil {
 			r.logger.Debug("session.render.failed", "err", err, "session", id)
@@ -2713,15 +2802,12 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 		label = sessionID
 	}
 	if !r.opts.DisableDesktopNotifications {
-		if r.opts.DesktopNotifier == nil {
-			r.opts.DesktopNotifier = desktopnotify.New()
-		}
-		if r.opts.DesktopNotifier != nil {
+		if notifier := r.localDesktopNotifier(); notifier != nil {
 			notifyCtx := r.runCtx
 			if notifyCtx == nil {
 				notifyCtx = context.Background()
 			}
-			_ = r.opts.DesktopNotifier.Notify(notifyCtx, desktopnotify.Request{
+			_ = notifier.Notify(notifyCtx, desktopnotify.Request{
 				Title: label,
 				Body:  "inactive",
 			})
@@ -2745,6 +2831,16 @@ func (r *Runner) fireLocalWallNotification(sessionID string) {
 		Kind:            protocolpb.WallKind_WALL_KIND_INACTIVITY,
 		SourceSessionId: sessionID,
 	}, r.stdout())
+}
+
+func (r *Runner) localDesktopNotifier() desktopnotify.Notifier {
+	r.desktopNotifierOnce.Do(func() {
+		r.desktopNotifier = r.opts.DesktopNotifier
+		if r.desktopNotifier == nil {
+			r.desktopNotifier = desktopnotify.New()
+		}
+	})
+	return r.desktopNotifier
 }
 
 func (r *Runner) suppressFocusedLocalInactivityWall(wall *protocolpb.Wall) bool {
@@ -2870,7 +2966,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		r.publishWallInactivityStatus(sessionID, "wall inactivity requires relay endpoint")
 		return
 	}
-	token := strings.TrimSpace(r.opts.Token)
+	token := strings.TrimSpace(r.accessToken())
 	if token == "" && tokenRefresher != nil {
 		refreshed, err := tokenRefresher(ctx)
 		if err != nil {
@@ -2883,7 +2979,7 @@ func (r *Runner) toggleWallInactivity(ctx context.Context, sessionID string, tok
 		}
 		token = strings.TrimSpace(refreshed)
 		if token != "" {
-			r.opts.Token = token
+			r.setAccessToken(token)
 		}
 	}
 	if token == "" {
@@ -3071,7 +3167,9 @@ func (r *Runner) activateLocalSession(sessionID string, stdout, stdin *os.File) 
 	if !activeLocal {
 		// Switching from remote to local has no compatible local render baseline.
 		// Local-to-local switches keep the previous snapshot for delta rendering.
+		r.stdoutMu.Lock()
 		r.renderCache.SetPrevSnapshot(nil)
+		r.stdoutMu.Unlock()
 	}
 	if r.remoteSessions != nil {
 		r.updateTabs(r.remoteSessions.Sessions())
@@ -3097,7 +3195,9 @@ func (r *Runner) activateRemote(ctx context.Context, sessionID string, stdout, s
 		r.remoteSessions.Hide(activeID)
 	}
 	if activeLocal {
+		r.stdoutMu.Lock()
 		r.renderCache.SetPrevSnapshot(nil)
+		r.stdoutMu.Unlock()
 	}
 	if r.remoteSessions.IsDisabled(sessionID) {
 		r.setActiveSession(sessionID, false)
@@ -3132,7 +3232,8 @@ func (r *Runner) takeControlLocal(local *localSession) {
 		r.logger.Trace("session.local.take_control", "session", local.ID())
 	}
 	local.takeControl()
-	r.resizeLocalSession(local, r.opts.Cols, r.opts.Rows)
+	cols, rows := r.terminalGeometry()
+	r.resizeLocalSession(local, cols, rows)
 }
 
 func (r *Runner) resizeLocalSession(local *localSession, cols, rows int) {
@@ -3158,14 +3259,6 @@ func termSizeAny(files ...*os.File) (int, int) {
 		}
 		cols, rows := termSize(file)
 		if cols > 0 && rows > 0 {
-			return cols, rows
-		}
-	}
-	if tty, err := os.Open("/dev/tty"); err == nil {
-		defer func() {
-			_ = tty.Close()
-		}()
-		if cols, rows := termSize(tty); cols > 0 && rows > 0 {
 			return cols, rows
 		}
 	}
@@ -3199,7 +3292,7 @@ func isTerminalWriter(w io.Writer) bool {
 	if !ok {
 		return false
 	}
-	return term.IsTerminal(int(outFile.Fd()))
+	return terminal.IsTerminal(outFile)
 }
 
 var terminalStateMu sync.Mutex

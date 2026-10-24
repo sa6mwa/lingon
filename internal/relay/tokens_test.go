@@ -1,8 +1,11 @@
 package relay
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	"pkt.systems/lingon/internal/clock"
 )
 
 func TestShareTokenLifecycle(t *testing.T) {
@@ -62,6 +65,61 @@ func TestAccessTokenLifecycle(t *testing.T) {
 	}
 	if _, err := store.ValidateAccessToken(access.Token, now.Add(2*time.Minute)); err == nil {
 		t.Fatalf("expected expiry error")
+	}
+}
+
+func TestMarkTokenClientTypeSkipsUnchangedMetadata(t *testing.T) {
+	store := NewStore()
+	access, err := store.CreateAccessToken("user", time.Hour, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.MarkTokenClientType(access.Token, "host") {
+		t.Fatal("first host classification should change token metadata")
+	}
+	if store.MarkTokenClientType(access.Token, "host") {
+		t.Fatal("reconnect should not rewrite unchanged token metadata")
+	}
+	if store.MarkTokenClientType(access.Token, "client") {
+		t.Fatal("client use must not downgrade a host token")
+	}
+}
+
+func TestStoreSavePrunesExpiredAccessTokens(t *testing.T) {
+	mock := clock.NewMock()
+	store := NewStore()
+	refresh, err := store.CreateRefreshToken("user", time.Hour, mock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := store.CreateAccessTokenForRefresh("user", refresh.Token, "host", time.Minute, mock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.Add(2 * time.Minute)
+	current, err := store.CreateAccessTokenForRefresh("user", refresh.Token, "host", time.Minute, mock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := store.saveAt(dir, mock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ValidateAccessToken(expired.Token, mock.Now()); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("expired access token remained in memory: %v", err)
+	}
+	loaded, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loaded.ValidateAccessToken(expired.Token, mock.Now()); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("expired access token validation = %v, want not found", err)
+	}
+	if _, err := loaded.ValidateAccessToken(current.Token, mock.Now()); err != nil {
+		t.Fatalf("current access token was lost: %v", err)
+	}
+	if _, err := loaded.ValidateRefreshToken(refresh.Token, mock.Now()); err != nil {
+		t.Fatalf("refresh token was lost: %v", err)
 	}
 }
 

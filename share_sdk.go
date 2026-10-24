@@ -172,6 +172,9 @@ func ShareCreate(ctx context.Context, opts ShareCreateOptions) (ShareCreateRespo
 	if scope != ShareScopeView && scope != ShareScopeControl {
 		return ShareCreateResponse{}, fmt.Errorf("invalid share scope")
 	}
+	if opts.TTL < 0 {
+		return ShareCreateResponse{}, fmt.Errorf("ttl must be non-negative")
+	}
 
 	httpURL, err := normalizeHTTPURL(opts.Endpoint)
 	if err != nil {

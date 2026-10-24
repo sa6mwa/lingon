@@ -181,29 +181,30 @@ func TestWallServiceInactivityFiresAfterEachActivityWhileEnabled(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
-			if len(host.sent) >= want && len(peer.sent) >= want {
+			if host.sentLen() >= want && peer.sentLen() >= want {
 				return
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		t.Fatalf("timed out waiting for %d frames, got host=%d peer=%d", want, len(host.sent), len(peer.sent))
+		t.Fatalf("timed out waiting for %d frames, got host=%d peer=%d", want, host.sentLen(), peer.sentLen())
 	}
 
 	waitFor(1)
-	first := len(host.sent)
-	firstPeer := len(peer.sent)
+	first := host.sentLen()
+	firstPeer := peer.sentLen()
 	if firstPeer != first {
 		t.Fatalf("peer frames = %d, want %d", firstPeer, first)
 	}
-	if got := peer.sent[0].GetWall(); got == nil || got.Message != "session-a inactive" {
-		t.Fatalf("unexpected peer wall frame: %#v", peer.sent[0].GetWall())
+	peerFrame := peer.sentFrame(0)
+	if got := peerFrame.GetWall(); got == nil || got.Message != "session-a inactive" {
+		t.Fatalf("unexpected peer wall frame: %#v", peerFrame.GetWall())
 	}
-	if got := peer.sent[0].GetWall(); got == nil || got.GetKind() != protocolpb.WallKind_WALL_KIND_INACTIVITY {
-		t.Fatalf("expected inactivity wall kind, got %#v", peer.sent[0].GetWall())
+	if got := peerFrame.GetWall(); got == nil || got.GetKind() != protocolpb.WallKind_WALL_KIND_INACTIVITY {
+		t.Fatalf("expected inactivity wall kind, got %#v", peerFrame.GetWall())
 	}
 	time.Sleep(1200 * time.Millisecond)
-	if len(host.sent) != first || len(peer.sent) != firstPeer {
-		t.Fatalf("expected one inactivity wall while enabled, got host=%d peer=%d", len(host.sent), len(peer.sent))
+	if host.sentLen() != first || peer.sentLen() != firstPeer {
+		t.Fatalf("expected one inactivity wall while enabled, got host=%d peer=%d", host.sentLen(), peer.sentLen())
 	}
 
 	svc.markActivity("s1", time.Now().UTC())
@@ -233,18 +234,18 @@ func TestWallServiceInactivityDoesNotRepeatWithoutActivity(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(peer.sent) >= 1 {
+		if peer.sentLen() >= 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(peer.sent) != 1 {
-		t.Fatalf("expected exactly one first inactivity wall, got %d", len(peer.sent))
+	if peer.sentLen() != 1 {
+		t.Fatalf("expected exactly one first inactivity wall, got %d", peer.sentLen())
 	}
 
 	time.Sleep(1500 * time.Millisecond)
-	if len(host.sent) != 1 || len(peer.sent) != 1 {
-		t.Fatalf("expected no repeated inactivity wall without activity, got host=%d peer=%d", len(host.sent), len(peer.sent))
+	if host.sentLen() != 1 || peer.sentLen() != 1 {
+		t.Fatalf("expected no repeated inactivity wall without activity, got host=%d peer=%d", host.sentLen(), peer.sentLen())
 	}
 }
 
@@ -271,28 +272,29 @@ func TestWallServiceManualWallDoesNotRearmInactivity(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(peer.sent) >= 1 {
+		if peer.sentLen() >= 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(peer.sent) != 1 {
-		t.Fatalf("expected exactly one first inactivity wall, got %d", len(peer.sent))
+	if peer.sentLen() != 1 {
+		t.Fatalf("expected exactly one first inactivity wall, got %d", peer.sentLen())
 	}
 
 	if _, err := svc.sendUserWall("alice", "alice@127.0.0.1", "manual hello", time.Now().UTC()); err != nil {
 		t.Fatalf("sendUserWall: %v", err)
 	}
-	if len(host.sent) != 2 || len(peer.sent) != 2 {
-		t.Fatalf("expected only the manual wall after first inactivity, got host=%d peer=%d", len(host.sent), len(peer.sent))
+	if host.sentLen() != 2 || peer.sentLen() != 2 {
+		t.Fatalf("expected only the manual wall after first inactivity, got host=%d peer=%d", host.sentLen(), peer.sentLen())
 	}
-	if got := peer.sent[1].GetWall(); got == nil || got.Message != "manual hello" {
-		t.Fatalf("expected second frame to be manual wall, got %#v", peer.sent[1].GetWall())
+	peerFrame := peer.sentFrame(1)
+	if got := peerFrame.GetWall(); got == nil || got.Message != "manual hello" {
+		t.Fatalf("expected second frame to be manual wall, got %#v", peerFrame.GetWall())
 	}
 
 	time.Sleep(1500 * time.Millisecond)
-	if len(host.sent) != 2 || len(peer.sent) != 2 {
-		t.Fatalf("expected manual wall not to re-arm inactivity, got host=%d peer=%d", len(host.sent), len(peer.sent))
+	if host.sentLen() != 2 || peer.sentLen() != 2 {
+		t.Fatalf("expected manual wall not to re-arm inactivity, got host=%d peer=%d", host.sentLen(), peer.sentLen())
 	}
 }
 

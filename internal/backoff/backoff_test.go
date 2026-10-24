@@ -49,3 +49,26 @@ func TestPolicyNextNeverReturnsNonPositiveDelay(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyWithJitterUsesBoundedSample(t *testing.T) {
+	p := Policy{Jitter: 10 * time.Second}
+	got := p.WithJitter(time.Second, func(max time.Duration) time.Duration {
+		if max != 10*time.Second {
+			t.Fatalf("jitter max = %v, want 10s", max)
+		}
+		return 7 * time.Second
+	})
+	if got != 8*time.Second {
+		t.Fatalf("WithJitter = %v, want 8s", got)
+	}
+}
+
+func TestPolicyWithJitterClampsSample(t *testing.T) {
+	p := Policy{Jitter: time.Second}
+	if got := p.WithJitter(time.Second, func(time.Duration) time.Duration { return 2 * time.Second }); got != 2*time.Second {
+		t.Fatalf("WithJitter high sample = %v, want 2s", got)
+	}
+	if got := p.WithJitter(time.Second, func(time.Duration) time.Duration { return -time.Second }); got != time.Second {
+		t.Fatalf("WithJitter low sample = %v, want 1s", got)
+	}
+}

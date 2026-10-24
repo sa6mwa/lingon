@@ -24,3 +24,21 @@ func TestNormalizeReconnectDelayFallsBackToDefaultBase(t *testing.T) {
 		t.Fatalf("normalizeReconnectDelay(0, 0) = %v, want %v", got, backoff.DefaultPolicy.Base)
 	}
 }
+
+func TestReconnectDelayAddsConfiguredJitter(t *testing.T) {
+	policy := backoff.Policy{
+		Base:   time.Second,
+		Factor: 2,
+		Max:    time.Minute,
+		Jitter: 10 * time.Second,
+	}
+	got := reconnectDelay(policy, 0, nil, func(max time.Duration) time.Duration {
+		if max != 10*time.Second {
+			t.Fatalf("jitter max = %v, want 10s", max)
+		}
+		return 6 * time.Second
+	})
+	if got != 7*time.Second {
+		t.Fatalf("reconnectDelay = %v, want 7s", got)
+	}
+}

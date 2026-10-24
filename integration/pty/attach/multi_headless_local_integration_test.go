@@ -96,6 +96,7 @@ func TestMultiAttachSwitchesAcrossLocalHeadlessSocketsPTY(t *testing.T) {
 
 func TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh(t *testing.T) {
 	cfgDir := shortConfigDir(t)
+	clk := clock.NewMock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sessionEvents, stopWatcher := startHeadlessStateWatcher(t, ctx, cfgDir)
@@ -105,6 +106,7 @@ func TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh(t *test
 		ConfigDir: cfgDir,
 		SessionID: "discover-a",
 		Respawn:   true,
+		Shell:     fixedPromptEmitRowsBash(t),
 	})
 	defer stopA()
 
@@ -114,7 +116,8 @@ func TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh(t *test
 
 	var activeMu sync.Mutex
 	activeID := ""
-	h := newHarness(t, ptytest.WithClock(clock.New()))
+	var activeClient *attach.Client
+	h := newHarness(t, ptytest.WithClock(clk))
 	attachSess := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		Endpoint:           "local://headless",
 		SessionID:          "discover-a",
@@ -125,6 +128,13 @@ func TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh(t *test
 		SessionEvents:  sessionEvents,
 		SessionSource:  localHeadlessSessionSource(cfgDir),
 		SocketResolver: localHeadlessSocketResolver(cfgDir),
+		OnView: func(id string, client *attach.Client) {
+			if id == "discover-a" {
+				activeMu.Lock()
+				activeClient = client
+				activeMu.Unlock()
+			}
+		},
 		OnActive: func(id string) {
 			activeMu.Lock()
 			activeID = id
@@ -136,17 +146,28 @@ func TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh(t *test
 	waitUntilLocal(t, 8*time.Second, func() bool {
 		activeMu.Lock()
 		defer activeMu.Unlock()
-		return activeID == "discover-a"
+		return activeID == "discover-a" && activeClient != nil && activeClient.HasSnapshot()
+	})
+
+	// Keep the active cursor below the intentional row-1 auto-hide boundary,
+	// and observe actual shell output before measuring event-driven discovery.
+	attachSess.Send("printf 'DISCOVERY_%s\\n' READY\r")
+	attachSess.Eventually(8*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains("DISCOVERY_READY") || attachSess.Cursor().Row <= 1 {
+			return fmt.Errorf("active shell output/cursor not ready for discovery: %s", screen.String())
+		}
+		return nil
 	})
 
 	stopB := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
 		SessionID: "discover-b",
 		Respawn:   true,
+		Shell:     fixedPromptEmitRowsBash(t),
 	})
 	defer stopB()
 
-	discoveredAt := time.Now()
+	discoveredAt := clk.Now()
 	attachSess.Eventually(2*time.Second, 80*time.Millisecond, func(screen ptytest.Screen) error {
 		row := screen.Row(0)
 		if !strings.Contains(row, "discover-a") || !strings.Contains(row, "discover-b") {
@@ -154,7 +175,7 @@ func TestMultiAttachHeadlessDiscoversNewSessionQuicklyWithDefaultRefresh(t *test
 		}
 		return nil
 	})
-	if elapsed := time.Since(discoveredAt); elapsed > 2*time.Second {
+	if elapsed := clk.Now().Sub(discoveredAt); elapsed > 2*time.Second {
 		t.Fatalf("new headless tab discovery took too long: %v", elapsed)
 	}
 
@@ -562,13 +583,16 @@ func TestMultiAttachHeadlessOfflineToggleImmediatelyMutesActiveTab(t *testing.T)
 func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	cfgDir := shortConfigDir(t)
 	const sessionID = "offline-immediate-roundtrip-a"
-	h := newHarness(t, ptytest.WithClock(clock.New()))
+	clk := clock.NewMock()
+	h := newHarness(t, ptytest.WithClock(clk))
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
 		SessionID: sessionID,
 		Publish:   true,
 		Endpoint:  h.Endpoint(),
 		Token:     h.AccessToken(),
+		Shell:     fixedPromptEmitRowsBash(t),
+		Clock:     clk,
 	})
 	defer stop()
 
@@ -595,6 +619,15 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 		return nil
 	})
 
+	// Keep the shell cursor below the top-row auto-hide boundary before
+	// asserting tab labels/styles, as in the permanent tab-switch fixtures.
+	attachSess.Send("printf 'ONLINE_%s\\n' READY\r")
+	attachSess.Eventually(8*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains("ONLINE_READY") || attachSess.Cursor().Row <= 1 {
+			return fmt.Errorf("shell output/cursor not ready for visible tab assertions: %s", screen.String())
+		}
+		return nil
+	})
 	h.StopServer()
 	attachSess.Eventually(12*time.Second, 150*time.Millisecond, func(screen ptytest.Screen) error {
 		row := screen.Row(0)
@@ -632,7 +665,7 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	attachSess.Eventually(900*time.Millisecond, 60*time.Millisecond, func(_ ptytest.Screen) error {
 		mode, ok := tabLabelMode(attachSess, sessionID)
 		if !ok {
-			return fmt.Errorf("session label %q not visible after immediate online toggle", sessionID)
+			return fmt.Errorf("session label %q not visible after immediate online toggle, row=%q", sessionID, attachSess.Screen().Row(0))
 		}
 		if mode&terminal.ModeFaint != 0 || mode&terminal.ModeItalic != 0 {
 			return fmt.Errorf("expected immediate non-muted tab style in online mode, mode=%d", mode)

@@ -2,6 +2,9 @@ package lingon
 
 import (
 	"context"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,20 +14,22 @@ import (
 
 func TestHeadlessSessionSource(t *testing.T) {
 	cfgDir := t.TempDir()
+	socketA := listenHeadlessSocket(t, cfgDir, "a")
+	socketB := listenHeadlessSocket(t, cfgDir, "b")
 	store := headless.NewStore(cfgDir)
 	now := time.Now().UTC()
 	err := store.WithLock(func(state *headless.State) error {
 		state.Sessions["a"] = headless.SessionRecord{
 			SessionID:  "a",
-			PID:        1,
-			SocketPath: "/tmp/a.sock",
+			PID:        os.Getpid(),
+			SocketPath: socketA,
 			LastSeenAt: now.Add(-time.Minute),
 			Status:     "running",
 		}
 		state.Sessions["b"] = headless.SessionRecord{
 			SessionID:  "b",
-			PID:        2,
-			SocketPath: "/tmp/b.sock",
+			PID:        os.Getpid(),
+			SocketPath: socketB,
 			LastSeenAt: now,
 			Status:     "running",
 			Offline:    true,
@@ -67,12 +72,13 @@ func TestHeadlessSessionSource(t *testing.T) {
 
 func TestHeadlessSocketResolver(t *testing.T) {
 	cfgDir := t.TempDir()
+	expectedSocketPath := listenHeadlessSocket(t, cfgDir, "abc")
 	store := headless.NewStore(cfgDir)
 	err := store.WithLock(func(state *headless.State) error {
 		state.Sessions["abc"] = headless.SessionRecord{
 			SessionID:  "abc",
-			PID:        1,
-			SocketPath: "/tmp/abc.sock",
+			PID:        os.Getpid(),
+			SocketPath: expectedSocketPath,
 			Status:     "running",
 		}
 		return nil
@@ -85,8 +91,8 @@ func TestHeadlessSocketResolver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve existing socket: %v", err)
 	}
-	if socketPath != "/tmp/abc.sock" {
-		t.Fatalf("resolved socket path = %q, want %q", socketPath, "/tmp/abc.sock")
+	if got, want := socketPath, expectedSocketPath; got != want {
+		t.Fatalf("resolved socket path = %q, want %q", got, want)
 	}
 
 	_, err = headlessSocketResolver(cfgDir)("missing")
@@ -96,4 +102,23 @@ func TestHeadlessSocketResolver(t *testing.T) {
 	if !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected not found error, got %v", err)
 	}
+}
+
+func listenHeadlessSocket(t *testing.T, cfgDir, sessionID string) string {
+	t.Helper()
+	socketPath, err := headless.SocketPath(cfgDir, sessionID)
+	if err != nil {
+		t.Fatalf("SocketPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Listen unix: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ln.Close()
+	})
+	return socketPath
 }

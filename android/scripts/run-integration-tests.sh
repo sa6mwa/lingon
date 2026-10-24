@@ -3,13 +3,32 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ANDROID_DIR="${ROOT_DIR}/android"
+HOST_HOME="${HOME}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${HOST_HOME}/Android/Sdk}"
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+export CA_PEM_PATH="${CA_PEM_PATH:-${HOST_HOME}/.lingon/tls/ca.pem}"
+export GRADLE_USER_HOME="${GRADLE_USER_HOME:-${HOST_HOME}/.gradle}"
+export GOCACHE="${GOCACHE:-${HOST_HOME}/.cache/go-build}"
+export GOPATH="${GOPATH:-${HOST_HOME}/go}"
 
-ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+# Keep the harness's AVD, emulator preferences, and snapshots away from the
+# developer's normal Android profile. All of these paths are ignored build data.
+EMULATOR_PROFILE="${ANDROID_DIR}/build/integration-emulator"
+export HOME="${EMULATOR_PROFILE}"
+export ANDROID_SDK_HOME="${EMULATOR_PROFILE}"
+export ANDROID_USER_HOME="${EMULATOR_PROFILE}/.android"
+export ANDROID_EMULATOR_HOME="${ANDROID_USER_HOME}"
+export ANDROID_AVD_HOME="${ANDROID_USER_HOME}/avd"
+export XDG_CONFIG_HOME="${EMULATOR_PROFILE}/.config"
+export LINGON_IT_ADB_SERVER_PORT="${LINGON_IT_ADB_SERVER_PORT:-$((20000 + RANDOM))}"
+export ANDROID_ADB_SERVER_PORT="${LINGON_IT_ADB_SERVER_PORT}"
+
 ADB_BIN="${ADB:-${ANDROID_SDK_ROOT}/platform-tools/adb}"
 EMULATOR_BIN="${EMULATOR:-${ANDROID_SDK_ROOT}/emulator/emulator}"
-EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-snapshot}"
+EMULATOR_FLAGS="${EMULATOR_FLAGS:--gpu host -no-window -no-snapshot -no-boot-anim -feature -Vulkan -skin 720x1600}"
 PRESET="${PRESET:-medium}"
 AVD_NAME="${AVD_NAME:-}"
+EMULATOR_WORKSPACE="${LINGON_IT_EMULATOR_WORKSPACE:-8}"
 HARNESS_BIN="${ROOT_DIR}/bin/lingon-android-harness"
 ARTIFACT_OUT="${ANDROID_DIR}/test-artifacts"
 HARNESS_LOG="${ARTIFACT_OUT}/harness.log"
@@ -17,6 +36,8 @@ LOCK_PATH="${ARTIFACT_OUT}/integration-test.lock"
 CURRENT_TEST_PID=""
 CURRENT_TEST_PGID=""
 EMULATOR_STARTED="0"
+EMULATOR_PID=""
+ADB_SERVER_OWNED="0"
 HOST_COLS_OVERRIDE="${HOST_COLS:-}"
 HOST_ROWS_OVERRIDE="${HOST_ROWS:-}"
 CONFIG_PATH=""
@@ -28,28 +49,6 @@ REUSE_DEVICE="${LINGON_IT_REUSE_DEVICE:-0}"
 APP_ID="systems.pkt.lingon"
 TEST_APP_ID="${APP_ID}.test"
 CGROUP_MONITOR_PID=""
-
-detect_online_cpu_count() {
-  local cores=""
-  cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
-  if [[ ! "${cores}" =~ ^[0-9]+$ ]] || [[ "${cores}" -le 0 ]]; then
-    cores="$(nproc 2>/dev/null || true)"
-  fi
-  if [[ ! "${cores}" =~ ^[0-9]+$ ]] || [[ "${cores}" -le 0 ]]; then
-    cores="2"
-  fi
-  echo "${cores}"
-}
-
-default_cpu_quota_percent() {
-  local cores="$1"
-  local half_quota=$((cores * 50))
-  if [[ "${half_quota}" -gt 200 ]]; then
-    echo "200"
-  else
-    echo "${half_quota}"
-  fi
-}
 
 summarize_cgroup_profile() {
   local profile_dir="$1"
@@ -111,6 +110,8 @@ summarize_cgroup_profile() {
     fi
     echo "samples_path=${samples}"
     echo "top_processes_path=${profile_dir}/top-processes.txt"
+    echo "memory_stat_path=${profile_dir}/memory.stat"
+    echo "memory_events_path=${profile_dir}/memory.events"
   } > "${summary}"
   echo "Resource profile: ${summary}"
   cat "${summary}"
@@ -118,27 +119,30 @@ summarize_cgroup_profile() {
 
 maybe_wrap_in_cgroup_scope() {
   if [[ "${LINGON_IT_CGROUP:-1}" == "0" ]]; then
-    return 0
-  fi
-  if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" ]]; then
-    return 0
-  fi
-  if ! command -v systemd-run >/dev/null 2>&1; then
-    echo "systemd-run is required for contained Android integration tests; set LINGON_IT_CGROUP=0 to bypass deliberately." >&2
+    echo "Verification containment cannot be disabled." >&2
     exit 1
   fi
-
-  local cores quota_percent memory_max memory_swap_max unit profile_dir
-  cores="$(detect_online_cpu_count)"
-  quota_percent="${LINGON_IT_CPU_QUOTA_PERCENT:-$(default_cpu_quota_percent "${cores}")}"
-  memory_max="${LINGON_IT_MEMORY_MAX:-7G}"
-  memory_swap_max="${LINGON_IT_MEMORY_SWAP_MAX:-0}"
-  unit="lingon-android-it-$$"
+  local quota_percent=400 memory_max=4G memory_swap_max=0 unit profile_dir
+  if [[ "${LINGON_IT_CPU_QUOTA_PERCENT:-400}" != 400 ||
+        "${LINGON_IT_MEMORY_MAX:-4G}" != 4G ||
+        "${LINGON_IT_MEMORY_SWAP_MAX:-0}" != 0 || "${REUSE_DEVICE}" != 0 ]]; then
+    echo "Verification requires 4 CPUs / 4 GiB / zero swap and an owned emulator." >&2
+    exit 1
+  fi
+  if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" ]]; then
+    bash "${ROOT_DIR}/scripts/verify-contained.sh" --check
+    return 0
+  fi
+  if bash "${ROOT_DIR}/scripts/verify-contained.sh" --check >/dev/null 2>&1; then
+    unit="$(basename "$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup)" .scope)"
+  else
+    unit="lingon-android-it-$$"
+  fi
   profile_dir="${ARTIFACT_OUT}/resource-profile-$(date +%Y%m%d-%H%M%S)-$$"
   mkdir -p "${profile_dir}"
 
   echo "Running Android integration tests in systemd scope ${unit}.scope"
-  echo "Limits: CPUQuota=${quota_percent}% (${cores} online CPUs, capped integration default), MemoryMax=${memory_max}, MemorySwapMax=${memory_swap_max}"
+  echo "Limits: CPUQuota=${quota_percent}% (aggregate verification ceiling), MemoryMax=${memory_max}, MemorySwapMax=${memory_swap_max}"
   echo "Resource profile directory: ${profile_dir}"
   export LINGON_IT_CGROUP_UNIT="${unit}.scope"
   export LINGON_IT_CPU_QUOTA_PERCENT_EFFECTIVE="${quota_percent}"
@@ -146,14 +150,7 @@ maybe_wrap_in_cgroup_scope() {
   export LINGON_IT_MEMORY_SWAP_MAX_EFFECTIVE="${memory_swap_max}"
 
   set +e
-  systemd-run --user --scope --quiet --collect \
-    --unit="${unit}" \
-    -p CPUAccounting=yes \
-    -p "CPUQuota=${quota_percent}%" \
-    -p MemoryAccounting=yes \
-    -p "MemoryMax=${memory_max}" \
-    -p "MemorySwapMax=${memory_swap_max}" \
-    -p OOMPolicy=kill \
+  LINGON_VERIFY_UNIT="${unit}" bash "${ROOT_DIR}/scripts/verify-contained.sh" \
     env \
       LINGON_IT_CGROUP_WRAPPED=1 \
       LINGON_IT_CGROUP_UNIT="${LINGON_IT_CGROUP_UNIT}" \
@@ -205,6 +202,10 @@ start_cgroup_monitor() {
       memory_current="$(cat "${cgroup_dir}/memory.current" 2>/dev/null)"
       memory_peak="$(cat "${cgroup_dir}/memory.peak" 2>/dev/null)"
       pids_current="$(cat "${cgroup_dir}/pids.current" 2>/dev/null)"
+      # Preserve the last owned-scope breakdown even if OOMPolicy kills the
+      # monitor with the workload. RSS omits GPU/shared/cache charges.
+      cat "${cgroup_dir}/memory.stat" > "${profile_dir}/memory.stat" 2>/dev/null || true
+      cat "${cgroup_dir}/memory.events" > "${profile_dir}/memory.events" 2>/dev/null || true
       local cpu_some_avg10="0.00"
       if [[ -r "${cgroup_dir}/cpu.pressure" ]]; then
         cpu_some_avg10="$(awk -F'[ =]' '$1 == "some" {for (i=1; i<=NF; i++) if ($i == "avg10") {print $(i+1); exit}}' "${cgroup_dir}/cpu.pressure")"
@@ -267,13 +268,7 @@ collect_test_timing_profile() {
   if [[ -z "${profile_dir}" ]]; then
     return 0
   fi
-  local result_dir="${ANDROID_DIR}/app/build/outputs/androidTest-results/connected/debug"
-  if [[ ! -d "${result_dir}" ]]; then
-    return 0
-  fi
-  mkdir -p "${profile_dir}/android-test-results"
-  find "${result_dir}" -maxdepth 1 -type f -name 'TEST-*.xml' -exec cp {} "${profile_dir}/android-test-results/" \; 2>/dev/null || true
-  run_android_tools test-times --dir "${result_dir}" > "${profile_dir}/test-times.txt" 2>"${profile_dir}/test-times.err" || true
+  run_android_tools test-times --dir "${profile_dir}/android-test-batches" > "${profile_dir}/test-times.txt" 2>"${profile_dir}/test-times.err" || true
 }
 
 resolve_avd_name() {
@@ -288,6 +283,42 @@ resolve_avd_name() {
     pixel9) echo "lingon-pixel9" ;;
     *) echo "lingon-medium" ;;
   esac
+}
+
+start_emulator() {
+  local avd_name="$1"
+  local emu_port="$2"
+  if [[ " ${EMULATOR_FLAGS} " != *" -no-window "* ]] && command -v xws >/dev/null 2>&1; then
+    echo "Starting emulator ${avd_name} on port ${emu_port} via xws workspace ${EMULATOR_WORKSPACE}..."
+    xws -w "${EMULATOR_WORKSPACE}" -- "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 2 >/dev/null 2>&1 &
+  else
+    echo "Starting emulator ${avd_name} on port ${emu_port}..."
+    "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 2 >/dev/null 2>&1 &
+  fi
+  EMULATOR_PID=$!
+}
+
+verify_emulator_profile() {
+  hardware_config="${ANDROID_AVD_HOME}/${AVD_NAME}.avd/hardware-qemu.ini"
+  if [[ ! -r "${hardware_config}" ]]; then
+    echo "Missing actual emulator hardware configuration: ${hardware_config}; stopping." >&2
+    exit 1
+  fi
+  guest_ram="$(awk -F' = ' '$1 == "hw.ramSize" {print $2}' "${hardware_config}")"
+  guest_cores="$(awk -F' = ' '$1 == "hw.cpu.ncore" {print $2}' "${hardware_config}")"
+  if [[ "${guest_ram}" != 1024 || "${guest_cores}" != 2 ]]; then
+    echo "Emulator ignored 1024 MiB RAM / 2 vCPUs (actual: ${guest_ram:-unknown} MiB / ${guest_cores:-unknown} vCPUs); stopping." >&2
+    exit 1
+  fi
+  guest_width="$(awk -F' = ' '$1 == "hw.lcd.width" {print $2}' "${hardware_config}")"
+  guest_height="$(awk -F' = ' '$1 == "hw.lcd.height" {print $2}' "${hardware_config}")"
+  guest_density="$(awk -F' = ' '$1 == "hw.lcd.density" {print $2}' "${hardware_config}")"
+  if [[ "${guest_width}" != 720 || "${guest_height}" != 1600 || "${guest_density}" != 280 ]]; then
+    echo "Emulator ignored 720x1600 / 280 dpi (actual: ${guest_width:-unknown}x${guest_height:-unknown} / ${guest_density:-unknown} dpi); stopping." >&2
+    exit 1
+  fi
+  echo "Verified actual emulator: ${guest_ram} MiB / ${guest_cores} vCPU / ${guest_width}x${guest_height} / ${guest_density} dpi."
+
 }
 
 acquire_lock() {
@@ -335,7 +366,7 @@ remove_harness_root() {
 
 kill_running_tests() {
   if [[ -n "${CURRENT_TEST_PID}" ]]; then
-    if [[ -n "${CURRENT_TEST_PGID}" ]]; then
+    if [[ "${CURRENT_TEST_PGID}" == "${CURRENT_TEST_PID}" ]]; then
       kill -TERM -- "-${CURRENT_TEST_PGID}" >/dev/null 2>&1 || true
     fi
     kill -TERM "${CURRENT_TEST_PID}" >/dev/null 2>&1 || true
@@ -361,6 +392,13 @@ cleanup() {
   done
   if [[ "${EMULATOR_STARTED}" == "1" ]] && [[ "${KEEP_EMULATOR}" != "1" ]] && [[ -n "${DEVICE_SERIAL:-}" ]]; then
     "${ADB_BIN}" -s "${DEVICE_SERIAL}" emu kill >/dev/null 2>&1 || true
+    if [[ -n "${EMULATOR_PID}" ]]; then
+      wait "${EMULATOR_PID}" || true
+      EMULATOR_PID=""
+    fi
+  fi
+  if [[ "${ADB_SERVER_OWNED}" == "1" ]]; then
+    "${ADB_BIN}" kill-server >/dev/null 2>&1 || true
   fi
   release_lock
   if [[ -n "${CONFIG_PATH:-}" ]]; then
@@ -381,6 +419,15 @@ trap cleanup EXIT
 
 mkdir -p "${ROOT_DIR}/bin" "${ARTIFACT_OUT}"
 acquire_lock
+if ! command -v ss >/dev/null 2>&1; then
+  echo "ss is required to verify the isolated adb server port." >&2
+  exit 1
+fi
+if [[ -n "$(ss -H -ltn "sport = :${ANDROID_ADB_SERVER_PORT}")" ]]; then
+  echo "Isolated adb server port ${ANDROID_ADB_SERVER_PORT} is already in use; set LINGON_IT_ADB_SERVER_PORT." >&2
+  exit 1
+fi
+ADB_SERVER_OWNED="1"
 start_cgroup_monitor
 if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" && "${KEEP_EMULATOR}" == "1" ]]; then
   echo "LINGON_IT_KEEP_EMULATOR=1 is ignored for contained integration runs; the managed emulator must exit with the cgroup."
@@ -388,6 +435,9 @@ if [[ "${LINGON_IT_CGROUP_WRAPPED:-0}" == "1" && "${KEEP_EMULATOR}" == "1" ]]; t
 fi
 
 HARNESS_ARGS=()
+if [[ "${LINGON_IT_CLEARTEXT:-0}" == "1" ]]; then
+  HARNESS_ARGS+=("-cleartext")
+fi
 SPECIAL_TEST="refreshes_sessions_when_host_starts_late"
 QUIET_HOST_TEST="tab_switch_does_not_rearm_wall_inactivity_without_terminal_input"
 if [[ -z "${HOST_COLS_OVERRIDE}" ]]; then
@@ -411,7 +461,39 @@ TEST_SRC="${ANDROID_DIR}/app/src/androidTest/java/systems/pkt/lingon/EndToEndTes
 TESTS=()
 SELECTED_TESTS=()
 ONLY_TEST="${LINGON_IT_ONLY:-}"
-if [[ -f "${TEST_SRC}" ]]; then
+TARGET_CLASS="${LINGON_IT_CLASS:-}"
+if [[ -n "${TARGET_CLASS}" ]]; then
+  if [[ ! "${TARGET_CLASS}" =~ ^[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?(,[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?)*$ ]]; then
+    echo "Invalid LINGON_IT_CLASS: ${TARGET_CLASS}" >&2
+    exit 1
+  fi
+  if [[ -n "${ONLY_TEST}" ]]; then
+    echo "Set only one of LINGON_IT_CLASS and LINGON_IT_ONLY." >&2
+    exit 1
+  fi
+  IFS=',' read -r -a requested_classes <<< "${TARGET_CLASS}"
+  for selection in "${requested_classes[@]}"; do
+    class="${selection%%#*}"
+    source="${ANDROID_DIR}/app/src/androidTest/java/${class//./\/}.kt"
+    if [[ ! -f "${source}" ]]; then
+      echo "No Android test source for ${class}" >&2
+      exit 1
+    fi
+    methods="$(run_android_tools test-names --file "${source}")"
+    matched=false
+    while IFS= read -r method; do
+      [[ -n "${method}" ]] || continue
+      if [[ "${selection}" == "${class}" || "${selection}" == "${class}#${method}" ]]; then
+        TESTS+=("${class}#${method}")
+        matched=true
+      fi
+    done <<< "${methods}"
+    if [[ "${matched}" != true ]]; then
+      echo "No Android methods matched ${selection}" >&2
+      exit 1
+    fi
+  done
+elif [[ -f "${TEST_SRC}" ]]; then
   mapfile -t TESTS < <(run_android_tools test-names --file "${TEST_SRC}")
 fi
 if [[ "${#TESTS[@]}" -eq 0 ]]; then
@@ -450,8 +532,18 @@ fi
 echo "Building harness..."
 (
   cd "${ROOT_DIR}"
+  go build -buildvcs=true -o "${ROOT_DIR}/bin/lingon" ./cmd/lingon
   go build -buildvcs=true -o "${HARNESS_BIN}" ./cmd/lingon-android-harness
 )
+
+ANDROID_TOOLS_BIN="${ANDROID_DIR}/build/lingon-android-tools"
+mkdir -p "${ANDROID_DIR}/build"
+(cd "${ANDROID_DIR}" && go build -buildvcs=true -o "${ANDROID_TOOLS_BIN}" ./cmd/lingon-android-tools)
+echo "Building app and instrumentation APKs before starting the emulator..."
+(cd "${ANDROID_DIR}" && ./gradlew --no-daemon --max-workers=1 \
+  -Dorg.gradle.parallel=false -Dkotlin.compiler.execution.strategy=in-process \
+  "-Dorg.gradle.jvmargs=-Xmx1536m -XX:ActiveProcessorCount=4 -Dfile.encoding=UTF-8" \
+  :app:assembleDebug :app:assembleDebugAndroidTest --no-configuration-cache)
 
 read_config() {
   run_android_tools config-env --config "${CONFIG_PATH}"
@@ -482,7 +574,7 @@ start_harness() {
   if [[ -n "${HARNESS_ROOT}" ]]; then
     HARNESS_ROOTS+=("${HARNESS_ROOT}")
   fi
-  DEVICE_ENDPOINT="https://localhost:${PORT}/v1"
+  DEVICE_ENDPOINT="${ENDPOINT%%://*}://localhost:${PORT}/v1"
   echo "Harness endpoint: ${ENDPOINT}"
   echo "Device endpoint: ${DEVICE_ENDPOINT}"
   echo "Sessions: ${SESSIONS}"
@@ -544,18 +636,25 @@ if [[ "${REUSE_DEVICE}" == "1" ]]; then
 fi
 if [[ -z "${DEVICE_SERIAL}" ]]; then
   AVD_NAME="$(resolve_avd_name)"
-  if [[ ! -d "${HOME}/.android/avd/${AVD_NAME}.avd" ]]; then
+  if [[ ! -d "${ANDROID_AVD_HOME}/${AVD_NAME}.avd" ]]; then
     echo "Creating AVD ${AVD_NAME} (PRESET=${PRESET})..."
     (cd "${ANDROID_DIR}" && make avd PRESET="${PRESET}")
   fi
   AVD_NAME="${AVD_NAME}" \
-    AVD_RAM_MB="${LINGON_IT_AVD_RAM_MB:-2048}" \
-    AVD_CPU_CORES="${LINGON_IT_AVD_CPU_CORES:-2}" \
+    AVD_RAM_MB=1024 \
+    AVD_CPU_CORES=2 \
     "${ANDROID_DIR}/scripts/configure-avd.sh"
+  # Scale framebuffer and density together to retain the medium phone's
+  # logical layout while reducing graphics/shared-memory allocations.
+  display_config="${ANDROID_AVD_HOME}/${AVD_NAME}.avd/config.ini"
+  sed -i -E \
+    -e 's/^hw\.lcd\.width[[:space:]]*=.*/hw.lcd.width = 720/' \
+    -e 's/^hw\.lcd\.height[[:space:]]*=.*/hw.lcd.height = 1600/' \
+    -e 's/^hw\.lcd\.density[[:space:]]*=.*/hw.lcd.density = 280/' \
+    "${display_config}"
   AVD_NAME="${AVD_NAME}" "${ANDROID_DIR}/scripts/cleanup-avd-snapshots.sh" || true
   EMU_PORT="$(ADB="${ADB_BIN}" "${ANDROID_DIR}/scripts/find-emu-port.sh")"
-  echo "Starting emulator ${AVD_NAME} on port ${EMU_PORT}..."
-  "${EMULATOR_BIN}" -avd "${AVD_NAME}" -port "${EMU_PORT}" ${EMULATOR_FLAGS} >/dev/null 2>&1 &
+  start_emulator "${AVD_NAME}" "${EMU_PORT}"
   DEVICE_SERIAL="emulator-${EMU_PORT}"
   EMULATOR_STARTED="1"
 fi
@@ -570,15 +669,25 @@ export ADB="${ADB_BIN}"
 
 "${ANDROID_DIR}/scripts/ensure-emu-keyboard.sh" || true
 
+verify_emulator_profile
+
+echo "Installing app and instrumentation APKs..."
+"${ADB_BIN}" -s "${DEVICE_SERIAL}" install -r -t "${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
+"${ADB_BIN}" -s "${DEVICE_SERIAL}" install -r -t "${ANDROID_DIR}/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
+if ! "${ADB_BIN}" -s "${DEVICE_SERIAL}" shell pm list instrumentation | grep -Fxq \
+  "instrumentation:${TEST_APP_ID}/androidx.test.runner.AndroidJUnitRunner (target=${APP_ID})"; then
+  echo "Installed instrumentation runner/target identity mismatch." >&2
+  exit 1
+fi
 start_harness 2
 ensure_adb_reverse
 
-echo "Running connectedDebugAndroidTest..."
-set +e
-(
+echo "Running native AndroidJUnitRunner instrumentation..."
+run_selected_tests() {
   cd "${ANDROID_DIR}"
   TEST_EXIT=0
 
+  LINGON_BATCH_INDEX=0
   run_test_batch() {
     local test_names=("$@")
     if [[ "${#test_names[@]}" -eq 0 ]]; then
@@ -590,7 +699,11 @@ set +e
       if [[ -n "${class_arg}" ]]; then
         class_arg+=","
       fi
-      class_arg+="systems.pkt.lingon.EndToEndTest#${test_name}"
+      if [[ -n "${TARGET_CLASS}" ]]; then
+        class_arg+="${test_name}"
+      else
+        class_arg+="systems.pkt.lingon.EndToEndTest#${test_name}"
+      fi
     done
     reset_test_apps
     ensure_adb_reverse
@@ -599,30 +712,25 @@ set +e
     else
       echo "Running ${#test_names[@]} Android tests in one instrumentation batch..."
     fi
-    ./gradlew --no-daemon \
-      -Dkotlin.compiler.execution.strategy=in-process \
-      "-Dorg.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8" \
-      :app:connectedDebugAndroidTest \
-      --no-configuration-cache \
-      -Plingon.it.class="${class_arg}" \
-      -Plingon.it.endpoint="${DEVICE_ENDPOINT}" \
-      -Plingon.it.username="${USERNAME}" \
-      -Plingon.it.password="${PASSWORD}" \
-      -Plingon.it.totp_secret="${TOTP_SECRET}" \
-      -Plingon.it.ca_pem_b64="${CA_PEM_B64}" \
-      -Plingon.it.sessions="${SESSIONS}" \
-      -Plingon.it.view_token="${VIEW_TOKEN}" \
-      -Plingon.it.username2="${USERNAME2}" \
-      -Plingon.it.password2="${PASSWORD2}" \
-      -Plingon.it.totp_secret2="${TOTP_SECRET2}" \
-      -Plingon.it.sessions2="${SESSIONS2}" \
-      -Plingon.it.view_token2="${VIEW_TOKEN2}" \
-      -Plingon.it.host_cols="${HOST_COLS}" \
-      -Plingon.it.host_rows="${HOST_ROWS}" &
+    LINGON_BATCH_INDEX=$((LINGON_BATCH_INDEX + 1))
+    local report_dir="${LINGON_IT_CGROUP_PROFILE_DIR}/android-test-batches/batch-${LINGON_BATCH_INDEX}"
+    local skip_args=()
+    if [[ "${LINGON_IT_CLEARTEXT:-0}" == "0" && ",${class_arg}," == *",systems.pkt.lingon.EndToEndTest#cleartext_share_authentication_uses_token_fallback,"* ]]; then
+      skip_args=(--allow-skip "systems.pkt.lingon.EndToEndTest#cleartext_share_authentication_uses_token_fallback")
+    fi
+    setsid --wait "${ANDROID_TOOLS_BIN}" instrument --adb "${ADB_BIN}" \
+      --serial "${DEVICE_SERIAL}" --config "${CONFIG_PATH}" --classes "${class_arg}" \
+      --report "${report_dir}/TEST-instrumentation.xml" "${skip_args[@]}" </dev/null &
     CURRENT_TEST_PID=$!
     CURRENT_TEST_PGID="$(ps -o pgid= "${CURRENT_TEST_PID}" | tr -d ' ' || true)"
     wait "${CURRENT_TEST_PID}"
     TEST_EXIT=$?
+    # A later harness restart replaces the shared log. Retain the exact peer
+    # trace alongside this batch's raw protocol/JUnit, including failed runs.
+    if ! cp "${HARNESS_LOG}" "${report_dir}/harness.log" || ! chmod 600 "${report_dir}/harness.log"; then
+      echo "Failed to retain instrumentation batch harness evidence." >&2
+      TEST_EXIT=1
+    fi
     CURRENT_TEST_PID=""
     CURRENT_TEST_PGID=""
     return "${TEST_EXIT}"
@@ -655,25 +763,31 @@ set +e
       flush_batch || break
       stop_harness
       export LINGON_ANDROID_HARNESS_HOST_SHELL=/bin/sh
+      export LINGON_ANDROID_HARNESS_WALL_CLOCK=mock
       start_harness 2
       ensure_adb_reverse
-      unset LINGON_ANDROID_HARNESS_HOST_SHELL
+      unset LINGON_ANDROID_HARNESS_HOST_SHELL LINGON_ANDROID_HARNESS_WALL_CLOCK
       run_test_batch "${test_name}" || break
       stop_harness
-      unset LINGON_ANDROID_HARNESS_HOST_SHELL
+      unset LINGON_ANDROID_HARNESS_HOST_SHELL LINGON_ANDROID_HARNESS_WALL_CLOCK
       start_harness 2
       ensure_adb_reverse
       continue
     fi
     BATCH+=("${test_name}")
+    if [[ "${#BATCH[@]}" -eq 10 ]]; then
+      flush_batch || break
+    fi
   done
   if [[ "${TEST_EXIT}" -eq 0 ]]; then
     flush_batch
     TEST_EXIT=$?
   fi
   stop_harness
-  exit "${TEST_EXIT}"
-)
+  return "${TEST_EXIT}"
+}
+set +e
+run_selected_tests
 TEST_EXIT=$?
 set -e
 collect_test_timing_profile

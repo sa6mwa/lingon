@@ -31,6 +31,7 @@ class TerminalGridView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
     private var snapshot: TerminalSnapshot? = null
+    private var terminalLinks: List<TerminalLinkRange> = emptyList()
     private var palette: TerminalPalette? = null
     private var baseFontSizeSp: Int = 0
     private var minFontSizeSp: Int = MinTerminalFontSizeSp
@@ -59,11 +60,17 @@ class TerminalGridView @JvmOverloads constructor(
     private var lastViewportHeightPx: Int = 0
     private var lastScaledCellHeightPx: Float = 0f
     private var panActive: Boolean = false
+    private var selectionMode: Boolean = false
+    private var selection: TerminalSelection? = null
+    private var selectionBeforeTouch: TerminalSelection? = null
+    private var selectionDragActive: Boolean = false
+    private var selectionMoved: Boolean = false
     private var lastTouchX: Float = 0f
     private var lastTouchY: Float = 0f
     private var onViewSizeChanged: ((Int, Int) -> Unit)? = null
     private var onZoomChanged: ((Float) -> Unit)? = null
     private var onTap: (() -> Unit)? = null
+    private var onOpenLink: ((String) -> Boolean)? = null
     private var onScrollback: ((Int) -> Unit)? = null
     private var scrollRemainderY: Float = 0f
     private var pendingLiveReentryRows: Int = 0
@@ -84,7 +91,9 @@ class TerminalGridView @JvmOverloads constructor(
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            performClick()
+            if (!tryOpenLinkAt(e.x, e.y)) {
+                performClick()
+            }
             return true
         }
 
@@ -206,8 +215,14 @@ class TerminalGridView @JvmOverloads constructor(
         localInputNonce: Long = 0,
     ) {
         var invalidate = false
+        var snapshotChanged = false
+        var frameSeqChanged = false
         if (this.snapshot !== snapshot) {
+            if (snapshot == null || this.snapshot?.cols != snapshot.cols || this.snapshot?.rows != snapshot.rows) {
+                selection = null
+            }
             this.snapshot = snapshot
+            snapshotChanged = true
             if (snapshot == null) {
                 cameraMode = TerminalViewportMode.LiveBottom
                 cursorFollowReturnMode = TerminalViewportMode.LiveBottom
@@ -228,12 +243,16 @@ class TerminalGridView @JvmOverloads constructor(
         }
         if (this.frameSeq != frameSeq) {
             this.frameSeq = frameSeq
+            frameSeqChanged = true
             restoredViewportState = null
             restoredViewportFrameSeq = Long.MIN_VALUE
             if (suppressLiveAutoFollowFrameSeq != frameSeq) {
                 suppressLiveAutoFollowFrameSeq = null
             }
             invalidate = true
+        }
+        TerminalLinks.refreshForUpdate(snapshot, snapshotChanged, frameSeqChanged)?.let {
+            terminalLinks = it
         }
         if (this.hostCols != hostCols) {
             this.hostCols = hostCols
@@ -312,8 +331,29 @@ class TerminalGridView @JvmOverloads constructor(
         onTap = listener
     }
 
+    fun setOnOpenLink(listener: ((String) -> Boolean)?) {
+        onOpenLink = listener
+    }
+
     fun setOnScrollback(listener: ((Int) -> Unit)?) {
         onScrollback = listener
+    }
+
+    fun setSelectionMode(enabled: Boolean) {
+        if (selectionMode == enabled) return
+        selectionMode = enabled
+        selection = null
+        selectionBeforeTouch = null
+        selectionDragActive = false
+        selectionMoved = false
+        panActive = false
+        invalidate()
+    }
+
+    fun selectedText(): String? {
+        val currentSelection = selection ?: return null
+        val currentSnapshot = snapshot ?: return null
+        return currentSelection.extractText(currentSnapshot)
     }
 
     fun getViewCols(): Int = viewCols
@@ -330,6 +370,12 @@ class TerminalGridView @JvmOverloads constructor(
 
     fun getCameraOffsetYForTesting(): Float = cameraOffsetYPx
 
+    fun getCameraDiagnosticsForTesting(): String =
+        "mode=$cameraMode return=$cursorFollowReturnMode frame=$frameSeq " +
+            "restored=$restoredViewportState suppress=$suppressLiveAutoFollowFrameSeq"
+
+    fun getScaledCellWidthForTesting(): Float = scaledCellWidth
+
     fun getScaledCellHeightForTesting(): Float = scaledCellHeight
 
     fun getViewportHeightForTesting(): Int = effectiveViewportHeightPx()
@@ -337,6 +383,10 @@ class TerminalGridView @JvmOverloads constructor(
     fun getPhysicalHeightForTesting(): Int = height
 
     fun getSizeChangeInvalidateCountForTesting(): Int = sizeChangeInvalidateCountForTesting
+
+    fun getLinkAtCellForTesting(row: Int, col: Int): String? {
+        return linkAt(row, col)?.url
+    }
 
     fun getVisibleStartRow(): Int {
         val snap = snapshot ?: return 0
@@ -483,6 +533,10 @@ class TerminalGridView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (selectionMode) {
+            scaleDetector.onTouchEvent(event)
+            return onSelectionTouchEvent(event)
+        }
         scaleDetector.onTouchEvent(event)
         gestureDetector.onTouchEvent(event)
         when (event.actionMasked) {
@@ -490,10 +544,6 @@ class TerminalGridView @JvmOverloads constructor(
                 lastTouchX = event.x
                 lastTouchY = event.y
                 panActive = shouldUseTouchPan()
-                if (panActive) {
-                    cameraMode = TerminalViewportMode.Manual
-                    cursorFollowReturnMode = TerminalViewportMode.Manual
-                }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (panActive && !scaleDetector.isInProgress) {
@@ -511,6 +561,87 @@ class TerminalGridView @JvmOverloads constructor(
         return true
     }
 
+    private fun onSelectionTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                selectionBeforeTouch = selection
+                selectionDragActive = true
+                selectionMoved = false
+                cellAtScreenPoint(event.x, event.y)?.let { cell ->
+                    selection = TerminalSelection(cell, cell)
+                    invalidate()
+                }
+                lastTouchX = event.x
+                lastTouchY = event.y
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                selection = selectionBeforeTouch
+                selectionDragActive = false
+                panActive = true
+                cameraMode = TerminalViewportMode.Manual
+                cursorFollowReturnMode = TerminalViewportMode.Manual
+                lastTouchX = pointerCenterX(event)
+                lastTouchY = pointerCenterY(event)
+                invalidate()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (event.pointerCount >= 2) {
+                    val x = pointerCenterX(event)
+                    val y = pointerCenterY(event)
+                    applyPanDelta(x - lastTouchX, y - lastTouchY)
+                    lastTouchX = x
+                    lastTouchY = y
+                } else if (selectionDragActive) {
+                    cellAtScreenPoint(event.x, event.y)?.let { cell ->
+                        val anchor = selection?.anchor ?: cell
+                        if (cell != anchor) selectionMoved = true
+                        selection = TerminalSelection(anchor, cell)
+                        invalidate()
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                panActive = false
+                selectionDragActive = false
+            }
+            MotionEvent.ACTION_UP -> {
+                if (selectionDragActive && !selectionMoved) performClick()
+                panActive = false
+                selectionDragActive = false
+                selectionBeforeTouch = null
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                selection = selectionBeforeTouch
+                invalidate()
+                panActive = false
+                selectionDragActive = false
+                selectionBeforeTouch = null
+            }
+        }
+        return true
+    }
+
+    private fun pointerCenterX(event: MotionEvent): Float =
+        (0 until event.pointerCount).sumOf { event.getX(it).toDouble() }.toFloat() / event.pointerCount
+
+    private fun pointerCenterY(event: MotionEvent): Float =
+        (0 until event.pointerCount).sumOf { event.getY(it).toDouble() }.toFloat() / event.pointerCount
+
+    private fun cellAtScreenPoint(x: Float, y: Float): TerminalCell? {
+        val snap = snapshot ?: return null
+        if (scaledCellWidth <= 0f || scaledCellHeight <= 0f || width <= 0 || effectiveViewportHeightPx() <= 0) return null
+        var col = floor((cameraOffsetXPx + x.coerceIn(0f, width.toFloat() - 1f)) / scaledCellWidth)
+            .toInt().coerceIn(0, snap.cols - 1)
+        val row = floor((cameraOffsetYPx + y.coerceIn(0f, effectiveViewportHeightPx().toFloat() - 1f)) / scaledCellHeight)
+            .toInt().coerceIn(0, snap.rows - 1)
+        if (col > 0) {
+            if (snap.isWideContinuation(row, col)) {
+                col -= 1
+            }
+        }
+        return TerminalCell(row, col)
+    }
+
     private fun shouldUseTouchPan(): Boolean {
         val snap = snapshot ?: return false
         if (scaledCellWidth <= 0f || scaledCellHeight <= 0f) return false
@@ -519,6 +650,29 @@ class TerminalGridView @JvmOverloads constructor(
         if (snap.cols * scaledCellWidth > width.toFloat() + 0.5f) return true
         if (snap.rows * scaledCellHeight > viewportHeightPx.toFloat() + 0.5f) return true
         return scrollbackOffsetRows > 0 || onScrollback != null
+    }
+
+    private fun tryOpenLinkAt(xPx: Float, yPx: Float): Boolean {
+        val link = linkAtScreenPoint(xPx, yPx) ?: return false
+        return onOpenLink?.invoke(link.url) == true
+    }
+
+    private fun linkAtScreenPoint(xPx: Float, yPx: Float): TerminalLinkRange? {
+        val snap = snapshot ?: return null
+        if (xPx < 0f || xPx >= width.toFloat()) return null
+        val viewportHeightPx = effectiveViewportHeightPx()
+        if (yPx < 0f || yPx >= viewportHeightPx.toFloat()) return null
+        if (scaledCellWidth <= 0f || scaledCellHeight <= 0f) return null
+        val maxOffsetXPx = max(0f, (snap.cols * scaledCellWidth) - width.toFloat())
+        val maxOffsetYPx = max(0f, (snap.rows * scaledCellHeight) - viewportHeightPx.toFloat())
+        val col = floor((cameraOffsetXPx.coerceIn(0f, maxOffsetXPx) + xPx) / scaledCellWidth).toInt()
+        val row = floor((cameraOffsetYPx.coerceIn(0f, maxOffsetYPx) + yPx) / scaledCellHeight).toInt()
+        return linkAt(row, col)
+    }
+
+    private fun linkAt(row: Int, col: Int): TerminalLinkRange? {
+        if (row < 0 || col < 0) return null
+        return terminalLinks.firstOrNull { it.contains(row, col) }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -692,8 +846,7 @@ class TerminalGridView @JvmOverloads constructor(
                 )
                 val grapheme = snap.graphemes?.getOrElse(idx) { "" } ?: ""
                 val rune = snap.runes.getOrElse(idx) { 32 }
-                val width = cellWidth(grapheme)
-                val skipNext = width > 1 && x + 1 < endColExclusive && isContinuationCell(snap, idx + 1, attr)
+                val skipNext = x + 1 < endColExclusive && snap.isWideContinuation(y, x + 1)
 
                 val text = if (attr.mode and MODE_HIDDEN != 0) {
                     ""
@@ -713,11 +866,18 @@ class TerminalGridView @JvmOverloads constructor(
                 if (attr.mode and MODE_FAINT != 0) {
                     fg = applyFaint(fg)
                 }
+                val selected = selection?.contains(y, x) == true ||
+                    (skipNext && selection?.contains(y, x + 1) == true)
+                if (selected) {
+                    fg = androidx.compose.ui.graphics.Color.Black
+                    bg = androidx.compose.ui.graphics.Color.White
+                }
 
                 val left = x * cellW
                 val top = y * cellH
                 bgPaint.color = bg.toArgb()
-                canvas.drawRect(left, top, left + cellW, top + cellH, bgPaint)
+                val paintedCells = if (skipNext) 2 else 1
+                canvas.drawRect(left, top, left + cellW * paintedCells, top + cellH, bgPaint)
 
                 if (text.isNotEmpty()) {
                     val paint = resolvePaint(attr.mode)
@@ -725,7 +885,7 @@ class TerminalGridView @JvmOverloads constructor(
                     canvas.drawText(text, left, top + baseline, paint)
                 }
 
-                if (attr.mode and MODE_UNDERLINE != 0) {
+                if (attr.mode and MODE_UNDERLINE != 0 || linkAt(y, x) != null) {
                     linePaint.color = fg.toArgb()
                     val yLine = top + underlineY
                     canvas.drawLine(left, yLine, left + cellW, yLine, linePaint)
@@ -1131,19 +1291,6 @@ class TerminalGridView @JvmOverloads constructor(
         val fg: Int,
         val bg: Int,
     )
-
-    private fun cellWidth(grapheme: String): Int = if (grapheme.isNotEmpty()) 2 else 1
-
-    private fun isContinuationCell(snapshot: TerminalSnapshot, idx: Int, attr: CellAttr): Boolean {
-        if (idx < 0 || idx >= snapshot.runes.size) return false
-        if (!snapshot.graphemes.isNullOrEmpty() && snapshot.graphemes[idx].isNotEmpty()) return false
-        val rune = snapshot.runes[idx]
-        if (rune != 0) return false
-        val mode = snapshot.modes[idx]
-        val fg = snapshot.fg[idx]
-        val bg = snapshot.bg[idx]
-        return mode == attr.mode && fg == attr.fg && bg == attr.bg
-    }
 
     private companion object {
         const val zoomEpsilon = 0.001f

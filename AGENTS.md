@@ -1,5 +1,8 @@
 # AGENTS.md
 
+This file is a repository-specific supplement for Lingon. Keep it limited to
+Lingon-specific constraints.
+
 ## Absolute first rule: terminal isolation
 
 Never run or write tests, harnesses, scripts, or ad hoc verification that can
@@ -31,6 +34,10 @@ This is a hard stop, not a preference:
 
 Agent-driven verification must also avoid surprise resource exhaustion:
 
+- Verification must use `bash scripts/verify-contained.sh <command> [args...]`
+  or a Make target that uses it. The entire verification stack shares a hard
+  4 CPUs / 4 GiB RAM ceiling with zero swap; do not bypass or raise these limits.
+
 - Do not run full Android/emulator/instrumentation sweeps in parallel with other
   heavy suites.
 - Do not leave emulators, adb servers, Gradle daemons, harnesses, or test
@@ -39,82 +46,165 @@ Agent-driven verification must also avoid surprise resource exhaustion:
 - If a suite can monopolize CPU, RAM, GPU, or the desktop session, state that
   before starting it and run it serially.
 
-You are collaborating with a highly opinionated Go architect. Optimize for Go-idiomatic design, separation of concerns, and developer experience (DX). Do NOT jump into implementation: propose options + tradeoffs first.
+## Command execution discipline
 
-## Workflow (mandatory)
-1. Restate goal + constraints.
-2. Propose 1–3 designs with tradeoffs.
-3. Get alignment before writing significant code.
-4. Implement in small, reviewable steps.
-5. Run quality gates (see below).
-6. Git commit messages must follow Conventional Commits: https://www.conventionalcommits.org/en/v1.0.0/
+- Do not run shell commands that execute code, mutate state, start processes,
+  run tests, run builds, run linters, start servers, start emulators, use adb,
+  use Gradle, or perform other operational work in parallel.
+- Test suites, build commands, linters, package managers, dev servers, emulator
+  runs, Android instrumentation, database/service processes, and other
+  long-running or resource-heavy commands must be strictly serialized: start
+  one, wait for it to finish, inspect the result, then decide the next command.
+- Parallel read-only file inspection is allowed. It is fine to read multiple
+  files or run read-only discovery commands such as `rg`, `sed`, `ls`,
+  `git show`, `nl`, `wc`, and similar commands in parallel when they cannot
+  mutate state or start substantial background work.
+- Parallel web searches are allowed when useful.
+- If there is any doubt whether a command is read-only and lightweight, run it
+  serially.
 
-## Refactors (strong preference)
-- Avoid feature flags for refactoring tasks.
-- Prefer clean refactors with a clear cutover:
-  - No lingering “legacy” implementations, structs, or parallel codepaths.
-  - Remove dead code and migrate call sites in the same change-set/sequence.
-- Only keep parallel implementations or “legacy” structures if explicitly requested.
+## Lingon engineering standards
 
-## Architecture & packaging
-- Separation starts at the package boundary:
-  - Public API packages for exported surfaces.
-  - `internal/...` for non-exported implementation details.
-- If there are two or more variants/adapters of an implementation: **use an interface**.
-- Constructors:
-  - Provide a `New...` constructor for implementations.
-  - **Constructors must return the interface type, never a concrete type.**
-- Cyclic imports:
-  - If cyclic imports occur, extract core application functionality into a `core` package or subpackage
-    so both main/module code and subpackages can import it without cycles.
+- Optimize for Go-idiomatic design, separation of concerns, and developer
+  experience.
+- Keep package boundaries clean:
+  - Public API packages expose stable user-facing surfaces.
+  - `internal/...` packages hold non-exported implementation details.
+- If there are two or more variants/adapters of an implementation, use an
+  interface.
+- Constructors for implementations should be named `New...`; when a constructor
+  exists specifically to provide an implementation behind an interface, return
+  the interface type.
+- If cyclic imports occur, extract core application functionality into a `core`
+  package or subpackage so both main/module code and subpackages can import it
+  without cycles.
 
-## Public API shape (strong preference)
-- Inputs:
-  - If a user-facing function or interface method takes more than 4 parameters total (including `ctx context.Context`),
-    do not bloat the signature. Put the non-`ctx` inputs into a request/input struct instead (e.g. `FooRequest`).
-- Outputs:
-  - A user-facing function or interface method must return **no more than two values**: `(T, error)` (or `(Response, error)`).
-  - If more than one non-error value needs to be returned, the first return value must be a **response/result struct**
-    that carries all outputs (e.g. `FooResponse`), and the second return value is `error`.
+## Public API shape
 
-## Documentation & generators
-- Every package must have a `doc.go` with standard Go package comment documentation.
-- Code generation:
-  - If generators are not tightly bound to a single package: put `generate.go` at the top-level module folder.
-  - If tightly bound to a single package: put `generate.go` in that package folder (and place any generator runner `main` packages underneath as appropriate).
+- If a user-facing function or interface method takes more than 4 parameters
+  total, including `ctx context.Context`, put the non-`ctx` inputs into a
+  request/input struct.
+- A user-facing function or interface method should return no more than two
+  values: `(T, error)` or `(Response, error)`.
+- If more than one non-error value needs to be returned, use a response/result
+  struct for the first return value and `error` for the second.
 
-## Quality gates (always run before “done”)
-- `go test ./...`
-- `go vet ./...`
-- `golint ./...`
-- `golangci-lint run ./...`
-- All test failures must be addressed before the task is considered done, even if a failure appears unrelated to the current change.
-- Do not leave the repo with known failing tests and describe them as “unrelated”; fix them in the same task or explicitly stop and escalate if they cannot be resolved safely.
+## Documentation and generators
 
-## Android verification policy (mandatory)
-- Do not run the full connected Android instrumentation suite on every change by default.
-- Use a tiered verification policy:
-  - Always run `./gradlew :app:testDebugUnitTest` for Android-touching changes.
-  - Always run `./gradlew :app:compileDebugAndroidTestKotlin` for Android-touching changes so `src/androidTest` stays buildable.
-  - Run targeted `:app:connectedDebugAndroidTest` cases for the specific Android-visible behavior that changed:
-    - UI/layout/render/pan/zoom
-    - notifications
-    - lifecycle/reconnect/background behavior
-    - relay/app/session interactions visible in the app
-  - Run the full Android integration sweep before release, and after broad terminal/render/session/relay changes that can affect multiple Android-visible behaviors at once.
-- An Android-visible bug is not considered fixed without a passing targeted instrumentation or end-to-end verification for that exact behavior.
+- Every package must have a `doc.go` with standard Go package comment
+  documentation.
+- If generators are not tightly bound to a single package, put `generate.go` at
+  the top-level module folder.
+- If a generator is tightly bound to a single package, put `generate.go` in that
+  package folder and place any generator runner `main` packages underneath as
+  appropriate.
 
-## Android release metadata
-- `android/app/build.gradle.kts` contains Android app release/version metadata.
-- The engineer may intentionally update this file by running `make release`
-  manually before `make adb-install` to the phone that runs Lingon.
-- If this file appears dirty while investigating unrelated work, treat it as
-  expected local release/install metadata churn. Do not revert or normalize it.
-- Include this file in commits like any other tracked source file when it is
-  dirty; the release metadata needs to follow the commit it was generated from.
+## Quality gates
+
+Run the project standard checks before declaring code changes complete:
+
+- `make test` (uncached `go test ./...` with coverage)
+- `make vet`
+- `bash scripts/verify-contained.sh golint -set_exit_status ./...`
+- `make golangci-lint` (repository-pinned tool, built with the active Go version)
+
+All test failures must be addressed before the task is considered done, even if
+a failure appears unrelated to the current change. If a failure cannot be
+resolved safely in the current production envelope, stop and escalate with the
+evidence.
+
+For documentation, policy, configuration, or other non-executable changes, run
+the strongest applicable verification: readback, syntax validation, rendered
+output, config validation, or another check that can falsify mistakes.
+
+## Android verification policy
+
+Do not run the full connected Android instrumentation suite on every change by
+default.
+
+Use this tiered policy for Android-touching changes:
+
+- Always run `./gradlew :app:testDebugUnitTest`.
+- Always run `./gradlew :app:compileDebugAndroidTestKotlin` so
+  `src/androidTest` stays buildable.
+- Run targeted `:app:connectedDebugAndroidTest` cases for the specific
+  Android-visible behavior that changed:
+  - UI/layout/render/pan/zoom
+  - notifications
+  - lifecycle/reconnect/background behavior
+  - relay/app/session interactions visible in the app
+- Run the full Android integration sweep before release, and after broad
+  terminal/render/session/relay changes that can affect multiple
+  Android-visible behaviors at once.
+
+An Android-visible bug is not considered fixed without a passing targeted
+instrumentation or end-to-end verification for that exact behavior.
+
+## Local CI and release lifecycle
+
+- [RELEASE.md](RELEASE.md) defines the repository-owned Go lifecycle;
+  `make help` is the command index. This is local CI, not GitHub Actions.
+- `make prerelease` / `make test-all` run the full serial proof and artifact
+  rehearsal. Root and Android-tool Go tests, race tests, PTY/browser integration,
+  Android unit/compile gates and all instrumentation classes are required.
+  Narrow checks remain available during ordinary development.
+- Release targets are Linux, FreeBSD and Darwin, each on amd64 and arm64, plus
+  the signed APK. CGO is disabled for every shipped Go binary. Linux/BSD must be
+  static; Darwin may depend only on system libraries. Runtime test coverage is
+  Linux/Android; other binaries are cross-built and inspected.
+- Commit candidate code/docs and resolve review findings before release. A
+  clean candidate must contain current `trunk`, which must match `origin/trunk`.
+- `make release VERSION=X.Y.Z RELEASE_MESSAGE='type(scope): change'` runs the
+  complete candidate gate before squashing to trunk, preserves the source
+  branch, creates a lightweight `vX.Y.Z` tag, then cleans/retests/rebuilds and
+  verifies final artifacts from that exact tagged commit. Select actual release
+  versions explicitly; do not treat examples as a version decision.
+- Release gates are stop-only. On failure, report the failing gate and local
+  branch/tag/artifact state. Do not fix, amend, reset, retag, retry correctness
+  gates or publish inside that release attempt; start a separate fix iteration.
+- Final checksums are the upload manifest. Missing/extra artifacts, wrong
+  identity/architecture/linking, private paths and APK signer/version failures
+  block publication. Build scratch/logs belong under ignored `build/`; final
+  artifacts belong under ignored `dist/`.
+- `make publish`, when explicitly authorized, consumes verified full-proof
+  artifacts, checks GitHub immutability, pushes trunk/tag atomically, verifies
+  GitHub draft asset bytes, publishes, then pushes the versioned Podman manifest
+  to `docker.io/pktsystems/lingon` as the last step.
+- Assume existing GitHub/Docker Hub login. A final registry push failure leaves
+  Git/GitHub published; `make push-container` retries only that step with the
+  original verified image. Never rebuild or overwrite released bytes/tags.
+  Once pushed, release identity is immutable; corrections roll forward.
+- Podman is the sole engine. Local services use `podman kube play/down` and
+  `devenv.yaml.in`, with all project-owned state under `build/devenv/` and
+  unprivileged cleanup after teardown. Do not reintroduce containerd/Docker
+  fallbacks, live home-directory mounts or surprise persistent test services.
+- Android release version name/code are supplied as Gradle properties; release
+  builds must not rewrite tracked metadata. Preserve intentional pre-existing
+  `android/app/build.gradle.kts` edits rather than reverting them.
 
 ## Repo hygiene
-- If `.golangci.yml` does not exist in repo root, create and seed it with the contents below.
+
+- Generated review output, verification logs, transcripts, reports, receipts,
+  diagnostic dumps and bug-investigation evidence are local scratch, never
+  source documentation. Store them under ignored `build/review/` or
+  `build/verification/`; existing lifecycle logs stay under `build/lifecycle/`.
+  Never create these files in the repository root or force-add ignored output.
+- This rule overrides instructions to record or commit verification evidence,
+  review closeouts or bug ledgers. Report validation in the final response or
+  commit message; do not create evidence-only documentation commits. Commit
+  only durable source, tests, product documentation and repository policy.
+- Before staging or committing, run `make hygiene` and inspect the staged
+  paths. A passing ignore check does not authorize committing generated output.
+- `/build/` and `/dist/` must stay ignored. Keep final release artifacts under
+  `dist/`; retain diagnostic evidence under `build/` only as long as needed.
+- Put temporary Go helpers and example packages under
+  `build/verification/_go/`. Git ignore rules do not exclude packages from Go's
+  `./...` discovery; underscore directories do. Run those packages explicitly
+  when needed. Hygiene rejects discoverable Go source in generated-output roots.
+- Repository rules apply when using external skills: choose output paths under
+  `build/` even if a skill example uses the repository root or another location.
+
+If `.golangci.yml` does not exist in repo root, create and seed it with:
 
 ```yaml
 version: "2"
@@ -135,40 +225,47 @@ linters:
 ```
 
 ## Non-negotiable UI invariant
+
 - Tab switching in host TUI and attach TUI MUST NOT flicker.
 - Specifically forbidden:
   - Full-screen clear/redraw on tab switch.
-  - Row-1 base repaint followed by row-1 tab overlay repaint as separate visible phases.
-- Regression tests enforcing this invariant are permanent and must not be removed or weakened.
-- Do not remove or soften these tests. Ask the developer three times before touching this.
+  - Row-1 base repaint followed by row-1 tab overlay repaint as separate
+    visible phases.
+- Regression tests enforcing this invariant are permanent and must not be
+  removed or weakened.
+- Do not remove or soften these tests. Ask the engineer three times before
+  touching this.
 
-## Regression discipline (mandatory)
-- Every user-reported bug must be converted into a failing regression test before the fix is merged.
-- For TUI/attach/headless flows, regressions must be real PTY integration tests (`ptytest`) that drive actual keypresses and assert observable screen/state outcomes.
-- For Android app behavior, prefer instrumentation or end-to-end verification when the bug is visible at the UI, notification, lifecycle, or relay boundary.
-- For timing-sensitive behavior, tests must use injected `clock.Clock` and explicitly advance mock time; do not rely on wall-clock sleeps or polling loops as proof of correctness.
+## Regression discipline
+
+- Every user-reported bug must be converted into a failing regression test
+  before the fix is merged.
+- For TUI/attach/headless flows, regressions must be real PTY integration tests
+  (`ptytest`) that drive actual keypresses and assert observable screen/state
+  outcomes.
+- For Android app behavior, prefer instrumentation or end-to-end verification
+  when the bug is visible at the UI, notification, lifecycle, or relay boundary.
+- For timing-sensitive behavior, tests must use injected `clock.Clock` and
+  explicitly advance mock time; do not rely on wall-clock sleeps or polling loops
+  as proof of correctness.
 - A bug is not marked resolved until:
   - the new regression test fails before the fix,
   - passes after the fix,
   - and relevant existing suites still pass.
-- If a report contains multiple failure modes, add one explicit assertion per failure mode (or separate tests) so coverage is auditable.
+- If a report contains multiple failure modes, add one explicit assertion per
+  failure mode, or separate tests, so coverage is auditable.
 
-## Terminal isolation (mandatory, non-negotiable)
-- Tests, harnesses, and ad hoc verification commands must never mutate the inherited terminal/tty/pty of the shell, tmux client, or Lingon session they were launched from.
-- Any test or helper that needs raw mode, resize events, or PTY control must create and use its own dedicated PTY/TTY, fully isolated from the user's terminal.
-- Process-level window-change signaling is prohibited in tests and test helpers:
-  - do not send `SIGWINCH` to the process, process group, parent process, or inherited tty owner
-  - do not rely on process-global `signal.Notify(..., SIGWINCH)` as a test stimulus
-- If resize behavior must be tested, drive it only through PTY-local mechanisms owned by the test, such as resizing the dedicated PTY created for that test.
-- Do not use `/dev/tty`, inherited stdin/stdout terminals, or shell wrappers that alter the caller terminal state as part of test setup.
-- When any illicit inherited-tty or process-level resize behavior is discovered in the test codebase, remove or refactor it immediately; do not preserve it as legacy coverage.
+## Bug tracking and post-fix verification
 
-## Bug tracking and post-fix verification (mandatory)
-- Track active user-reported bugs in [BUG_TRACKER.md](BUG_TRACKER.md).
-- Add or update the tracker entry before or during investigation; do not rely on thread memory alone.
+- Track active user-reported bugs in the local ignored ledger
+  `build/verification/BUG_TRACKER.md`; create it when needed. It is not a tracked
+  project document and must never be staged or committed.
+- Add or update the tracker entry before or during investigation; do not rely on
+  thread memory alone.
 - A bug fix is not considered trustworthy just because code was written.
-- After implementing a fix, perform an explicit review of the changed code paths and confirm they actually enforce the intended behavior.
-- Record verification evidence in the tracker entry:
+- After implementing a fix, perform an explicit review of the changed code paths
+  and confirm they actually enforce the intended behavior.
+- Record verification evidence only in the ignored tracker entry:
   - concrete repro steps,
   - regression coverage added,
   - tests or end-to-end checks run,

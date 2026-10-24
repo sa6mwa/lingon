@@ -37,6 +37,10 @@ import (
 
 // Options configures a headless daemon session.
 type Options struct {
+	// ConfigFile preserves host configuration defaults when starting detached terminals.
+	ConfigFile string
+	// HeadlessExecutable overrides the Lingon executable for embedded hosts.
+	HeadlessExecutable      string
 	ConfigDir               string
 	Endpoint                string
 	Token                   string
@@ -60,6 +64,15 @@ type Options struct {
 	Clock  clock.Clock
 	Logger pslog.Logger
 	Trace  *trace.Writer
+
+	OnStartupReady func(StartupReady)
+}
+
+// StartupReady reports that the daemon has bound its local socket and started
+// the local attach server.
+type StartupReady struct {
+	SessionID  string
+	SocketPath string
 }
 
 // Daemon runs one local headless PTY session and serves local attach clients over UDS websocket.
@@ -242,7 +255,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	runnerCtx, cancelRunner := context.WithCancel(ctx)
 	defer cancelRunner()
+	runnerReadyCh := make(chan error, 1)
 	runner := session.New(session.Options{
+		ConfigDir:                   d.opts.ConfigDir,
+		ConfigFile:                  d.opts.ConfigFile,
+		HeadlessExecutable:          d.opts.HeadlessExecutable,
+		OnRename:                    d.persistRename,
 		Endpoint:                    d.opts.Endpoint,
 		Token:                       d.opts.Token,
 		AuthFile:                    d.opts.AuthFile,
@@ -255,6 +273,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		Offline:                     d.opts.Offline,
 		Publish:                     d.opts.Publish,
 		PublishControl:              d.opts.PublishControl,
+		DisableRemoteSessions:       true,
 		HostnameOnly:                d.opts.HostnameOnly,
 		ScrollbackLines:             d.opts.ScrollbackLines,
 		TLSDir:                      d.opts.TLSDir,
@@ -271,6 +290,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		OnPublishStatus:             d.handlePublishStatus,
 		OnPublishWall:               d.handlePublishWall,
 		OnStatus:                    d.handleSessionStatus,
+		OnInitialSessionReady: func(err error) {
+			runnerReadyCh <- err
+		},
 		ToggleWallInactivityFallback: func(ctx context.Context, sessionID string) (session.WallInactivityToggleResult, error) {
 			return d.toggleWallInactivityFallback(sessionID), nil
 		},
@@ -290,9 +312,25 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go func() {
 		runnerErrCh <- runner.Run(runnerCtx)
 	}()
+	select {
+	case err := <-runnerReadyCh:
+		if err != nil {
+			_ = d.writeState("stopped", err.Error())
+			return err
+		}
+	case err := <-runnerErrCh:
+		if err != nil {
+			_ = d.writeState("stopped", err.Error())
+			return err
+		}
+		return fmt.Errorf("initial local runner exited before reporting readiness")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/client", d.handleWSClient)
+	mux.HandleFunc("/sessions/manage", d.handleSessionManagement)
 	mux.HandleFunc("/internal/headless/wall", d.handleInternalWall)
 	detachCh := make(chan string, 1)
 	mux.HandleFunc("/internal/headless/detach", d.handleInternalDetach(detachCh))
@@ -306,6 +344,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer stopHeartbeat()
 	go d.heartbeat(heartbeatCtx)
 	go d.monitorLocalWallInactivity(ctx)
+	if d.opts.OnStartupReady != nil {
+		d.opts.OnStartupReady(StartupReady{
+			SessionID:  d.sessionID,
+			SocketPath: d.socketPath,
+		})
+	}
 
 	runnerDone := false
 	var runnerErr error
@@ -1105,6 +1149,7 @@ func (d *Daemon) writeState(status, lastErr string) error {
 		rec := state.Sessions[d.sessionID]
 		if rec.SessionID == "" {
 			rec.SessionID = d.sessionID
+			rec.Name = d.sessionID
 			rec.StartedAt = d.startedAt
 		}
 		rec.PID = os.Getpid()

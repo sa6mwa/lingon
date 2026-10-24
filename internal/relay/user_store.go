@@ -12,7 +12,10 @@ import (
 
 // UserStore persists users to disk.
 type UserStore struct {
-	mu sync.RWMutex
+	mu         sync.RWMutex
+	saveMu     sync.Mutex
+	mutationMu sync.Mutex
+	owner      *StateOwner
 
 	Users map[string]User `json:"users"`
 }
@@ -61,9 +64,19 @@ func (s *UserStore) Save(path string) error {
 	if s == nil {
 		return fmt.Errorf("user store is nil")
 	}
+	if s.owner != nil {
+		return s.owner.withWrite(func() error { return s.saveUnowned(path) })
+	}
+	return s.saveUnowned(path)
+}
+
+func (s *UserStore) saveUnowned(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
 	s.mu.RLock()
 	data, err := json.MarshalIndent(s, "", "  ")
 	s.mu.RUnlock()
@@ -97,6 +110,8 @@ func (s *UserStore) ReloadFromDisk(path string) error {
 	if s == nil {
 		return fmt.Errorf("user store is nil")
 	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -125,6 +140,20 @@ func (s *UserStore) Upsert(user User) {
 		s.Users = make(map[string]User)
 	}
 	s.Users[user.Username] = user
+}
+
+// Create inserts a user only when the username is not already present.
+func (s *UserStore) Create(user User) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Users == nil {
+		s.Users = make(map[string]User)
+	}
+	if _, exists := s.Users[user.Username]; exists {
+		return false
+	}
+	s.Users[user.Username] = user
+	return true
 }
 
 // Delete removes a user by username.

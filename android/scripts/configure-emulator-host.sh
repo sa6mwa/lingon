@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_DIR="${HOME}/.config/Android Open Source Project"
+CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/Android Open Source Project"
 CONFIG_PATH="${CONFIG_DIR}/Emulator.conf"
 
 mkdir -p "${CONFIG_DIR}"

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"pkt.systems/lingon/internal/clock"
+	"pkt.systems/lingon/internal/testclock"
 )
 
 func TestNextExpiryDelay(t *testing.T) {
@@ -27,7 +27,7 @@ func TestNextExpiryDelay(t *testing.T) {
 }
 
 func TestEffectSchedulerScheduleReplaceStopAll(t *testing.T) {
-	mock := clock.NewMock()
+	mock := testclock.New()
 	s := NewEffectScheduler(mock)
 	ctx := context.Background()
 	count := 0

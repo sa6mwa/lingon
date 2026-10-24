@@ -80,6 +80,7 @@ type Action interface {
 type ActionResult struct {
 	Changed   bool
 	Delay     time.Duration
+	Deadline  time.Time // Absolute expiry; authoritative when nonzero.
 	ForceFull bool
 	Visible   bool
 	Tabs      []Tab
@@ -390,9 +391,15 @@ func actionEffectFrom(r *Runtime, changed bool, now time.Time) ActionResult {
 		now = r.now()
 	}
 	state := r.State()
+	delay := NextExpiryDelay(state, now)
+	var deadline time.Time
+	if delay > 0 {
+		deadline = now.Add(delay)
+	}
 	return ActionResult{
 		Changed:   changed,
-		Delay:     r.ExpiryDelay(now),
+		Delay:     delay,
+		Deadline:  deadline,
 		ForceFull: state.DisconnectVisible,
 		State:     state,
 	}

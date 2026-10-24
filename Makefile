@@ -1,5 +1,6 @@
-.PHONY: help generate build test test-short test-webui test-last-fail test-android lint fmt vet golangci-lint install release clean container push-container \
-	android-clean android-sdk android-avd android-emulator android-build android-release android-install android-integration-test
+.NOTPARALLEL:
+.PHONY: help hygiene generate build test test-short test-webui test-last-fail test-android test-all lint fmt vet golangci-lint install release prerelease release-matrix package-verify publish print-release-version clean container push-container dev-up dev-down dev-ps dev-logs dev-reset \
+	android-clean android-sdk android-avd android-emulator android-build android-release android-install android-install-release android-integration-test
 
 GO ?= go
 CGO_ENABLED ?= 0
@@ -8,41 +9,52 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 INSTALL ?= install
 INSTALL_MODE ?= 0755
-CONTAINER_BUILDER ?= $(shell command -v podman || command -v nerdctl || command -v docker)
-IMAGE ?= docker.io/pktsystems/lingon
-LINGON_VERSION ?= $(shell $(GO) run -buildvcs=true ./cmd/lingon version --version)
-LINGON_SEMVER ?= $(shell $(GO) run -buildvcs=true ./cmd/lingon version --semver)
+VERSION ?=
+RELEASE_MESSAGE ?=
+export LINGON_RELEASE_VERSION := $(VERSION)
+export LINGON_RELEASE_MESSAGE := $(RELEASE_MESSAGE)
+VERIFY = bash scripts/verify-contained.sh
+LIFECYCLE = $(VERIFY) $(GO) run ./cmd/lingon-lifecycle
 
 GOFLAGS ?=
 BUILD_FLAGS ?= -trimpath
 LD_FLAGS ?=
-TEST_LOG ?= test.log
+TEST_LOG ?= build/test.log
 WEBUI_TEST_PKGS ?= ./integration/webui
 
 ANDROID_DIR ?= android
 APK_PATH ?= $(ANDROID_DIR)/app/build/outputs/apk/release/app-release.apk
-APK_OUT ?= $(dir $(BIN))lingon.apk
-GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
-ZIP_OUT ?= $(dir $(BIN))lingon-$(shell $(GO) env GOOS)-$(shell $(GO) env GOARCH)-$(LINGON_SEMVER).zip
 
 .DEFAULT_GOAL := help
 
 help:
 	@echo "Targets:"
 	@echo "  make                # show this help"
+	@echo "  make hygiene        # reject tracked evidence and root-level review/log clutter"
 	@echo "  make generate       # run: go generate ./..."
 	@echo "  make build          # build the lingon binary"
 	@echo "  make test           # run tests with coverage"
-	@echo "  make test-short     # run short tests with coverage"
+	@echo "  make test-short     # run uncached short Go tests with coverage"
 	@echo "  make test-webui     # run web UI integration tests"
 	@echo "  make test-last-fail # show last failing test from $(TEST_LOG)"
 	@echo "  make test-android   # run Android integration tests"
-	@echo "  make test-all       # run all tests (phone tests are not headless!)"
+	@echo "  make test-all       # serial full proof including the owned Android emulator"
 	@echo "  make lint           # go vet + golint + golangci-lint"
 	@echo "  make install        # install binary"
-	@echo "  make container      # build container image (podman/nerdctl/docker)"
-	@echo "  make push-container # push version + latest container tags"
-	@echo "  make release        # build binary + Android APK + zip"
+	@echo "  make prerelease     # serial full proof + six-platform matrix + APK + Podman rehearsal"
+	@echo "  make release VERSION=X.Y.Z RELEASE_MESSAGE='feat(scope): change'"
+	@echo "                      # candidate proof, squash to trunk, lightweight tag, clean final proof/artifacts"
+	@echo "  make release-matrix # incremental artifact rehearsal, never sufficient to publish"
+	@echo "  make package-verify # inspect existing receipt, checksums, binary/APK/image metadata"
+	@echo "  make publish        # push verified trunk/tag, publish GitHub assets, push Docker Hub last"
+	@echo "  make container      # verify the image produced by release-matrix"
+	@echo "  make push-container # retry only the final Docker Hub push; never rebuild"
+	@echo "  make print-release-version # exact lightweight vX.Y.Z on HEAD, otherwise 0.0.0"
+	@echo "  make dev-up LINGON_DEV_IMAGE=docker.io/pktsystems/lingon:vX.Y.Z"
+	@echo "  make dev-down dev-ps dev-logs dev-reset # rootless Podman Kube, state under build/devenv"
+	@echo "  Release contract: Linux/FreeBSD/Darwin amd64+arm64, CGO=0; Linux/BSD static."
+	@echo "  Release tests run on Linux; BSD/Darwin are cross-built and inspected."
+	@echo "  GitHub and Docker Hub authentication must already be configured."
 	@echo ""
 	@echo "Android targets:"
 	@echo "  make android-sdk"
@@ -50,7 +62,8 @@ help:
 	@echo "  make android-emulator"
 	@echo "  make android-build"
 	@echo "  make android-release"
-	@echo "  make android-install"
+	@echo "  make android-install          # install debug APK on a device/emulator"
+	@echo "  make android-install-release  # build and install release APK on a connected phone"
 	@echo "  make android-integration-test"
 	@echo ""
 	@echo "Variables:"
@@ -61,45 +74,46 @@ help:
 	@echo "  BINDIR=$(BINDIR)"
 	@echo "  INSTALL=$(INSTALL)"
 	@echo "  INSTALL_MODE=$(INSTALL_MODE)"
-	@echo "  CONTAINER_BUILDER=$(CONTAINER_BUILDER)"
-	@echo "  IMAGE=$(IMAGE)"
-	@echo "  LINGON_VERSION=$(LINGON_VERSION)"
-	@echo "  LINGON_SEMVER=$(LINGON_SEMVER)"
 	@echo "  GOFLAGS=$(GOFLAGS)"
 	@echo "  BUILD_FLAGS=$(BUILD_FLAGS)"
 	@echo "  LD_FLAGS=$(LD_FLAGS)"
 	@echo "  WEBUI_TEST_PKGS=$(WEBUI_TEST_PKGS)"
 	@echo "  ANDROID_DIR=$(ANDROID_DIR)"
 	@echo "  APK_PATH=$(APK_PATH)"
-	@echo "  APK_OUT=$(APK_OUT)"
-	@echo "  ZIP_OUT=$(ZIP_OUT)"
 
 generate:
 	$(GO) generate ./...
 
-$(BIN):
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) build -buildvcs=true $(GOFLAGS) $(BUILD_FLAGS) -ldflags="$(LD_FLAGS)" -o $(BIN) ./cmd/lingon
+hygiene:
+	$(VERIFY) bash scripts/check-hygiene.sh
 
-build: $(BIN)
+build: hygiene
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build -buildvcs=true $(GOFLAGS) $(BUILD_FLAGS) -ldflags="$(LD_FLAGS)" -o $(BIN) ./cmd/lingon
 
 fmt:
 	$(GO) fmt ./...
 
 vet:
-	$(GO) vet ./...
+	$(VERIFY) $(GO) vet ./...
 
 golangci-lint:
-	golangci-lint run ./...
+	$(VERIFY) bash scripts/golangci-lint.sh run --concurrency=1 ./...
 
-lint: vet
-	golint ./...
+lint: hygiene vet
+	$(VERIFY) golint ./...
 	$(MAKE) golangci-lint
 
-test:
-	@bash -lc 'set -o pipefail; $(GO) test -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
+test: hygiene
+	@mkdir -p $(dir $(TEST_LOG))
+	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
 
-test-webui:
-	@bash -lc 'set -o pipefail; $(GO) test -count=1 -tags integration -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
+test-short: hygiene
+	@mkdir -p $(dir $(TEST_LOG))
+	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -short -count=1 -cover -json ./... | tee "$(TEST_LOG)"'
+
+test-webui: hygiene
+	@mkdir -p $(dir $(TEST_LOG))
+	@$(VERIFY) bash -c 'set -o pipefail; $(GO) test -count=1 -tags integration -json $(WEBUI_TEST_PKGS) | tee -a "$(TEST_LOG)"'
 
 test-last-fail:
 	@bash -lc 'if [ ! -f "$(TEST_LOG)" ]; then echo "missing $(TEST_LOG); run make test first"; exit 1; fi; \
@@ -128,37 +142,18 @@ test-android:
 	$(MAKE) -C $(ANDROID_DIR) integration-test
 
 test-all:
-	time $(MAKE) test test-webui test-android
+	$(LIFECYCLE) prerelease </dev/null
 
-install: $(BIN)
+install: build
 	$(INSTALL) -m $(INSTALL_MODE) $(BIN) $(BINDIR)/lingon
 	rm -f $(BINDIR)/lingonx
 	ln -s lingon $(BINDIR)/lingonx
 
-release: build android-release
-	@mkdir -p $(dir $(BIN))
-	@if [ -f "$(APK_PATH)" ]; then \
-		cp $(APK_PATH) $(APK_OUT); \
-	else \
-		echo "Error: APK not found at $(APK_PATH). Run 'make android-release' first." >&2; \
-		exit 1; \
-	fi
-	zip -j $(ZIP_OUT) $(BIN) $(APK_OUT)
+release prerelease release-matrix package-verify publish container push-container dev-up dev-down dev-ps dev-logs dev-reset:
+	$(LIFECYCLE) $@ </dev/null
 
-podman.yaml:
-	envsubst < podman.template.yaml > podman.yaml
-
-container: $(BIN) podman.yaml
-	@if [ -z "$(CONTAINER_BUILDER)" ]; then \
-		echo "Error: no container builder found (podman, nerdctl, docker)." >&2; \
-		exit 1; \
-	fi
-	$(CONTAINER_BUILDER) build -f Containerfile --build-arg LINGON_BIN=$(BIN) -t $(IMAGE):$(LINGON_VERSION) .
-	$(CONTAINER_BUILDER) tag $(IMAGE):$(LINGON_VERSION) $(IMAGE):latest
-
-push-container:
-	$(CONTAINER_BUILDER) push $(IMAGE):$(LINGON_VERSION)
-	$(CONTAINER_BUILDER) push $(IMAGE):latest
+print-release-version:
+	@$(LIFECYCLE) version </dev/null
 
 clean:
 	rm -rf $(dir $(BIN))
@@ -184,6 +179,9 @@ android-release:
 
 android-install:
 	$(MAKE) -C $(ANDROID_DIR) install
+
+android-install-release:
+	$(MAKE) -C $(ANDROID_DIR) install-release
 
 android-integration-test:
 	$(MAKE) -C $(ANDROID_DIR) integration-test

@@ -188,6 +188,20 @@ func TestAltScreen1049RestoresSavedAttributes(t *testing.T) {
 	}
 }
 
+func TestAltScreenSwitchClearsDelayedWrap(t *testing.T) {
+	emu := New(6, 2)
+	_ = emu.Write([]byte("MAIN\x1b[2;1H\x1b[44m"))
+	_ = emu.Write([]byte("\x1b[?1049h\x1b[2;6HX\x1b[?1049lC"))
+
+	snap, _ := emu.Snapshot()
+	if got := rowString(snap, 0); got[:4] != "MAIN" {
+		t.Fatalf("primary screen unexpectedly scrolled after alternate-screen exit: %q", got)
+	}
+	if cell := cellAt(snap, 1, 1); cell.BG != terminal.ColorDefault {
+		t.Fatalf("primary blank inherited prompt background after alternate-screen exit: %#x", cell.BG)
+	}
+}
+
 func TestTabStops(t *testing.T) {
 	emu := New(10, 1)
 	_ = emu.Write([]byte("a\tb"))

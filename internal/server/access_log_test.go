@@ -1,23 +1,15 @@
 package server
 
 import (
-	"bytes"
-	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"pkt.systems/pslog"
 )
 
 func TestAccessLogEmitsStatusAndIP(t *testing.T) {
-	var buf bytes.Buffer
-	logger := pslog.NewWithOptions(context.Background(), &buf, pslog.Options{
-		Mode:             pslog.ModeStructured,
-		DisableTimestamp: true,
-		NoColor:          true,
-	}).With("app", "lingon")
+	logger := &recordingLogger{}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
@@ -28,17 +20,99 @@ func TestAccessLogEmitsStatusAndIP(t *testing.T) {
 
 	AccessLog(logger, handler).ServeHTTP(rec, req)
 
-	logs := buf.String()
-	if !strings.Contains(logs, "\"status\":401") {
-		t.Fatalf("expected status in log, got %s", logs)
+	entry := logger.singleEntry(t)
+	if entry.level != pslog.WarnLevel {
+		t.Fatalf("log level = %v, want %v", entry.level, pslog.WarnLevel)
 	}
-	if !strings.Contains(logs, "\"ip\":\"203.0.113.9\"") {
-		t.Fatalf("expected ip in log, got %s", logs)
+	if got := entry.field("status"); got != http.StatusUnauthorized {
+		t.Fatalf("status = %v, want %d", got, http.StatusUnauthorized)
 	}
-	if !strings.Contains(logs, "\"msg\":\"server.http.request.done\"") {
-		t.Fatalf("expected message in log, got %s", logs)
+	if got := entry.field("ip"); got != "203.0.113.9" {
+		t.Fatalf("ip = %v, want 203.0.113.9", got)
 	}
-	if !strings.Contains(logs, "\"app\":\"lingon\"") {
-		t.Fatalf("expected app in log, got %s", logs)
+	if entry.message != "server.http.request.done" {
+		t.Fatalf("message = %q, want server.http.request.done", entry.message)
 	}
+}
+
+func TestAccessLogUsesResponseSeverity(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		wantLevel pslog.Level
+	}{
+		{name: "successful request", status: http.StatusOK, wantLevel: pslog.TraceLevel},
+		{name: "client error", status: http.StatusBadRequest, wantLevel: pslog.WarnLevel},
+		{name: "server error", status: http.StatusInternalServerError, wantLevel: pslog.ErrorLevel},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := &recordingLogger{}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+			})
+
+			AccessLog(logger, handler).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/resource", nil))
+
+			if got := logger.singleEntry(t).level; got != tt.wantLevel {
+				t.Fatalf("log level = %v, want %v", got, tt.wantLevel)
+			}
+		})
+	}
+}
+
+type logEntry struct {
+	level   pslog.Level
+	message string
+	fields  []any
+}
+
+func (e logEntry) field(want string) any {
+	for i := 0; i+1 < len(e.fields); i += 2 {
+		if e.fields[i] == want {
+			return e.fields[i+1]
+		}
+	}
+	return nil
+}
+
+type recordingLogger struct {
+	pslog.Logger
+	entries []logEntry
+}
+
+func (l *recordingLogger) Trace(message string, fields ...any) {
+	l.record(pslog.TraceLevel, message, fields)
+}
+
+func (l *recordingLogger) Debug(message string, fields ...any) {
+	l.record(pslog.DebugLevel, message, fields)
+}
+
+func (l *recordingLogger) Info(message string, fields ...any) {
+	l.record(pslog.InfoLevel, message, fields)
+}
+
+func (l *recordingLogger) Warn(message string, fields ...any) {
+	l.record(pslog.WarnLevel, message, fields)
+}
+
+func (l *recordingLogger) Error(message string, fields ...any) {
+	l.record(pslog.ErrorLevel, message, fields)
+}
+
+func (l *recordingLogger) record(level pslog.Level, message string, fields []any) {
+	l.entries = append(l.entries, logEntry{
+		level:   level,
+		message: message,
+		fields:  append([]any(nil), fields...),
+	})
+}
+
+func (l *recordingLogger) singleEntry(t *testing.T) logEntry {
+	t.Helper()
+	if len(l.entries) != 1 {
+		t.Fatalf("log entries = %d, want 1", len(l.entries))
+	}
+	return l.entries[0]
 }

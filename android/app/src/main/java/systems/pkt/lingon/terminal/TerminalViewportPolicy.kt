@@ -110,6 +110,7 @@ internal object TerminalViewportPolicy {
         ) {
             return cameraOffsetYPx
         }
+        if (cameraOffsetYPx <= max(1f, previousScaledCellHeightPx * 0.1f)) return 0f
         val previousBottomRows = (cameraOffsetYPx + previousViewportHeightPx.toFloat()) / previousScaledCellHeightPx
         val maxOffsetYPx = max(0f, (totalRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
         return ((previousBottomRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
@@ -144,6 +145,7 @@ internal object TerminalViewportPolicy {
         ) {
             return savedCameraOffsetYPx
         }
+        if (savedCameraOffsetYPx <= max(1f, savedScaledCellHeightPx * 0.1f)) return 0f
         val savedBottom = bottomAlignedCameraOffsetY(
             totalRows = savedTotalRows,
             scaledCellHeightPx = savedScaledCellHeightPx,

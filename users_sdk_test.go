@@ -67,3 +67,41 @@ func TestUsersSDKFlow(t *testing.T) {
 		t.Fatalf("UsersDelete: %v", err)
 	}
 }
+
+func TestUsersSDKEscapesUsernamePathSegments(t *testing.T) {
+	store := relay.NewStore()
+	users := relay.NewUserStore()
+	admin, err := relay.SeedTestUser(users)
+	if err != nil {
+		t.Fatalf("SeedTestUser: %v", err)
+	}
+	auth := relay.NewAuthenticator(users)
+	server := relay.NewHTTPServer(store, users, auth, nil, nil)
+
+	access, err := store.CreateAccessToken(admin.Username, relay.DefaultAccessTokenTTL, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CreateAccessToken: %v", err)
+	}
+
+	httptestServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httptestServer.Close)
+
+	username := "ali?ce#one"
+	if _, err := UsersAdd(context.Background(), UserCreateOptions{
+		Endpoint:    httptestServer.URL,
+		AccessToken: access.Token,
+		Username:    username,
+	}); err != nil {
+		t.Fatalf("UsersAdd: %v", err)
+	}
+
+	if _, err := UsersRotateTOTP(context.Background(), httptestServer.URL, access.Token, username); err != nil {
+		t.Fatalf("UsersRotateTOTP: %v", err)
+	}
+	if _, err := UsersChpasswd(context.Background(), httptestServer.URL, access.Token, username, ""); err != nil {
+		t.Fatalf("UsersChpasswd: %v", err)
+	}
+	if err := UsersDelete(context.Background(), httptestServer.URL, access.Token, username); err != nil {
+		t.Fatalf("UsersDelete: %v", err)
+	}
+}

@@ -19,6 +19,8 @@ const (
 	ActionSendCtrlD
 	// ActionNewPTY creates a new local PTY session.
 	ActionNewPTY
+	// ActionRename edits the active session display name.
+	ActionRename
 	// ActionToggleRespawn toggles respawn for the active local session.
 	ActionToggleRespawn
 	// ActionToggleWallInactivity cycles relay-managed inactivity wall notifications.
@@ -66,6 +68,8 @@ func (p *Prefix) Feed(b byte) (Action, []byte) {
 			return ActionNone, []byte{CtrlL}
 		case 'c', 'C':
 			return ActionNewPTY, nil
+		case 'e', 'E':
+			return ActionRename, nil
 		case 'r', 'R':
 			return ActionToggleRespawn, nil
 		case 'w', 'W':

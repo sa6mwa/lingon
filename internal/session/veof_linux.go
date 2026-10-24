@@ -9,18 +9,17 @@ import (
 )
 
 func getVEOF(file *os.File) (uint8, error) {
-	termios, err := unix.IoctlGetTermios(int(file.Fd()), unix.TCGETS)
-	if err != nil {
-		return 0, err
-	}
-	return termios.Cc[unix.VEOF], nil
+	termios, err := readTermios(file)
+	return termios.Cc[unix.VEOF], err
 }
 
 func setVEOF(file *os.File, value uint8) error {
-	termios, err := unix.IoctlGetTermios(int(file.Fd()), unix.TCGETS)
-	if err != nil {
-		return err
-	}
-	termios.Cc[unix.VEOF] = value
-	return unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, termios)
+	return withTTYDescriptor(file, func(fd int) error {
+		termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+		if err != nil {
+			return err
+		}
+		termios.Cc[unix.VEOF] = value
+		return unix.IoctlSetTermios(fd, unix.TCSETS, termios)
+	})
 }

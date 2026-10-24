@@ -12,6 +12,12 @@ import (
 
 // InteractiveOptions configures a local interactive Lingon session.
 type InteractiveOptions struct {
+	// ConfigFile preserves host configuration defaults when starting detached terminals.
+	ConfigFile string
+	// HeadlessExecutable overrides the Lingon executable for embedded hosts.
+	HeadlessExecutable string
+	// ConfigDir identifies the host configuration root used by detached terminals.
+	ConfigDir                   string
 	Endpoint                    string
 	Token                       string
 	AuthFile                    string
@@ -41,6 +47,9 @@ type InteractiveOptions struct {
 func Interactive(ctx context.Context, opts InteractiveOptions) error {
 	startedAt := time.Now()
 	runner := session.New(session.Options{
+		ConfigDir:                   opts.ConfigDir,
+		ConfigFile:                  opts.ConfigFile,
+		HeadlessExecutable:          opts.HeadlessExecutable,
 		Endpoint:                    opts.Endpoint,
 		Token:                       opts.Token,
 		AuthFile:                    opts.AuthFile,

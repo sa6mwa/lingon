@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -154,6 +155,48 @@ func TestMultiAttachHeadlessResizeMatrixRendersExpectedViewport(t *testing.T) {
 
 	waitForPromptVisible(t, attach, 8*time.Second)
 	runMultiHeadlessResizeMatrix(t, attach, func(cols, rows int) { attach.Resize(cols, rows) })
+}
+
+func TestMultiAttachExplicitHeadlessResizeUsesSelectedSessionDuringRefresh(t *testing.T) {
+	cfgDir := shortConfigDir(t)
+	for _, id := range []string{"explicit-resize-a", "explicit-resize-b"} {
+		stop := startHeadlessDaemon(t, headlessDaemonSpec{
+			ConfigDir: cfgDir, SessionID: id, Shell: fixedPromptEmitRowsBash(t),
+		})
+		defer stop()
+	}
+	waitUntilLocal(t, 8*time.Second, func() bool { return localSessionCount(cfgDir) == 2 })
+	h := newHarness(t)
+	var active atomic.Value
+	active.Store("")
+	client := startMultiAttachWithoutExplicitTermSize(t, h, ptytest.MultiAttachOptions{
+		Endpoint: "local://headless", SessionID: "explicit-resize-a",
+		Cols: 40, Rows: 10, RefreshInterval: 50 * time.Millisecond,
+		SessionSource:  localHeadlessSessionSource(cfgDir),
+		SocketResolver: localHeadlessSocketResolver(cfgDir),
+		OnActive:       func(id string) { active.Store(id) },
+	})
+	defer client.session.Cancel()
+	waitForPromptVisible(t, client.session, 8*time.Second)
+	// Change only the owned outer PTY size. No resize event is sent: the
+	// explicit command must resize the selected child.
+	client.session.Resize(60, 14)
+	for _, id := range []string{"explicit-resize-a", "explicit-resize-b"} {
+		client.session.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+			if active.Load().(string) != id {
+				return fmt.Errorf("waiting for selected session %s: %s", id, screen.String())
+			}
+			return nil
+		})
+		for i := 0; i < 32; i++ {
+			client.session.SendCtrlL()
+			client.session.Send("0")
+			ptytest.Advance(h.Clock(), 50*time.Millisecond)
+		}
+		assertHeadlessPTYSizeViaShell(t, client.session, 60, 14, id)
+		client.session.SendCtrlL()
+		client.session.Send("n")
+	}
 }
 
 func runRelayResizeMatrix(t *testing.T, host, attach *ptytest.PTYSession, resize func(cols, rows int)) {

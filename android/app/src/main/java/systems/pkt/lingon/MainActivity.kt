@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity() {
         )
     }
     private var unlockPromptInFlight = false
+    private var trustedShareLaunch: PendingShareLaunch? = null
     private val unlockLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             unlockPromptInFlight = false
@@ -45,13 +46,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        intent?.let { incoming ->
-            val endpointOverride = incoming.getStringExtra(EXTRA_ENDPOINT_OVERRIDE)
-            val shareToken = incoming.getStringExtra(EXTRA_SHARE_TOKEN)
-            if (!shareToken.isNullOrBlank()) {
-                viewModel.handleSharedToken(shareToken, endpointOverride)
-            } else if (!endpointOverride.isNullOrBlank()) {
-                viewModel.updateEndpoint(endpointOverride)
+        if (!handleIncomingIntent(intent)) {
+            val token = savedInstanceState?.getString(STATE_TRUSTED_SHARE_TOKEN)
+            if (!token.isNullOrBlank()) {
+                val restored = PendingShareLaunch(token, savedInstanceState.getString(STATE_TRUSTED_SHARE_ENDPOINT))
+                trustedShareLaunch = restored
+                // Ordinary configuration changes retain this ViewModel. Only
+                // replay the trusted context when the replacement lost it.
+                if (viewModel.state.value.shareToken != token) {
+                    applyShareLaunch(restored)
+                }
             }
         }
         setContent {
@@ -69,8 +73,33 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        val endpointOverride = intent.getStringExtra(EXTRA_ENDPOINT_OVERRIDE)
-        val shareToken = intent.getStringExtra(EXTRA_SHARE_TOKEN)
+        handleIncomingIntent(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.remove(STATE_TRUSTED_SHARE_TOKEN)
+        outState.remove(STATE_TRUSTED_SHARE_ENDPOINT)
+        val token = trustedShareLaunch?.shareToken
+        val current = viewModel.state.value
+        // Logout or leaving the share must not resurrect a consumed launch.
+        if (!token.isNullOrBlank() && current.shareToken == token) {
+            outState.putString(STATE_TRUSTED_SHARE_TOKEN, token)
+            outState.putString(STATE_TRUSTED_SHARE_ENDPOINT, trustedShareLaunch?.endpointOverride ?: current.endpoint)
+        }
+    }
+
+    private fun handleIncomingIntent(intent: Intent?): Boolean {
+        if (intent?.action != ACTION_INTERNAL_SHARE) return false
+        val pending = PendingShareLaunches.take(intent.getStringExtra(EXTRA_SHARE_REQUEST_ID)) ?: return false
+        trustedShareLaunch = pending
+        applyShareLaunch(pending)
+        return true
+    }
+
+    private fun applyShareLaunch(pending: PendingShareLaunch) {
+        val endpointOverride = pending.endpointOverride
+        val shareToken = pending.shareToken
         if (!shareToken.isNullOrBlank()) {
             viewModel.handleSharedToken(shareToken, endpointOverride)
         } else if (!endpointOverride.isNullOrBlank()) {
@@ -124,7 +153,9 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        const val EXTRA_SHARE_TOKEN = "share_token"
-        const val EXTRA_ENDPOINT_OVERRIDE = "endpoint_override"
+        const val ACTION_INTERNAL_SHARE = "systems.pkt.lingon.action.INTERNAL_SHARE"
+        const val EXTRA_SHARE_REQUEST_ID = "share_request_id"
+        private const val STATE_TRUSTED_SHARE_TOKEN = "trusted_share_token"
+        private const val STATE_TRUSTED_SHARE_ENDPOINT = "trusted_share_endpoint"
     }
 }

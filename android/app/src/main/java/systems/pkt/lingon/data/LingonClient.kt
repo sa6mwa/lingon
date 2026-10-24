@@ -2,6 +2,8 @@ package systems.pkt.lingon.data
 
 import kotlinx.coroutines.flow.Flow
 import systems.pkt.lingon.data.relay.RelayWallEventsPage
+import systems.pkt.lingon.data.relay.SessionManagementRequest
+import systems.pkt.lingon.data.relay.SessionManagementResult
 import systems.pkt.lingon.data.relay.RelaySession
 import systems.pkt.lingon.data.certs.TrustedCert
 
@@ -31,6 +33,7 @@ interface LingonClient {
     suspend fun refreshAuth(): Boolean
     suspend fun loadSessionZoom(endpoint: String, sessionId: String): Float
     suspend fun loadLastActiveSessionId(endpoint: String): String?
+    suspend fun manageSession(operation: SessionManagementRequest): SessionManagementResult
     suspend fun listSessions(): List<RelaySession>
     suspend fun listWallEvents(sinceId: Long, limit: Int): RelayWallEventsPage
     fun streamSessions(): Flow<List<RelaySession>>

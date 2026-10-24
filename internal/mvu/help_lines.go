@@ -19,6 +19,7 @@ func HelpLines(state State) []string {
 		"endpoint: " + state.Endpoint,
 		"",
 		"Ctrl+L c  new session",
+		"Ctrl+L e  rename session",
 		"Ctrl+L Q  close session",
 		"Ctrl+L d  send Ctrl+D",
 		"Ctrl+L [  scrollback (PgUp/PgDn/w/s/u/d half page; Up/Down or j/k line; J/K five lines; h/l one col; H/L five cols; Home/End/g/G top/bottom and reset x-pan; wheel scrolls)",

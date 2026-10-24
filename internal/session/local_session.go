@@ -26,8 +26,9 @@ import (
 )
 
 type localSession struct {
-	id   string
-	name string
+	id     string
+	nameMu sync.RWMutex
+	name   string
 
 	shell string
 	term  string
@@ -101,6 +102,8 @@ type localSession struct {
 
 	remoteInputCh chan []byte
 	outputNotify  chan struct{}
+	startupOnce   sync.Once
+	startupCh     chan error
 
 	resizeRedrawMu      sync.Mutex
 	ignoreNextPTYOutput bool
@@ -477,6 +480,7 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 		allowRemoteResize: opts.AllowRemoteResize,
 		remoteInputCh:     make(chan []byte, 256),
 		outputNotify:      make(chan struct{}, 1),
+		startupCh:         make(chan error, 1),
 	}
 	if opts.Cols > 0 && opts.Rows > 0 {
 		session.snapshot = &protocolpb.Snapshot{
@@ -493,11 +497,34 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 	return session
 }
 
+func (s *localSession) waitForStartup(ctx context.Context) error {
+	if s == nil || s.startupCh == nil {
+		return fmt.Errorf("local session startup is unavailable")
+	}
+	select {
+	case err := <-s.startupCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *localSession) reportStartup(err error) {
+	if s == nil || s.startupCh == nil {
+		return
+	}
+	s.startupOnce.Do(func() {
+		s.startupCh <- err
+	})
+}
+
 func (s *localSession) ID() string {
 	return s.id
 }
 
 func (s *localSession) Name() string {
+	s.nameMu.RLock()
+	defer s.nameMu.RUnlock()
 	return s.name
 }
 
@@ -654,6 +681,10 @@ func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
 	if cols <= 0 || rows <= 0 {
 		return nil, fmt.Errorf("invalid size")
 	}
+	// Input must not reach the child until the resized viewport and cursor
+	// baseline have been restored. Echo during that transaction uses stale rows.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.emuMu.Lock()
 	prevCols := s.cols
 	prevRows := s.rows
@@ -1169,6 +1200,7 @@ func (s *localSession) closePTY() {
 func (s *localSession) runOnce(ctx context.Context) error {
 	ptyFile, ttyFile, cmd, err := startShell(s.shell, s.term)
 	if err != nil {
+		s.reportStartup(err)
 		return err
 	}
 	s.ptyMu.Lock()
@@ -1176,8 +1208,6 @@ func (s *localSession) runOnce(ctx context.Context) error {
 	s.tty = ttyFile
 	s.cmd = cmd
 	s.ptyMu.Unlock()
-
-	defer s.closePTY()
 
 	s.captureVEOF()
 	if ttyFile != nil {
@@ -1189,6 +1219,8 @@ func (s *localSession) runOnce(ctx context.Context) error {
 		s.ptyMu.Unlock()
 	}
 
+	// Startup and later resize/control requests share one geometry boundary.
+	s.emuMu.Lock()
 	if s.cols <= 0 {
 		s.cols = 80
 	}
@@ -1196,7 +1228,6 @@ func (s *localSession) runOnce(ctx context.Context) error {
 		s.rows = 24
 	}
 
-	s.emuMu.Lock()
 	s.emulator = emu.New(s.cols, s.rows)
 	if emuImpl, ok := s.emulator.(*emu.Emulator); ok {
 		if s.trace != nil {
@@ -1265,32 +1296,36 @@ func (s *localSession) runOnce(ctx context.Context) error {
 		}
 		emuImpl.SetScrollbackLimit(s.scrollbackLines)
 	}
-	s.emuMu.Unlock()
-	if s.logger != nil {
-		s.logger.Trace("session.emulator.ready", "session", s.id, "cols", s.cols, "rows", s.rows)
-	}
-	_ = s.resizePTY(s.cols, s.rows)
-	s.emuMu.Lock()
+	cols, rows := s.cols, s.rows
+	_ = s.resizePTY(cols, rows)
 	rawSnap, snapErr := s.emulator.Snapshot()
-	s.emuMu.Unlock()
 	if snapErr == nil {
 		s.storeSnapshot(protocol.SnapshotToProto(rawSnap), 0)
 	}
+	s.emuMu.Unlock()
+	if s.logger != nil {
+		s.logger.Trace("session.emulator.ready", "session", s.id, "cols", cols, "rows", rows)
+	}
+	s.reportStartup(nil)
 	_ = setNonblock(ptyFile, true)
 	defer func() {
 		_ = setNonblock(ptyFile, false)
 	}()
 
 	localErr := make(chan error, 1)
+	readCtx, stopReader := context.WithCancel(ctx)
+	readerDone := make(chan struct{})
+	defer shutdownPTYReader(stopReader, s.closePTY, readerDone)
 	go func() {
+		defer close(readerDone)
 		buf := make([]byte, 4096)
 		for {
 			select {
-			case <-ctx.Done():
+			case <-readCtx.Done():
 				return
 			default:
 			}
-			n, err := readPTY(ctx, ptyFile, buf)
+			n, err := readPTY(readCtx, ptyFile, buf)
 			if err != nil {
 				if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
 					s.clock.Sleep(10 * time.Millisecond)

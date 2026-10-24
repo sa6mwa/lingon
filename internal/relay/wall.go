@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
 	"pkt.systems/pslog"
@@ -34,7 +35,7 @@ type inactivityMonitor struct {
 	lastActivity  time.Time
 	level         int
 	inactiveAfter time.Duration
-	timer         *time.Timer
+	timer         *clock.Timer
 }
 
 type wallEvent struct {
@@ -55,6 +56,7 @@ type WallService struct {
 	store               *Store
 	hub                 *Hub
 	logger              pslog.Logger
+	clock               clock.Clock
 	timeout             time.Duration
 	inactiveAfterLevels []time.Duration
 	monitors            map[string]*inactivityMonitor
@@ -72,6 +74,7 @@ func newWallService(store *Store, hub *Hub, logger pslog.Logger, timeout time.Du
 		store:        store,
 		hub:          hub,
 		logger:       logger,
+		clock:        clock.New(),
 		monitors:     make(map[string]*inactivityMonitor),
 		bySession:    make(map[string]map[string]struct{}),
 		eventTTL:     defaultWallEventTTL,
@@ -79,6 +82,10 @@ func newWallService(store *Store, hub *Hub, logger pslog.Logger, timeout time.Du
 	}
 	s.setConfig(timeout, inactiveAfterLevels)
 	return s
+}
+
+func (s *WallService) now() time.Time {
+	return s.clock.Now().UTC()
 }
 
 func (s *WallService) setConfig(timeout time.Duration, inactiveAfterLevels []time.Duration) {
@@ -138,7 +145,7 @@ func (s *WallService) setConfigLocked(timeout time.Duration, inactiveAfterLevels
 	if !levelsChanged {
 		return
 	}
-	now := time.Now().UTC()
+	now := s.now()
 	for key, monitor := range s.monitors {
 		if monitor == nil {
 			continue
@@ -365,7 +372,7 @@ func (s *WallService) recordEvent(username, sourceSessionID, sourceSessionName, 
 		return 0
 	}
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = s.now()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -391,7 +398,7 @@ func (s *WallService) listEvents(username string, sinceID uint64, limit int, now
 		return []wallEvent{}, sinceID, false
 	}
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = s.now()
 	}
 	limit = s.normalizeEventLimit(limit)
 	s.mu.Lock()
@@ -502,7 +509,7 @@ func (s *WallService) setInactivity(username, sessionID, sender string, enabled 
 		return false, 0
 	}
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = s.now()
 	}
 	key := monitorKey(username, sessionID)
 	s.mu.Lock()
@@ -519,7 +526,7 @@ func (s *WallService) toggleInactivity(username, sessionID, sender string, now t
 		return false, 0
 	}
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = s.now()
 	}
 	key := monitorKey(username, sessionID)
 	s.mu.Lock()
@@ -567,7 +574,7 @@ func (s *WallService) markActivity(sessionID string, now time.Time) {
 		return
 	}
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = s.now()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -598,13 +605,13 @@ func (s *WallService) scheduleMonitorLocked(key string, monitor *inactivityMonit
 	if delay < time.Second {
 		delay = time.Second
 	}
-	monitor.timer = time.AfterFunc(delay, func() {
+	monitor.timer = s.clock.AfterFunc(delay, func() {
 		s.fireMonitor(key)
 	})
 }
 
 func (s *WallService) fireMonitor(key string) {
-	now := time.Now().UTC()
+	now := s.now()
 	var sessionID string
 	var username string
 	var sender string

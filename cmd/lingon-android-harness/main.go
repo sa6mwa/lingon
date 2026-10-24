@@ -29,6 +29,7 @@ import (
 
 	"pkt.systems/lingon"
 	"pkt.systems/lingon/internal/cliwall"
+	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/headless"
 	"pkt.systems/lingon/internal/headlessd"
 	"pkt.systems/lingon/internal/protocolpb"
@@ -51,29 +52,32 @@ type harnessConfig struct {
 }
 
 type harnessUser struct {
-	Username   string   `json:"username"`
-	Password   string   `json:"password"`
-	TOTPSecret string   `json:"totp_secret"`
-	Sessions   []string `json:"sessions"`
-	ViewToken  string   `json:"view_token"`
+	Username     string   `json:"username"`
+	Password     string   `json:"password"`
+	TOTPSecret   string   `json:"totp_secret"`
+	Sessions     []string `json:"sessions"`
+	ViewToken    string   `json:"view_token"`
+	ControlToken string   `json:"control_token"`
 }
 
 type harness struct {
-	config     harnessConfig
-	server     *httptest.Server
-	sessions   []sessionHandle
-	sessionsMu sync.Mutex
-	ctx        context.Context
-	baseDir    string
-	configDir  string
-	selfPath   string
-	endpoint   string
-	access     string
-	authPath   string
-	hostIndex  int
-	headlessIx int
-	cols       int
-	rows       int
+	wallClock   clock.Clock
+	wallClockMu sync.Mutex
+	config      harnessConfig
+	server      *httptest.Server
+	sessions    []sessionHandle
+	sessionsMu  sync.Mutex
+	ctx         context.Context
+	baseDir     string
+	configDir   string
+	selfPath    string
+	endpoint    string
+	access      string
+	authPath    string
+	hostIndex   int
+	headlessIx  int
+	cols        int
+	rows        int
 }
 
 type harnessWallRequest struct {
@@ -90,7 +94,8 @@ type harnessHeadlessRequest struct {
 }
 
 type harnessHeadlessResponse struct {
-	ID string `json:"id"`
+	ID        string `json:"id"`
+	ViewToken string `json:"view_token"`
 }
 
 type harnessHeadlessSizeResponse struct {
@@ -107,6 +112,7 @@ func main() {
 	var (
 		sessionCount = flag.Int("sessions", 2, "number of host sessions to start")
 		port         = flag.Int("port", 0, "port to bind (0 for random)")
+		cleartext    = flag.Bool("cleartext", false, "use HTTP for debug-only share fallback verification")
 		basePath     = flag.String("base-path", "/v1", "API base path")
 		user         = flag.String("user", "test", "login username")
 		pass         = flag.String("pass", "pass", "login password")
@@ -129,6 +135,7 @@ func main() {
 	h, err := startHarness(ctx, harnessOptions{
 		sessionCount: *sessionCount,
 		port:         *port,
+		cleartext:    *cleartext,
 		basePath:     *basePath,
 		username:     *user,
 		password:     *pass,
@@ -151,8 +158,10 @@ func main() {
 }
 
 type harnessOptions struct {
+	wallClock    clock.Clock
 	sessionCount int
 	port         int
+	cleartext    bool
 	basePath     string
 	username     string
 	password     string
@@ -244,15 +253,27 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	endpoint := "https://127.0.0.1:" + portStr + ensureBasePath(opts.basePath)
+	scheme := "https"
+	if opts.cleartext {
+		scheme = "http"
+	}
+	endpoint := scheme + "://127.0.0.1:" + portStr + ensureBasePath(opts.basePath)
 
 	hub := relay.NewHub(nil)
 	auth := relay.NewAuthenticator(users)
 	relayServer := relay.NewHTTPServer(store, users, auth, nil, hub)
+	wallClock := opts.wallClock
+	if wallClock == nil && os.Getenv("LINGON_ANDROID_HARNESS_WALL_CLOCK") == "mock" {
+		mock := clock.NewMock()
+		mock.Add(time.Since(mock.Now()))
+		wallClock = mock
+	}
+	relayServer.WallClock = wallClock
 	relayServer.ConfigureWall(harnessWallTimeout(), harnessWallLevels())
 	relayServer.UsersFile = usersPath
 	relayServer.DataDir = configDir
 	h := &harness{
+		wallClock: wallClock,
 		config: harnessConfig{
 			Endpoint:    endpoint,
 			CACertPath:  filepath.Join(tlsDir, "ca.pem"),
@@ -284,6 +305,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 	stopHostPath := ensureBasePath(opts.basePath) + "/__harness/stop-host"
 	wallPath := ensureBasePath(opts.basePath) + "/__harness/send-wall"
 	wallInactivityPath := ensureBasePath(opts.basePath) + "/__harness/wall-inactivity"
+	wallClockPath := ensureBasePath(opts.basePath) + "/__harness/advance-wall-clock"
 	startHeadlessPath := ensureBasePath(opts.basePath) + "/__harness/start-headless"
 	detachHeadlessPath := ensureBasePath(opts.basePath) + "/__harness/detach-headless"
 	headlessSizePath := ensureBasePath(opts.basePath) + "/__harness/headless-size"
@@ -294,7 +316,8 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			clientDelay = time.Duration(ms) * time.Millisecond
 		}
 	}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	faults := &shareAuthFaults{}
+	handler := faults.wrap(ensureBasePath(opts.basePath), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case controlPath:
 			if r.Method != http.MethodPost {
@@ -375,6 +398,26 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "sent"})
 			return
+		case wallClockPath:
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				Milliseconds int64 `json:"milliseconds"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := h.advanceWallClock(req.Milliseconds); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "advanced"})
+			return
 		case wallInactivityPath:
 			if r.Method != http.MethodPost {
 				w.Header().Set("Allow", http.MethodPost)
@@ -416,8 +459,13 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			share, err := h.createHeadlessShare(r.Context(), id)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(harnessHeadlessResponse{ID: id})
+			_ = json.NewEncoder(w).Encode(harnessHeadlessResponse{ID: id, ViewToken: share.Token})
 			return
 		case detachHeadlessPath:
 			if r.Method != http.MethodPost {
@@ -459,7 +507,7 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			relayHandler.ServeHTTP(w, r)
 			return
 		}
-	})
+	}))
 
 	srv := httptest.NewUnstartedServer(handler)
 	srv.TLS = &tls.Config{
@@ -467,7 +515,11 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 		Certificates: []tls.Certificate{cert},
 	}
 	srv.Listener = listener
-	srv.StartTLS()
+	if opts.cleartext {
+		srv.Start()
+	} else {
+		srv.StartTLS()
+	}
 	h.server = srv
 
 	user1 := harnessUser{
@@ -514,6 +566,12 @@ func startHarness(ctx context.Context, opts harnessOptions) (*harness, error) {
 			return nil, err
 		}
 		user1.ViewToken = share.Token
+		controlShare, err := store.CreateShareToken(user1.Sessions[0], relay.ShareScopeControl, 24*time.Hour, time.Now().UTC())
+		if err != nil {
+			h.stop()
+			return nil, err
+		}
+		user1.ControlToken = controlShare.Token
 	}
 	if len(user2.Sessions) > 0 {
 		share, err := store.CreateShareToken(user2.Sessions[0], relay.ShareScopeView, 24*time.Hour, time.Now().UTC())
@@ -571,6 +629,20 @@ func (h *harness) setWallInactivity(sessions []string, enabled bool) error {
 	return nil
 }
 
+func (h *harness) advanceWallClock(milliseconds int64) error {
+	advancing, ok := h.wallClock.(interface{ Add(time.Duration) })
+	if !ok {
+		return fmt.Errorf("wall clock is not controlled")
+	}
+	if milliseconds < 0 || milliseconds > int64(time.Hour/time.Millisecond) {
+		return fmt.Errorf("wall clock advance must be between zero and one hour")
+	}
+	h.wallClockMu.Lock()
+	defer h.wallClockMu.Unlock()
+	advancing.Add(time.Duration(milliseconds) * time.Millisecond)
+	return nil
+}
+
 func harnessWallTimeout() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_WALL_TIMEOUT"))
 	if raw == "" {
@@ -608,6 +680,11 @@ func harnessWallLevels() []time.Duration {
 }
 
 func (h *harness) stop() {
+	if records, err := headless.NewStore(h.configDir).Reconcile(); err == nil {
+		for _, record := range records {
+			_ = headless.DetachSession(context.Background(), h.configDir, record.SessionID)
+		}
+	}
 	h.sessionsMu.Lock()
 	for _, sess := range h.sessions {
 		if sess.stop != nil {
@@ -678,17 +755,18 @@ func (h *harness) startHeadless(cols int, rows int) (string, error) {
 		}
 	}()
 	daemon := headlessd.New(headlessd.Options{
-		ConfigDir:      h.configDir,
-		Endpoint:       h.endpoint,
-		Token:          h.access,
-		AuthFile:       h.authPath,
-		SessionID:      id,
-		Cols:           cols,
-		Rows:           rows,
-		Shell:          defaultHeadlessShell(),
-		Publish:        true,
-		PublishControl: true,
-		Logger:         pslog.NoopLogger(),
+		ConfigDir:          h.configDir,
+		HeadlessExecutable: filepath.Join(filepath.Dir(h.selfPath), "lingon"),
+		Endpoint:           h.endpoint,
+		Token:              h.access,
+		AuthFile:           h.authPath,
+		SessionID:          id,
+		Cols:               cols,
+		Rows:               rows,
+		Shell:              defaultHeadlessShell(),
+		Publish:            true,
+		PublishControl:     true,
+		Logger:             pslog.NoopLogger(),
 	})
 	runErr := make(chan error, 1)
 	go func() {
@@ -849,6 +927,8 @@ func startHostSession(ctx context.Context, endpoint, token, id, scriptPath strin
 
 func buildHostSessionOptions(endpoint, token, id, scriptPath string, cols, rows int, tlsDir string, stdinFile, stdoutFile *os.File, ptyDebug bool, ptyMu *sync.Mutex, ptyBuf *bytes.Buffer) session.Options {
 	return session.Options{
+		ConfigDir:                   filepath.Dir(tlsDir),
+		HeadlessExecutable:          filepath.Join(filepath.Dir(os.Args[0]), "lingon"),
 		Endpoint:                    endpoint,
 		Token:                       token,
 		TLSDir:                      tlsDir,
@@ -892,10 +972,20 @@ func writeHostScript(baseDir, id, harnessPath string, shellOverride string, init
 		shellPath = strings.TrimSpace(os.Getenv("LINGON_ANDROID_HARNESS_HOST_SHELL"))
 	}
 	if shellPath != "" {
+		initialOutput := ""
+		if initialLines > 0 {
+			initialOutput = fmt.Sprintf(`line_index=0
+while [ "$line_index" -lt %d ]; do
+  printf 'LINE_%s %%03d\r\n' "$line_index"
+  line_index=$((line_index + 1))
+done
+`, initialLines, id)
+		}
 		content := fmt.Sprintf(`#!/bin/sh
+%s
 export PS1='%s$ '
 exec "%s" -i
-`, id, shellPath)
+`, initialOutput, id, shellPath)
 		if err := os.WriteFile(scriptPath, []byte(content), 0o700); err != nil {
 			return "", err
 		}
@@ -906,8 +996,9 @@ exec "%s" -i
 		initialLinesEnv = fmt.Sprintf("export LINGON_HOST_ECHO_INITIAL_LINES=%d\n", initialLines)
 	}
 	content := fmt.Sprintf(`#!/bin/sh
-%sexec "%s" -host-echo -host-id "%s"
-`, initialLinesEnv, harnessPath, id)
+export LINGON_HOST_ECHO_OWNED_PTY=1
+	%sexec "%s" -host-echo -host-id "%s"
+	`, initialLinesEnv, harnessPath, id)
 	if err := os.WriteFile(scriptPath, []byte(content), 0o700); err != nil {
 		return "", err
 	}
@@ -935,15 +1026,18 @@ func runHostEcho(id string) {
 		_, _ = fmt.Fprintf(logFile, format+"\n", args...)
 	}
 	logf("host-echo start id=%s", id)
-
-	if state, err := term.MakeRaw(int(os.Stdin.Fd())); err == nil {
-		defer func() {
-			_ = term.Restore(int(os.Stdin.Fd()), state)
-		}()
-		logf("term.MakeRaw ok")
-	} else {
-		logf("term.MakeRaw failed err=%v", err)
+	if os.Getenv("LINGON_HOST_ECHO_OWNED_PTY") != "1" {
+		logf("host-echo refused without owned pty marker")
+		return
 	}
+	// The harness launches this process on its own child PTY. Byte-level echo
+	// must not wait for a newline in the PTY's canonical input mode.
+	ptyState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		logf("host-echo raw mode failed: %v", err)
+		return
+	}
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), ptyState) }()
 
 	writer := bufio.NewWriterSize(os.Stdout, 4096)
 	if raw := strings.TrimSpace(os.Getenv("LINGON_HOST_ECHO_INITIAL_LINES")); raw != "" {

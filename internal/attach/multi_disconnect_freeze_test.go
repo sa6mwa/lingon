@@ -54,6 +54,23 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 	})
 	attach.DrainRaw()
 
+	// Both offline tabs need their own previously rendered snapshot.
+	hostB.Send("printf 'cached-session-b\\n'\n")
+	attach.SendBytes([]byte{0x0c, 'n'})
+	attach.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains("cached-session-b") {
+			return fmt.Errorf("expected session B snapshot before disconnect; screen:\n%s", screen.String())
+		}
+		return nil
+	})
+	attach.SendBytes([]byte{0x0c, 'p'})
+	attach.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains("offline-test") || screen.Contains("cached-session-b") {
+			return fmt.Errorf("expected session A snapshot before disconnect; screen:\n%s", screen.String())
+		}
+		return nil
+	})
+
 	h.StopServer()
 	h.Advance(2 * time.Second)
 
@@ -87,6 +104,7 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 	_ = attach.DrainRaw()
 
 	openHelpOrOffline := func(sessionID string) {
+		attach.SendBytes([]byte{0x0c, 'h'})
 		attach.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
 			if screen.Contains("no sessions available") || screen.Contains("Waiting for sessions") {
 				return nil
@@ -100,7 +118,6 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 			if screen.Contains("session: "+sessionID) && screen.Contains("Ctrl+L h  help") {
 				return nil
 			}
-			attach.SendBytes([]byte{0x0c, 'h'})
 			return fmt.Errorf("help overlay missing for %s; screen:\n%s", sessionID, screen.String())
 		})
 	}
@@ -108,10 +125,18 @@ func TestMultiAttachRespondsToKeysWhileOffline(t *testing.T) {
 	openHelpOrOffline("session_a")
 
 	attach.Send("q")
-	h.Advance(200 * time.Millisecond)
-	attach.SendCtrlL()
-	h.Advance(80 * time.Millisecond)
-	attach.Send("n")
-	h.Advance(80 * time.Millisecond)
+	attach.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if screen.Contains("Ctrl+L h  help") {
+			return fmt.Errorf("help did not dismiss; screen:\n%s", screen.String())
+		}
+		return nil
+	})
+	attach.SendBytes([]byte{0x0c, 'n'})
+	attach.Eventually(2*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+		if !screen.Contains("cached-session-b") {
+			return fmt.Errorf("expected cached session B after offline tab switch; screen:\n%s", screen.String())
+		}
+		return nil
+	})
 	openHelpOrOffline("session_b")
 }

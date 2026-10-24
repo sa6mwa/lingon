@@ -937,9 +937,9 @@ func (e *Emulator) cursorPositionWithReason(row, col int, reason string) {
 	y := row - 1
 	if e.originMode {
 		y += e.scr.scrollTop
-	}
-	if y > e.scr.scrollBottom {
-		y = e.scr.scrollBottom
+		if y > e.scr.scrollBottom {
+			y = e.scr.scrollBottom
+		}
 	}
 	x := col - 1
 	if x >= e.cols {
@@ -1294,6 +1294,11 @@ func (e *Emulator) setMode(params []int, private byte, enable bool) {
 }
 
 func (e *Emulator) setAltScreen(enable bool, saveCursor bool) {
+	// Delayed wrap belongs to the active screen buffer. Do not carry a
+	// bottom-right write from one buffer into the other: the first printable
+	// character after an alternate-screen restore would otherwise wrap and
+	// scroll the restored primary screen.
+	e.wrapPending = false
 	if enable {
 		if saveCursor {
 			e.main.saveCursor(e.attr)

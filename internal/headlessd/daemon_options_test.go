@@ -1,8 +1,10 @@
 package headlessd
 
 import (
+	"context"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +32,29 @@ func TestNormalizeWallInactiveAfterLevelsFiltersInvalidAndDedupes(t *testing.T) 
 	want := []time.Duration{2 * time.Minute, 5 * time.Minute}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("levels = %v, want %v", got, want)
+	}
+}
+
+func TestDaemonDoesNotReportReadyWhenInitialShellFails(t *testing.T) {
+	ready := make(chan StartupReady, 1)
+	d := New(Options{
+		ConfigDir: testutil.TempDir(t),
+		SessionID: "invalid-initial-shell",
+		Shell:     "/definitely/not/a/shell",
+		Publish:   false,
+		OnStartupReady: func(status StartupReady) {
+			ready <- status
+		},
+	})
+
+	err := d.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "start shell") {
+		t.Fatalf("Run error = %v, want initial shell startup failure", err)
+	}
+	select {
+	case status := <-ready:
+		t.Fatalf("reported ready status after initial shell failure: %+v", status)
+	default:
 	}
 }
 

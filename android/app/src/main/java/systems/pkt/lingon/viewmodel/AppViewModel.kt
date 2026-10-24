@@ -2,6 +2,8 @@ package systems.pkt.lingon.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,6 +13,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -23,7 +26,9 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import systems.pkt.lingon.data.ApiException
 import systems.pkt.lingon.data.LingonClient
+import systems.pkt.lingon.data.certs.normalizeCertificateEndpointKey
 import systems.pkt.lingon.data.relay.RelaySession
+import systems.pkt.lingon.data.relay.AuthenticatedShareSession
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
 import systems.pkt.lingon.notifications.NoopWallDeliveryCoordinator
 import systems.pkt.lingon.notifications.WallDeliveryCoordinator
@@ -44,6 +49,7 @@ import systems.pkt.lingon.work.NoopBackgroundWallServiceController
 import systems.pkt.lingon.work.WallWorkScheduler
 import java.util.LinkedHashMap
 import java.util.UUID
+import java.io.IOException
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -54,11 +60,16 @@ class AppViewModel(
     private val wallDeliveryCoordinator: WallDeliveryCoordinator = NoopWallDeliveryCoordinator,
     private val wallWorkScheduler: WallWorkScheduler = NoopWallWorkScheduler,
     private val backgroundWallServiceController: BackgroundWallServiceController = NoopBackgroundWallServiceController,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    private var createdSessionId: String? = null
+    private var sessionContextGeneration = 0L
+    private var shareAuthenticationGeneration = 0L
     private var ws: WebSocket? = null
+    private var socketEvents: SocketEventInbox? = null
     private var socketOpen = false
     private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
@@ -165,7 +176,9 @@ class AppViewModel(
             repository.certificatesFlow.collectLatest { allCerts ->
                 val endpoint = _state.value.selectedCertEndpoint
                 if (endpoint.isNullOrBlank()) return@collectLatest
-                _state.update { it.copy(trustedCerts = allCerts[endpoint].orEmpty()) }
+                _state.update {
+                    it.copy(trustedCerts = allCerts[normalizeCertificateEndpointKey(endpoint)].orEmpty())
+                }
             }
         }
         viewModelScope.launch {
@@ -194,7 +207,14 @@ class AppViewModel(
     }
 
     fun showShareToken(show: Boolean, token: String? = null) {
-        _state.update { it.copy(showShareToken = show, shareToken = token, shareTokenError = null) }
+        _state.update {
+            it.copy(
+                showShareToken = show,
+                shareToken = token,
+                shareTokenError = null,
+                shareCanControl = token != null && token == it.shareToken && it.shareCanControl,
+            )
+        }
     }
 
     fun setResizeHostEnabled(enabled: Boolean) {
@@ -249,6 +269,43 @@ class AppViewModel(
                 delay(minRefreshMs - elapsed)
             }
             _state.update { it.copy(isRefreshing = false) }
+        }
+    }
+
+    fun createTerminal() = manageSession("create", "")
+
+    fun renameSession(name: String) = manageSession("rename", name.trim())
+
+    private fun manageSession(kind: String, name: String) {
+        val before = _state.value
+        if (!before.sessionManagementAvailable) {
+            setStatus("session management requires a connected owner account", StatusLevel.Warn)
+            return
+        }
+        val generation = sessionContextGeneration
+        fun isCurrent(): Boolean {
+            return isCurrentSessionContext(before, generation) && _state.value.loggedIn
+        }
+        _state.update { it.copy(sessionManagementBusy = true) }
+        viewModelScope.launch {
+            try {
+                val result = repository.manageSession(systems.pkt.lingon.data.relay.SessionManagementRequest(
+                    requestId = UUID.randomUUID().toString(), sessionId = before.activeSessionId!!, kind = kind, name = name,
+                ))
+                if (!isCurrent()) return@launch
+                val sessions = repository.listSessions()
+                if (!isCurrent()) return@launch
+                if (kind == "create") createdSessionId = result.sessionId
+                updateSessions(sessions)
+                if (!isCurrent()) return@launch
+                setStatus(if (kind == "create") "Terminal created" else "Session renamed", StatusLevel.Info)
+            } catch (err: CancellationException) {
+                throw err
+            } catch (err: Exception) {
+                if (isCurrent()) setStatus(err.message ?: "Session operation outcome unknown; refresh sessions before trying again", StatusLevel.Error)
+            } finally {
+                if (generation == sessionContextGeneration) _state.update { it.copy(sessionManagementBusy = false) }
+            }
         }
     }
 
@@ -367,6 +424,7 @@ class AppViewModel(
                 sessions = emptyList(),
                 activeSessionId = null,
                 shareToken = null,
+                shareCanControl = false,
                 shareTokenError = null,
                 wallInactivityEnabled = false,
                 wallInactivityLabel = null,
@@ -466,6 +524,7 @@ class AppViewModel(
                         username = username,
                         loginError = null,
                         shareToken = null,
+                        shareCanControl = false,
                         shareTokenError = null,
                         status = null,
                         transientStatus = null,
@@ -496,7 +555,8 @@ class AppViewModel(
             closeWebSocket("logout")
             try {
                 repository.logout()
-            } catch (err: ApiException) {
+            } catch (err: Exception) {
+                if (err !is ApiException && err !is IOException) throw err
                 _state.update {
                     it.copy(
                         status = StatusMessage(err.message ?: "logout failed", StatusLevel.Error),
@@ -520,6 +580,7 @@ class AppViewModel(
                         activeSessionId = null,
                         activeSnapshot = null,
                         shareToken = null,
+                        shareCanControl = false,
                         shareTokenError = null,
                         wallInactivityEnabled = false,
                         wallInactivityLabel = null,
@@ -551,6 +612,7 @@ class AppViewModel(
         stopReconnect()
         stopWallPoll(resetCursor = true)
         closeWebSocket("share token")
+        suppressReconnect = false
         clearSessionCaches()
         resetCurrentSessionState()
         lastBackgroundAtMs = null
@@ -559,6 +621,7 @@ class AppViewModel(
                 loggedIn = false,
                 username = null,
                 shareToken = token,
+                shareCanControl = false,
                 shareTokenError = null,
                 sessions = listOf(sharedSession()),
                 activeSessionId = sharedSessionId,
@@ -694,6 +757,9 @@ class AppViewModel(
     }
 
     private fun clearSessionCaches() {
+        sessionContextGeneration++
+        createdSessionId = null
+        _state.update { it.copy(sessionManagementBusy = false) }
         sessionCaches.clear()
         sessionListCache.clear()
         missingSessionSinceMs.clear()
@@ -950,8 +1016,8 @@ class AppViewModel(
             setStatus("not connected", StatusLevel.Warn)
             return
         }
-        if (state.shareToken != null && !state.hasControl) {
-            setStatus("view-only session", StatusLevel.Warn)
+        if (!state.canSendInput) {
+            setStatus(if (state.shareToken != null) "view-only session" else "control unavailable", StatusLevel.Warn)
             return
         }
         sendProcessedInput(data.toByteArray())
@@ -969,8 +1035,8 @@ class AppViewModel(
             setStatus("not connected", StatusLevel.Warn)
             return
         }
-        if (state.shareToken != null && !state.hasControl) {
-            setStatus("view-only session", StatusLevel.Warn)
+        if (!state.canSendInput) {
+            setStatus(if (state.shareToken != null) "view-only session" else "control unavailable", StatusLevel.Warn)
             return
         }
         sendProcessedInput(bytes)
@@ -988,23 +1054,37 @@ class AppViewModel(
         _state.update { it.copy(localInputNonce = it.localInputNonce + 1) }
     }
 
+    private fun isCurrentSessionContext(before: UiState, generation: Long): Boolean {
+        val current = _state.value
+        return generation == sessionContextGeneration && current.endpoint == before.endpoint &&
+            current.username == before.username && current.shareToken == before.shareToken
+    }
+
     private suspend fun bootstrapSessions() {
-        if (_state.value.requiresAppUnlock) {
+        val generation = sessionContextGeneration
+        // Initialize the endpoint before capturing request context, but retain
+        // invalidation by logout/account changes while preferences are loading.
+        val before = _state.first { it.endpoint.isNotBlank() }
+        if (generation != sessionContextGeneration) return
+        if (before.requiresAppUnlock) {
             return
         }
-        if (_state.value.shareToken != null) {
+        if (before.shareToken != null) {
             return
         }
         try {
             val sessions = listSessionsWithRecovery()
+            if (!isCurrentSessionContext(before, generation)) return
             _state.update { it.copy(loggedIn = true) }
             updateSessions(sessions)
+            if (!isCurrentSessionContext(before, generation)) return
             syncWallPollingSchedule()
             if (sessions.isEmpty()) {
                 scheduleSessionPoll()
             }
             // Sessions updates are delivered via the active WebSocket connection.
         } catch (err: ApiException) {
+            if (!isCurrentSessionContext(before, generation)) return
             if (err.statusCode == 401) {
                 handleUnauthorizedResponse()
                 return
@@ -1018,6 +1098,7 @@ class AppViewModel(
         } catch (err: CancellationException) {
             throw err
         } catch (err: Exception) {
+            if (!isCurrentSessionContext(before, generation)) return
             _state.update {
                 it.copy(
                     status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error),
@@ -1057,6 +1138,12 @@ class AppViewModel(
         _state.update { it.copy(sessions = orderedSessions) }
         prefetchSessionViewStates(_state.value.endpoint, orderedSessions)
         syncWallPollingSchedule()
+        val created = createdSessionId
+        if (created != null && orderedSessions.any { it.id == created }) {
+            createdSessionId = null
+            selectSession(created)
+            return true
+        }
         val connectionHandled = ensureActiveSession(orderedSessions)
         if (merged.isNotEmpty()) {
             stopSessionPoll()
@@ -1097,7 +1184,9 @@ class AppViewModel(
     }
 
     private suspend fun ensureActiveSession(sessions: List<RelaySession>): Boolean {
-        val current = _state.value.activeSessionId
+        val before = _state.value
+        val generation = sessionContextGeneration
+        val current = before.activeSessionId
         val hasCurrent = current != null && sessions.any { it.id == current }
         if (hasCurrent) {
             if (ws == null || _state.value.connectionState != ConnectionState.Connected) {
@@ -1107,9 +1196,11 @@ class AppViewModel(
             return false
         }
         val endpoint = resolveEndpointForPersistence()
+        if (!isCurrentSessionContext(before, generation)) return false
         val preferredSessionId = withTimeoutOrNull(1500) {
             repository.loadLastActiveSessionId(endpoint)
         }
+        if (!isCurrentSessionContext(before, generation)) return false
         val next = when {
             !preferredSessionId.isNullOrBlank() && sessions.any { it.id == preferredSessionId } -> preferredSessionId
             else -> sessions.firstOrNull()?.id
@@ -1156,7 +1247,7 @@ class AppViewModel(
         }
         val shareToken = state.shareToken
         var sessionId = if (!shareToken.isNullOrBlank()) {
-            null
+            state.activeSessionId?.takeIf { it != sharedSessionId }
         } else {
             state.activeSessionId?.takeIf { candidate ->
                 state.sessions.any { session -> session.id == candidate }
@@ -1207,14 +1298,93 @@ class AppViewModel(
                 // Refreshing auth can fail transiently on mobile networks; attempt WS anyway and
                 // rely on explicit 401 handling from the WS connection path.
                 runCatching { repository.refreshAuth() }
+                val current = _state.value
+                if (!current.loggedIn ||
+                    current.shareToken != shareToken ||
+                    current.activeSessionId != sessionId ||
+                    current.endpoint.trim().toHttpUrlOrNull() != baseUrl
+                ) {
+                    return@launch
+                }
                 openWebSocket(baseUrl, sessionId, shareToken, state)
             }
             return
         }
-        openWebSocket(baseUrl, sessionId, shareToken, state)
+        val authenticationGeneration = ++shareAuthenticationGeneration
+        viewModelScope.launch {
+            val shareAuthentication: AuthenticatedShareSession
+            try {
+                shareAuthentication = withContext(ioDispatcher) {
+                    wsClient.authenticateShareSession(baseUrl, shareToken)
+                }
+            } catch (err: CancellationException) {
+                throw err
+            } catch (err: Exception) {
+                val current = _state.value
+                if (authenticationGeneration != shareAuthenticationGeneration ||
+                    current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl
+                ) {
+                    return@launch
+                }
+                val statusCode = (err as? ApiException)?.statusCode
+                if (err is IOException || statusCode == 408 || statusCode == 429 || statusCode in 500..599) {
+                    _state.update { it.copy(shareTokenError = null) }
+                    scheduleReconnect(err.message, retryAfterSeconds = (err as? ApiException)?.retryAfterSeconds)
+                    return@launch
+                }
+                _state.update {
+                    it.copy(
+                        shareTokenError = err.message ?: "share authentication failed",
+                        shareCanControl = false,
+                        sessionSyncing = false,
+                        connectionState = ConnectionState.Disconnected,
+                    )
+                }
+                setStatus("share authentication failed", StatusLevel.Error)
+                syncWallPollingSchedule()
+                return@launch
+            }
+            val current = _state.value
+            if (authenticationGeneration != shareAuthenticationGeneration ||
+                current.shareToken != shareToken || current.endpoint.trim().toHttpUrlOrNull() != baseUrl
+            ) {
+                return@launch
+            }
+            val shareSession = shareAuthentication.session
+            val authenticatedSessionID = shareSession.sessionId.trim()
+            val authenticatedSession = RelaySession(
+                id = authenticatedSessionID,
+                name = shareSession.name ?: "Shared session",
+                status = "active",
+            )
+            _state.update {
+                it.copy(
+                    sessions = listOf(authenticatedSession),
+                    activeSessionId = authenticatedSessionID,
+                    shareCanControl = shareSession.scope == "control",
+                    shareTokenError = null,
+                )
+            }
+            activateSessionViewState()
+            openWebSocket(baseUrl, authenticatedSessionID, shareToken, _state.value, shareAuthentication)
+        }
     }
 
-    private fun openWebSocket(baseUrl: HttpUrl, sessionId: String?, shareToken: String?, state: UiState) {
+    private fun rejectTerminalFrame(frame: systems.pkt.lingon.protocol.Frame, frameType: String, err: Exception) {
+        val message = err.message ?: "invalid terminal frame"
+        _state.update {
+            it.copy(
+                lastFrameSeq = frame.seq,
+                lastFrameType = frameType,
+                lastFrameAtMs = System.currentTimeMillis(),
+                lastFrameError = message,
+                sessionSyncing = false,
+            )
+        }
+        setStatus(message, StatusLevel.Error)
+    }
+
+    private fun openWebSocket(baseUrl: HttpUrl, sessionId: String?, shareToken: String?, state: UiState, shareAuthentication: AuthenticatedShareSession? = null) {
         val key = ConnectionKey(sessionId = sessionId, shareToken = shareToken)
         if (activeConnection == key && socketOpen && ws != null) {
             return
@@ -1237,32 +1407,43 @@ class AppViewModel(
             baseUrl = baseUrl,
             sessionId = sessionId,
             shareToken = shareToken,
+            shareAuthentication = shareAuthentication,
             clientId = clientId,
             cols = 0,
             rows = 0,
             wantsControl = true,
             lastSeq = if (forceFullSnapshotOnNextConnect) 0L else lastSeq,
         )
+        val events = SocketEventInbox(viewModelScope)
+        socketEvents = events
         ws = wsClient.connect(options, object : RelayWebSocketClient.Listener {
             private fun isStale(webSocket: WebSocket): Boolean {
                 return ws !== webSocket
             }
 
+            private fun onCurrent(webSocket: WebSocket, block: suspend () -> Unit) {
+                events.post {
+                    if (isStale(webSocket)) return@post
+                    block()
+                }
+            }
+
             override fun onOpen(webSocket: WebSocket) {
-                if (isStale(webSocket)) return
-                socketOpen = true
-                reconnectAttempt = 0
-                stopReconnect()
-                clearStatus()
-                syncWallPollingSchedule()
+                onCurrent(webSocket) {
+                    socketOpen = true
+                    reconnectAttempt = 0
+                    stopReconnect()
+                    clearStatus()
+                    syncWallPollingSchedule()
+                }
             }
 
             override fun onFrame(webSocket: WebSocket, frame: systems.pkt.lingon.protocol.Frame) {
-                if (isStale(webSocket)) return
-                if (frame.seq != 0L) {
-                    lastSeq = frame.seq
-                }
-                when {
+                onCurrent(webSocket) {
+                    if (frame.seq != 0L) {
+                        lastSeq = frame.seq
+                    }
+                    when {
                     frame.hasSessions() -> {
                         val updated = frame.sessions.sessionsList.map { session ->
                             RelaySession(
@@ -1272,9 +1453,7 @@ class AppViewModel(
                                 headless = session.headless,
                             )
                         }
-                        viewModelScope.launch {
-                            updateSessions(updated)
-                        }
+                        updateSessions(updated)
                         _state.update {
                             it.copy(
                                 lastFrameSeq = frame.seq,
@@ -1289,9 +1468,14 @@ class AppViewModel(
                             ?: _state.value.activeSessionId
                             ?: activeConnection?.sessionId
                         if (!closedSessionId.isNullOrBlank()) {
-                            viewModelScope.launch {
+                            // Closing the source socket cancels this inbox. The
+                            // surviving-session preference read must outlive it.
+                            // Join keeps inactive-session events ordered; active
+                            // closure cancels the old inbox while this owned job
+                            // continues reconciliation for the remaining views.
+                            viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
                                 handleExplicitSessionClosed(closedSessionId.trim())
-                            }
+                            }.join()
                         }
                         _state.update {
                             it.copy(
@@ -1328,7 +1512,13 @@ class AppViewModel(
                     }
                     frame.hasSnapshot() -> {
                         forceFullSnapshotOnNextConnect = false
-                        val snapshot = TerminalSnapshot.fromProto(frame.snapshot)
+                        val snapshot = try {
+                            TerminalSnapshot.fromProto(frame.snapshot)
+                        } catch (err: IllegalArgumentException) {
+                            forceFullSnapshotOnNextConnect = true
+                            rejectTerminalFrame(frame, "snapshot", err)
+                            return@onCurrent
+                        }
                         liveSnapshot = snapshot
                         val display = if (scrollbackOffset > 0) {
                             buildScrollbackSnapshot(snapshot, scrollbackRows, scrollbackOffset)
@@ -1356,7 +1546,13 @@ class AppViewModel(
                         clearStatus()
                     }
                     frame.hasDiff() -> {
-                        val nextLive = TerminalSnapshot.applyDiff(liveSnapshot, frame.diff)
+                        val nextLive = try {
+                            TerminalSnapshot.applyDiff(liveSnapshot, frame.diff)
+                        } catch (err: IllegalArgumentException) {
+                            forceFullSnapshotOnNextConnect = true
+                            rejectTerminalFrame(frame, "diff", err)
+                            return@onCurrent
+                        }
                         liveSnapshot = nextLive
                         val display = if (scrollbackOffset > 0) {
                             buildScrollbackSnapshot(nextLive, scrollbackRows, scrollbackOffset)
@@ -1482,14 +1678,12 @@ class AppViewModel(
                             sourceSessionName = wall.sourceSessionName,
                             message = wall.message,
                         )
-                        viewModelScope.launch {
-                            if (appInForeground) {
-                                if (wallDeliveryCoordinator.consumeInApp(notification)) {
-                                    showTransientStatus(wallBanner(notification), StatusLevel.Info)
-                                }
-                            } else {
-                                wallDeliveryCoordinator.deliver(notification)
+                        if (appInForeground) {
+                            if (wallDeliveryCoordinator.consumeInApp(notification)) {
+                                showTransientStatus(wallBanner(notification), StatusLevel.Info)
                             }
+                        } else {
+                            wallDeliveryCoordinator.deliver(notification)
                         }
                         _state.update {
                             it.copy(
@@ -1538,7 +1732,7 @@ class AppViewModel(
                             if (pendingWallInactivitySessionId == cleanedSessionId) {
                                 pendingWallInactivitySessionId = null
                             }
-                            return
+                            return@onCurrent
                         }
                         val shouldShowBanner =
                             pendingWallInactivitySessionId == cleanedSessionId || previousState != nextState
@@ -1567,61 +1761,66 @@ class AppViewModel(
                                 reconnectState = ConnectionState.Waiting,
                             )
                             syncCurrentSessionCache()
-                            return
+                            return@onCurrent
                         }
                         if (msg.contains("control not permitted", ignoreCase = true)) {
                             setStatus("view-only session", StatusLevel.Warn)
                             syncCurrentSessionCache()
-                            return
+                            return@onCurrent
                         }
                         if (msg.contains("authorization", ignoreCase = true)) {
                             handleRecoverableAuthFailure()
                             syncCurrentSessionCache()
-                            return
+                            return@onCurrent
                         }
                         val retryAfter = frame.error.retryAfterSeconds.takeIf { it > 0 }
                         scheduleReconnect(msg, retryAfter)
                     }
                 }
-                if (frame.seq != 0L) {
-                    syncCurrentSessionCache()
+                    if (frame.seq != 0L) {
+                        syncCurrentSessionCache()
+                    }
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable?, response: Response?) {
-                if (isStale(webSocket)) return
-                ws = null
-                socketOpen = false
-                if (response?.code == 401) {
-                    handleRecoverableAuthFailure()
-                    return
+                onCurrent(webSocket) {
+                    ws = null
+                    socketOpen = false
+                    events.close()
+                    if (response?.code == 401) {
+                        handleRecoverableAuthFailure()
+                        return@onCurrent
+                    }
+                    _state.update {
+                        it.copy(
+                            lastFrameType = "failure",
+                            lastFrameAtMs = System.currentTimeMillis(),
+                            lastFrameError = t?.message,
+                            sessionSyncing = false,
+                        )
+                    }
+                    scheduleReconnect(t?.message)
+                    syncWallPollingSchedule()
                 }
-                _state.update {
-                    it.copy(
-                        lastFrameType = "failure",
-                        lastFrameAtMs = System.currentTimeMillis(),
-                        lastFrameError = t?.message,
-                        sessionSyncing = false,
-                    )
-                }
-                scheduleReconnect(t?.message)
-                syncWallPollingSchedule()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String?) {
-                if (isStale(webSocket)) return
-                ws = null
-                socketOpen = false
-                _state.update {
-                    it.copy(
-                        lastFrameType = "closed",
-                        lastFrameAtMs = System.currentTimeMillis(),
-                        lastFrameError = reason,
-                        sessionSyncing = false,
-                    )
+                onCurrent(webSocket) {
+                    ws = null
+                    socketOpen = false
+                    events.close()
+                    _state.update {
+                        it.copy(
+                            lastFrameType = "closed",
+                            lastFrameAtMs = System.currentTimeMillis(),
+                            lastFrameError = reason,
+                            sessionSyncing = false,
+                        )
+                    }
+                    scheduleReconnect(reason)
+                    syncWallPollingSchedule()
                 }
-                scheduleReconnect(reason)
-                syncWallPollingSchedule()
             }
         })
     }
@@ -1644,6 +1843,7 @@ class AppViewModel(
                 activeSessionId = null,
                 activeSnapshot = null,
                 shareToken = null,
+                shareCanControl = false,
                 wallInactivityEnabled = false,
                 wallInactivityLabel = null,
                 scrollbackOffsetRows = 0,
@@ -1666,6 +1866,9 @@ class AppViewModel(
     }
 
     private fun closeWebSocket(reason: String) {
+        shareAuthenticationGeneration++
+        socketEvents?.close()
+        socketEvents = null
         val current = ws
         ws = null
         socketOpen = false
@@ -1717,6 +1920,7 @@ class AppViewModel(
                 delay(1000)
                 remaining -= 1
             }
+            reconnectJob = null
             refreshSessionsAndReconnect()
         }
     }
@@ -1756,19 +1960,23 @@ class AppViewModel(
     }
 
     private suspend fun refreshSessionsAndReconnect() {
-        if (_state.value.requiresAppUnlock) {
+        val before = _state.value
+        val generation = sessionContextGeneration
+        if (before.requiresAppUnlock) {
             return
         }
-        if (_state.value.shareToken != null) {
+        if (before.shareToken != null) {
             connectActiveSession()
             return
         }
-        if (!_state.value.loggedIn) {
+        if (!before.loggedIn) {
             return
         }
         try {
             val sessions = listSessionsWithRecovery()
+            if (!isCurrentSessionContext(before, generation)) return
             val connectionHandled = updateSessions(sessions)
+            if (!isCurrentSessionContext(before, generation)) return
             if (sessions.isEmpty()) {
                 scheduleSessionPoll()
                 return
@@ -1777,6 +1985,7 @@ class AppViewModel(
                 return
             }
         } catch (err: ApiException) {
+            if (!isCurrentSessionContext(before, generation)) return
             if (err.statusCode == 401) {
                 handleUnauthorizedResponse()
                 return
@@ -1790,6 +1999,7 @@ class AppViewModel(
         } catch (err: CancellationException) {
             throw err
         } catch (err: Exception) {
+            if (!isCurrentSessionContext(before, generation)) return
             _state.update {
                 it.copy(
                     status = StatusMessage(err.message ?: "failed to load sessions", StatusLevel.Error),
@@ -1797,18 +2007,20 @@ class AppViewModel(
                 )
             }
         }
-        connectActiveSession()
+        if (isCurrentSessionContext(before, generation)) connectActiveSession()
     }
 
     private suspend fun listSessionsWithRecovery(): List<RelaySession> {
+        val before = _state.value
+        val generation = sessionContextGeneration
         return try {
             repository.listSessions()
         } catch (err: ApiException) {
-            if (err.statusCode != 401 || !_state.value.loggedIn) {
+            if (err.statusCode != 401 || !_state.value.loggedIn || !isCurrentSessionContext(before, generation)) {
                 throw err
             }
             val refreshed = runCatching { repository.refreshAuth() }.getOrDefault(false)
-            if (!refreshed) {
+            if (!refreshed || !isCurrentSessionContext(before, generation)) {
                 throw err
             }
             repository.listSessions()
@@ -1899,6 +2111,7 @@ class AppViewModel(
                 activeSessionId = null,
                 activeSnapshot = null,
                 shareToken = null,
+                shareCanControl = false,
                 wallInactivityEnabled = false,
                 wallInactivityLabel = null,
                 scrollbackOffsetRows = 0,
@@ -1919,9 +2132,9 @@ class AppViewModel(
     }
 
     private fun nextBackoffMs(attempt: Int, retryAfterSeconds: Int?): Int {
-        val backoffMs = min(15000, 1000 * (1 shl (attempt - 1)))
+        val backoffMs = min(15000, 1000 * (1 shl (attempt.coerceIn(1, 5) - 1)))
         return if (retryAfterSeconds != null && retryAfterSeconds > 0) {
-            max(backoffMs, retryAfterSeconds * 1000)
+            max(backoffMs.toLong(), retryAfterSeconds.toLong() * 1000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         } else {
             backoffMs
         }
@@ -2062,6 +2275,11 @@ class AppViewModel(
     }
 
     override fun onCleared() {
+        stopReconnect()
+        stopSessionPoll()
+        refreshJob?.cancel()
+        refreshJob = null
+        closeWebSocket("view model cleared")
         transientStatusJob?.cancel()
         transientStatusJob = null
         super.onCleared()

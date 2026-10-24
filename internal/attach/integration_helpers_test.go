@@ -148,58 +148,6 @@ func assertNoTabSwitchFlickerAfterAction(t *testing.T, sess *ptytest.PTYSession,
 	}
 }
 
-func advanceActiveTabWithRetry(t *testing.T, sess *ptytest.PTYSession, clk clock.Clock, activeMu *sync.Mutex, active *string, viewsMu *sync.Mutex, views map[string]*attach.Client, prev string, timeout time.Duration) string {
-	t.Helper()
-	deadline := ptytest.Now(clk).Add(timeout)
-	for ptytest.Now(clk).Before(deadline) {
-		sess.SendCtrlL()
-		sess.Send("n")
-		ptytest.Advance(sess.Clock(), 150*time.Millisecond)
-		if next := waitForActiveSessionReadyOptional(clk, activeMu, active, viewsMu, views, prev, 400*time.Millisecond); next != "" {
-			return next
-		}
-	}
-	t.Fatalf("timed out waiting for active session ready after %q", prev)
-	return ""
-}
-
-func waitForActiveSessionReadyOptional(clk clock.Clock, activeMu *sync.Mutex, active *string, viewsMu *sync.Mutex, views map[string]*attach.Client, prev string, timeout time.Duration) string {
-	deadline := ptytest.Now(clk).Add(timeout)
-	for ptytest.Now(clk).Before(deadline) {
-		activeMu.Lock()
-		current := *active
-		activeMu.Unlock()
-		if current != "" && current != prev {
-			if clientReady(viewsMu, views, current) {
-				return current
-			}
-		}
-		ptytest.Advance(clk, 50*time.Millisecond)
-	}
-	return ""
-}
-
-func waitForRawIdle(t *testing.T, sess *ptytest.PTYSession, idle, timeout time.Duration) {
-	t.Helper()
-	if idle <= 0 {
-		return
-	}
-	clk := sess.Clock()
-	start := ptytest.Now(clk)
-	idleStart := start
-	deadline := start.Add(timeout)
-	for ptytest.Now(clk).Before(deadline) {
-		if raw := sess.DrainRaw(); raw != "" {
-			idleStart = ptytest.Now(clk)
-		}
-		if ptytest.Now(clk).Sub(idleStart) >= idle {
-			return
-		}
-		ptytest.Advance(clk, 100*time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for raw output to idle")
-}
-
 func truncateRaw(raw string) string {
 	if len(raw) <= 200 {
 		return raw

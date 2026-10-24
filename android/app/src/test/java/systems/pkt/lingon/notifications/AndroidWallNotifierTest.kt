@@ -18,24 +18,24 @@ class AndroidWallNotifierTest {
     }
 
     @Test
-    fun wallNotificationIdDiffersForDistinctEvents() {
-        assertNotEquals(
+    fun wallNotificationIdCoalescesRepeatedContentAcrossDistinctEvents() {
+        assertEquals(
             wallNotificationId(wallNotification(eventId = 42L, message = "hello")),
             wallNotificationId(wallNotification(eventId = 43L, message = "hello")),
         )
-        assertNotEquals(
+        assertEquals(
             wallNotificationTag(wallNotification(eventId = 42L, message = "hello")),
             wallNotificationTag(wallNotification(eventId = 43L, message = "hello")),
         )
     }
 
     @Test
-    fun wallNotificationIdTreatsSameEventAsSameNotificationEvenIfMessageChanges() {
-        assertEquals(
+    fun wallNotificationIdKeepsDistinctContentEvenWhenEventIdMatches() {
+        assertNotEquals(
             wallNotificationId(wallNotification(eventId = 55L, message = "hello one")),
             wallNotificationId(wallNotification(eventId = 55L, message = "hello two")),
         )
-        assertEquals(
+        assertNotEquals(
             wallNotificationTag(wallNotification(eventId = 55L, message = "hello one")),
             wallNotificationTag(wallNotification(eventId = 55L, message = "hello two")),
         )

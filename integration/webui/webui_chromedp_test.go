@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
@@ -40,6 +40,25 @@ import (
 
 func newTestClock() clock.Clock {
 	return clock.New()
+}
+
+// capture composes a typed browser result into a sequence of actions.
+func capture[T any](destination *T, action chromedp.Action[T]) chromedp.Action[chromedp.Void] {
+	return chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		value, err := action(ctx, target)
+		if err != nil {
+			return err
+		}
+		*destination = value
+		return nil
+	})
+}
+
+func browserCommand[P, R any](command cdp.Command[P, R], params P) chromedp.Action[chromedp.Void] {
+	return chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		_, err := cdp.Call(ctx, target, command, params)
+		return err
+	})
 }
 
 func TestWebUIControlFlow(t *testing.T) {
@@ -158,7 +177,7 @@ func TestWebUIControlFlow(t *testing.T) {
 	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
 
@@ -201,12 +220,12 @@ func TestWebUIControlFlow(t *testing.T) {
 	}, hostErr)
 
 	var cookiesAfterLogin []*network.Cookie
-	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		cookies, err := network.GetCookies().Do(ctx)
+	if err := chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		cookies, err := chromedp.Call(ctx, network.GetCookies, network.GetCookiesParams{})
 		if err != nil {
 			return err
 		}
-		cookiesAfterLogin = cookies
+		cookiesAfterLogin = cookies.Cookies
 		return nil
 	})); err != nil {
 		t.Fatalf("chromedp cookies: %v", err)
@@ -226,11 +245,16 @@ func TestWebUIControlFlow(t *testing.T) {
 	var hasTerm bool
 	var authState string
 	var storageStatus string
-	if err := chromedp.Run(ctx,
+	if err := chromedp.Do(ctx,
 		chromedp.Navigate(loginURL),
-		chromedp.WaitVisible("body", chromedp.ByQuery),
-		chromedp.Sleep(1*time.Second),
-		chromedp.Evaluate(`(() => {
+		chromedp.WaitVisible(chromedp.CSS("body")),
+		chromedp.Sleep(1*time.Second), capture(&viewState, chromedp.Evaluate[struct {
+			LoginHidden   bool   `json:"loginHidden"`
+			TerminalShown bool   `json:"terminalShown"`
+			InitStep      string `json:"initStep"`
+			LoginReason   string `json:"loginReason"`
+			InitError     string `json:"initError"`
+		}](`(() => {
   const login = document.getElementById("login-view");
   const term = document.getElementById("terminal-view");
   const lingon = window.__bifrons || {};
@@ -241,27 +265,21 @@ func TestWebUIControlFlow(t *testing.T) {
     loginReason: lingon.lastLoginReason || "",
     initError: lingon.initError || "",
   };
-	})()`, &viewState),
-		chromedp.Evaluate(`(async () => {
+	})()`)), capture(&sessionStatus, chromedp.Evaluate[int](`(async () => {
   try {
     const resp = await fetch("sessions", { credentials: "include" });
     return resp.status;
   } catch {
     return 0;
   }
-})()`, &sessionStatus, chromedp.EvalAsValue, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-			return p.WithAwaitPromise(true)
-		}),
-		chromedp.Evaluate(`Boolean(window.__bifrons && window.__bifrons.term)`, &hasTerm),
-		chromedp.Evaluate(`window.__bifrons ? window.__bifrons.authState || "" : ""`, &authState),
-		chromedp.Evaluate(`(() => {
+})()`, chromedp.EvalAsValue, chromedp.EvalAwaitPromise)), capture(&hasTerm, chromedp.Evaluate[bool](`Boolean(window.__bifrons && window.__bifrons.term)`)), capture(&authState, chromedp.Evaluate[string](`window.__bifrons ? window.__bifrons.authState || "" : ""`)), capture(&storageStatus, chromedp.Evaluate[string](`(() => {
   try {
     localStorage.getItem("bifrons.fontScale");
     return "ok";
   } catch (err) {
     return err && err.name ? err.name : "error";
   }
-})()`, &storageStatus),
+})()`)),
 	); err != nil {
 		t.Fatalf("chromedp reload: %v", err)
 	}
@@ -292,14 +310,13 @@ func TestWebUIControlFlow(t *testing.T) {
 	}, hostErr, c1Err)
 
 	var pasted bool
-	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(`(() => {
+	if err := chromedp.Do(ctx, capture(&pasted, chromedp.Evaluate[bool](`(() => {
   if (window.__bifrons && window.__bifrons.term) {
     window.__bifrons.term.paste("WEBINPUT\r\n");
     return true;
   }
   return false;
-})()`, &pasted),
+})()`)),
 	); err != nil {
 		t.Fatalf("chromedp paste: %v", err)
 	}
@@ -397,7 +414,7 @@ func TestWebUIAccountSeparation(t *testing.T) {
 	runLogin := func(user, pass, totpSecret, sessionID, readyToken, forbiddenToken, dataDir string) {
 		ctx, cancel := newChromedpContext(t, dataDir)
 		defer cancel()
-		if err := chromedp.Run(ctx, network.Enable()); err != nil {
+		if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 			t.Fatalf("chromedp network enable: %v", err)
 		}
 		code := totpCode(t, totpSecret)
@@ -573,11 +590,11 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 
 	ctx, cancel := newChromedpContext(t, filepath.Join(configDir, "chromedp-share-cookie"))
 	defer cancel()
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
 
-	if err := chromedp.Run(ctx,
+	if err := chromedp.Do(ctx,
 		chromedp.Navigate(loginURL+"?token="+url.QueryEscape(share.Token)),
 	); err != nil {
 		t.Fatalf("share attach login: %v", err)
@@ -587,10 +604,7 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 
 	var locationSearch string
 	var locationHref string
-	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(`window.location.search`, &locationSearch),
-		chromedp.Evaluate(`window.location.href`, &locationHref),
-	); err != nil {
+	if err := chromedp.Do(ctx, capture(&locationSearch, chromedp.Evaluate[string](`window.location.search`)), capture(&locationHref, chromedp.Evaluate[string](`window.location.href`))); err != nil {
 		t.Fatalf("read location: %v", err)
 	}
 	if locationSearch != "" {
@@ -602,19 +616,13 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 
 	var shareSessionStatus int
 	var sessionsStatus int
-	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(`(async () => {
+	if err := chromedp.Do(ctx, capture(&shareSessionStatus, chromedp.Evaluate[int](`(async () => {
   const resp = await fetch("auth/share/session", { credentials: "include" });
   return resp.status;
-})()`, &shareSessionStatus, chromedp.EvalAsValue, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-			return p.WithAwaitPromise(true)
-		}),
-		chromedp.Evaluate(`(async () => {
+})()`, chromedp.EvalAsValue, chromedp.EvalAwaitPromise)), capture(&sessionsStatus, chromedp.Evaluate[int](`(async () => {
   const resp = await fetch("sessions", { credentials: "include" });
   return resp.status;
-})()`, &sessionsStatus, chromedp.EvalAsValue, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-			return p.WithAwaitPromise(true)
-		}),
+})()`, chromedp.EvalAsValue, chromedp.EvalAwaitPromise)),
 	); err != nil {
 		t.Fatalf("share status checks: %v", err)
 	}
@@ -625,7 +633,7 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 		t.Fatalf("sessions status = %d, want %d", sessionsStatus, http.StatusUnauthorized)
 	}
 
-	if err := chromedp.Run(ctx, chromedp.Navigate(loginURL)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate(loginURL)); err != nil {
 		t.Fatalf("share reload navigate: %v", err)
 	}
 	waitForTerminalView(t, ctx, 15*time.Second, hostErr)
@@ -644,23 +652,20 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 		return fmt.Sprintf("unexpected status banner after reload: visible=%v text=%q", banner.Visible, banner.Text)
 	}, hostErr)
 
-	if err := chromedp.Run(ctx,
-		chromedp.Click("#menu-toggle", chromedp.ByQuery),
-		chromedp.WaitVisible("#logout-btn", chromedp.ByQuery),
-		chromedp.Click("#logout-btn", chromedp.ByQuery),
+	if err := chromedp.Do(ctx,
+		chromedp.Click(chromedp.CSS("#menu-toggle")),
+		chromedp.WaitVisible(chromedp.CSS("#logout-btn")),
+		chromedp.Click(chromedp.CSS("#logout-btn")),
 	); err != nil {
 		t.Fatalf("share logout click: %v", err)
 	}
 	waitForLoginView(t, ctx, 10*time.Second, hostErr)
 
 	var afterLogoutShareStatus int
-	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(`(async () => {
+	if err := chromedp.Do(ctx, capture(&afterLogoutShareStatus, chromedp.Evaluate[int](`(async () => {
   const resp = await fetch("auth/share/session", { credentials: "include" });
   return resp.status;
-})()`, &afterLogoutShareStatus, chromedp.EvalAsValue, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-			return p.WithAwaitPromise(true)
-		}),
+})()`, chromedp.EvalAsValue, chromedp.EvalAwaitPromise)),
 	); err != nil {
 		t.Fatalf("share session after logout: %v", err)
 	}
@@ -668,7 +673,7 @@ func TestWebUIShareTokenCookieReloadAndLogout(t *testing.T) {
 		t.Fatalf("share session after logout status = %d, want %d", afterLogoutShareStatus, http.StatusUnauthorized)
 	}
 
-	if err := chromedp.Run(ctx, chromedp.Navigate(loginURL)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate(loginURL)); err != nil {
 		t.Fatalf("navigate after logout: %v", err)
 	}
 	waitForLoginView(t, ctx, 10*time.Second, hostErr)
@@ -757,7 +762,7 @@ func TestWebUIWebSocketBackoff(t *testing.T) {
 	ctx, cancel = context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
 
@@ -780,7 +785,7 @@ func TestWebUIWebSocketBackoff(t *testing.T) {
 	go func() {
 		srv.Close()
 	}()
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`window.__bifrons && window.__bifrons.forceDisconnect && window.__bifrons.forceDisconnect()`, nil)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Evaluate[chromedp.Void](`window.__bifrons && window.__bifrons.forceDisconnect && window.__bifrons.forceDisconnect()`)); err != nil {
 		t.Fatalf("force disconnect: %v", err)
 	}
 
@@ -862,7 +867,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 
 	ctx, cancel := newChromedpContext(t, filepath.Join(configDir, "chromedp-fullscreen"))
 	defer cancel()
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
 	loginURL := endpoint + "/"
@@ -882,7 +887,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 		return "expected at least 1 session"
 	}, hostErr)
 
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	if err := chromedp.Do(ctx, chromedp.Evaluate[chromedp.Void](`(() => {
   const firstTab = document.querySelector(".tab-button");
   if (firstTab) {
     firstTab.click();
@@ -900,7 +905,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
     window.__bifrons.debug.setFullscreenActive(true);
   }
   return true;
-})()`, nil)); err != nil {
+})()`)); err != nil {
 		t.Fatalf("chromedp fullscreen toggle: %v", err)
 	}
 
@@ -915,7 +920,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 	}
 	measureLayout := func() (layoutState, error) {
 		var state layoutState
-		err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+		err := chromedp.Do(ctx, capture(&state, chromedp.Evaluate[layoutState](`(() => {
   const tiles = Array.from(document.querySelectorAll(".terminal-tile"));
   const visible = tiles.filter(t => !t.classList.contains("hidden") && t.offsetParent !== null);
 	  const active = document.querySelector(".terminal-tile.is-active");
@@ -937,7 +942,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 	    fillsScreen = widthRatio >= 0.9 || heightRatio >= 0.9;
 	  }
 	  return { visibleTiles: visible.length, leftFits, rightFits, bottomFits, fillsScreen, widthRatio, heightRatio };
-	})()`, &state))
+	})()`)))
 		return state, err
 	}
 
@@ -1015,8 +1020,8 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 			initial.WidthRatio, initial.HeightRatio, after.WidthRatio, after.HeightRatio)
 	}
 
-	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(`(() => {
+	if err := chromedp.Do(ctx,
+		chromedp.Evaluate[chromedp.Void](`(() => {
   if (window.__bifrons && window.__bifrons.debug && window.__bifrons.debug.setFullscreenSingle) {
     window.__bifrons.debug.setFullscreenSingle(false);
   } else {
@@ -1030,7 +1035,7 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
     window.__bifrons.debug.setFullscreenActive(false);
   }
   return true;
-})()`, nil),
+})()`),
 		chromedp.EmulateViewport(1100, 430),
 	); err != nil {
 		t.Fatalf("chromedp non-fullscreen single resize prep: %v", err)
@@ -1042,13 +1047,13 @@ func TestWebUIFullscreenSingleLayout(t *testing.T) {
 	}
 	measureNonFullscreen := func() (nonFullscreenState, error) {
 		var state nonFullscreenState
-		err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+		err := chromedp.Do(ctx, capture(&state, chromedp.Evaluate[nonFullscreenState](`(() => {
   const tiles = Array.from(document.querySelectorAll(".terminal-tile"));
   const visible = tiles.filter(t => !t.classList.contains("hidden") && t.offsetParent !== null);
   const active = document.querySelector(".terminal-tile.is-active");
   const activeVisible = Boolean(active && !active.classList.contains("hidden") && active.offsetParent !== null);
   return { visibleTiles: visible.length, activeVisible };
-})()`, &state))
+})()`)))
 		return state, err
 	}
 
@@ -1148,10 +1153,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 
 	ctx, cancel := newChromedpContext(t, filepath.Join(configDir, "chromedp-tab-overflow"))
 	defer cancel()
-	if err := chromedp.Run(ctx,
-		network.Enable(),
-		chromedp.EmulateViewport(640, 460),
-	); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{}), chromedp.EmulateViewport(640, 460)); err != nil {
 		t.Fatalf("chromedp setup: %v", err)
 	}
 	code := totpCode(t, created.TOTPSecret)
@@ -1174,7 +1176,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 
 	readTabState := func() (tabState, error) {
 		var state tabState
-		err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+		err := chromedp.Do(ctx, capture(&state, chromedp.Evaluate[tabState](`(() => {
   const tabBar = document.getElementById("tab-bar");
   const tabList = document.getElementById("tab-list");
   const buttons = tabList ? Array.from(tabList.querySelectorAll(".tab-button")) : [];
@@ -1195,7 +1197,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
     tabBarHidden: Boolean(tabBar && tabBar.classList.contains("hidden")),
     horizontalFits: Boolean(tabList && tabList.clientHeight === tabList.offsetHeight),
   };
-})()`, &state))
+})()`)))
 		return state, err
 	}
 
@@ -1235,7 +1237,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
 	}
 
 	var clicked bool
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	if err := chromedp.Do(ctx, capture(&clicked, chromedp.Evaluate[bool](`(() => {
   const tabList = document.getElementById("tab-list");
   if (!tabList) return false;
   const buttons = Array.from(tabList.querySelectorAll(".tab-button"));
@@ -1243,7 +1245,7 @@ func TestWebUITabOverflowAutoScrollAndFades(t *testing.T) {
   if (!last) return false;
   last.click();
   return true;
-})()`, &clicked)); err != nil {
+})()`))); err != nil {
 		t.Fatalf("click last tab: %v", err)
 	}
 	if !clicked {
@@ -1396,7 +1398,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
   }
   return false;
 })()`, strconv.Quote(inputBurst.String()))
-	if err := chromedp.Run(ctx, chromedp.Evaluate(inputJS, &pasted)); err != nil {
+	if err := chromedp.Do(ctx, capture(&pasted, chromedp.Evaluate[bool](inputJS))); err != nil {
 		t.Fatalf("chromedp input paste: %v", err)
 	}
 	if !pasted {
@@ -1418,7 +1420,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
   }
   return false;
 })()`, strconv.Quote(outputCmd))
-	if err := chromedp.Run(ctx, chromedp.Evaluate(outputJS, &pasted)); err != nil {
+	if err := chromedp.Do(ctx, capture(&pasted, chromedp.Evaluate[bool](outputJS))); err != nil {
 		t.Fatalf("chromedp output paste: %v", err)
 	}
 	if !pasted {
@@ -1452,7 +1454,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
   }
   return false;
 })()`, strconv.Quote(finalCmds))
-	if err := chromedp.Run(ctx, chromedp.Evaluate(finalJS, &pasted)); err != nil {
+	if err := chromedp.Do(ctx, capture(&pasted, chromedp.Evaluate[bool](finalJS))); err != nil {
 		t.Fatalf("chromedp final paste: %v", err)
 	}
 	if !pasted {
@@ -1481,7 +1483,7 @@ func TestWebUIHostBurstRepro(t *testing.T) {
 
 func xtermText(ctx context.Context) (string, error) {
 	var out string
-	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	err := chromedp.Do(ctx, capture(&out, chromedp.Evaluate[string](`(() => {
   const term = window.__bifrons && window.__bifrons.term ? window.__bifrons.term : null;
   if (!term || !term.buffer || !term.buffer.active) return "";
   const buf = term.buffer.active;
@@ -1495,7 +1497,7 @@ func xtermText(ctx context.Context) (string, error) {
     lines.push(line.translateToString(true));
   }
   return lines.join("\n");
-})()`, &out))
+})()`)))
 	return out, err
 }
 
@@ -1503,7 +1505,7 @@ func waitForTerminalReady(t *testing.T, ctx context.Context, timeout time.Durati
 	t.Helper()
 	waitUntilDebug(t, timeout, func() bool {
 		var ready bool
-		_ = chromedp.Run(ctx, chromedp.Evaluate(`Boolean(window.__bifrons && window.__bifrons.term && window.__bifrons.term.buffer && window.__bifrons.term.buffer.active)`, &ready))
+		_ = chromedp.Do(ctx, capture(&ready, chromedp.Evaluate[bool](`Boolean(window.__bifrons && window.__bifrons.term && window.__bifrons.term.buffer && window.__bifrons.term.buffer.active)`)))
 		return ready
 	}, func() string {
 		state, err := readUIState(ctx)
@@ -1541,7 +1543,7 @@ type statusBannerState struct {
 
 func readUIState(ctx context.Context) (uiState, error) {
 	var state uiState
-	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	err := chromedp.Do(ctx, capture(&state, chromedp.Evaluate[uiState](`(() => {
   const login = document.getElementById("login-view");
   const terminal = document.getElementById("terminal-view");
   const lingon = window.__bifrons || {};
@@ -1553,13 +1555,13 @@ func readUIState(ctx context.Context) (uiState, error) {
     hasTerminal: Boolean(lingon.term),
     authState: lingon.authState || "",
   };
-})()`, &state))
+})()`)))
 	return state, err
 }
 
 func readStatusBanner(ctx context.Context) (statusBannerState, error) {
 	var state statusBannerState
-	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	err := chromedp.Do(ctx, capture(&state, chromedp.Evaluate[statusBannerState](`(() => {
   const banner = document.getElementById("status-banner");
   if (!banner) {
     return { visible: false, text: "", level: "" };
@@ -1569,7 +1571,7 @@ func readStatusBanner(ctx context.Context) (statusBannerState, error) {
     text: (banner.textContent || "").trim(),
     level: banner.dataset && banner.dataset.level ? String(banner.dataset.level) : "",
   };
-})()`, &state))
+})()`)))
 	return state, err
 }
 
@@ -1626,33 +1628,22 @@ func ensureWebUILogin(ctx context.Context, loginURL, username, password, totp st
 	if err != nil {
 		return err
 	}
-	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := network.SetCookie("lingon_access", access).
-				WithURL(loginURL).
-				WithHTTPOnly(true).
-				WithSecure(true).
-				Do(ctx); err != nil {
-				return err
-			}
-			if err := network.SetCookie("lingon_refresh", refresh).
-				WithURL(loginURL).
-				WithHTTPOnly(true).
-				WithSecure(true).
-				Do(ctx); err != nil {
-				return err
-			}
-			return nil
-		}),
+	if err := chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		if _, err := chromedp.Call(ctx, network.SetCookie, network.SetCookieParams{Name: "lingon_access", Value: access, URL: loginURL, HTTPOnly: new(true), Secure: new(true)}); err != nil {
+			return err
+		}
+		if _, err := chromedp.Call(ctx, network.SetCookie, network.SetCookieParams{Name: "lingon_refresh", Value: refresh, URL: loginURL, HTTPOnly: new(true), Secure: new(true)}); err != nil {
+			return err
+		}
+		return nil
+	}),
 	); err != nil {
 		return err
 	}
-	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			_, _, _, _, err := page.Navigate(loginURL).Do(ctx)
-			return err
-		}),
-		chromedp.Sleep(200*time.Millisecond),
+	if err := chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		_, err := chromedp.Call(ctx, page.Navigate, page.NavigateParams{URL: loginURL})
+		return err
+	}), chromedp.Sleep(200*time.Millisecond),
 	); err != nil {
 		return err
 	}
@@ -1664,26 +1655,19 @@ func ensureWebUIShare(ctx context.Context, loginURL, token string) error {
 	if err != nil {
 		return err
 	}
-	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := network.SetCookie("bifrons_share_session", shareSessionID).
-				WithURL(loginURL).
-				WithHTTPOnly(true).
-				WithSecure(true).
-				Do(ctx); err != nil {
-				return err
-			}
-			return nil
-		}),
+	if err := chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		if _, err := chromedp.Call(ctx, network.SetCookie, network.SetCookieParams{Name: "bifrons_share_session", Value: shareSessionID, URL: loginURL, HTTPOnly: new(true), Secure: new(true)}); err != nil {
+			return err
+		}
+		return nil
+	}),
 	); err != nil {
 		return err
 	}
-	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			_, _, _, _, err := page.Navigate(loginURL).Do(ctx)
-			return err
-		}),
-		chromedp.Sleep(200*time.Millisecond),
+	if err := chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		_, err := chromedp.Call(ctx, page.Navigate, page.NavigateParams{URL: loginURL})
+		return err
+	}), chromedp.Sleep(200*time.Millisecond),
 	); err != nil {
 		return err
 	}
@@ -1840,8 +1824,7 @@ func totpCode(t *testing.T, secret string) string {
 
 func fetchSessionIDs(ctx context.Context) ([]string, error) {
 	var ids []string
-	err := chromedp.Run(ctx,
-		chromedp.Evaluate(`(async () => {
+	err := chromedp.Do(ctx, capture(&ids, chromedp.Evaluate[[]string](`(async () => {
   try {
     const resp = await fetch("sessions", { credentials: "include" });
     if (!resp.ok) return [];
@@ -1850,9 +1833,7 @@ func fetchSessionIDs(ctx context.Context) ([]string, error) {
   } catch {
     return [];
   }
-})()`, &ids, chromedp.EvalAsValue, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-			return p.WithAwaitPromise(true)
-		}),
+})()`, chromedp.EvalAsValue, chromedp.EvalAwaitPromise)),
 	)
 	return ids, err
 }
@@ -1936,12 +1917,12 @@ type viewInfo struct {
 
 func readViewInfo(ctx context.Context) (viewInfo, error) {
 	var info *viewInfo
-	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	err := chromedp.Do(ctx, capture(&info, chromedp.Evaluate[*viewInfo](`(() => {
   if (!window.__bifrons || !window.__bifrons.viewInfo) {
     return null;
   }
   return window.__bifrons.viewInfo();
-})()`, &info))
+})()`)))
 	if err != nil {
 		return viewInfo{}, err
 	}
@@ -1953,18 +1934,18 @@ func readViewInfo(ctx context.Context) (viewInfo, error) {
 
 func readActiveSessionID(ctx context.Context) (string, error) {
 	var out string
-	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	err := chromedp.Do(ctx, capture(&out, chromedp.Evaluate[string](`(() => {
   if (!window.__bifrons || !window.__bifrons.debug || !window.__bifrons.debug.state) {
     return "";
   }
   return window.__bifrons.debug.state.activeSessionId || "";
-})()`, &out))
+})()`)))
 	return out, err
 }
 
 func readDebugInfo(ctx context.Context) (string, error) {
 	var out string
-	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	err := chromedp.Do(ctx, capture(&out, chromedp.Evaluate[string](`(() => {
   if (!window.__bifrons || !window.__bifrons.debugInfo) {
     return "";
   }
@@ -1973,18 +1954,18 @@ func readDebugInfo(ctx context.Context) (string, error) {
   } catch (err) {
     return "";
   }
-})()`, &out))
+})()`)))
 	return out, err
 }
 
 func readReconnectAt(ctx context.Context) (float64, error) {
 	var out float64
-	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	err := chromedp.Do(ctx, capture(&out, chromedp.Evaluate[float64](`(() => {
   if (!window.__bifrons || !window.__bifrons.debug) {
     return 0;
   }
   return window.__bifrons.debug.lastReconnectAt || 0;
-	})()`, &out))
+	})()`)))
 	return out, err
 }
 
@@ -2061,7 +2042,7 @@ func TestWebUIResizeDoesNotBypassReconnectBackoff(t *testing.T) {
 
 	ctx, cancel := newChromedpContext(t, filepath.Join(configDir, "chromedp-backoff-resize"))
 	defer cancel()
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
 
@@ -2123,7 +2104,7 @@ func TestWebUIResizeDoesNotBypassReconnectBackoff(t *testing.T) {
 		if i%2 == 1 {
 			width = 1030
 		}
-		if err := chromedp.Run(ctx, chromedp.EmulateViewport(int64(width), 640)); err != nil {
+		if err := chromedp.Do(ctx, chromedp.EmulateViewport(int64(width), 640)); err != nil {
 			t.Fatalf("chromedp emulate viewport #%d: %v", i, err)
 		}
 		time.Sleep(40 * time.Millisecond)
@@ -2218,7 +2199,7 @@ func TestWebUISwitchesToNewActiveSessionAfterNoHost(t *testing.T) {
 
 	ctx, cancel := newChromedpContext(t, filepath.Join(configDir, "chromedp-switch-active"))
 	defer cancel()
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
 
@@ -2331,7 +2312,7 @@ func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 
 	ctx, cancel := newChromedpContext(t, filepath.Join(configDir, "chromedp-manual-refresh"))
 	defer cancel()
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
 
@@ -2373,7 +2354,7 @@ func TestWebUIManualRefreshButtonDiscoversSessions(t *testing.T) {
 		return hub.HasHost(hostSessionID)
 	}, hostErr)
 
-	if err := chromedp.Run(ctx, chromedp.Click("#refresh-sessions-btn", chromedp.ByID)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Click(chromedp.ID("refresh-sessions-btn"))); err != nil {
 		t.Fatalf("click refresh sessions: %v", err)
 	}
 
@@ -2463,7 +2444,7 @@ func TestWebUIConnectAndReloadDoNotRearmWallInactivityWithoutTerminalInput(t *te
 
 	ctx, cancel := newChromedpContext(t, filepath.Join(configDir, "chromedp-wall-idle"))
 	defer cancel()
-	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+	if err := chromedp.Do(ctx, browserCommand(network.Enable, network.EnableParams{})); err != nil {
 		t.Fatalf("chromedp network enable: %v", err)
 	}
 
@@ -2487,8 +2468,9 @@ func TestWebUIConnectAndReloadDoNotRearmWallInactivityWithoutTerminalInput(t *te
 		t.Fatalf("expected webui connect to avoid rearming inactivity, got %d wall events", got)
 	}
 
-	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return page.Reload().Do(ctx)
+	if err := chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		_, err := chromedp.Call(ctx, page.Reload, page.ReloadParams{})
+		return err
 	})); err != nil {
 		t.Fatalf("chromedp reload: %v", err)
 	}

@@ -18,7 +18,10 @@ func headlessSessionSource(configDir string) func(context.Context) ([]attach.Ses
 		}
 		out := make([]attach.SessionInfo, 0, len(records))
 		for _, rec := range records {
-			name := strings.TrimSpace(rec.SessionID)
+			name := strings.TrimSpace(rec.Name)
+			if name == "" {
+				name = rec.SessionID
+			}
 			out = append(out, attach.SessionInfo{
 				ID:           rec.SessionID,
 				Name:         name,

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -41,12 +40,13 @@ func DetachSession(ctx context.Context, configDir, sessionID string) error {
 	if socketPath == "" {
 		socketPath, _ = SocketPath(configDir, normalized)
 	}
-	if socketPath != "" {
+	socketReachable := SocketReachable(socketPath)
+	if socketReachable {
 		if err := requestDetach(ctx, socketPath, "detached"); err == nil {
-			return waitDetached(ctx, store, normalized, socketPath, rec.PID)
+			return waitDetached(ctx, store, normalized, socketPath, rec.PID, rec.StartedAt)
 		}
 	}
-	return forceDetach(ctx, store, normalized, socketPath, rec.PID)
+	return forceDetach(ctx, store, normalized, socketPath, rec.PID, rec.StartedAt)
 }
 
 func requestDetach(ctx context.Context, socketPath, reason string) error {
@@ -86,7 +86,7 @@ func requestDetach(ctx context.Context, socketPath, reason string) error {
 	return nil
 }
 
-func waitDetached(ctx context.Context, store *Store, sessionID, socketPath string, pid int) error {
+func waitDetached(ctx context.Context, store *Store, sessionID, socketPath string, pid int, startedAt time.Time) error {
 	selfPID := os.Getpid()
 	deadline := time.Now().Add(detachWaitTimeout)
 	for {
@@ -108,14 +108,14 @@ func waitDetached(ctx context.Context, store *Store, sessionID, socketPath strin
 			}
 		}
 		if time.Now().After(deadline) {
-			return forceDetach(ctx, store, sessionID, socketPath, pid)
+			return forceDetach(ctx, store, sessionID, socketPath, pid, startedAt)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 }
 
-func forceDetach(ctx context.Context, store *Store, sessionID, socketPath string, pid int) error {
-	if pid > 0 && pid != os.Getpid() && PIDAlive(pid) {
+func forceDetach(ctx context.Context, store *Store, sessionID, socketPath string, pid int, startedAt time.Time) error {
+	if pid > 0 && pid != os.Getpid() && PIDAlive(pid) && RecordedProcessMayMatch(pid, startedAt) {
 		_ = TerminatePID(pid)
 		deadline := time.Now().Add(detachWaitTimeout)
 		for time.Now().Before(deadline) {
@@ -141,10 +141,6 @@ func forceDetach(ctx context.Context, store *Store, sessionID, socketPath string
 	}); err != nil {
 		return err
 	}
-	if strings.TrimSpace(socketPath) != "" {
-		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
+	store.removeOwnedSocket(socketPath)
 	return nil
 }

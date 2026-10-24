@@ -1,13 +1,20 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"pkt.systems/lingon"
+	"pkt.systems/lingon/internal/headless"
+	"pkt.systems/lingon/internal/headlessd"
 )
 
 func TestHeadlessAliasEnabled(t *testing.T) {
@@ -27,20 +34,94 @@ func TestHeadlessAliasEnabled(t *testing.T) {
 	}
 }
 
-func TestWithEnvReplacesExistingKey(t *testing.T) {
-	env := []string{"A=1", "X=old", "B=2"}
-	out := withEnv(env, "X", "new")
-	found := false
-	for _, e := range out {
-		if e == "X=new" {
-			found = true
-		}
-		if e == "X=old" {
-			t.Fatalf("old key retained: %v", out)
+func TestLocalHeadlessSelectionUsesDisplayNameThenStableID(t *testing.T) {
+	for _, test := range []struct {
+		sessions []localHeadlessSession
+		wantID   string
+	}{
+		{[]localHeadlessSession{{ID: "a", Name: "Zulu"}, {ID: "z", Name: "Alpha"}}, "z"},
+		{[]localHeadlessSession{{ID: "b", Name: "same"}, {ID: "a", Name: "same"}}, "a"},
+		{[]localHeadlessSession{{ID: "a", Name: "zulu"}, {ID: "b"}}, "b"},
+	} {
+		got, err := firstLocalHeadlessSession(test.sessions)
+		if err != nil || got.ID != test.wantID {
+			t.Fatalf("selected %q want %q error=%v", got.ID, test.wantID, err)
 		}
 	}
-	if !found {
-		t.Fatalf("new key not found: %v", out)
+}
+
+func TestHeadlessChildConfigFileSelection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LINGON_CONFIG_DIR", dir)
+	loader := lingon.NewLoader()
+	if _, err := loader.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if got := existingConfigFileForLoader(loader); got != "" {
+		t.Fatalf("optional missing config became mandatory: %q", got)
+	}
+	path := filepath.Join(dir, "selected.yaml")
+	if err := os.WriteFile(path, []byte("terminal:\n  term: screen-256color\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loader.SetConfigFile(path)
+	if _, err := loader.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if got := existingConfigFileForLoader(loader); got != path {
+		t.Fatalf("selected config lost: %q", got)
+	}
+}
+
+func TestHeadlessStartupReporterWritesReadyStatus(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	defer func() {
+		_ = readFile.Close()
+	}()
+	reporter := &headlessStartupReporter{file: writeFile}
+	if err := reporter.Ready(headlessd.StartupReady{
+		SessionID:  "session-a",
+		SocketPath: "/tmp/lingon/headless/s.session-a.sock",
+	}); err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	reporter.Close()
+
+	status, err := headless.ReadStartupStatus(context.Background(), readFile)
+	if err != nil {
+		t.Fatalf("waitForHeadlessStartupStatus: %v", err)
+	}
+	if status.Status != "ready" || status.Session != "session-a" || status.Socket != "/tmp/lingon/headless/s.session-a.sock" {
+		t.Fatalf("status = %+v, want ready session/socket", status)
+	}
+}
+
+func TestHeadlessStartupReporterWritesFailureWithOfflineHint(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	defer func() {
+		_ = readFile.Close()
+	}()
+	reporter := &headlessStartupReporter{file: writeFile}
+	if err := reporter.Failed(errors.New("auth file not found at /tmp/auth.json; run `lingon login -e https://relay.example/v1`")); err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	reporter.Close()
+
+	status, err := headless.ReadStartupStatus(context.Background(), readFile)
+	if err != nil {
+		t.Fatalf("waitForHeadlessStartupStatus: %v", err)
+	}
+	if status.Status != "error" {
+		t.Fatalf("status = %+v, want error", status)
+	}
+	if !strings.Contains(status.Error, "auth file not found") || !strings.Contains(status.Error, "--offline") {
+		t.Fatalf("error = %q, want auth failure with offline hint", status.Error)
 	}
 }
 
@@ -93,6 +174,187 @@ func TestFirstLocalHeadlessSessionUsesIDOrder(t *testing.T) {
 	}
 }
 
+func TestResolveHeadlessRelayConfigPreservesExplicitOfflineRelay(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	if err := cmd.Flags().Set("endpoint", "https://relay.example/v1"); err != nil {
+		t.Fatalf("set endpoint: %v", err)
+	}
+	if err := cmd.Flags().Set("token", "secret-token"); err != nil {
+		t.Fatalf("set token: %v", err)
+	}
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), lingon.Config{}, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "https://relay.example/v1" || got.Token != "secret-token" || !got.Offline {
+		t.Fatalf("relay config = %+v, want offline relay endpoint/token preserved", got)
+	}
+	if got.AuthPath != "" {
+		t.Fatalf("AuthPath = %q, want empty when --token is explicit", got.AuthPath)
+	}
+}
+
+func TestResolveHeadlessRelayConfigDefaultOfflineNoAuthFallsBackLocalOnly(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	missingAuth := filepath.Join(t.TempDir(), "missing-auth.json")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = missingAuth
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "" || got.Token != "" || got.AuthPath != "" || !got.Offline {
+		t.Fatalf("relay config = %+v, want local-only offline fallback", got)
+	}
+}
+
+func TestResolveHeadlessRelayConfigDefaultNoAuthRequiresOffline(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	missingAuth := filepath.Join(t.TempDir(), "missing-auth.json")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = missingAuth
+
+	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err == nil {
+		t.Fatalf("expected default missing auth to require --offline")
+	}
+	if !strings.Contains(err.Error(), "auth file not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveHeadlessRelayConfigDefaultOfflineSingleStoredAuthPreservesRelay(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	writeAuthEndpoints(t, authPath, "https://relay.example/v1")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = authPath
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "https://relay.example/v1" || got.Token != "access-https://relay.example/v1" || got.AuthPath != authPath || !got.Offline {
+		t.Fatalf("relay config = %+v, want offline stored relay auth preserved", got)
+	}
+}
+
+func TestResolveHeadlessRelayConfigDefaultOfflineAmbiguousStoredAuthFallsBackLocalOnly(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	writeAuthEndpoints(t, authPath, "https://alpha.example/v1", "https://beta.example/v1")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = authPath
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "" || got.Token != "" || got.AuthPath != "" || !got.Offline {
+		t.Fatalf("relay config = %+v, want local-only offline fallback", got)
+	}
+}
+
+func TestResolveHeadlessRelayConfigExplicitOfflineAuthFileAmbiguityRequiresEndpoint(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	writeAuthEndpoints(t, authPath, "https://alpha.example/v1", "https://beta.example/v1")
+	if err := cmd.Flags().Set("auth-file", authPath); err != nil {
+		t.Fatalf("set auth-file: %v", err)
+	}
+
+	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), lingon.Config{}, false)
+	if err == nil {
+		t.Fatalf("expected explicit auth file with ambiguous endpoints to fail")
+	}
+	if !strings.Contains(err.Error(), "endpoint is ambiguous") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveHeadlessRelayConfigExplicitOfflineEndpointRequiresAuth(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	if err := cmd.Flags().Set("endpoint", "https://relay.example/v1"); err != nil {
+		t.Fatalf("set endpoint: %v", err)
+	}
+	missingAuth := filepath.Join(t.TempDir(), "missing-auth.json")
+	cfg := lingon.Config{}
+	cfg.Client.AuthFile = missingAuth
+
+	_, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err == nil {
+		t.Fatalf("expected explicit offline endpoint without auth to fail")
+	}
+	if !strings.Contains(err.Error(), "auth file not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveHeadlessRelayConfigConfiguredOfflineEndpointNoAuthFallsBackLocalOnly(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("client:\n  endpoint: https://configured.example/v1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	loader := lingon.NewLoader()
+	loader.SetConfigFile(configPath)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Client.AuthFile = filepath.Join(t.TempDir(), "missing-auth.json")
+
+	got, err := resolveHeadlessRelayConfig(cmd, loader, cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "" || got.Token != "" || got.AuthPath != "" || !got.Offline {
+		t.Fatalf("relay config = %+v, want local-only offline fallback", got)
+	}
+}
+
+func TestResolveHeadlessRelayConfigEnvOfflineEndpointNoAuthFallsBackLocalOnly(t *testing.T) {
+	cmd := headlessRelayTestCommand(t)
+	if err := cmd.Flags().Set("offline", "true"); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	t.Setenv("LINGON_CLIENT_ENDPOINT", "https://env.example/v1")
+	cfg := lingon.Config{}
+	cfg.Client.Endpoint = "https://env.example/v1"
+	cfg.Client.AuthFile = filepath.Join(t.TempDir(), "missing-auth.json")
+
+	got, err := resolveHeadlessRelayConfig(cmd, lingon.NewLoader(), cfg, false)
+	if err != nil {
+		t.Fatalf("resolveHeadlessRelayConfig: %v", err)
+	}
+	if got.Endpoint != "" || got.Token != "" || got.AuthPath != "" || !got.Offline {
+		t.Fatalf("relay config = %+v, want local-only offline fallback", got)
+	}
+}
+
 func TestResolveHeadlessWallInactiveAfterLevelsUsesConfigDefault(t *testing.T) {
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().String("wall-inactive-after", lingon.DefaultWallInactiveAfterCSV, "")
@@ -109,6 +371,32 @@ func TestResolveHeadlessWallInactiveAfterLevelsUsesConfigDefault(t *testing.T) {
 	want := []time.Duration{3 * time.Minute, 7 * time.Minute}
 	if !reflect.DeepEqual(levels, want) {
 		t.Fatalf("levels = %v, want %v", levels, want)
+	}
+}
+
+func headlessRelayTestCommand(t *testing.T) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().Bool("offline", false, "")
+	cmd.Flags().String("auth-file", lingon.DefaultAuthPath(), "")
+	cmd.Flags().String("token", "", "")
+	cmd.Flags().String("endpoint", lingon.DefaultClientEndpoint, "")
+	return cmd
+}
+
+func writeAuthEndpoints(t *testing.T, authPath string, endpoints ...string) {
+	t.Helper()
+	now := time.Now().UTC()
+	for _, endpoint := range endpoints {
+		if err := lingon.SaveAuth(authPath, lingon.AuthState{
+			Endpoint:         endpoint,
+			AccessToken:      "access-" + endpoint,
+			AccessExpiresAt:  now.Add(5 * time.Minute),
+			RefreshToken:     "refresh-" + endpoint,
+			RefreshExpiresAt: now.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("SaveAuth(%q): %v", endpoint, err)
+		}
 	}
 }
 

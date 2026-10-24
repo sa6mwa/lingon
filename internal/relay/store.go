@@ -17,7 +17,9 @@ const storeFilename = "state.json"
 
 // Store persists relay data to disk.
 type Store struct {
-	mu sync.RWMutex
+	mu     sync.RWMutex
+	saveMu sync.Mutex
+	owner  *StateOwner
 
 	Sessions      map[string]Session       `json:"sessions"`
 	Active        map[string]ActiveSession `json:"active"`
@@ -78,16 +80,42 @@ func LoadStoreFromBytes(data []byte) (*Store, error) {
 	return &s, nil
 }
 
-// Save writes the store to disk.
+// Save removes expired access tokens and writes the store to disk.
 func (s *Store) Save(dir string) error {
+	return s.saveAt(dir, time.Now().UTC())
+}
+
+func (s *Store) saveAt(dir string, now time.Time) error {
+	if s.owner != nil {
+		path, err := filepath.Abs(dir)
+		if err != nil {
+			return err
+		}
+		if path != s.owner.dir {
+			return fmt.Errorf("state directory does not match its owner")
+		}
+		return s.owner.withWrite(func() error { return s.saveUnowned(dir, now) })
+	}
+	return s.saveUnowned(dir, now)
+}
+
+func (s *Store) saveUnowned(dir string, now time.Time) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	path := filepath.Join(dir, storeFilename)
 
-	s.mu.RLock()
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+
+	s.mu.Lock()
+	for value, token := range s.AccessTokens {
+		if token.IsExpired(now) {
+			delete(s.AccessTokens, value)
+		}
+	}
 	data, err := json.MarshalIndent(s, "", "  ")
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -357,4 +385,17 @@ func shareTokenStatus(token ShareToken, now time.Time) (valid, revoked, expired 
 	revoked = isRevoked && !isExpired
 	expired = isExpired && !isRevoked
 	return valid, revoked, expired
+}
+
+// SetSessionName updates only a session's display metadata.
+func (s *Store) SetSessionName(id, name string) (Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.Sessions[id]
+	if !ok {
+		return Session{}, false
+	}
+	session.Name = name
+	s.Sessions[id] = session
+	return session, true
 }

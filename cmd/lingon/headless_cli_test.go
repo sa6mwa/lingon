@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -17,12 +19,13 @@ import (
 
 func TestSessionsHeadlessUsesLocalState(t *testing.T) {
 	cfgDir := testutil.SetLingonConfigEnv(t)
+	socketPath := listenTestHeadlessSocket(t, cfgDir, "local-a")
 	store := headless.NewStore(cfgDir)
 	if err := store.WithLock(func(state *headless.State) error {
 		state.Sessions["local-a"] = headless.SessionRecord{
 			SessionID:  "local-a",
 			PID:        os.Getpid(),
-			SocketPath: "/tmp/nonexistent.sock",
+			SocketPath: socketPath,
 			StartedAt:  time.Now().UTC(),
 			LastSeenAt: time.Now().UTC(),
 			Status:     "running",
@@ -55,8 +58,16 @@ func TestDetachRemovesLocalState(t *testing.T) {
 	if err := os.MkdirAll(headless.BaseDir(cfgDir), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(socketPath, []byte("x"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrUnix{Name: socketPath}); err != nil {
+		_ = syscall.Close(fd)
+		t.Fatalf("bind unix socket: %v", err)
+	}
+	if err := syscall.Close(fd); err != nil {
+		t.Fatalf("close socket: %v", err)
 	}
 	store := headless.NewStore(cfgDir)
 	if err := store.WithLock(func(state *headless.State) error {
@@ -335,12 +346,14 @@ func TestDetachCompletionListsSessionIDs(t *testing.T) {
 
 func TestSendHeadlessRejectsUnknownSessionIDBeforeFallback(t *testing.T) {
 	cfgDir := testutil.SetLingonConfigEnv(t)
+	socketPath := listenTestHeadlessSocket(t, cfgDir, "local-a")
 	store := headless.NewStore(cfgDir)
 	if err := store.WithLock(func(state *headless.State) error {
 		now := time.Now().UTC()
 		state.Sessions["local-a"] = headless.SessionRecord{
 			SessionID:  "local-a",
 			PID:        os.Getpid(),
+			SocketPath: socketPath,
 			StartedAt:  now,
 			LastSeenAt: now,
 			Status:     "running",
@@ -360,4 +373,23 @@ func TestSendHeadlessRejectsUnknownSessionIDBeforeFallback(t *testing.T) {
 	if !strings.Contains(err.Error(), `headless session "local-typo" not found`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func listenTestHeadlessSocket(t *testing.T, cfgDir, sessionID string) string {
+	t.Helper()
+	socketPath, err := headless.SocketPath(cfgDir, sessionID)
+	if err != nil {
+		t.Fatalf("SocketPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Listen unix: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ln.Close()
+	})
+	return socketPath
 }

@@ -2,14 +2,21 @@ package systems.pkt.lingon.data.relay
 
 import com.google.protobuf.ByteString as ProtoByteString
 import android.util.Log
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import okhttp3.HttpUrl
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString as OkioByteString
 import okio.ByteString.Companion.toByteString
 import systems.pkt.lingon.data.HttpClientProvider
+import systems.pkt.lingon.data.ApiException
+import systems.pkt.lingon.data.LingonJson
 import systems.pkt.lingon.protocol.Frame
 import systems.pkt.lingon.protocol.Hello
 import systems.pkt.lingon.protocol.In
@@ -22,6 +29,7 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         val baseUrl: HttpUrl,
         val sessionId: String?,
         val shareToken: String? = null,
+        val shareAuthentication: AuthenticatedShareSession? = null,
         val clientId: String,
         val cols: Int,
         val rows: Int,
@@ -38,9 +46,14 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
     }
 
     open fun connect(options: ConnectOptions, listener: Listener): WebSocket {
-        val wsUrl = buildWsUrl(options.baseUrl, options.shareToken)
-        val request = Request.Builder().url(wsUrl).build()
-        val client = httpClientProvider.clientFor(options.baseUrl)
+        val client = if (!options.shareToken.isNullOrBlank()) {
+            requireNotNull(options.shareAuthentication) { "authenticate the share session before connecting" }
+                .clientFor(options)
+        } else {
+            require(options.shareAuthentication == null) { "account connections cannot use share authentication" }
+            httpClientProvider.clientFor(options.baseUrl)
+        }
+        val request = buildWebSocketRequest(options)
         return client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val hello = Hello.newBuilder()
@@ -94,16 +107,21 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         })
     }
 
+    internal fun buildWebSocketRequest(options: ConnectOptions): Request {
+        val requestBuilder = Request.Builder().url(buildWsUrl(options.baseUrl, options.shareToken))
+        if (!options.shareToken.isNullOrBlank()) {
+            requestBuilder.header("X-Lingon-Share-Session", "1")
+        }
+        return requestBuilder.build()
+    }
+
     open fun sendInput(webSocket: WebSocket, data: ByteArray) {
-        val hex = data.joinToString(" ") { b -> "%02x".format(b) }
-        Log.d("lingon-input", "sendInput bytes=$hex len=${data.size}")
         val input = In.newBuilder().setData(ProtoByteString.copyFrom(data)).build()
         val frame = Frame.newBuilder().setIn(input).build()
         webSocket.send(frame.toOkioByteString())
     }
 
     open fun sendInput(webSocket: WebSocket, text: String) {
-        Log.d("lingon-input", "sendInput text=\"${text}\"")
         sendInput(webSocket, text.toByteArray())
     }
 
@@ -120,10 +138,43 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
         webSocket.send(frame.toOkioByteString())
     }
 
+    open fun authenticateShareSession(baseUrl: HttpUrl, shareToken: String): AuthenticatedShareSession {
+        val cookies = ShareSessionCookieJar()
+        val client = httpClientProvider.clientFor(baseUrl).newBuilder().cookieJar(cookies).build()
+        val url = baseUrl.newBuilder()
+            .addPathSegments("auth/share")
+            .build()
+        val body = LingonJson.encodeToString(ShareAuthRequest(token = shareToken))
+        val request = Request.Builder()
+            .url(url)
+            .post(body.toRequestBody(jsonMediaType))
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw ApiException(
+                    "share authentication failed: HTTP ${response.code}",
+                    statusCode = response.code,
+                    retryAfterSeconds = response.header("Retry-After")?.toIntOrNull(),
+                )
+            }
+            val raw = response.body?.string().orEmpty()
+            val shareSession = LingonJson.decodeFromString<RelayShareSession>(raw)
+            if (shareSession.sessionId.isBlank()) {
+                throw IllegalStateException("share authentication failed: missing session")
+            }
+            // Debug/local HTTP uses the existing token-query handshake because
+            // the relay's Secure grant cannot be sent over cleartext.
+            if (baseUrl.isHttps && cookies.loadForRequest(buildWsUrl(baseUrl, shareToken)).isEmpty()) {
+                throw IllegalStateException("share authentication failed: missing cookie")
+            }
+            return AuthenticatedShareSession(shareSession, baseUrl, shareToken, client)
+        }
+    }
+
     private fun buildWsUrl(baseUrl: HttpUrl, shareToken: String?): HttpUrl {
         val builder = baseUrl.newBuilder()
             .addPathSegments("ws/client")
-        if (!shareToken.isNullOrBlank()) {
+        if (!baseUrl.isHttps && !shareToken.isNullOrBlank()) {
             builder.addQueryParameter("token", shareToken)
         }
         return builder.build()
@@ -151,7 +202,16 @@ open class RelayWebSocketClient(private val httpClientProvider: HttpClientProvid
     private fun isLoggable(tag: String, level: Int): Boolean {
         return runCatching { Log.isLoggable(tag, level) }.getOrDefault(false)
     }
+
+    companion object {
+        private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+    }
 }
+
+@Serializable
+private data class ShareAuthRequest(
+    val token: String,
+)
 
 private fun Frame.toOkioByteString(): OkioByteString {
     return toByteArray().toByteString()

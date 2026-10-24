@@ -4,10 +4,16 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.joinAll
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -22,6 +28,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -38,6 +45,8 @@ import systems.pkt.lingon.data.HttpClientProvider
 import systems.pkt.lingon.data.LingonClient
 import systems.pkt.lingon.data.WallWorkStateStore
 import systems.pkt.lingon.data.relay.RelaySession
+import systems.pkt.lingon.data.relay.RelayShareSession
+import systems.pkt.lingon.data.relay.AuthenticatedShareSession
 import systems.pkt.lingon.data.relay.RelayWallEventsPage
 import systems.pkt.lingon.data.certs.TrustedCert
 import systems.pkt.lingon.data.relay.RelayWebSocketClient
@@ -50,6 +59,7 @@ import systems.pkt.lingon.protocol.Scrollback
 import systems.pkt.lingon.protocol.Snapshot
 import systems.pkt.lingon.protocol.Sessions
 import systems.pkt.lingon.protocol.SessionInfo
+import systems.pkt.lingon.protocol.SessionClosed
 import systems.pkt.lingon.protocol.Welcome
 import systems.pkt.lingon.protocol.WallInactivityStatus
 import systems.pkt.lingon.protocol.ScrollbackRow
@@ -66,10 +76,620 @@ class AppViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
+    fun activeSessionClosureSelectsSurvivorAfterSuspendedPreferenceRead() = runTest {
+        val sessions = listOf(
+            RelaySession(id = "first", name = "First", status = "active"),
+            RelaySession(id = "second", name = "Second", status = "active"),
+        )
+        val repository = FakeRepository(sessions = sessions, failListSessions = false)
+        val wsClient = FakeWsClient { options, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, snapshotFrame(1, options.sessionId.orEmpty()))
+        }
+        val model = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        setUiStateForTest(model, model.state.value.copy(loggedIn = true, sessions = sessions, activeSessionId = "first", endpoint = "https://localhost:12843/v1"))
+        model.selectSession("first")
+        runCurrent()
+        wsClient.fireConnect()
+        runCurrent()
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        repository.onLoadLastActiveSession = {
+            entered.complete(Unit)
+            release.await()
+            "second"
+        }
+
+        wsClient.fireFrame(Frame.newBuilder().setSessionId("first")
+            .setSessionClosed(SessionClosed.newBuilder().setReason("closed")).build())
+        runCurrent()
+        assertTrue("socket closure cancelled survivor preference loading", entered.isCompleted)
+        assertNull(model.state.value.activeSessionId)
+        release.complete(Unit)
+        runCurrent()
+        assertEquals("second", model.state.value.activeSessionId)
+        assertEquals("second", wsClient.lastConnectOptions?.sessionId)
+    }
+
+    @Test
+    fun incomingTerminalBurstDoesNotCreateOneMainJobPerFrame() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, snapshotFrame(1, "initial"))
+        }
+        val model = AppViewModel(repository, wsClient)
+        runCurrent()
+        setUiStateForTest(model, model.state.value.copy(loggedIn = true, activeSessionId = "host-1", endpoint = "https://localhost:12843/v1"))
+        model.selectSession("host-1")
+        runCurrent()
+        wsClient.fireConnect()
+        runCurrent()
+        val parent = requireNotNull(model.viewModelScope.coroutineContext[kotlinx.coroutines.Job])
+        val before = parent.children.count { it.isActive }
+
+        // Main is deliberately paused while the callback accepts this burst.
+        // The bound is on retained scheduled work, not on elapsed wall time.
+        for (i in 1..8) wsClient.fireFrame(diffFrame(i + 1L, "burst-$i"))
+        val retained = parent.children.count { it.isActive } - before
+        assertTrue("terminal burst retained $retained separate main jobs", retained <= 2)
+        runCurrent()
+        assertEquals(9L, model.state.value.lastFrameSeq)
+        assertEquals("burst-8", model.state.value.activeSnapshot?.title)
+    }
+
+    @Test
+    fun sessionManagementRequiresConnectedOwnerButDoesNotRequireControl() = runTest {
+        val repository = FakeRepository()
+        val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        val owner = viewModel.state.value.copy(loggedIn = true, activeSessionId = "host", connectionState = ConnectionState.Connected, hasControl = false)
+        for (state in listOf(owner.copy(shareToken = "shared", hasControl = true), owner.copy(requiresAppUnlock = true), owner.copy(connectionState = ConnectionState.Disconnected))) {
+            setUiStateForTest(viewModel, state)
+            viewModel.createTerminal()
+            runCurrent()
+        }
+        assertEquals(0, repository.managementRequests.size)
+        setUiStateForTest(viewModel, owner)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        repository.onManage = { release.await() }
+        viewModel.renameSession("build 🦊")
+        runCurrent()
+        assertTrue(viewModel.state.value.sessionManagementBusy)
+        viewModel.createTerminal()
+        runCurrent()
+        assertEquals(1, repository.managementRequests.size)
+        assertEquals("rename", repository.managementRequests.single().kind)
+        assertEquals("build 🦊", repository.managementRequests.single().name)
+        assertEquals("host", repository.managementRequests.single().sessionId)
+        release.complete(Unit)
+        runCurrent()
+        assertFalse(viewModel.state.value.sessionManagementBusy)
+    }
+
+    @Test
+    fun obsoleteTransientShareAuthenticationDoesNotDropNewSocket() = runTest {
+        assertObsoleteShareAuthenticationIgnored(java.io.IOException("obsolete network failure"))
+    }
+
+    @Test
+    fun obsoletePermanentShareAuthenticationDoesNotClearNewPermission() = runTest {
+        assertObsoleteShareAuthenticationIgnored(ApiException("obsolete denial", 403))
+    }
+
+    @Test
+    fun obsoleteSuccessfulShareAuthenticationDoesNotReplaceNewMetadata() = runTest {
+        assertObsoleteShareAuthenticationIgnored(null)
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.assertObsoleteShareAuthenticationIgnored(oldFailure: Exception?) {
+        val dispatcher = java.util.concurrent.Executors.newFixedThreadPool(2).asCoroutineDispatcher()
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val wsClient = FakeWsClient { _, listener, socket -> listener.onOpen(socket) }
+        wsClient.onAuthenticateShareSession = { _, _ ->
+            if (attempts.incrementAndGet() == 1) {
+                entered.complete(Unit)
+                kotlinx.coroutines.runBlocking { release.await() }
+                if (oldFailure != null) throw oldFailure
+                RelayShareSession(sessionId = "shared-real", name = "Obsolete metadata", scope = "view")
+            } else {
+                RelayShareSession(sessionId = "shared-real", name = "Current metadata", scope = "control")
+            }
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = dispatcher)
+        try {
+            runCurrent()
+            val originalJobs = viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.children.toSet()
+            viewModel.handleSharedToken("token", "https://example")
+            runCurrent()
+            entered.await()
+            val beforeRecoveryJobs = viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.children.toSet()
+            val oldJobs = beforeRecoveryJobs.filter { it !in originalJobs }
+            viewModel.onAppForegroundAt(5_000L)
+            runCurrent()
+            viewModel.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!!.children.filter { it !in beforeRecoveryJobs }.toList().joinAll()
+            wsClient.fireConnect()
+            wsClient.fireFrame(welcomeFrame())
+            runCurrent()
+            assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+            val epoch = viewModel.state.value.terminalConnectionEpoch
+            release.complete(Unit)
+            oldJobs.joinAll()
+            runCurrent()
+            assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+            assertEquals(epoch, viewModel.state.value.terminalConnectionEpoch)
+            assertNull(viewModel.state.value.shareTokenError)
+            assertTrue(viewModel.state.value.shareCanControl)
+            assertEquals("Current metadata", viewModel.state.value.sessions.single().name)
+            wsClient.fireFrame(Frame.newBuilder().setSeq(9).setSnapshot(Snapshot.newBuilder().setCols(1).setRows(1).addRunes('X'.code)).build())
+            runCurrent()
+            assertEquals('X'.code, viewModel.state.value.activeSnapshot?.runes?.first())
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals(2, attempts.get())
+            assertEquals(1, wsClient.connectCount)
+            assertEquals(0, wsClient.closeCount)
+        } finally {
+            release.complete(Unit)
+            invokeOnClearedForTest(viewModel)
+            dispatcher.close()
+        }
+    }
+
+    @Test
+    fun shareAuthenticationRetriesNetworkAndServerFailuresWithBackoff() = runTest {
+        val wsClient = FakeWsClient()
+        var attempts = 0
+        wsClient.onAuthenticateShareSession = { _, _ ->
+            attempts += 1
+            when (attempts) {
+                1 -> throw java.io.IOException("offline")
+                2 -> throw ApiException("relay restarting", statusCode = 503)
+                else -> wsClient.shareSession
+            }
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        assertEquals(1, attempts)
+        assertTrue(viewModel.state.value.sessionSyncing)
+        assertNull(viewModel.state.value.shareTokenError)
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(1, attempts)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, attempts)
+        advanceTimeBy(1999)
+        runCurrent()
+        assertEquals(2, attempts)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(3, attempts)
+        assertEquals(1, wsClient.connectCount)
+        assertEquals("shared-real", wsClient.lastConnectOptions?.sessionId)
+        assertNull(viewModel.state.value.shareTokenError)
+    }
+
+    @Test
+    fun newShareRetriesTransientAuthenticationAfterLastSharedSessionCloses() = runTest {
+        for (failure in listOf(
+            java.io.IOException("offline"),
+            ApiException("rate limited", statusCode = 429),
+            ApiException("relay restarting", statusCode = 503),
+        )) {
+            val wsClient = FakeWsClient()
+            wsClient.shareSession = RelayShareSession(sessionId = "old-share", name = "Old", scope = "view")
+            val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+            viewModel.handleSharedToken("old-token", "https://example")
+            runCurrent()
+            wsClient.fireFrame(Frame.newBuilder().setSessionId("old-share")
+                .setSessionClosed(SessionClosed.newBuilder().setReason("closed")).build())
+            runCurrent()
+            assertNull(viewModel.state.value.activeSessionId)
+            assertTrue(viewModel.state.value.sessions.isEmpty())
+
+            var attempts = 0
+            wsClient.onAuthenticateShareSession = { _, _ ->
+                attempts += 1
+                if (attempts == 1) throw failure
+                RelayShareSession(sessionId = "new-share", name = "New", scope = "view")
+            }
+            viewModel.handleSharedToken("new-token", "https://example")
+            runCurrent()
+            assertEquals(1, attempts)
+            advanceTimeBy(999)
+            runCurrent()
+            assertEquals(1, attempts)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals("retry suppressed after ${failure.message}", 2, attempts)
+            assertEquals("new-share", viewModel.state.value.activeSessionId)
+            assertEquals(2, wsClient.connectCount)
+            assertNull(viewModel.state.value.shareTokenError)
+            viewModel.logout()
+            runCurrent()
+        }
+    }
+
+    @Test
+    fun reconnectSessionFetchIsIgnoredAfterEndpointChange() = runTest {
+        assertSupersededReconnectFetch(logout = false)
+    }
+
+    @Test
+    fun reconnectSessionFetchIsIgnoredAfterLogout() = runTest {
+        assertSupersededReconnectFetch(logout = true)
+    }
+
+    @Test
+    fun staleReconnectAuthenticationFailureDoesNotClearNewAccount() = runTest {
+        assertSupersededReconnectFetch(logout = false, failure = ApiException("expired old owner", 401))
+    }
+
+    @Test
+    fun staleReconnectNetworkFailureDoesNotSetNewContextError() = runTest {
+        assertSupersededReconnectFetch(logout = false, failure = java.io.IOException("obsolete network failure"))
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.assertSupersededReconnectFetch(logout: Boolean, failure: Exception? = null) {
+        val oldSessions = listOf(RelaySession(id = "old-host", name = "Old account", status = "active"))
+        val repository = FakeRepository(sessions = oldSessions, failListSessions = false, refreshAuthResult = false)
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+            listener.onFrame(socket, snapshotFrame(7, "old snapshot"))
+        }
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        setUiStateForTest(viewModel, viewModel.state.value.copy(
+            loggedIn = true, username = "old-owner", activeSessionId = "old-host", sessions = oldSessions,
+            endpoint = "https://localhost:12843/v1", connectionState = ConnectionState.Disconnected,
+        ))
+        viewModel.selectSession("old-host")
+        runCurrent()
+        wsClient.fireConnect()
+        runCurrent()
+        assertEquals(ConnectionState.Connected, viewModel.state.value.connectionState)
+        val fetched = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        repository.onListSessions = {
+            fetches += 1
+            if (fetches > 1) throw ApiException("new endpoint unauthenticated", 401)
+            fetched.complete(Unit)
+            release.await()
+            if (failure != null) throw failure
+            oldSessions
+        }
+        wsClient.fakeSocket.close(1000, "trigger reconnect")
+        runCurrent()
+        advanceTimeBy(2000)
+        runCurrent()
+        assertTrue("reconnect must be awaiting its old session response", fetched.isCompleted)
+        if (logout) viewModel.logout() else viewModel.updateEndpoint("https://new.example/v1")
+        runCurrent()
+        if (failure != null) {
+            setUiStateForTest(viewModel, viewModel.state.value.copy(
+                loggedIn = true, username = "new-owner", activeSessionId = "new-host",
+                sessions = listOf(RelaySession(id = "new-host", name = "New account", status = "active")),
+                status = StatusMessage("new context"), connectionState = ConnectionState.Connected,
+            ))
+        }
+        val expected = viewModel.state.value
+        val connects = wsClient.connectCount
+        val refreshes = repository.refreshAuthCalls
+        release.complete(Unit)
+        runCurrent()
+        assertEquals(expected.sessions, viewModel.state.value.sessions)
+        assertEquals(expected.activeSessionId, viewModel.state.value.activeSessionId)
+        assertEquals(expected.loggedIn, viewModel.state.value.loggedIn)
+        assertEquals(expected.username, viewModel.state.value.username)
+        assertEquals(expected.status, viewModel.state.value.status)
+        assertEquals(refreshes, repository.refreshAuthCalls)
+        assertEquals(connects, wsClient.connectCount)
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertEquals(connects, wsClient.connectCount)
+        assertEquals(expected.sessions, viewModel.state.value.sessions)
+    }
+
+    @Test
+    fun managementSessionFetchIsIgnoredAfterEndpointChange() = runTest {
+        assertSupersededManagementFetch(logout = false)
+    }
+
+    @Test
+    fun managementSessionFetchIsIgnoredAfterLogout() = runTest {
+        assertSupersededManagementFetch(logout = true)
+    }
+
+    @Test
+    fun bootstrapRestoresSessionsAfterDelayedInitialEndpoint() = runTest {
+        val sessions = listOf(RelaySession(id = "restored", name = "Restored terminal", status = "active"))
+        val repository = FakeRepository(
+            sessions = sessions,
+            failListSessions = false,
+            initialLastActiveSessionByEndpoint = mapOf("https://localhost:12843/v1" to "restored"),
+        )
+        val endpointReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+        lateinit var model: AppViewModel
+        val delayedRepository = object : LingonClient by repository {
+            override val endpointFlow = flow {
+                endpointReady.await()
+                emitAll(repository.endpointFlow)
+            }
+            override suspend fun listSessions(): List<RelaySession> {
+                endpointReady.await()
+                model.state.first { it.endpoint.isNotBlank() }
+                return repository.listSessions()
+            }
+        }
+        val wsClient = FakeWsClient()
+        model = AppViewModel(delayedRepository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        assertEquals("", model.state.value.endpoint)
+        assertFalse(model.state.value.loggedIn)
+
+        endpointReady.complete(Unit)
+        runCurrent()
+
+        assertTrue("persisted authentication was discarded after endpoint initialization", model.state.value.loggedIn)
+        assertEquals(sessions, model.state.value.sessions)
+        assertEquals("restored", model.state.value.activeSessionId)
+        assertEquals("restored", wsClient.lastConnectOptions?.sessionId)
+    }
+
+    @Test
+    fun bootstrapDoesNotRestoreAuthenticationWhenLoggedOutDuringEndpointInitialization() = runTest {
+        val repository = FakeRepository(failListSessions = false)
+        val endpointReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val delayedRepository = object : LingonClient by repository {
+            override val endpointFlow = flow {
+                endpointReady.await()
+                emitAll(repository.endpointFlow)
+            }
+        }
+        val model = AppViewModel(delayedRepository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        model.logout()
+        runCurrent()
+        assertEquals(1, repository.clearAuthCalls)
+
+        endpointReady.complete(Unit)
+        runCurrent()
+
+        assertFalse(model.state.value.loggedIn)
+        assertTrue(model.state.value.sessions.isEmpty())
+        assertNull(model.state.value.activeSessionId)
+    }
+
+    @Test
+    fun bootstrapSessionFetchIsIgnoredAfterEndpointChange() = runTest {
+        assertSupersededBootstrapFetch(logout = false)
+    }
+
+    @Test
+    fun bootstrapSessionFetchIsIgnoredAfterLogout() = runTest {
+        assertSupersededBootstrapFetch(logout = true)
+    }
+
+    @Test
+    fun staleBootstrapAuthenticationFailureDoesNotClearNewAccount() = runTest {
+        val repository = FakeRepository(refreshAuthResult = false)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        repository.onListSessions = {
+            fetches += 1
+            if (fetches == 1) release.await()
+            throw ApiException("expired old account", 401)
+        }
+        val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        viewModel.updateEndpoint("https://new.example/v1")
+        runCurrent()
+        val newSessions = listOf(RelaySession(id = "new-host", name = "New account", status = "active"))
+        setUiStateForTest(viewModel, viewModel.state.value.copy(
+            loggedIn = true, username = "new-owner", activeSessionId = "new-host", sessions = newSessions,
+            status = StatusMessage("new context"), connectionState = ConnectionState.Connected,
+        ))
+        release.complete(Unit)
+        runCurrent()
+        assertTrue(viewModel.state.value.loggedIn)
+        assertEquals("new-owner", viewModel.state.value.username)
+        assertEquals(newSessions, viewModel.state.value.sessions)
+        assertEquals("new-host", viewModel.state.value.activeSessionId)
+        assertEquals("new context", viewModel.state.value.status?.message)
+    }
+
+    @Test
+    fun pendingSessionPreferenceCannotRestoreOldActiveSessionAfterEndpointChange() = runTest {
+        val repository = FakeRepository()
+        val waiting = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        repository.onListSessions = {
+            fetches += 1
+            if (fetches > 1) throw ApiException("new context is unauthenticated", 401)
+            listOf(RelaySession(id = "old-host", name = "Old account", status = "active"))
+        }
+        repository.onLoadLastActiveSession = {
+            waiting.complete(Unit)
+            release.await()
+            "old-host"
+        }
+        val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        assertTrue(waiting.isCompleted)
+        viewModel.updateEndpoint("https://new.example/v1")
+        runCurrent()
+        release.complete(Unit)
+        runCurrent()
+        assertTrue(viewModel.state.value.sessions.isEmpty())
+        assertNull(viewModel.state.value.activeSessionId)
+        assertFalse(viewModel.state.value.loggedIn)
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.assertSupersededBootstrapFetch(logout: Boolean) {
+        val repository = FakeRepository()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var fetches = 0
+        repository.onListSessions = {
+            fetches += 1
+            if (fetches > 1) throw ApiException("new context is unauthenticated", 401)
+            release.await()
+            listOf(RelaySession(id = "old-account-host", name = "Old account", status = "active"))
+        }
+        val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        assertEquals(1, fetches)
+        if (logout) viewModel.logout() else viewModel.updateEndpoint("https://new.example/v1")
+        runCurrent()
+        release.complete(Unit)
+        runCurrent()
+        assertTrue(viewModel.state.value.sessions.isEmpty())
+        assertNull(viewModel.state.value.activeSessionId)
+        assertFalse(viewModel.state.value.loggedIn)
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.assertSupersededManagementFetch(logout: Boolean) {
+        for (kind in listOf("create", "rename")) {
+            val repository = FakeRepository()
+            val viewModel = AppViewModel(repository, FakeWsClient(), ioDispatcher = StandardTestDispatcher(testScheduler))
+            runCurrent()
+            val fetched = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+            var fetches = 0
+            repository.onListSessions = {
+                fetches += 1
+                if (fetches > 1) throw ApiException("new context is unauthenticated", 401)
+                fetched.complete(Unit)
+                release.await()
+                listOf(RelaySession(id = "old-host", name = "Old renamed host", status = "active"))
+            }
+            setUiStateForTest(viewModel, viewModel.state.value.copy(
+                loggedIn = true, activeSessionId = "old-host", connectionState = ConnectionState.Connected,
+            ))
+            if (kind == "create") viewModel.createTerminal() else viewModel.renameSession("Old renamed host")
+            runCurrent()
+            assertTrue(fetched.isCompleted)
+            if (logout) viewModel.logout() else viewModel.updateEndpoint("https://new.example/v1")
+            runCurrent()
+            release.complete(Unit)
+            runCurrent()
+            assertTrue(viewModel.state.value.sessions.isEmpty())
+            assertNull(viewModel.state.value.activeSessionId)
+            assertFalse(viewModel.state.value.loggedIn)
+            assertFalse(viewModel.state.value.sessionManagementBusy)
+            assertFalse(viewModel.state.value.status?.message in listOf("Session renamed", "Terminal created"))
+        }
+    }
+
+    @Test
+    fun shareAuthenticationHonorsRetryAfterAndDoesNotRetryInvalidTokens() = runTest {
+        val wsClient = FakeWsClient()
+        var attempts = 0
+        wsClient.onAuthenticateShareSession = { _, _ ->
+            attempts += 1
+            if (attempts == 1) throw ApiException("limited", statusCode = 429, retryAfterSeconds = 5)
+            throw ApiException("invalid share token", statusCode = 401)
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        advanceTimeBy(4999)
+        runCurrent()
+        assertEquals(1, attempts)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, attempts)
+        assertEquals("invalid share token", viewModel.state.value.shareTokenError)
+        assertFalse(viewModel.state.value.sessionSyncing)
+        advanceTimeBy(30000)
+        runCurrent()
+        assertEquals(2, attempts)
+        assertEquals(0, wsClient.connectCount)
+    }
+
+    @Test
+    fun changingShareTokenCancelsRetryOfTheOldToken() = runTest {
+        val wsClient = FakeWsClient()
+        val tokens = mutableListOf<String>()
+        wsClient.onAuthenticateShareSession = { _, token ->
+            tokens += token
+            if (token == "old") throw java.io.IOException("offline")
+            wsClient.shareSession
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("old", "https://example")
+        runCurrent()
+        viewModel.handleSharedToken("new", "https://example")
+        runCurrent()
+        advanceTimeBy(30000)
+        runCurrent()
+        assertEquals(listOf("old", "new"), tokens)
+        assertEquals("new", wsClient.lastConnectOptions?.shareToken)
+        assertEquals(1, wsClient.connectCount)
+    }
+
+    @Test
+    fun prolongedShareOutageKeepsBackoffBoundedWithoutOverflow() = runTest {
+        val wsClient = FakeWsClient()
+        var attempts = 0
+        wsClient.onAuthenticateShareSession = { _, _ ->
+            attempts += 1
+            if (attempts < 40) throw java.io.IOException("offline")
+            wsClient.shareSession
+        }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        for (attempt in 1 until 40) {
+            val delayMs = minOf(15000, 1000 * (1 shl (minOf(attempt, 5) - 1)))
+            advanceTimeBy(delayMs.toLong() - 1)
+            runCurrent()
+            assertEquals(attempt, attempts)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(attempt + 1, attempts)
+        }
+        assertEquals(1, wsClient.connectCount)
+    }
+
+    @Test
+    fun sharedAuthenticationRestoresAndReopensPersistedSessionZoom() = runTest {
+        val key = "https://example|shared-real"
+        val repository = FakeRepository(initialSessionZooms = mapOf(key to 1.7f))
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        assertEquals("shared-real", viewModel.state.value.activeSessionId)
+        assertEquals(1.7f, viewModel.state.value.zoomFactor, 0.0001f)
+
+        viewModel.updateZoomFactor(1.9f)
+        advanceTimeBy(150)
+        runCurrent()
+        assertEquals(1.9f, repository.savedZooms[key]!!, 0.0001f)
+        viewModel.handleSharedToken("token", "https://example")
+        runCurrent()
+        assertEquals("shared-real", viewModel.state.value.activeSessionId)
+        assertEquals(1.9f, viewModel.state.value.zoomFactor, 0.0001f)
+    }
+
+    @Test
     fun handleSharedTokenUpdatesState() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
-        val viewModel = AppViewModel(repository, wsClient)
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
 
         viewModel.handleSharedToken("token", "https://example")
 
@@ -81,10 +701,31 @@ class AppViewModelTest {
     }
 
     @Test
+    fun certificateFlowUsesNormalizedSelectedEndpointKey() = runTest {
+        val certificate = TrustedCert(
+            id = "cert-1",
+            subject = "CN=relay.example",
+            issuer = "CN=test-ca",
+            fingerprint = "fingerprint",
+            addedAt = "2026-07-13T00:00:00Z",
+        )
+        val repository = FakeRepository(
+            savedEndpoints = listOf("https://relay.example"),
+            initialCertificates = mapOf("https://relay.example/" to listOf(certificate)),
+        )
+        val viewModel = AppViewModel(repository, FakeWsClient())
+
+        advanceUntilIdle()
+
+        assertEquals("https://relay.example", viewModel.state.value.selectedCertEndpoint)
+        assertEquals(listOf(certificate), viewModel.state.value.trustedCerts)
+    }
+
+    @Test
     fun selectSessionOnActiveTabKeepsVisibleSnapshot() = runTest {
         val repository = FakeRepository()
         val wsClient = FakeWsClient()
-        val viewModel = AppViewModel(repository, wsClient)
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
 
         viewModel.handleSharedToken("token", "https://example")
         advanceUntilIdle()
@@ -257,6 +898,84 @@ class AppViewModelTest {
 
         assertEquals(0, wsClient.lastConnectOptions?.cols)
         assertEquals(0, wsClient.lastConnectOptions?.rows)
+    }
+
+    @Test
+    fun sharedSessionClosedUsesAuthenticatedSessionId() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+        }
+        wsClient.shareSession = RelayShareSession(sessionId = "real-session", name = "Shared real", scope = "view")
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+
+        viewModel.handleSharedToken("token", "https://example")
+        advanceUntilIdle()
+
+        assertEquals("real-session", viewModel.state.value.activeSessionId)
+        assertEquals("real-session", wsClient.lastConnectOptions?.sessionId)
+
+        wsClient.fireFrame(
+            Frame.newBuilder()
+                .setSessionId("real-session")
+                .setSessionClosed(SessionClosed.newBuilder().setReason("closed").build())
+                .build(),
+        )
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.activeSessionId)
+        assertTrue(viewModel.state.value.sessions.isEmpty())
+    }
+
+    @Test
+    fun shareForegroundRecoveryReusesAuthenticatedSessionConnection() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+        }
+        wsClient.shareSession = RelayShareSession(sessionId = "real-session", name = "Shared real", scope = "view")
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+
+        viewModel.handleSharedToken("token", "https://example")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals("real-session", viewModel.state.value.activeSessionId)
+        assertEquals("real-session", wsClient.lastConnectOptions?.sessionId)
+        assertEquals(1, wsClient.connectCount)
+
+        viewModel.onAppBackgroundAt(0L)
+        viewModel.onAppForegroundAt(5_000L)
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.connectCount)
+        assertEquals(0, wsClient.closeCount)
+        assertEquals("real-session", wsClient.lastConnectOptions?.sessionId)
+    }
+
+    @Test
+    fun staleShareAuthenticationFailureDoesNotReplaceCurrentTokenState() = runTest {
+        val repository = FakeRepository()
+        lateinit var viewModel: AppViewModel
+        val wsClient = FakeWsClient()
+        wsClient.onAuthenticateShareSession = { _, shareToken ->
+            if (shareToken == "old-token") {
+                viewModel.handleSharedToken("new-token", "https://example")
+                throw IllegalStateException("old token failed")
+            }
+            RelayShareSession(sessionId = "new-session", name = "New shared", scope = "view")
+        }
+        viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+
+        viewModel.handleSharedToken("old-token", "https://example")
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals("new-token", state.shareToken)
+        assertEquals("new-session", state.activeSessionId)
+        assertNull(state.shareTokenError)
+        assertNotEquals(ConnectionState.Disconnected, state.connectionState)
     }
 
     @Test
@@ -671,6 +1390,42 @@ class AppViewModelTest {
         assertEquals(1, repository.refreshAuthCalls)
         assertEquals(1, wsClient.connectCount)
         assertEquals("host-1", viewModel.state.value.activeSessionId)
+    }
+
+    @Test
+    fun connectActiveSessionSkipsStaleOpenAfterRefreshRace() = runTest {
+        val repository = FakeRepository()
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(repository, wsClient)
+        advanceUntilIdle()
+        repository.onRefreshAuth = {
+            setUiStateForTest(
+                viewModel,
+                viewModel.state.value.copy(
+                    endpoint = "https://other.example/v1",
+                    sessions = listOf(RelaySession(id = "host-2", name = "Host 2", status = "active")),
+                    activeSessionId = "host-2",
+                ),
+            )
+        }
+
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(
+                loggedIn = true,
+                endpoint = "https://localhost:12843/v1",
+                sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+                activeSessionId = "host-1",
+                shareToken = null,
+                connectionState = ConnectionState.Disconnected,
+            ),
+        )
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+
+        assertEquals(1, repository.refreshAuthCalls)
+        assertEquals(0, wsClient.connectCount)
+        assertEquals("host-2", viewModel.state.value.activeSessionId)
     }
 
     @Test
@@ -1255,6 +2010,8 @@ class AppViewModelTest {
             viewModel.state.value.copy(
                 connectionState = ConnectionState.Connected,
                 activeSnapshot = liveSnapshot,
+                loggedIn = true,
+                hasControl = true,
             ),
         )
         setWebSocketForTest(viewModel, wsClient.fakeSocket)
@@ -1262,6 +2019,94 @@ class AppViewModelTest {
         viewModel.sendRawBytes("\u001b[B".encodeToByteArray())
 
         assertArrayEquals("\u001bOB".encodeToByteArray(), wsClient.lastSentBytes)
+    }
+
+    @Test
+    fun ownerInputReclaimsControlWithoutDroppingOrRepeatingFirstPayload() = runTest {
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(FakeRepository(), wsClient)
+        advanceUntilIdle()
+        setUiStateForTest(
+            viewModel,
+            viewModel.state.value.copy(loggedIn = true, connectionState = ConnectionState.Connected, hasControl = false),
+        )
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+
+        viewModel.sendRawInput("z")
+        assertArrayEquals("z".encodeToByteArray(), wsClient.lastSentBytes)
+        assertEquals(1L, viewModel.state.value.localInputNonce)
+        viewModel.sendRawBytes(byteArrayOf(0x1b, 0x0d))
+        assertArrayEquals(byteArrayOf(0x1b, 0x0d), wsClient.lastSentBytes)
+        assertEquals(2, wsClient.sentInputs.size)
+        assertEquals(2L, viewModel.state.value.localInputNonce)
+        assertFalse(viewModel.state.value.hasControl)
+        assertEquals(0, wsClient.connectCount)
+    }
+
+    @Test
+    fun authenticatedShareScopeGatesTypingIndependentlyOfLeaseOwnership() = runTest {
+        val wsClient = FakeWsClient { _, listener, socket -> listener.onOpen(socket) }
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        for (scope in listOf("control", "view", "", "unknown")) {
+            wsClient.shareSession = RelayShareSession(sessionId = "real-session", scope = scope)
+            viewModel.handleSharedToken("token-$scope", "https://example")
+            advanceUntilIdle()
+            wsClient.fireConnect()
+            advanceUntilIdle()
+            setUiStateForTest(viewModel, viewModel.state.value.copy(
+                connectionState = ConnectionState.Connected, hasControl = scope != "control",
+            ))
+            val sentBefore = wsClient.sentInputs.size
+            val nonceBefore = viewModel.state.value.localInputNonce
+            viewModel.sendRawInput("q")
+            viewModel.sendRawBytes(byteArrayOf(0x1b, 0x0d))
+            if (scope == "control") {
+                assertEquals(sentBefore + 2, wsClient.sentInputs.size)
+                assertArrayEquals("q".encodeToByteArray(), wsClient.sentInputs[sentBefore])
+                assertArrayEquals(byteArrayOf(0x1b, 0x0d), wsClient.sentInputs[sentBefore + 1])
+                assertEquals(nonceBefore + 2, viewModel.state.value.localInputNonce)
+                assertFalse(viewModel.state.value.hasControl)
+            } else {
+                assertEquals(sentBefore, wsClient.sentInputs.size)
+                assertEquals(nonceBefore, viewModel.state.value.localInputNonce)
+                assertEquals("view-only session", viewModel.state.value.status?.message)
+            }
+        }
+    }
+
+    @Test
+    fun inputRemainsBlockedWhileLockedDisconnectedOrUnauthenticated() = runTest {
+        val wsClient = FakeWsClient()
+        val viewModel = AppViewModel(FakeRepository(), wsClient)
+        advanceUntilIdle()
+        setWebSocketForTest(viewModel, wsClient.fakeSocket)
+        val owner = viewModel.state.value.copy(loggedIn = true, connectionState = ConnectionState.Connected, hasControl = false)
+        for (state in listOf(owner.copy(requiresAppUnlock = true), owner.copy(connectionState = ConnectionState.Disconnected), owner.copy(loggedIn = false, hasControl = true))) {
+            setUiStateForTest(viewModel, state)
+            viewModel.sendRawInput("z")
+            viewModel.sendRawBytes(byteArrayOf(0x0d))
+            assertTrue(wsClient.sentInputs.isEmpty())
+            assertEquals(0L, viewModel.state.value.localInputNonce)
+        }
+    }
+
+    @Test
+    fun sharePermissionIsClearedWhenTokenChangesBeforeAuthentication() = runTest {
+        val wsClient = FakeWsClient { _, listener, socket -> listener.onOpen(socket) }
+        wsClient.shareSession = RelayShareSession(sessionId = "real-session", scope = "control")
+        val viewModel = AppViewModel(FakeRepository(), wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        viewModel.handleSharedToken("control", "https://example")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.canSendInput)
+        viewModel.handleSharedToken("view", "https://example")
+        assertFalse(viewModel.state.value.canSendInput)
+        assertFalse(viewModel.state.value.shareCanControl)
+        advanceUntilIdle()
+        viewModel.showShareToken(false)
+        assertFalse(viewModel.state.value.canSendInput)
+        assertFalse(viewModel.state.value.shareCanControl)
     }
 
     @Test
@@ -1323,24 +2168,8 @@ class AppViewModelTest {
                 listener.onFrame(socket, snapshotFrame(seq, title))
             }
         }
-        val viewModel = AppViewModel(repository, wsClient)
-        advanceUntilIdle()
-
-        setUiStateForTest(
-            viewModel,
-            viewModel.state.value.copy(
-                loggedIn = true,
-                endpoint = "https://localhost:12843/v1",
-                sessions = listOf(
-                    RelaySession(id = "host-1", name = "Host 1", status = "active"),
-                ),
-                activeSessionId = "host-1",
-                connectionState = ConnectionState.Disconnected,
-                shareToken = null,
-            ),
-        )
-
-        viewModel.selectSession("host-1")
+        // Bootstrap establishes the initial connection from persisted auth.
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
         advanceUntilIdle()
         wsClient.fireConnect()
         runCurrent()
@@ -1408,6 +2237,32 @@ class AppViewModelTest {
         assertEquals(listOf(0L, 7L), connects)
         assertEquals(7L, wsClient.lastConnectOptions?.lastSeq)
         assertEquals("replayed", viewModel.state.value.activeSnapshot?.title)
+    }
+
+    @Test
+    fun clearingViewModelClosesTerminalWebSocketWithoutReconnect() = runTest {
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val viewModel = AppViewModel(repository, wsClient, ioDispatcher = StandardTestDispatcher(testScheduler))
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.connectCount)
+        assertEquals(0, wsClient.closeCount)
+
+        invokeOnClearedForTest(viewModel)
+        advanceTimeBy(5_000)
+        advanceUntilIdle()
+
+        assertEquals(1, wsClient.closeCount)
+        assertEquals(1, wsClient.connectCount)
     }
 
     @Test
@@ -1545,7 +2400,7 @@ class AppViewModelTest {
             listener.onFrame(socket, welcomeFrame())
         }
         val recordingNotifier = RecordingWallNotifier()
-        val wallStore = testWallWorkStateStore()
+        val wallStore = testWallWorkStateStore(backgroundScope)
         val viewModel = AppViewModel(
             repository = repository,
             wsClient = wsClient,
@@ -1678,6 +2533,40 @@ class AppViewModelTest {
         advanceTimeBy(1)
         runCurrent()
         assertNull(viewModel.state.value.transientStatus)
+    }
+
+    @Test
+    fun logoutCompletesLocallyWhenRelayIsUnreachable() = runTest {
+        val repository = FakeRepository(failListSessions = false)
+        repository.onLogout = { throw java.net.ConnectException("offline") }
+        val model = AppViewModel(repository, FakeWsClient())
+        setUiStateForTest(model, model.state.value.copy(loggedIn = true, username = "owner", shareToken = "shared"))
+
+        model.logout()
+        advanceUntilIdle()
+
+        assertFalse(model.state.value.loggedIn)
+        assertNull(model.state.value.username)
+        assertNull(model.state.value.shareToken)
+        assertNull(model.state.value.activeSessionId)
+        assertTrue(model.state.value.sessions.isEmpty())
+        assertEquals(1, repository.clearAuthCalls)
+        assertFalse(model.state.value.isBusy)
+        assertEquals("offline", model.state.value.status?.message)
+    }
+
+    @Test
+    fun logoutCancellationIsNotReportedAsNetworkFailure() = runTest {
+        val repository = FakeRepository(failListSessions = false)
+        repository.onLogout = { throw kotlinx.coroutines.CancellationException("cancelled") }
+        val model = AppViewModel(repository, FakeWsClient())
+
+        model.logout()
+        advanceUntilIdle()
+
+        assertTrue(model.state.value.status?.level != StatusLevel.Error)
+        assertEquals(1, repository.clearAuthCalls)
+        assertFalse(model.state.value.isBusy)
     }
 
     @Test
@@ -2070,26 +2959,36 @@ private class FakeRepository(
     followOnReadEnabled: Boolean = false,
     initialSessionZooms: Map<String, Float> = emptyMap(),
     initialLastActiveSessionByEndpoint: Map<String, String> = emptyMap(),
+    savedEndpoints: List<String> = listOf("https://localhost:12843/v1"),
+    initialCertificates: Map<String, List<TrustedCert>> = emptyMap(),
 ) : LingonClient {
     private val backgroundWallEnabledState = MutableStateFlow(backgroundWallEnabled)
     private val followOnReadEnabledState = MutableStateFlow(followOnReadEnabled)
-    override val endpointFlow: Flow<String> = MutableStateFlow("https://localhost:12843/v1")
+    private val endpointState = MutableStateFlow("https://localhost:12843/v1")
+    override val endpointFlow: Flow<String> = endpointState
     override val fontSizeFlow: Flow<Int> = MutableStateFlow(14)
     override val resizeHostFlow: Flow<Boolean> = MutableStateFlow(false)
     override val backgroundWallEnabledFlow: Flow<Boolean> =
         backgroundWallEnabledFlowOverride ?: backgroundWallEnabledState
     override val followOnReadEnabledFlow: Flow<Boolean> = followOnReadEnabledState
     override val appLockTimeoutMinutesFlow: Flow<Int> = MutableStateFlow(appLockMinutes)
-    override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(listOf("https://localhost:12843/v1"))
-    override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(emptyMap())
+    override val savedEndpointsFlow: Flow<List<String>> = MutableStateFlow(savedEndpoints)
+    override val certificatesFlow: Flow<Map<String, List<TrustedCert>>> = MutableStateFlow(initialCertificates)
     private val lastActiveSessionByEndpoint = initialLastActiveSessionByEndpoint.toMutableMap()
+    val managementRequests = mutableListOf<systems.pkt.lingon.data.relay.SessionManagementRequest>()
+    var onManage: (suspend () -> Unit)? = null
+    var onListSessions: (suspend () -> List<RelaySession>)? = null
+    var onLoadLastActiveSession: (suspend () -> String?)? = null
     var refreshAuthCalls: Int = 0
     var saveZoomCalls: Int = 0
     var onSetBackgroundWallEnabled: ((Boolean) -> Unit)? = null
+    var onRefreshAuth: (suspend () -> Unit)? = null
+    var onLogout: (suspend () -> Unit)? = null
+    var clearAuthCalls: Int = 0
     val savedZooms = initialSessionZooms.toMutableMap()
 
     override fun setEndpoint(value: String) {
-        // no-op
+        endpointState.value = value
     }
 
     override fun setFontSize(value: Int) {
@@ -2135,15 +3034,16 @@ private class FakeRepository(
     }
 
     override suspend fun logout() {
-        // no-op
+        onLogout?.invoke()
     }
 
     override suspend fun clearAuth() {
-        // no-op
+        clearAuthCalls += 1
     }
 
     override suspend fun refreshAuth(): Boolean {
         refreshAuthCalls += 1
+        onRefreshAuth?.invoke()
         refreshAuthError?.let { throw it }
         return refreshAuthResult
     }
@@ -2153,12 +3053,20 @@ private class FakeRepository(
     }
 
     override suspend fun loadLastActiveSessionId(endpoint: String): String? {
+        onLoadLastActiveSession?.let { return it() }
         val cleanedEndpoint = endpoint.trim()
         if (cleanedEndpoint.isBlank()) return null
         return lastActiveSessionByEndpoint[cleanedEndpoint]
     }
 
+    override suspend fun manageSession(operation: systems.pkt.lingon.data.relay.SessionManagementRequest): systems.pkt.lingon.data.relay.SessionManagementResult {
+        managementRequests += operation
+        onManage?.invoke()
+        return systems.pkt.lingon.data.relay.SessionManagementResult(sessionId = operation.sessionId, name = operation.name)
+    }
+
     override suspend fun listSessions(): List<RelaySession> {
+        onListSessions?.let { return it() }
         if (failListSessions) {
             throw ApiException("invalid session", 401)
         }
@@ -2181,25 +3089,33 @@ private class FakeRepository(
 }
 
 private class FakeWsClient(
+    private val provider: HttpClientProvider = testHttpClientProvider(),
     var onConnect: (ConnectOptions, Listener, WebSocket) -> Unit = { _, _, _ -> },
 ) : RelayWebSocketClient(
-    testHttpClientProvider(),
+    provider,
 ) {
     var connectCount: Int = 0
     var lastConnectOptions: ConnectOptions? = null
     var lastSentBytes: ByteArray? = null
+    val sentInputs = mutableListOf<ByteArray>()
     var lastSentCommand: CommandKind? = null
     var resizeCount: Int = 0
     var closeCount: Int = 0
-    private var pendingConnect: ((WebSocket) -> Unit)? = null
-    val fakeSocket: WebSocket = object : WebSocket {
+    var shareSession: RelayShareSession = RelayShareSession(sessionId = "shared-real", name = "Shared session", scope = "view")
+    var onAuthenticateShareSession: ((okhttp3.HttpUrl, String) -> RelayShareSession)? = null
+    private var pendingConnect: (() -> Unit)? = null
+    private val listeners = mutableMapOf<WebSocket, Listener>()
+    var fakeSocket: WebSocket = newSocket()
+        private set
+
+    private fun newSocket(): WebSocket = object : WebSocket {
         override fun request(): okhttp3.Request = okhttp3.Request.Builder().url("https://localhost/").build()
         override fun queueSize(): Long = 0
         override fun send(text: String): Boolean = true
         override fun send(bytes: okio.ByteString): Boolean = true
         override fun close(code: Int, reason: String?): Boolean {
             closeCount += 1
-            lastListener?.onClosed(this, code, reason)
+            listeners[this]?.onClosed(this, code, reason)
             return true
         }
         override fun cancel() {}
@@ -2207,17 +3123,25 @@ private class FakeWsClient(
     private var lastListener: RelayWebSocketClient.Listener? = null
 
     override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
+        if (connectCount > 0) fakeSocket = newSocket()
         connectCount += 1
         lastConnectOptions = options
         lastListener = listener
-        pendingConnect = { socket -> onConnect(options, listener, socket) }
+        val socket = fakeSocket
+        listeners[socket] = listener
+        pendingConnect = { onConnect(options, listener, socket) }
         return fakeSocket
+    }
+
+    override fun authenticateShareSession(baseUrl: okhttp3.HttpUrl, shareToken: String): AuthenticatedShareSession {
+        val session = onAuthenticateShareSession?.invoke(baseUrl, shareToken) ?: shareSession
+        return AuthenticatedShareSession(session, baseUrl, shareToken, provider.clientFor(baseUrl))
     }
 
     fun fireConnect() {
         val callback = pendingConnect ?: return
         pendingConnect = null
-        callback(fakeSocket)
+        callback()
     }
 
     fun fireFrame(frame: Frame) {
@@ -2236,6 +3160,7 @@ private class FakeWsClient(
 
     override fun sendInput(webSocket: WebSocket, data: ByteArray) {
         lastSentBytes = data.copyOf()
+        sentInputs.add(data.copyOf())
     }
 
     override fun sendInput(webSocket: WebSocket, text: String) {
@@ -2316,6 +3241,12 @@ private fun setActiveConnectionForTest(viewModel: AppViewModel, sessionId: Strin
     val field = AppViewModel::class.java.getDeclaredField("activeConnection")
     field.isAccessible = true
     field.set(viewModel, key)
+}
+
+private fun invokeOnClearedForTest(viewModel: AppViewModel) {
+    val method = AppViewModel::class.java.getDeclaredMethod("onCleared")
+    method.isAccessible = true
+    method.invoke(viewModel)
 }
 
 private fun welcomeFrame(): Frame {
@@ -2433,9 +3364,9 @@ private fun testHttpClientProvider(): HttpClientProvider {
     return HttpClientProvider(certStore, CookieJar.NO_COOKIES)
 }
 
-private fun testWallWorkStateStore(): WallWorkStateStore {
+private fun testWallWorkStateStore(scope: CoroutineScope): WallWorkStateStore {
     val dataStore = PreferenceDataStoreFactory.create(
-        scope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
+        scope = scope,
         produceFile = { Files.createTempFile("lingon-wall", ".preferences_pb").toFile() },
     )
     return WallWorkStateStore(dataStore)

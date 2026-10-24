@@ -36,6 +36,12 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		return err
 	}
 
+	owner, err := relay.NewStateOwner(cfg.Server.DataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = owner.Close() }()
+
 	tlsCfg, err := tlsmgr.BuildServerTLSConfig(
 		ctx,
 		tlsmgr.Config{
@@ -51,11 +57,11 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		return err
 	}
 
-	store, err := relay.LoadStore(cfg.Server.DataDir)
+	store, err := owner.LoadStore()
 	if err != nil {
 		return err
 	}
-	users, err := relay.LoadUserStore(cfg.Server.UsersFile)
+	users, err := owner.LoadUsers(cfg.Server.UsersFile)
 	if err != nil {
 		return err
 	}
@@ -64,6 +70,7 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 	hub := relay.NewHub(logger)
 	hub.SetReplayHistoryBytes(cfg.Server.ReplayHistoryBytes)
 	relayServer := relay.NewHTTPServer(store, users, auth, logger, hub)
+	defer relayServer.Close("shutdown")
 	relayServer.DataDir = cfg.Server.DataDir
 	relayServer.UsersFile = cfg.Server.UsersFile
 	relayServer.BasePath = base
@@ -80,8 +87,16 @@ func Serve(ctx context.Context, opts ServeOptions) error {
 		Window:   cfg.Server.ConnectLimit.Window,
 		Headroom: 3,
 	})
-	if err := relay.StartUserReloadLoop(ctx, cfg.Server.UsersFile, users, logger); err != nil {
-		logger.Warn("relay.users.reload.disabled", "err", err)
+	reloader, err := relay.NewUserReloader(ctx, relay.UserReloadOptions{
+		Path: cfg.Server.UsersFile, Store: users, Logger: logger,
+		OnReload: func(changedUsers []string) { relayServer.InvalidateReloadedUsers(changedUsers, time.Now().UTC()) },
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = reloader.Close() }()
+	if err := owner.ListenUsers(cfg.Server.UsersFile, relayServer); err != nil {
+		return err
 	}
 
 	srvCfg := server.Config{
