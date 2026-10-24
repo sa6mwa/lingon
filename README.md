@@ -38,6 +38,16 @@ make install PREFIX="$HOME/.local"
 The install target also creates `lingonx`; add `$HOME/.local/bin` to `PATH` when
 using that prefix. Android setup is documented in [android/README.md](android/README.md).
 
+For a system-wide installation:
+
+```bash
+make build
+sudo make install
+```
+
+`make install` copies the existing binary and creates `lingonx`; it does not
+build or run verification.
+
 ## Quick start
 
 ### 1) Bootstrap config + TLS

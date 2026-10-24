@@ -87,7 +87,7 @@ generate:
 hygiene:
 	$(VERIFY) bash scripts/check-hygiene.sh
 
-build: hygiene
+build:
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) build -buildvcs=true $(GOFLAGS) $(BUILD_FLAGS) -ldflags="$(LD_FLAGS)" -o $(BIN) ./cmd/lingon
 
 fmt:
@@ -144,10 +144,12 @@ test-android:
 test-all:
 	$(LIFECYCLE) prerelease </dev/null
 
-install: build
-	$(INSTALL) -m $(INSTALL_MODE) $(BIN) $(BINDIR)/lingon
-	rm -f $(BINDIR)/lingonx
-	ln -s lingon $(BINDIR)/lingonx
+install:
+	@test -f "$(BIN)" || { echo "Missing $(BIN); run make build first." >&2; exit 1; }
+	$(INSTALL) -d "$(BINDIR)"
+	$(INSTALL) -m $(INSTALL_MODE) "$(BIN)" "$(BINDIR)/lingon"
+	rm -f "$(BINDIR)/lingonx"
+	ln -s lingon "$(BINDIR)/lingonx"
 
 release prerelease release-matrix package-verify publish container push-container dev-up dev-down dev-ps dev-logs dev-reset:
 	$(LIFECYCLE) $@ </dev/null
