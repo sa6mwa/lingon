@@ -2036,7 +2036,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		if m.Logger != nil {
 			m.Logger.Debug("attach.stdin.send", "bytes", len(pending))
 		}
-		if err := targetClient.SendInput(ctx, pending); err != nil {
+		if err := targetClient.SendTerminalInput(ctx, pending); err != nil {
 			if m.Logger != nil {
 				m.Logger.Debug("attach.stdin.send.failed", "err", err)
 			}

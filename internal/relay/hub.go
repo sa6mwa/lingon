@@ -60,20 +60,22 @@ var errHostSessionClosed = errors.New("host session closed")
 var errStaleHostConnection = errors.New("stale host connection")
 
 type sessionState struct {
-	id             string
-	host           connection
-	clients        map[string]connection
-	clientIDs      map[string]string
-	pendingClients map[string]struct{}
-	seenClientIDs  map[string]struct{}
-	controller     string
-	cols           int
-	rows           int
-	seq            uint64
-	history        []*protocolpb.Frame
-	historyBytes   int
-	replayMu       sync.RWMutex
-	explicitClose  bool
+	id              string
+	host            connection
+	clients         map[string]connection
+	clientIDs       map[string]string
+	pendingClients  map[string]struct{}
+	seenClientIDs   map[string]struct{}
+	controller      string
+	cols            int
+	rows            int
+	seq             uint64
+	history         []*protocolpb.Frame
+	historyBytes    int
+	replayMu        sync.RWMutex
+	explicitClose   bool
+	clipboardID     string
+	clipboardSource string
 }
 
 // NewHub constructs a Hub.
@@ -154,6 +156,7 @@ func (h *Hub) registerClient(conn connection, sessionID, clientID string, wantsC
 			continue
 		}
 		if existing, ok := state.clients[existingConnID]; ok {
+			h.cancelClipboardLocked(state, existingConnID)
 			replaced = existing
 			replacedConnID = existingConnID
 			delete(state.clients, existingConnID)
@@ -255,6 +258,7 @@ func (h *Hub) Unregister(conn connection) {
 			state.explicitClose = false
 		}
 	} else {
+		h.cancelClipboardLocked(state, conn.ID())
 		delete(state.clients, conn.ID())
 		delete(state.clientIDs, conn.ID())
 		delete(state.pendingClients, conn.ID())
@@ -327,6 +331,7 @@ func (h *Hub) removeShareTokenClients(token string) []connection {
 			if !ok || shareConn.ShareToken() != token {
 				continue
 			}
+			h.cancelClipboardLocked(state, connID)
 			conns = append(conns, client)
 			delete(state.clients, connID)
 			delete(state.clientIDs, connID)
@@ -415,6 +420,17 @@ func (h *Hub) HandleHostFrame(ctx context.Context, conn connection, frame *proto
 	if state.host == nil || state.host.ID() != conn.ID() {
 		h.mu.Unlock()
 		return errStaleHostConnection
+	}
+	if reply := frame.GetClipboard(); reply != nil {
+		client := state.clients[reply.Source]
+		h.mu.Unlock()
+		if len(reply.Data) != 0 || len(reply.TransferId) != 32 || len(reply.Error) > 1024 || (!reply.Completed && (reply.Offset == 0 || reply.Offset > 32<<20 || reply.Offset%(1<<20) != 0 || reply.Error != "")) {
+			return fmt.Errorf("invalid clipboard response")
+		}
+		if client != nil {
+			return client.Send(ctx, frame)
+		}
+		return nil
 	}
 	if frame.GetSessionClosed() != nil {
 		state.seq++
@@ -540,6 +556,9 @@ func (h *Hub) HasParticipants(sessionID string) bool {
 
 // HandleClientFrame processes client input/control frames and forwards to host.
 func (h *Hub) HandleClientFrame(ctx context.Context, conn connection, frame *protocolpb.Frame) error {
+	if frame.GetClipboard() != nil {
+		return h.handleClipboard(ctx, conn, frame)
+	}
 	if frame.GetManagement() != nil {
 		return fmt.Errorf("session management requires the owner-authenticated HTTP API")
 	}

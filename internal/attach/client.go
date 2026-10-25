@@ -26,6 +26,7 @@ import (
 	"golang.org/x/term"
 	"google.golang.org/protobuf/proto"
 
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
@@ -90,6 +91,14 @@ type Client struct {
 	Logger          pslog.Logger
 	Trace           *trace.Writer
 	DesktopNotifier desktopnotify.Notifier
+	// ClipboardReader overrides the originating terminal's X11 clipboard.
+	ClipboardReader     clipboard.Reader
+	clipboardInputMu    sync.Mutex
+	clipboardInput      clipboard.Input
+	clipboardMu         sync.Mutex
+	clipboardReplyMu    sync.Mutex
+	clipboardReply      chan *protocolpb.Clipboard
+	clipboardTransferID string
 
 	holderID string
 
@@ -901,6 +910,10 @@ func (c *Client) readWS(ctx context.Context, ws *websocket.Conn) {
 			return
 		}
 		c.touchActivity()
+		if reply := frame.GetClipboard(); reply != nil {
+			c.receiveClipboardReply(reply)
+			continue
+		}
 		if c.OnFrame != nil {
 			c.OnFrame(frame)
 		}
@@ -2210,7 +2223,7 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 			if len(pending) == 0 {
 				return true
 			}
-			if err := c.SendInput(ctx, pending); err != nil {
+			if err := c.SendTerminalInput(ctx, pending); err != nil {
 				c.Logger.Debug("attach.ws.write.failed", "err", err)
 				c.setError(err)
 				return false

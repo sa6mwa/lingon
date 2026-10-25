@@ -54,6 +54,8 @@ type Publisher struct {
 
 	Logger                 pslog.Logger
 	OnInput                func([]byte)
+	OnClipboard            func(context.Context, *protocolpb.Clipboard) *protocolpb.Clipboard
+	OnClipboardReset       func()
 	OnResize               func(cols, rows int)
 	OnCommand              func(kind protocolpb.CommandKind)
 	OnManagement           func(context.Context, *protocolpb.SessionManagement) *protocolpb.SessionManagement
@@ -594,12 +596,25 @@ func (p *Publisher) clearConn() {
 }
 
 func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
+	if p.OnClipboardReset != nil {
+		defer p.OnClipboardReset()
+	}
 	for {
 		frame, err := relaywire.ReadFrame(ctx, ws)
 		if err != nil {
 			return err
 		}
 		p.touchActivity()
+		if chunk := frame.GetClipboard(); chunk != nil {
+			reply := &protocolpb.Clipboard{TransferId: chunk.TransferId, Source: chunk.Source, Completed: true, Error: "host does not support image paste"}
+			if p.OnClipboard != nil {
+				reply = p.OnClipboard(ctx, chunk)
+			}
+			if reply != nil {
+				p.sendFrame(&protocolpb.Frame{SessionId: p.opts.SessionID, Payload: &protocolpb.Frame_Clipboard{Clipboard: reply}})
+			}
+			continue
+		}
 		if request := frame.GetManagement(); request != nil {
 			select {
 			case p.management <- request:
@@ -631,6 +646,9 @@ func (p *Publisher) readWS(ctx context.Context, ws *websocket.Conn) error {
 			continue
 		}
 		if ctrl := frame.GetControl(); ctrl != nil {
+			if p.OnClipboardReset != nil {
+				p.OnClipboardReset()
+			}
 			p.setHolder(ctrl.HolderClientId)
 			continue
 		}

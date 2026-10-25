@@ -20,6 +20,7 @@ import (
 	"pkt.systems/lingon/internal/attach"
 	"pkt.systems/lingon/internal/authstore"
 	"pkt.systems/lingon/internal/backoff"
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/desktopnotify"
 	"pkt.systems/lingon/internal/netgate"
@@ -451,6 +452,7 @@ func (h *Harness) startProxy() {
 
 // HostOptions configures a PTY-backed host session.
 type HostOptions struct {
+	ClipboardReader             clipboard.Reader
 	SessionID                   string
 	SessionName                 string
 	Shell                       string
@@ -539,6 +541,7 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 	disableDesktopNotifications, desktopNotifier := effectiveHostDesktopNotificationConfig(opts)
 	resizeCh := make(chan struct{}, 1)
 	runner := session.New(session.Options{
+		ClipboardReader:             opts.ClipboardReader,
 		Endpoint:                    h.endpoint,
 		Token:                       token,
 		AuthFile:                    authFile,
@@ -583,12 +586,13 @@ func (h *Harness) StartHost(opts HostOptions) *PTYSession {
 
 // AttachOptions configures a PTY-backed attach client.
 type AttachOptions struct {
-	SessionID      string
-	ClientID       string
-	RequestControl bool
-	Cols           int
-	Rows           int
-	Clock          clock.Clock
+	ClipboardReader clipboard.Reader
+	SessionID       string
+	ClientID        string
+	RequestControl  bool
+	Cols            int
+	Rows            int
+	Clock           clock.Clock
 	// Endpoint overrides the harness relay endpoint. Supports local headless endpoints in tests.
 	Endpoint string
 	// UnixSocket overrides the transport socket used by attach client tests.
@@ -667,6 +671,7 @@ func (h *Harness) StartAttach(opts AttachOptions) *PTYSession {
 		opts.DesktopNotifier,
 	)
 	client := &attach.Client{
+		ClipboardReader:             opts.ClipboardReader,
 		Endpoint:                    h.endpoint,
 		SessionID:                   opts.SessionID,
 		AccessToken:                 token,

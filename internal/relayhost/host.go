@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
@@ -45,9 +46,11 @@ type Host struct {
 
 	Logger pslog.Logger
 
-	emulator terminal.Emulator
-	emuMu    sync.Mutex
-	lastSnap *protocolpb.Snapshot
+	emulator          terminal.Emulator
+	emuMu             sync.Mutex
+	lastSnap          *protocolpb.Snapshot
+	clipboardEndpoint *clipboard.Endpoint
+	clipboardReceiver clipboard.Receiver
 }
 
 // Run starts the host session.
@@ -83,7 +86,14 @@ func (h *Host) Run(ctx context.Context) error {
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 
-	cmd, ptyFile, err := startCommand(h.Command)
+	endpoint, err := clipboard.NewEndpoint(runCtx, os.Getenv("DISPLAY"), os.Getenv("XAUTHORITY"))
+	if err != nil {
+		return fmt.Errorf("start clipboard endpoint: %w", err)
+	}
+	defer endpoint.Close()
+	h.clipboardEndpoint = endpoint
+	defer h.clipboardReceiver.Reset()
+	cmd, ptyFile, err := startCommand(h.Command, endpoint)
 	if err != nil {
 		return err
 	}
@@ -265,6 +275,41 @@ func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File,
 			h.Logger.Debug("host.ws.read.failed", "err", err)
 			return
 		}
+		if frame.GetControl() != nil {
+			h.clipboardReceiver.Reset()
+		}
+		if chunk := frame.GetClipboard(); chunk != nil {
+			if chunk.Cancel {
+				h.clipboardReceiver.Cancel(chunk.Source, chunk.TransferId)
+				continue
+			}
+			img, err := h.clipboardReceiver.Accept(chunk)
+			if err == nil && len(img.Data) == 0 {
+				if progress := clipboard.Progress(chunk); progress != nil {
+					enqueueControl(ctx, ctrlFrames, &protocolpb.Frame{SessionId: h.SessionID, Payload: &protocolpb.Frame_Clipboard{Clipboard: progress}})
+				}
+				continue
+			}
+			if err == nil {
+				err = h.clipboardEndpoint.Set(ctx, img)
+			}
+			if err == nil {
+				if h.OnInput != nil {
+					h.OnInput([]byte{0x16})
+				}
+				select {
+				case ptyInput <- []byte{0x16}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			reply := &protocolpb.Clipboard{TransferId: chunk.TransferId, Source: chunk.Source, Completed: true}
+			if err != nil {
+				reply.Error = err.Error()
+			}
+			enqueueControl(ctx, ctrlFrames, &protocolpb.Frame{SessionId: h.SessionID, Payload: &protocolpb.Frame_Clipboard{Clipboard: reply}})
+			continue
+		}
 		if hello := frame.GetHello(); hello != nil {
 			if snap, err := h.snapshot(); err == nil {
 				h.emuMu.Lock()
@@ -437,24 +482,16 @@ func (h *Host) snapshotLocked() (*protocolpb.Snapshot, error) {
 	return snapshotToProto(snap), nil
 }
 
-func startCommand(command []string) (*exec.Cmd, *os.File, error) {
+func startCommand(command []string, endpoint *clipboard.Endpoint) (*exec.Cmd, *os.File, error) {
 	if len(command) == 0 {
-		return startShell()
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		command = []string{shell}
 	}
 	cmd := exec.Command(command[0], command[1:]...)
-	ptyFile, err := startPTY(cmd)
-	if err != nil {
-		return nil, nil, err
-	}
-	return cmd, ptyFile, nil
-}
-
-func startShell() (*exec.Cmd, *os.File, error) {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	cmd := exec.Command(shell)
+	cmd.Env = append(os.Environ(), "DISPLAY="+endpoint.Display, "XAUTHORITY="+endpoint.Authority)
 	ptyFile, err := startPTY(cmd)
 	if err != nil {
 		return nil, nil, err

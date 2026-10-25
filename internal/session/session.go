@@ -19,6 +19,7 @@ import (
 	"golang.org/x/term"
 
 	"pkt.systems/lingon/internal/backoff"
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/control"
@@ -89,6 +90,8 @@ type Options struct {
 	// DisableDesktopNotifications suppresses best-effort desktop notifications for inactivity walls.
 	DisableDesktopNotifications bool
 	DesktopNotifier             desktopnotify.Notifier
+	// ClipboardReader overrides image capture at the originating terminal.
+	ClipboardReader clipboard.Reader
 	// AllowRemoteResize permits relay- or attach-driven resize frames to resize
 	// the underlying local PTY. This must remain false for normal host sessions
 	// and only be enabled for headless Lingon-owned PTYs.
@@ -501,6 +504,10 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 		defer wg.Done()
 		buf := make([]byte, 4096)
 		var prefix control.Prefix
+		clipboardInput := clipboard.Input{Reader: clipboard.NewX11(os.Getenv("DISPLAY"), os.Getenv("XAUTHORITY"))}
+		if r.opts.ClipboardReader != nil {
+			clipboardInput.Reader = r.opts.ClipboardReader
+		}
 		var rename control.RenamePrompt
 		pending := make([]byte, 0, 4096)
 		var scrollState scrollInputState
@@ -566,7 +573,14 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 						return true
 					}
 					for {
-						if _, err := local.writePTY(pending); err != nil {
+						err := clipboardInput.Forward(sigCtx, pending, func(data []byte) error { _, err := local.writePTY(data); return err }, func(img clipboard.Image) error {
+							return local.pasteImage(sigCtx, img)
+						})
+						if err != nil {
+							if clipboard.IsPasteError(err) {
+								r.showStatus("Image paste: "+err.Error(), stdout, 3*time.Second)
+								break
+							}
 							if errors.Is(err, errPTYNotReady) {
 								if r.logger != nil {
 									r.logger.Debug("session.pty.write.waiting", "session", activeID)
@@ -589,8 +603,11 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 					r.noteLocalEnterInput(activeID, pending)
 				} else if r.remoteSessions != nil {
 					r.setTabSuppressed(activeID, false)
-					if err := r.remoteSessions.SendInput(sigCtx, activeID, pending, stdout); err != nil {
+					if err := clipboardInput.Forward(sigCtx, pending, func(data []byte) error { return r.remoteSessions.SendInput(sigCtx, activeID, data, stdout) }, func(img clipboard.Image) error { return r.remoteSessions.SendImage(sigCtx, activeID, img) }); err != nil {
 						r.logger.Debug("session.remote.input.failed", "session", activeID, "err", err)
+						if clipboard.IsPasteError(err) {
+							r.showStatus("Image paste: "+err.Error(), stdout, 3*time.Second)
+						}
 					}
 				}
 				pending = pending[:0]
@@ -1997,6 +2014,8 @@ func (r *Runner) addLocalSession(ctx context.Context, id, name string, respawn, 
 		pub.OnInput = func(data []byte) {
 			r.handleRemoteInput(session, data, debugRemoteInput)
 		}
+		pub.OnClipboard = session.handleClipboard
+		pub.OnClipboardReset = session.clipboardReceiver.Reset
 		pub.OnManagement = func(ctx context.Context, request *protocolpb.SessionManagement) *protocolpb.SessionManagement {
 			result := r.Manage(ctx, sessionmanage.Request{RequestID: request.RequestId, SessionID: session.ID(), Kind: request.Kind, Name: request.Name})
 			return &protocolpb.SessionManagement{ResultSessionId: result.SessionID, Name: result.Name, Error: result.Error}

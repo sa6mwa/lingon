@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocol"
@@ -30,8 +31,11 @@ type localSession struct {
 	nameMu sync.RWMutex
 	name   string
 
-	shell string
-	term  string
+	shell             string
+	term              string
+	clipboardMu       sync.Mutex
+	clipboardEndpoint *clipboard.Endpoint
+	clipboardReceiver clipboard.Receiver
 
 	cols            int
 	rows            int
@@ -100,7 +104,7 @@ type localSession struct {
 	recentInputMu sync.Mutex
 	recentInput   []byte
 
-	remoteInputCh chan []byte
+	remoteInputCh chan remoteInputOperation
 	outputNotify  chan struct{}
 	startupOnce   sync.Once
 	startupCh     chan error
@@ -478,7 +482,7 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 		cursorQuery:       opts.CursorQuery,
 		trace:             opts.Trace,
 		allowRemoteResize: opts.AllowRemoteResize,
-		remoteInputCh:     make(chan []byte, 256),
+		remoteInputCh:     make(chan remoteInputOperation, 256),
 		outputNotify:      make(chan struct{}, 1),
 		startupCh:         make(chan error, 1),
 	}
@@ -1089,6 +1093,7 @@ func (s *localSession) setHolder(holderID string) {
 		return
 	}
 	s.holderID = holderID
+	s.clipboardReceiver.Reset()
 	s.applyVEOF(holderID)
 }
 
@@ -1144,7 +1149,7 @@ func (s *localSession) enqueueRemoteInput(data []byte) error {
 	select {
 	case <-s.ctx.Done():
 		return s.ctx.Err()
-	case s.remoteInputCh <- payload:
+	case s.remoteInputCh <- remoteInputOperation{data: payload}:
 		return nil
 	}
 }
@@ -1154,8 +1159,12 @@ func (s *localSession) runRemoteInput() {
 		select {
 		case <-s.ctx.Done():
 			return
-		case data := <-s.remoteInputCh:
-			s.processRemoteInput(data)
+		case op := <-s.remoteInputCh:
+			if op.paste != nil {
+				op.done <- op.paste()
+			} else {
+				s.processRemoteInput(op.data)
+			}
 		}
 	}
 }
@@ -1203,7 +1212,22 @@ func (s *localSession) closePTY() {
 }
 
 func (s *localSession) runOnce(ctx context.Context) error {
-	ptyFile, ttyFile, cmd, err := startShell(s.shell, s.term)
+	endpoint, err := clipboard.NewEndpoint(ctx, os.Getenv("DISPLAY"), os.Getenv("XAUTHORITY"))
+	if err != nil {
+		s.reportStartup(err)
+		return fmt.Errorf("start session clipboard: %w", err)
+	}
+	s.clipboardMu.Lock()
+	s.clipboardEndpoint = endpoint
+	s.clipboardMu.Unlock()
+	defer func() {
+		s.clipboardMu.Lock()
+		s.clipboardEndpoint = nil
+		s.clipboardReceiver.Reset()
+		s.clipboardMu.Unlock()
+		_ = endpoint.Close()
+	}()
+	ptyFile, ttyFile, cmd, err := startShell(s.shell, s.term, endpoint)
 	if err != nil {
 		s.reportStartup(err)
 		return err

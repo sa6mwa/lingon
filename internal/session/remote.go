@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"pkt.systems/lingon/internal/attach"
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/desktopnotify"
@@ -1038,6 +1039,14 @@ func (m *remoteManager) SendInput(ctx context.Context, sessionID string, data []
 	}
 	m.logViewState("send_input", view, nil)
 	return nil
+}
+
+func (m *remoteManager) SendImage(ctx context.Context, sessionID string, img clipboard.Image) error {
+	_, client := m.viewClient(sessionID)
+	if client == nil || !client.Connected() {
+		return fmt.Errorf("image paste requires a connected session; reconnect and retry")
+	}
+	return client.SendImage(ctx, img)
 }
 
 func (m *remoteManager) SendCommand(ctx context.Context, sessionID string, kind protocolpb.CommandKind, stdout io.Writer) error {
