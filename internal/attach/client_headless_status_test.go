@@ -170,7 +170,7 @@ func TestHandleWallInactivityStatus(t *testing.T) {
 	}
 }
 
-func TestPrepareForCtrlLClearStopsPendingRedrawEffects(t *testing.T) {
+func TestRenderCurrentStopsUnneededRedrawEffects(t *testing.T) {
 	clk := clock.NewMock()
 	var buf bytes.Buffer
 	client := &Client{
@@ -193,7 +193,7 @@ func TestPrepareForCtrlLClearStopsPendingRedrawEffects(t *testing.T) {
 		stateFired = true
 	})
 
-	client.PrepareForCtrlLClear()
+	client.RenderCurrent()
 	clk.Add(2 * time.Second)
 
 	if tabFired {
@@ -210,7 +210,7 @@ func TestPrepareForCtrlLClearStopsPendingRedrawEffects(t *testing.T) {
 	}
 }
 
-func TestPrepareForCtrlLClearRendersImmediatelyAndAvoidsDeferredFullClear(t *testing.T) {
+func TestRenderCurrentAvoidsSpeculativeFullClear(t *testing.T) {
 	clk := clock.NewMock()
 	var buf bytes.Buffer
 	client := &Client{
@@ -247,12 +247,9 @@ func TestPrepareForCtrlLClearRendersImmediatelyAndAvoidsDeferredFullClear(t *tes
 	client.showInfoStatus("wall inactivity: on")
 	buf.Reset()
 
-	client.PrepareForCtrlLClear()
-	if buf.Len() == 0 {
-		t.Fatalf("expected immediate redraw during Ctrl+L clear")
-	}
-	if !strings.Contains(buf.String(), "\x1b[2J\x1b[H") {
-		t.Fatalf("expected immediate Ctrl+L redraw to clear the viewport")
+	client.RenderCurrent()
+	if strings.Contains(buf.String(), "\x1b[2J\x1b[H") {
+		t.Fatalf("current snapshot redraw must not speculate that the child clears")
 	}
 
 	buf.Reset()
@@ -268,7 +265,7 @@ func TestPrepareForCtrlLClearRendersImmediatelyAndAvoidsDeferredFullClear(t *tes
 	}
 }
 
-func TestPrepareForCtrlLClearPreservesStateExpiryWithoutRemoteSnapshot(t *testing.T) {
+func TestRenderCurrentPreservesStateExpiryWithoutRemoteSnapshot(t *testing.T) {
 	clk := testclock.New()
 	var buf bytes.Buffer
 	client := &Client{
@@ -312,12 +309,12 @@ func TestPrepareForCtrlLClearPreservesStateExpiryWithoutRemoteSnapshot(t *testin
 	client.showInfoStatus("wall inactivity: on")
 	buf.Reset()
 
-	client.PrepareForCtrlLClear()
+	client.RenderCurrent()
 	buf.Reset()
 
 	clk.Add(2100 * time.Millisecond)
 	if len(expired) == 0 || buf.Len() == 0 {
-		t.Fatal("expected completed expiry redraw after Ctrl+L clear")
+		t.Fatal("expected completed expiry redraw after rendering current snapshot")
 	}
 	e := emu.New(80, 24)
 	if err := e.Write(buf.Bytes()); err != nil {
@@ -342,7 +339,7 @@ func TestPrepareForCtrlLClearPreservesStateExpiryWithoutRemoteSnapshot(t *testin
 	}
 	joined := strings.Join(rows, "\n")
 	if strings.Contains(joined, "wall inactivity: on") {
-		t.Fatalf("expected expiring overlay to disappear after Ctrl+L clear redraw, got:\n%s", joined)
+		t.Fatalf("expected expiring overlay to disappear after current snapshot redraw, got:\n%s", joined)
 	}
 	if strings.Contains(buf.String(), "\x1b[2J\x1b[H") {
 		t.Fatalf("expected expiry redraw without deferred full clear")

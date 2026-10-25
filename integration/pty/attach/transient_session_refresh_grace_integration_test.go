@@ -4,6 +4,7 @@
 package integrationptyattach_test
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,8 @@ func TestAttachRetainsTransientlyMissingActiveRemoteSession(t *testing.T) {
 
 	var activeMu sync.Mutex
 	activeID := ""
+	activeEvents := make(chan string, 8)
+	closedBeta := make(chan struct{}, 1)
 	var viewsMu sync.Mutex
 	views := map[string]*attach.Client{}
 
@@ -43,31 +46,77 @@ func TestAttachRetainsTransientlyMissingActiveRemoteSession(t *testing.T) {
 		},
 		OnActive: func(sessionID string) {
 			activeMu.Lock()
+			changed := activeID != sessionID
 			activeID = sessionID
 			activeMu.Unlock()
+			if changed {
+				activeEvents <- sessionID
+			}
 		},
 		OnView: func(sessionID string, client *attach.Client) {
 			viewsMu.Lock()
 			views[sessionID] = client
 			viewsMu.Unlock()
 		},
+		OnViewClosed: func(sessionID string, _, _ bool) {
+			if sessionID == "beta" {
+				select {
+				case closedBeta <- struct{}{}:
+				default:
+				}
+			}
+		},
 	})
 	t.Cleanup(attachSess.Cancel)
 
-	currentActive := waitForActiveSessionReady(t, h.Clock(), &activeMu, &activeID, &viewsMu, views, "", 3*time.Second)
-	if currentActive != "alpha" {
-		t.Fatalf("expected alpha to be active first, got %q", currentActive)
+	waitActive := func(want string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		select {
+		case got := <-activeEvents:
+			if got != want {
+				t.Fatalf("expected active session %q, got %q", want, got)
+			}
+		case <-ctx.Done():
+			t.Fatalf("waiting for active session %q: %v", want, ctx.Err())
+		}
 	}
-
-	_ = advanceActiveTabWithRetry(t, attachSess, h.Clock(), &activeMu, &activeID, &viewsMu, views, currentActive, 3*time.Second)
-	activeMu.Lock()
-	if activeID != "beta" {
-		t.Fatalf("expected beta to be active after switch, got %q", activeID)
+	waitScreen := func(token string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := attachSess.WaitForScreen(ctx, func(screen ptytest.Screen) bool { return screen.Contains(token) }); err != nil {
+			t.Fatalf("waiting for rendered %q: %v", token, err)
+		}
 	}
-	activeMu.Unlock()
+	alpha.Send("printf 'ALPHA_%s\\n' READY\r")
+	beta.Send("printf 'BETA_%s\\n' READY\r")
+	waitActive("alpha")
+	waitScreen("ALPHA_READY")
+	// Send exactly one switch. Retrying a non-idempotent key command while
+	// waiting for its snapshot can queue a second switch back to alpha.
+	attachSess.SendBytes([]byte{12, 'n'})
+	waitActive("beta")
+	waitScreen("BETA_READY")
 
 	beta.Cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	select {
+	case <-closedBeta:
+	case <-ctx.Done():
+		t.Fatalf("waiting for beta disconnect: %v", ctx.Err())
+	}
+	viewsMu.Lock()
+	betaClient := views["beta"]
+	viewsMu.Unlock()
+	// Deliver the authoritative missing-session event through the same
+	// callback as the relay, before advancing the grace interval.
+	missing := func() { betaClient.OnSessions([]attach.SessionInfo{{ID: "alpha", Name: "alpha", Status: "running"}}) }
+	missing()
 	h.Advance(200 * time.Millisecond)
+	missing()
 	activeMu.Lock()
 	current := activeID
 	activeMu.Unlock()
@@ -83,14 +132,8 @@ func TestAttachRetainsTransientlyMissingActiveRemoteSession(t *testing.T) {
 	waitForHost(t, h, "beta", 3*time.Second)
 	h.Advance(200 * time.Millisecond)
 
-	waitForClientReady(t, h.Clock(), &viewsMu, views, "beta", 3*time.Second)
-	beta.Send("BETA_BACK\n")
-	attachSess.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		if !screen.Contains("BETA_BACK") {
-			return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
-		}
-		return nil
-	})
+	beta.Send("printf 'BETA_%s\\n' BACK\r")
+	waitScreen("BETA_BACK")
 	activeMu.Lock()
 	current = activeID
 	activeMu.Unlock()

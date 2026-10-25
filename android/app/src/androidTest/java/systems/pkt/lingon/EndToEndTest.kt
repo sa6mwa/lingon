@@ -1028,9 +1028,22 @@ class EndToEndTest {
         loginWithConfiguredUser()
         waitForTagNoError(TestTags.TerminalInput)
         assertTerminalResponsive()
-        val sourceSession = activeSessionId()
-        val destinationSession = testConfig.primaryUser().sessions.firstOrNull { it != sourceSession }
-            ?: throw AssertionError("selection paste test needs a second host session")
+        // Keep selected cells stable while Android dispatches copy/paste keys.
+        // A periodic echo producer can scroll a different row under a selection.
+        val quietSessions = startHostsViaHarness(count = 2, shell = "/bin/sh")
+        val sourceSession = quietSessions[0]
+        val destinationSession = quietSessions[1]
+        quietSessions.forEach { sessionId ->
+            waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+            selectSessionTab(sessionId, timeoutMs = 10_000L)
+            sendTerminalInput("echo ECHO_${sessionId} 6$(echo 1)")
+            sendTerminalEnter()
+            waitUntilNoError(10_000L) {
+                snapshotContainsToken("ECHO_${sessionId} 61") &&
+                    readTerminalDebugInfo()?.cursorLine?.trimEnd() == "${sessionId}\$"
+            }
+        }
+        selectSessionTab(sourceSession, timeoutMs = 10_000L)
         val clipboard = composeRule.activity.getSystemService(ClipboardManager::class.java)
         val previousClip = clipboard.primaryClip
         fun selectEchoPrefix(sessionId: String) {
@@ -1072,8 +1085,6 @@ class EndToEndTest {
             }
         }
         try {
-            sendTerminalInput("a")
-            waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${sourceSession} 61") }
             composeRule.onNodeWithText("ALT").performClick()
             composeRule.onNodeWithText("ALT").performClick()
             assertTrue(hasTextNode("FN"))
@@ -1097,17 +1108,19 @@ class EndToEndTest {
             assertTrue("FN was reset on session switch", hasTextNode("FN"))
             sendKeyStroke(KeyEvent.KEYCODE_V)
             waitUntilNoError(10_000L) {
-                snapshotContainsSequence(*listOf("45", "43", "48", "4f").map { "ECHO_${destinationSession} $it" }.toTypedArray())
+                readTerminalDebugInfo()?.cursorLine?.trimEnd() == "${destinationSession}\$ ECHO"
             }
 
             clipboard.setPrimaryClip(ClipData.newPlainText("external", "NOW"))
             sendKeyStroke(KeyEvent.KEYCODE_V)
             waitUntilNoError(10_000L) {
-                snapshotContainsSequence(*listOf("4e", "4f", "57").map { "ECHO_${destinationSession} $it" }.toTypedArray())
+                readTerminalDebugInfo()?.cursorLine?.trimEnd() == "${destinationSession}\$ ECHONOW"
             }
 
             sendKeyStroke(KeyEvent.KEYCODE_A)
-            waitUntilNoError(10_000L) { snapshotContainsToken("ECHO_${destinationSession} 61") }
+            waitUntilNoError(10_000L) {
+                readTerminalDebugInfo()?.cursorLine?.trimEnd() == "${destinationSession}\$ ECHONOWa"
+            }
             selectEchoPrefix(destinationSession)
             sendKeyStroke(KeyEvent.KEYCODE_C)
             waitUntilNoError(10_000L) {
@@ -3598,6 +3611,53 @@ class EndToEndTest {
     }
 
     @Test
+    fun keyboard_reopening_keeps_manual_bottom_after_full_terminal_fit() {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        enableSoftKeyboardWithHardwareKeyboard()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        val sessionId = startHostsViaHarness(count = 1, rows = 240, shell = "/bin/sh", initialLines = 260).single()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        selectSessionTab(sessionId, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { snapshotContainsToken("LINE_${sessionId} 259") && !stateForTest().sessionSyncing }
+        composeRule.runOnIdle { appViewModel().resetZoomAndPan() }
+        focusTerminalInput()
+        waitUntilNoError(15_000L) { hasTextNode("CTRL") && readImeBottomInsetPx() > readNavigationBottomInsetPx() }
+        waitForTerminalDebugInfo { it.activeSessionId == sessionId && it.rows > it.viewRows && it.isLiveBottomAnchored() }
+            ?: throw AssertionError("manual-bottom fixture did not start at the visible bottom")
+
+        // An upward pan at the live bottom enters manual mode without moving
+        // away from it, just as after ordinary terminal navigation.
+        composeRule.runOnIdle {
+            val view = findTerminalView() as TerminalGridView
+            val x = view.width * 0.5f
+            val y = view.getViewportHeightForTesting() * 0.6f
+            val time = SystemClock.uptimeMillis()
+            view.dispatchTouchEvent(MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, x, y, 0))
+            view.dispatchTouchEvent(MotionEvent.obtain(time, time + 16, MotionEvent.ACTION_MOVE, x, y - 48f, 0))
+            view.dispatchTouchEvent(MotionEvent.obtain(time, time + 32, MotionEvent.ACTION_UP, x, y - 48f, 0))
+            assertEquals(systems.pkt.lingon.terminal.TerminalViewportMode.Manual, view.captureViewportState().mode)
+        }
+        assertLiveBottomAnchored("manual camera before keyboard hide")
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitUntilNoError(10_000L) { !hasTextNode("CTRL") && readImeBottomInsetPx() <= readNavigationBottomInsetPx() }
+        waitForTerminalDebugInfo { info ->
+            info.activeSessionId == sessionId && info.isLiveBottomAnchored() &&
+                info.rows * info.scaledCellHeightPx <= info.viewportHeightPx + 1f &&
+                kotlin.math.abs(info.cameraOffsetYPx) <= 1f
+        } ?: throw AssertionError("hidden keyboard did not fit the complete terminal at zero offset")
+
+        focusTerminalInput()
+        waitUntilNoError(15_000L) { hasTextNode("CTRL") && readImeBottomInsetPx() > readNavigationBottomInsetPx() }
+        assertTerminalViewportAboveIme("manual bottom after keyboard reopening")
+        assertTerminalViewportAboveQuickKeys("manual bottom after keyboard reopening")
+        waitForTerminalDebugInfo { info ->
+            info.activeSessionId == sessionId && info.rows > info.viewRows && info.isLiveBottomAnchored()
+        } ?: throw AssertionError("reopening keyboard left the manual terminal bottom behind the keyboard/button bar")
+    }
+
+    @Test
     fun keyboard_hide_show_preserves_bottom_anchor_for_tall_sessions() {
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
@@ -4023,8 +4083,16 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
-        val sessionId = activeSessionId()
-        assertTerminalResponsive(sessionId)
+        assertTerminalResponsive()
+        ensureAllWallInactivityOff()
+        val sessionId = startHostsViaHarness(
+            count = 1,
+            shell = "/bin/sh",
+            initialLines = 60,
+        ).single()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        selectSessionTab(sessionId, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { snapshotContainsToken("LINE_${sessionId} 059") }
         composeRule.runOnIdle {
             appViewModel().resetZoomAndPan()
         }
@@ -4032,12 +4100,14 @@ class EndToEndTest {
         composeRule.waitForIdle()
         val beforeLoad = readTerminalDebugInfo()
             ?: throw AssertionError("missing terminal debug info before background/foreground fixture")
-        sendTerminalInput("seq 1 60")
+        sendTerminalInput("seq 1 60; echo ANCHOR$(echo READY)")
         sendTerminalEnter()
         val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
             info.activeSessionId == sessionId &&
                 info.lastFrameSeq > beforeLoad.lastFrameSeq &&
                 info.hash != beforeLoad.hash &&
+                snapshotContainsToken("ANCHORREADY") &&
+                info.cursorLine.trimEnd() == "${sessionId}\$" &&
                 info.visibleEndRowExclusive > info.visibleStartRow
         } ?: throw AssertionError("terminal fixture did not render before background/foreground cycle")
 
@@ -4061,6 +4131,7 @@ class EndToEndTest {
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureAllWallInactivityOff()
         syncWallCursorToLatest()
+        val baselineWalls = wallEventCount()
 
         composeRule.runOnUiThread {
             appViewModel().setBackgroundWallEnabled(true)
@@ -4073,11 +4144,16 @@ class EndToEndTest {
             appViewModel().state.value.wallInactivityEnabled &&
                 appViewModel().state.value.wallInactivityLabel == "250ms"
         }
+        // Hold the inactivity deadline until background delivery is ready.
+        // The relay imposes a one-second minimum on inactivity timers.
+        advanceWallClockViaHarness(999)
+        assertEquals("inactivity fired before background delivery was ready", baselineWalls, wallEventCount())
 
         backgroundActivity()
         waitUntilDeviceCondition(10_000L, "background wall service notification") {
             activeNotifications().any { it.notification.channelId == "lingon_background_wall" }
         }
+        advanceWallClockViaHarness(1)
         waitUntilDeviceCondition(BACKGROUND_WALL_NOTIFICATION_TIMEOUT_MS, "wall inactivity notification") {
             wallNotifications().isNotEmpty()
         }
@@ -5386,6 +5462,7 @@ class EndToEndTest {
                 ';' -> KeyEvent.KEYCODE_SEMICOLON to false
                 '|' -> KeyEvent.KEYCODE_BACKSLASH to true
                 '-' -> KeyEvent.KEYCODE_MINUS to false
+                '_' -> KeyEvent.KEYCODE_MINUS to true
                 'a' -> KeyEvent.KEYCODE_A to false
                 'b' -> KeyEvent.KEYCODE_B to false
                 'c' -> KeyEvent.KEYCODE_C to false

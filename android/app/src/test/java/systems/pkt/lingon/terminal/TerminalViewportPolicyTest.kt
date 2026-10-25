@@ -325,6 +325,51 @@ class TerminalViewportPolicyTest {
     }
 
     @Test
+    fun `manual bottom follows keyboard reopening after full terminal fit`() {
+        for (hiddenHeight in listOf(600, 800)) {
+            val hiddenOffset = TerminalViewportPolicy.preserveBottomAnchorOnViewportChange(
+                cameraOffsetYPx = 300f,
+                previousViewportHeightPx = 300,
+                previousScaledCellHeightPx = 10f,
+                nextViewportHeightPx = hiddenHeight,
+                nextScaledCellHeightPx = 10f,
+                totalRows = 60,
+            )
+            assertEquals(0f, hiddenOffset, 0.001f)
+            assertEquals(
+                "keyboard reopening from height $hiddenHeight must retain the terminal bottom",
+                300f,
+                TerminalViewportPolicy.preserveBottomAnchorOnViewportChange(
+                    cameraOffsetYPx = hiddenOffset,
+                    previousViewportHeightPx = hiddenHeight,
+                    previousScaledCellHeightPx = 10f,
+                    nextViewportHeightPx = 300,
+                    nextScaledCellHeightPx = 10f,
+                    totalRows = 60,
+                ),
+                0.001f,
+            )
+        }
+    }
+
+    @Test
+    fun `restored manual bottom follows keyboard reopening after full terminal fit`() {
+        assertEquals(
+            300f,
+            TerminalViewportPolicy.restoreCameraOffsetY(
+                savedCameraOffsetYPx = 0f,
+                savedViewportHeightPx = 600,
+                savedScaledCellHeightPx = 10f,
+                savedTotalRows = 60,
+                nextViewportHeightPx = 300,
+                nextScaledCellHeightPx = 10f,
+                nextTotalRows = 60,
+            ),
+            0.001f,
+        )
+    }
+
+    @Test
     fun `top aligned manual camera stays at top as keyboard changes viewport height`() {
         assertEquals(
             0f,

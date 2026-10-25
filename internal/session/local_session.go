@@ -1082,8 +1082,13 @@ func (s *localSession) filterRemoteInput(data []byte) []byte {
 
 func (s *localSession) setHolder(holderID string) {
 	s.holderMu.Lock()
+	defer s.holderMu.Unlock()
+	// Repeated host input must not rewrite termios while the shell is
+	// switching modes. Apply EOF policy only on an ownership transition.
+	if s.holderID == holderID {
+		return
+	}
 	s.holderID = holderID
-	s.holderMu.Unlock()
 	s.applyVEOF(holderID)
 }
 

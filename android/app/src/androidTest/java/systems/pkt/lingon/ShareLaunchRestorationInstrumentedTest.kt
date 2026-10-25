@@ -2,6 +2,7 @@ package systems.pkt.lingon
 
 import android.Manifest
 import android.content.Intent
+import android.util.Base64
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -15,11 +16,35 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.Rule
+import org.junit.Before
 import org.junit.runner.RunWith
 import systems.pkt.lingon.viewmodel.AppViewModel
+import systems.pkt.lingon.viewmodel.ConnectionState
 
 @RunWith(AndroidJUnit4::class)
 class ShareLaunchRestorationInstrumentedTest {
+    @get:Rule
+    val testTimeout: org.junit.rules.Timeout = org.junit.rules.Timeout.seconds(30)
+
+    private val endpoint: String
+        get() = requireNotNull(InstrumentationRegistry.getArguments().getString("endpoint"))
+
+    private val shareToken: String
+        get() = requireNotNull(InstrumentationRegistry.getArguments().getString("view_token"))
+
+    @Before
+    fun configureOwnedRelay() = runBlocking {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val app = instrumentation.targetContext.applicationContext as LingonApplication
+        val ca = requireNotNull(InstrumentationRegistry.getArguments().getString("ca_pem_b64"))
+        app.certificateStore.addCertificates(endpoint, String(Base64.decode(ca, Base64.DEFAULT), Charsets.UTF_8))
+        // Launch a real shared session. Permanent connection errors keep the
+        // syncing animation running while ActivityScenario waits for idle.
+        app.repository.clearAuth()
+        app.repository.clearLastActiveSession()
+        app.repository.setEndpoint(endpoint)
+    }
+
     @get:Rule
     val notificationPermissionRule: GrantPermissionRule =
         GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS)
@@ -27,8 +52,8 @@ class ShareLaunchRestorationInstrumentedTest {
     @Test
     fun trustedNewIntentKeepsLaunchIdentityAndRestoresShare() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val token = "trusted-new-intent-token"
-        val requestId = PendingShareLaunches.put(token, "https://127.0.0.1:1")
+        val token = shareToken
+        val requestId = PendingShareLaunches.put(token, endpoint)
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
                 val launchIdentity = Intent(activity.intent)
@@ -57,17 +82,26 @@ class ShareLaunchRestorationInstrumentedTest {
     @Test
     fun consumedShareSurvivesLossOfPendingRequestAndViewModel() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val token = "trusted-restoration-token"
-        val requestId = PendingShareLaunches.put(token, "https://127.0.0.1:1")
+        val token = shareToken
+        val requestId = PendingShareLaunches.put(token, endpoint)
         val intent = Intent(context, MainActivity::class.java).apply {
             action = MainActivity.ACTION_INTERNAL_SHARE
             putExtra(MainActivity.EXTRA_SHARE_REQUEST_ID, requestId)
         }
         ActivityScenario.launch<MainActivity>(intent).use { scenario ->
+            var initialModel: AppViewModel? = null
             scenario.onActivity { activity ->
                 val model = ViewModelProvider(activity)[AppViewModel::class.java]
+                initialModel = model
                 assertEquals(token, model.state.value.shareToken)
                 assertNull(PendingShareLaunches.take(requestId))
+            }
+            runBlocking {
+                withTimeout(15_000) {
+                    requireNotNull(initialModel).state.first {
+                        it.connectionState == ConnectionState.Connected && it.activeSnapshot != null
+                    }
+                }
             }
             scenario.recreate()
             scenario.onActivity { activity ->
@@ -87,8 +121,15 @@ class ShareLaunchRestorationInstrumentedTest {
 
     @Test
     fun loggedOutShareIsNotRestored() {
+        // Exercise fresh launches against application state retained by prior
+        // logout/recreation cycles, rather than only the first clean launch.
+        repeat(8) { assertLoggedOutShareIsNotRestored() }
+    }
+
+    private fun assertLoggedOutShareIsNotRestored() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val requestId = PendingShareLaunches.put("logged-out-restoration-token", "https://127.0.0.1:1")
+        val token = shareToken
+        val requestId = PendingShareLaunches.put(token, endpoint)
         val intent = Intent(context, MainActivity::class.java).apply {
             action = MainActivity.ACTION_INTERNAL_SHARE
             putExtra(MainActivity.EXTRA_SHARE_REQUEST_ID, requestId)
@@ -98,7 +139,7 @@ class ShareLaunchRestorationInstrumentedTest {
             scenario.onActivity { activity ->
                 val current = ViewModelProvider(activity)[AppViewModel::class.java]
                 model = current
-                assertEquals("logged-out-restoration-token", current.state.value.shareToken)
+                assertEquals(token, current.state.value.shareToken)
                 current.logout()
             }
             runBlocking {

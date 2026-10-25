@@ -42,6 +42,7 @@ func proofGates() []gate {
 		{name: "vet", tool: "go", args: []string{"vet", "./..."}},
 		{name: "golint", tool: "golint", args: []string{"-set_exit_status", "./..."}},
 		{name: "golangci-lint", tool: "bash", args: []string{"scripts/golangci-lint.sh", "run", "--concurrency=1", "./..."}},
+		{name: "CLI build and install", tool: "bash", args: []string{"scripts/check-install.sh"}},
 		{name: "Go tests", tool: "go", args: []string{"test", "-count=1", "-timeout=20m", "./..."}},
 		{name: "Go race tests", tool: "go", args: []string{"test", "-race", "-count=1", "-timeout=20m", "./..."}},
 		{name: "Android Go tools vet", dir: "android", tool: "go", args: []string{"vet", "./..."}},

@@ -1,104 +1,94 @@
 package attach_test
 
 import (
-	"regexp"
-	"strconv"
-	"strings"
+	"context"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"pkt.systems/lingon/internal/attach"
+	"pkt.systems/lingon/internal/backoff"
 	"pkt.systems/lingon/internal/ptytest"
+	"pkt.systems/lingon/internal/session"
 )
 
 func TestMultiAttachCountdownOnServerDisconnect(t *testing.T) {
 	h := newHarness(t)
+	started := h.Clock().Now()
+	t.Cleanup(func() {
+		if got := h.Clock().Now().Sub(started); got != 1100*time.Millisecond {
+			t.Errorf("readiness and frame observations advanced application time: got %v, want only the explicit 1.1s countdown step", got)
+		}
+	})
+
+	// The owned process acknowledges input with output, independently of shell
+	// startup files, prompts and terminal input echo.
+	shell := filepath.Join(t.TempDir(), "countdown-shell.sh")
+	if err := os.WriteFile(shell, []byte("#!/bin/sh\nset -eu\nstty -echo\nprintf '\\nCOUNTDOWN_READY\\n'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\"; done\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	published := make(chan struct{})
+	var publishOnce sync.Once
 	host := h.StartHost(ptytest.HostOptions{
 		SessionID:   "session_disconnect_countdown",
 		SessionName: "session_disconnect_countdown",
-		Shell:       "/bin/sh",
+		Shell:       shell,
 		Cols:        80,
 		Rows:        24,
+		OnPublishStatus: func(status session.PublishStatus) {
+			if status.Kind == session.PublishStatusConnected {
+				publishOnce.Do(func() { close(published) })
+			}
+		},
 	})
 	t.Cleanup(host.Cancel)
+	awaitTabSwitchEvent(t, published)
+	waitTabSwitchFrame(t, host, "COUNTDOWN_READY", "")
 
-	waitForSessions(t, h.Clock(), h.Endpoint(), h.AccessToken(), []string{"session_disconnect_countdown"})
-	waitForHost(t, h, "session_disconnect_countdown", 10*time.Second)
-
-	attach := h.StartMultiAttach(ptytest.MultiAttachOptions{
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	attached := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		SessionID: "session_disconnect_countdown",
 		Cols:      80,
 		Rows:      24,
+		// Keep the first retry pending while observing a full countdown tick.
+		BackoffPolicy: backoff.Policy{Base: 4 * time.Second, Max: 4 * time.Second},
+		OnView: func(_ string, client *attach.Client) {
+			onReady := client.OnReady
+			client.OnReady = func() {
+				onReady()
+				readyOnce.Do(func() { close(ready) })
+			}
+		},
 	})
-	t.Cleanup(attach.Cancel)
-	if exited, err := attach.WaitErr(200 * time.Millisecond); exited {
-		t.Fatalf("attach exited early: %v", err)
-	}
-	waitForClientCount(t, h, "session_disconnect_countdown", 1, 3*time.Second)
-	h.Advance(200 * time.Millisecond)
-	host.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		if strings.TrimSpace(screen.String()) == "" {
-			return ptytest.FormatRowDiff("host", 0, screen.Row(0))
-		}
-		return nil
-	})
-	host.Send("printf 'ready-countdown\\n'\n")
-	host.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		if !screen.Contains("ready-countdown") {
-			return ptytest.FormatRowDiff("host", 0, screen.Row(0))
-		}
-		return nil
-	})
-	attach.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		if !screen.Contains("ready-countdown") {
-			return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
-		}
-		return nil
-	})
+	t.Cleanup(attached.Cancel)
+	awaitTabSwitchEvent(t, ready)
+	waitTabSwitchFrame(t, attached, "COUNTDOWN_READY", "")
+	// An actual input round trip proves the attach input loop and its periodic
+	// overlay ticker are installed before the clock is advanced.
+	attached.Send("ready-countdown\n")
+	waitTabSwitchFrame(t, host, "ready-countdown", "")
+	waitTabSwitchFrame(t, attached, "ready-countdown", "")
 
-	_ = attach.DrainRaw()
+	waitCountdown := func(detail string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		before := h.Clock().Now()
+		if err := attached.WaitForScreen(ctx, func(screen ptytest.Screen) bool {
+			return screen.Contains("Not connected") && screen.Contains(detail)
+		}); err != nil {
+			t.Fatalf("waiting for disconnect countdown %q: %v; screen:\n%s", detail, err, attached.Screen().String())
+		}
+		if !h.Clock().Now().Equal(before) {
+			t.Fatal("countdown observation advanced application time")
+		}
+	}
+
 	h.StopServer()
-
-	initialCountdown := regexp.MustCompile(`reconnecting in (\d+)s`)
-	var initialVal int
-	found := false
-	for i := 0; i < 6; i++ {
-		h.Advance(200 * time.Millisecond)
-		screen := attach.Screen()
-		if !screen.Contains("Not connected") {
-			continue
-		}
-		matches := initialCountdown.FindStringSubmatch(screen.String())
-		if len(matches) < 2 {
-			continue
-		}
-		val, err := strconv.Atoi(matches[1])
-		if err != nil {
-			continue
-		}
-		initialVal = val
-		found = true
-		break
-	}
-	if !found {
-		t.Fatalf("expected disconnect overlay after disconnect, got:\n%s", attach.Screen().String())
-	}
-
-	_ = attach.DrainRaw()
-
-	countdownRe := regexp.MustCompile(`reconnecting in (\d+)s`)
+	waitCountdown("reconnecting in 4s")
 	h.Advance(1100 * time.Millisecond)
-	attach.Eventually(3*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
-		matches := countdownRe.FindStringSubmatch(screen.String())
-		if len(matches) < 2 {
-			return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
-		}
-		val, err := strconv.Atoi(matches[1])
-		if err != nil {
-			return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
-		}
-		if val < 0 || val > initialVal {
-			return ptytest.FormatRowDiff("attach", 0, screen.Row(0))
-		}
-		return nil
-	})
+	waitCountdown("reconnecting in 3s")
 }

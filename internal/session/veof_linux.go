@@ -19,6 +19,9 @@ func setVEOF(file *os.File, value uint8) error {
 		if err != nil {
 			return err
 		}
+		if termios.Cc[unix.VEOF] == value {
+			return nil
+		}
 		termios.Cc[unix.VEOF] = value
 		return unix.IoctlSetTermios(fd, unix.TCSETS, termios)
 	})

@@ -314,7 +314,7 @@ func (w *workflow) pushContainer(ctx context.Context) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if _, err := w.exec(ctx, w.root, "podman", "manifest", "push", "--all", "--retry=0", "--digestfile="+digest, r.Image, "docker://"+r.Image); err != nil {
+	if _, err := w.exec(ctx, w.root, "podman", "manifest", "push", "--all", "--digestfile="+digest, r.Image, "docker://"+r.Image); err != nil {
 		return fmt.Errorf("registry push failed; git/GitHub remain published. Retry make push-container without rebuilding: %w", err)
 	}
 	data, err := os.ReadFile(digest)

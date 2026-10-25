@@ -1049,6 +1049,7 @@ func runHostEcho(id string) {
 	}
 	_, _ = fmt.Fprintf(writer, "LINGON_READY %s\r\n", id)
 	_ = writer.Flush()
+	output := &hostEchoOutput{writer: writer}
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -1059,8 +1060,7 @@ func runHostEcho(id string) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_, _ = fmt.Fprintf(writer, "TICK_%s %d\r\n", id, i)
-				_ = writer.Flush()
+				output.printf("TICK_%s %d\r\n", id, i)
 				i++
 			}
 		}
@@ -1071,8 +1071,7 @@ func runHostEcho(id string) {
 		n, err := os.Stdin.Read(buf)
 		if n > 0 {
 			logf("read byte=%02x", buf[0])
-			_, _ = fmt.Fprintf(writer, "ECHO_%s %02x\r\n", id, buf[0])
-			_ = writer.Flush()
+			output.printf("ECHO_%s %02x\r\n", id, buf[0])
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {

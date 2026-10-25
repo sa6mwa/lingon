@@ -440,6 +440,7 @@ if [[ "${LINGON_IT_CLEARTEXT:-0}" == "1" ]]; then
 fi
 SPECIAL_TEST="refreshes_sessions_when_host_starts_late"
 QUIET_HOST_TEST="tab_switch_does_not_rearm_wall_inactivity_without_terminal_input"
+BACKGROUND_WALL_TEST="background_wall_delivery_posts_system_notification"
 if [[ -z "${HOST_COLS_OVERRIDE}" ]]; then
   HOST_COLS_OVERRIDE="120"
 fi
@@ -759,7 +760,7 @@ run_selected_tests() {
       ensure_adb_reverse
       continue
     fi
-    if [[ "${test_name}" == "${QUIET_HOST_TEST}" ]]; then
+    if [[ "${test_name}" == "${QUIET_HOST_TEST}" || "${test_name}" == "${BACKGROUND_WALL_TEST}" ]]; then
       flush_batch || break
       stop_harness
       export LINGON_ANDROID_HARNESS_HOST_SHELL=/bin/sh

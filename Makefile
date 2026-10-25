@@ -40,7 +40,7 @@ help:
 	@echo "  make test-android   # run Android integration tests"
 	@echo "  make test-all       # serial full proof including the owned Android emulator"
 	@echo "  make lint           # go vet + golint + golangci-lint"
-	@echo "  make install        # install binary"
+	@echo "  make install        # install the existing binary; run make build first"
 	@echo "  make prerelease     # serial full proof + six-platform matrix + APK + Podman rehearsal"
 	@echo "  make release VERSION=X.Y.Z RELEASE_MESSAGE='feat(scope): change'"
 	@echo "                      # candidate proof, squash to trunk, lightweight tag, clean final proof/artifacts"

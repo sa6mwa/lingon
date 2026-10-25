@@ -859,21 +859,6 @@ func (c *Client) SuppressTabsUntilCursorLeavesTopRow() {
 	c.RenderCurrent()
 }
 
-// PrepareForCtrlLClear hides tabs for the upcoming clear redraw and forces the
-// next snapshot render to repaint from a clean framebuffer baseline.
-func (c *Client) PrepareForCtrlLClear() {
-	if scheduler, _ := c.effectRuntime(); scheduler != nil {
-		scheduler.Stop(mvu.EffectKeyTabAutoHide)
-		scheduler.Stop(mvu.EffectKeyStateExpiry)
-	}
-	c.tabSuppress.Start()
-	c.renderMu.Lock()
-	c.renderCache.Reset()
-	c.forceClear = true
-	c.renderMu.Unlock()
-	c.RenderCurrent()
-}
-
 // ForceTabsVisibleOnce forces the next active-view render passes to keep the tab
 // bar visible even if the cursor is currently on row 1.
 func (c *Client) ForceTabsVisibleOnce() {
@@ -2335,9 +2320,6 @@ func (c *Client) readInput(ctx context.Context, ws *websocket.Conn) {
 					c.showViewOnlyBanner(c.viewOnlyMessage())
 					pending = pending[:0]
 					return true
-				}
-				if len(out) == 1 && out[0] == 0x0c {
-					c.PrepareForCtrlLClear()
 				}
 				pending = append(pending, out...)
 				if inputEndsLineAttach(out) {

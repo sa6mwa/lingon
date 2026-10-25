@@ -584,6 +584,12 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	cfgDir := shortConfigDir(t)
 	const sessionID = "offline-immediate-roundtrip-a"
 	clk := clock.NewMock()
+	frozenAt := clk.Now()
+	defer func() {
+		if !clk.Now().Equal(frozenAt) {
+			t.Error("immediate UI observations advanced application time")
+		}
+	}()
 	h := newHarness(t, ptytest.WithClock(clk))
 	stop := startHeadlessDaemon(t, headlessDaemonSpec{
 		ConfigDir: cfgDir,
@@ -596,9 +602,9 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	})
 	defer stop()
 
-	waitUntilLocal(t, 8*time.Second, func() bool {
-		return localSessionCount(cfgDir) >= 1
-	})
+	if localSessionCount(cfgDir) < 1 {
+		t.Fatal("ready daemon has no local session record")
+	}
 
 	attachSess := h.StartMultiAttach(ptytest.MultiAttachOptions{
 		Endpoint:           "local://headless",
@@ -612,9 +618,21 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	})
 	t.Cleanup(attachSess.Cancel)
 
-	attachSess.Eventually(8*time.Second, 120*time.Millisecond, func(screen ptytest.Screen) error {
-		if !strings.Contains(screen.Row(0), sessionID) {
-			return fmt.Errorf("expected session id on tab row, got %q", screen.Row(0))
+	waitScreen := func(check func(ptytest.Screen) error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+		defer cancel()
+		var last error
+		if err := attachSess.WaitForScreen(ctx, func(screen ptytest.Screen) bool {
+			last = check(screen)
+			return last == nil
+		}); err != nil {
+			t.Fatalf("screen event: %v: %v; screen:\n%s", err, last, attachSess.Screen().String())
+		}
+	}
+	waitScreen(func(screen ptytest.Screen) error {
+		if !screen.Contains("PROMPT>") {
+			return fmt.Errorf("waiting for the actual shell prompt")
 		}
 		return nil
 	})
@@ -622,14 +640,47 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	// Keep the shell cursor below the top-row auto-hide boundary before
 	// asserting tab labels/styles, as in the permanent tab-switch fixtures.
 	attachSess.Send("printf 'ONLINE_%s\\n' READY\r")
-	attachSess.Eventually(8*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {
+	waitScreen(func(screen ptytest.Screen) error {
 		if !screen.Contains("ONLINE_READY") || attachSess.Cursor().Row <= 1 {
 			return fmt.Errorf("shell output/cursor not ready for visible tab assertions: %s", screen.String())
 		}
 		return nil
 	})
+	waitScreen(func(screen ptytest.Screen) error {
+		if !strings.Contains(screen.Row(0), sessionID) {
+			return fmt.Errorf("expected session id on tab row, got %q", screen.Row(0))
+		}
+		return nil
+	})
+	stateEvents, stopWatcher, err := headless.StartStateWatcher(t.Context(), cfgDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stopWatcher() })
+	waitOfflineState := func(want bool) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+		defer cancel()
+		for {
+			state, err := headless.NewStore(cfgDir).Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rec, ok := state.Sessions[sessionID]; ok && rec.Offline == want {
+				return
+			}
+			select {
+			case _, ok := <-stateEvents:
+				if !ok {
+					t.Fatal("headless state watcher stopped")
+				}
+			case <-ctx.Done():
+				t.Fatalf("waiting for persisted offline=%v: %v", want, ctx.Err())
+			}
+		}
+	}
 	h.StopServer()
-	attachSess.Eventually(12*time.Second, 150*time.Millisecond, func(screen ptytest.Screen) error {
+	waitScreen(func(screen ptytest.Screen) error {
 		row := screen.Row(0)
 		if !strings.Contains(row, "connection lost") && !strings.Contains(row, "reconnecting") {
 			return fmt.Errorf("expected routed disconnect status before offline toggle, got row=%q", row)
@@ -640,7 +691,7 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 	// Offline: must clear reconnect status and mute/italicize tab immediately.
 	attachSess.SendCtrlL()
 	attachSess.Send("o")
-	attachSess.Eventually(900*time.Millisecond, 60*time.Millisecond, func(screen ptytest.Screen) error {
+	waitScreen(func(screen ptytest.Screen) error {
 		row := screen.Row(0)
 		if strings.Contains(row, "connection lost") || strings.Contains(row, "reconnecting") {
 			return fmt.Errorf("expected routed disconnect status cleared immediately, row=%q", row)
@@ -654,15 +705,12 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 		}
 		return nil
 	})
-	waitUntilLocal(t, 8*time.Second, func() bool {
-		offline, ok := localOfflineState(cfgDir, sessionID)
-		return ok && offline
-	})
+	waitOfflineState(true)
 
 	// Online again: must unmute tab immediately and reconnect banner must return.
 	attachSess.SendCtrlL()
 	attachSess.Send("o")
-	attachSess.Eventually(900*time.Millisecond, 60*time.Millisecond, func(_ ptytest.Screen) error {
+	waitScreen(func(_ ptytest.Screen) error {
 		mode, ok := tabLabelMode(attachSess, sessionID)
 		if !ok {
 			return fmt.Errorf("session label %q not visible after immediate online toggle, row=%q", sessionID, attachSess.Screen().Row(0))
@@ -672,11 +720,8 @@ func TestMultiAttachHeadlessOfflineToggleImmediateUIRoundTrip(t *testing.T) {
 		}
 		return nil
 	})
-	waitUntilLocal(t, 8*time.Second, func() bool {
-		offline, ok := localOfflineState(cfgDir, sessionID)
-		return ok && !offline
-	})
-	attachSess.Eventually(8*time.Second, 120*time.Millisecond, func(screen ptytest.Screen) error {
+	waitOfflineState(false)
+	waitScreen(func(screen ptytest.Screen) error {
 		row := screen.Row(0)
 		if !strings.Contains(row, "connection lost") && !strings.Contains(row, "reconnecting") {
 			return fmt.Errorf("expected routed disconnect status to return after online toggle, row=%q", row)
@@ -1698,6 +1743,8 @@ func startHeadlessDaemon(t *testing.T, spec headlessDaemonSpec) func() {
 		}
 	}
 	runCtx, cancelRun := context.WithCancel(context.Background())
+	t.Cleanup(cancelRun)
+	startupReady := make(chan headlessd.StartupReady, 1)
 	d := headlessd.New(headlessd.Options{
 		ConfigDir: spec.ConfigDir,
 		SessionID: spec.SessionID,
@@ -1710,6 +1757,9 @@ func startHeadlessDaemon(t *testing.T, spec headlessDaemonSpec) func() {
 		Respawn:   spec.Respawn,
 		Clock:     spec.Clock,
 		Logger:    pslog.NoopLogger(),
+		OnStartupReady: func(ready headlessd.StartupReady) {
+			startupReady <- ready
+		},
 	})
 	runErr := make(chan error, 1)
 	go func() {
@@ -1720,23 +1770,17 @@ func startHeadlessDaemon(t *testing.T, spec headlessDaemonSpec) func() {
 	if err != nil {
 		t.Fatalf("SocketPath(%q): %v", spec.SessionID, err)
 	}
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-runErr:
-			if err != nil && err != context.Canceled {
-				t.Fatalf("daemon %s failed before socket ready: %v", spec.SessionID, err)
-			}
-			t.Fatalf("daemon %s exited before socket ready", spec.SessionID)
-		default:
+	readyCtx, cancelReady := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancelReady()
+	select {
+	case ready := <-startupReady:
+		if ready.SessionID != spec.SessionID || ready.SocketPath != socketPath {
+			t.Fatalf("unexpected daemon readiness: %+v", ready)
 		}
-		if headless.SocketExists(socketPath) {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	if !headless.SocketExists(socketPath) {
-		t.Fatalf("daemon %s socket not ready: %s", spec.SessionID, socketPath)
+	case err := <-runErr:
+		t.Fatalf("daemon %s exited before readiness: %v", spec.SessionID, err)
+	case <-readyCtx.Done():
+		t.Fatalf("daemon %s did not report readiness: %v", spec.SessionID, readyCtx.Err())
 	}
 
 	return func() {

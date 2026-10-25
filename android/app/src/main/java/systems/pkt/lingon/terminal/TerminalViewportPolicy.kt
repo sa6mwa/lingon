@@ -110,7 +110,15 @@ internal object TerminalViewportPolicy {
         ) {
             return cameraOffsetYPx
         }
-        if (cameraOffsetYPx <= max(1f, previousScaledCellHeightPx * 0.1f)) return 0f
+        val tolerance = max(1f, previousScaledCellHeightPx * 0.1f)
+        val previousBottom = bottomAlignedCameraOffsetY(
+            totalRows = totalRows,
+            scaledCellHeightPx = previousScaledCellHeightPx,
+            viewportHeightPx = previousViewportHeightPx,
+        )
+        // Zero is also the bottom when all content fits. Keep that bottom
+        // anchor when an IME or button bar makes the viewport smaller again.
+        if (cameraOffsetYPx <= tolerance && previousBottom > tolerance) return 0f
         val previousBottomRows = (cameraOffsetYPx + previousViewportHeightPx.toFloat()) / previousScaledCellHeightPx
         val maxOffsetYPx = max(0f, (totalRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
         return ((previousBottomRows * nextScaledCellHeightPx) - nextViewportHeightPx.toFloat())
@@ -145,13 +153,13 @@ internal object TerminalViewportPolicy {
         ) {
             return savedCameraOffsetYPx
         }
-        if (savedCameraOffsetYPx <= max(1f, savedScaledCellHeightPx * 0.1f)) return 0f
         val savedBottom = bottomAlignedCameraOffsetY(
             totalRows = savedTotalRows,
             scaledCellHeightPx = savedScaledCellHeightPx,
             viewportHeightPx = savedViewportHeightPx,
         )
         val tolerance = max(1f, savedScaledCellHeightPx * 0.1f)
+        if (savedCameraOffsetYPx <= tolerance && savedBottom > tolerance) return 0f
         if (abs(savedCameraOffsetYPx - savedBottom) > tolerance) {
             val savedContentBottomRows =
                 (savedCameraOffsetYPx + savedViewportHeightPx.toFloat()) / savedScaledCellHeightPx

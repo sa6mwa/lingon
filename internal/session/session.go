@@ -143,10 +143,6 @@ type StatusUpdate struct {
 	Duration  time.Duration
 }
 
-var (
-	lineInputPace = 50 * time.Millisecond
-)
-
 // WallInactivityToggleResult describes post-toggle wall inactivity state.
 type WallInactivityToggleResult struct {
 	Enabled       bool
@@ -588,20 +584,11 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 						}
 						break
 					}
-					if bytes.IndexByte(pending, control.CtrlL) >= 0 {
-						r.setTabSuppressed(activeID, true)
-						r.forceRedraw(stdout)
-					} else {
-						r.setTabSuppressed(activeID, false)
-					}
+					r.setTabSuppressed(activeID, false)
 					r.noteLocalActivity(activeID)
 					r.noteLocalEnterInput(activeID, pending)
 				} else if r.remoteSessions != nil {
-					if bytes.IndexByte(pending, control.CtrlL) >= 0 {
-						r.setTabSuppressed(activeID, true)
-					} else {
-						r.setTabSuppressed(activeID, false)
-					}
+					r.setTabSuppressed(activeID, false)
 					if err := r.remoteSessions.SendInput(sigCtx, activeID, pending, stdout); err != nil {
 						r.logger.Debug("session.remote.input.failed", "session", activeID, "err", err)
 					}
@@ -754,16 +741,13 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 					return true
 				}
 				if len(out) > 0 {
+					// Preserve read batches through the PTY write. Splitting at
+					// newlines interleaves queued input with shell mode changes.
 					pending = append(pending, out...)
-					if activeLocal && inputEndsLine(out) {
-						if !flushPending() {
-							return false
-						}
-					}
 				}
 				return true
 			}
-			for i, b := range filtered {
+			for _, b := range filtered {
 				activeID, _ := r.activeSession()
 				if r.scrollbackActiveFor(activeID) {
 					cmd := scrollState.feed(b)
@@ -816,14 +800,6 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 				if !processNormalByte(b) {
 					return
 				}
-				if isActiveSessionLineByte(activeID, b, r) && i+1 < len(filtered) {
-					remainder := filtered[i+1:]
-					r.addInputPrefill(remainder)
-					if inputAllLines(remainder) {
-						r.clock.Sleep(lineInputPace)
-					}
-					break
-				}
 			}
 			if !flushPending() {
 				return
@@ -875,14 +851,6 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 	return nil
 }
 
-func inputEndsLine(data []byte) bool {
-	if len(data) == 0 {
-		return false
-	}
-	last := data[len(data)-1]
-	return last == '\r' || last == '\n'
-}
-
 func inputAllLines(data []byte) bool {
 	if len(data) == 0 {
 		return false
@@ -893,14 +861,6 @@ func inputAllLines(data []byte) bool {
 		}
 	}
 	return true
-}
-
-func isActiveSessionLineByte(activeID string, b byte, r *Runner) bool {
-	if b != '\r' && b != '\n' {
-		return false
-	}
-	currentID, _ := r.activeSession()
-	return currentID == activeID
 }
 
 func (r *Runner) makeRaw(file *os.File) error {
@@ -3233,7 +3193,9 @@ func (r *Runner) takeControlLocal(local *localSession) {
 	}
 	local.takeControl()
 	cols, rows := r.terminalGeometry()
-	r.resizeLocalSession(local, cols, rows)
+	if currentCols, currentRows := local.Size(); currentCols != cols || currentRows != rows {
+		r.resizeLocalSession(local, cols, rows)
+	}
 }
 
 func (r *Runner) resizeLocalSession(local *localSession, cols, rows int) {

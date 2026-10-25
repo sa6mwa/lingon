@@ -28,9 +28,12 @@ reports, transcripts and the local bug ledger belong under ignored
 `build/verification/`. They are never tracked documentation or evidence-only
 commits. `make hygiene` checks required ignore rules, rejects generated files
 in the Git index (including force-added files), and rejects root-level log/review
-clutter. Run it before staging changes. Build, test and lint targets include this
-check; the full proof runs it before expensive gates. Keep validation summaries
-in the final response or commit message, rather than adding reports to source.
+clutter. Run it before staging changes. Test and lint targets include this
+check; the full proof runs it before expensive gates. Ordinary `make build`
+does not run CI checks. Build as your user, then run `sudo make install` to copy
+the existing binary; installation never invokes Go or verification. Keep
+validation summaries in the final response or commit message, rather than
+adding reports to source.
 Temporary Go helpers and example packages belong under
 `build/verification/_go/`: Go skips underscore directories during `./...`
 discovery, independently of Git ignore rules. Run a scratch package explicitly
@@ -57,7 +60,9 @@ attempt, fix and verify the defect in isolation, and begin a new complete
 rehearsal only after the isolated checks are stable again.
 
 The proof graph asserts formatting, module integrity, vet, golint and
-golangci-lint, uncached root Go tests and race tests, the Android Go tools module,
+golangci-lint, a real CLI build and installation into an owned temporary prefix
+with Go and the user session bus unavailable during installation, uncached root
+Go tests and race tests, the Android Go tools module,
 all Go integration packages (including actual owned-PTY and browser suites),
 Android unit tests and instrumentation compilation, the full Android end-to-end
 suite, and every remaining instrumentation test class. Android class selection is
