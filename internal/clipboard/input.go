@@ -23,10 +23,11 @@ type Input struct {
 }
 
 // Forward keeps ordinary bytes in order around an image operation. A missing
-// image/display forwards Ctrl+V normally. A failed image operation is returned
-// to the UI rather than pasting a stale image from the destination clipboard.
+// image/display forwards Ctrl+V normally. After an image failure, remaining input
+// is still parsed; the first paste error is returned after processing the batch.
 func (i *Input) Forward(ctx context.Context, data []byte, raw func([]byte) error, paste func(Image) error) error {
 	start := 0
+	var pasteErr error
 	for pos, b := range data {
 		copy(i.tail[:], i.tail[1:])
 		i.tail[5] = b
@@ -47,28 +48,28 @@ func (i *Input) Forward(ctx context.Context, data []byte, raw func([]byte) error
 		start = pos
 		img, err := i.Reader.Read(ctx)
 		if err != nil {
-			if pos+1 < len(data) {
-				if rawErr := raw(data[pos+1:]); rawErr != nil {
-					return rawErr
-				}
+			if pasteErr == nil {
+				pasteErr = &PasteError{Err: err}
 			}
-			return &PasteError{Err: err}
+			start = pos + 1
+			continue
 		}
 		if len(img.Data) == 0 {
 			continue
 		}
 		if err := paste(img); err != nil {
-			if pos+1 < len(data) {
-				if rawErr := raw(data[pos+1:]); rawErr != nil {
-					return rawErr
-				}
+			if pasteErr == nil {
+				pasteErr = &PasteError{Err: err}
 			}
-			return &PasteError{Err: err}
+			start = pos + 1
+			continue
 		}
 		start = pos + 1
 	}
 	if start < len(data) {
-		return raw(data[start:])
+		if err := raw(data[start:]); err != nil {
+			return err
+		}
 	}
-	return nil
+	return pasteErr
 }

@@ -17,6 +17,12 @@ import (
 // MaxBytes matches Softline's maximum clipboard image size.
 const MaxBytes = 32 << 20
 
+// MaxPixels bounds decoded images to at most 256 MiB of eight-byte pixels.
+const MaxPixels = 32 << 20
+
+// MaxDimension bounds scanline buffers in PNG/JPEG decoders.
+const MaxDimension = 32768
+
 // ChunkBytes keeps image messages below the ordinary websocket read limit.
 const ChunkBytes = 64 << 10
 
@@ -49,6 +55,16 @@ func (i Image) Validate() error {
 	}
 	if (i.MIME != "image/png" || format != "png") && (i.MIME != "image/jpeg" || format != "jpeg") {
 		return fmt.Errorf("clipboard image must be PNG or JPEG with a matching MIME type")
+	}
+	if cfg.Width > MaxDimension || cfg.Height > MaxDimension || uint64(cfg.Width)*uint64(cfg.Height) > MaxPixels {
+		return fmt.Errorf("clipboard image exceeds decoded size limit (%d pixels, %d per side)", MaxPixels, MaxDimension)
+	}
+	decoded, decodedFormat, err := image.Decode(bytes.NewReader(i.Data))
+	if err != nil {
+		return fmt.Errorf("invalid clipboard image body: %w", err)
+	}
+	if decodedFormat != format || decoded.Bounds().Dx() != cfg.Width || decoded.Bounds().Dy() != cfg.Height {
+		return fmt.Errorf("clipboard image metadata does not match its body")
 	}
 	return nil
 }

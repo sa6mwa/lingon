@@ -90,7 +90,7 @@ type Options struct {
 	// DisableDesktopNotifications suppresses best-effort desktop notifications for inactivity walls.
 	DisableDesktopNotifications bool
 	DesktopNotifier             desktopnotify.Notifier
-	// ClipboardReader overrides image capture at the originating terminal.
+	// ClipboardReader overrides image capture for remote tabs; local input stays raw.
 	ClipboardReader clipboard.Reader
 	// AllowRemoteResize permits relay- or attach-driven resize frames to resize
 	// the underlying local PTY. This must remain false for normal host sessions
@@ -573,14 +573,8 @@ func (r *Runner) Run(ctx context.Context) (retErr error) {
 						return true
 					}
 					for {
-						err := clipboardInput.Forward(sigCtx, pending, func(data []byte) error { _, err := local.writePTY(data); return err }, func(img clipboard.Image) error {
-							return local.pasteImage(sigCtx, img)
-						})
+						_, err := local.writePTY(pending)
 						if err != nil {
-							if clipboard.IsPasteError(err) {
-								r.showStatus("Image paste: "+err.Error(), stdout, 3*time.Second)
-								break
-							}
 							if errors.Is(err, errPTYNotReady) {
 								if r.logger != nil {
 									r.logger.Debug("session.pty.write.waiting", "session", activeID)

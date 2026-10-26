@@ -246,6 +246,13 @@ func (s *clipboardServer) serve(c net.Conn) {
 		data   []byte
 	}
 	properties := make(map[[2]uint32]property)
+	storeProperty := func(key [2]uint32, value property) bool {
+		if _, exists := properties[key]; !exists && len(properties) >= 32 {
+			return false
+		}
+		properties[key] = value
+		return true
+	}
 	var seq uint16
 	packet := func(kind byte) []byte { b := make([]byte, 32); b[0] = kind; order.PutUint16(b[2:], seq); return b }
 	propertyEvent := func(window, prop uint32, state byte) bool {
@@ -287,7 +294,16 @@ func (s *clipboardServer) serve(c net.Conn) {
 		}
 		var out []byte
 		switch req[0] {
-		case 1, 2, 4, 55, 60, 127: // window/default GC lifecycle, NoOperation
+		case 1, 2, 55, 60, 127: // window/default GC lifecycle, NoOperation
+		case 4: // DestroyWindow releases the window's retained selection buffers.
+			if len(req) != 8 {
+				return
+			}
+			for key := range properties {
+				if key[0] == u32(4) {
+					delete(properties, key)
+				}
+			}
 		case 16:
 			if len(req) < 8 {
 				return
@@ -339,11 +355,15 @@ func (s *clipboardServer) serve(c net.Conn) {
 				return
 			}
 			n := uint64(u32(20)) * uint64(req[16]) / 8
-			if n > uint64(len(req)-24) || n > ChunkBytes || (req[16] != 8 && req[16] != 32) || len(properties) >= 32 {
+			if n > uint64(len(req)-24) || n > ChunkBytes || (req[16] != 8 && req[16] != 32) {
 				return
 			}
 			key := [2]uint32{u32(4), u32(8)}
-			properties[key] = property{typ: u32(12), format: req[16], data: append([]byte(nil), req[24:24+int(n)]...)}
+			if !storeProperty(key, property{typ: u32(12), format: req[16], data: append([]byte(nil), req[24:24+int(n)]...)}) {
+				out = packet(0)
+				out[1], out[10] = 11, req[0] // BadAlloc
+				break
+			}
 			if !propertyEvent(key[0], key[1], 0) {
 				return
 			}
@@ -406,19 +426,23 @@ func (s *clipboardServer) serve(c net.Conn) {
 			if prop == 0 {
 				prop = target
 			}
+			var value property
 			if u32(8) != atoms["CLIPBOARD"] {
 				prop = 0
 			} else if target == atoms[captured.MIME] && len(captured.Data) > 0 {
-				properties[[2]uint32{u32(4), prop}] = property{typ: target, format: 8, data: captured.Data}
+				value = property{typ: target, format: 8, data: captured.Data}
 			} else if target == atoms["TARGETS"] {
-				value := make([]byte, 4)
-				order.PutUint32(value, atoms["TARGETS"])
+				data := make([]byte, 4)
+				order.PutUint32(data, atoms["TARGETS"])
 				if len(captured.Data) > 0 {
-					value = append(value, 0, 0, 0, 0)
-					order.PutUint32(value[4:], atoms[captured.MIME])
+					data = append(data, 0, 0, 0, 0)
+					order.PutUint32(data[4:], atoms[captured.MIME])
 				}
-				properties[[2]uint32{u32(4), prop}] = property{typ: 4, format: 32, data: value}
+				value = property{typ: 4, format: 32, data: data}
 			} else {
+				prop = 0
+			}
+			if prop != 0 && !storeProperty([2]uint32{u32(4), prop}, value) {
 				prop = 0
 			}
 			out = packet(31)

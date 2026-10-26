@@ -177,14 +177,18 @@ Lingon uses prefix keystroke `Ctrl+l` as *command introducer*, see `Ctrl+l h` (`
 lingon attach -e https://localhost:12843/v1 my-session
 ```
 
-With an X11 image in `CLIPBOARD`, press **Ctrl+V** inside a Lingon host or
-attach terminal to paste it into the target application. This also works inside
-tmux and with local `attach -x`. The originating Lingon process needs access to
+With an X11 image in `CLIPBOARD`, press **Ctrl+V** inside an attach terminal or
+a remote tab in the host UI to transfer it to the target application. Local
+interactive host tabs forward Ctrl+V unchanged: the app already shares the
+host's clipboard. Image transfer also works inside tmux and with local
+`attach -x`. The originating Lingon process needs access to
 `DISPLAY` and its Xauthority cookie; use a key binding that sends the actual
 Ctrl+V byte, rather than the terminal emulator's text-paste shortcut.
 
 PNG is preferred, with JPEG as the fallback. Original encoded bytes are
-preserved, up to 32 MiB per image. The target clipboard is populated before
+preserved, up to 32 MiB per image. The entire image is validated before delivery;
+decoded images are limited to 33,554,432 pixels and 32,768 pixels per side to
+bound decoder allocation. The target clipboard is populated before
 Ctrl+V reaches the application. Softline's chat prompt can then read the image
 normally and insert its own cached image path. When the source clipboard has
 no image, Ctrl+V passes through unchanged; bracketed text paste is unchanged.

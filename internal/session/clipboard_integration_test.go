@@ -40,7 +40,7 @@ func TestClipboardPTYHelper(t *testing.T) {
 		if _, err := io.ReadFull(os.Stdin, key[:]); err != nil {
 			os.Exit(0)
 		}
-		if key[0] != 0x16 {
+		if key[0] != 0x16 || os.Getenv("LINGON_CLIPBOARD_RAW_KEYS") == "1" {
 			fmt.Printf("KEY:%02x\n", key[0])
 			continue
 		}
@@ -146,7 +146,7 @@ func TestClipboardTerminalToHeadlessPTY(t *testing.T) {
 	if err := os.WriteFile(shell, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"host", "attach", "multi"} {
+	for _, path := range []string{"attach", "multi"} {
 		t.Run(path, func(t *testing.T) {
 			recorder := ptytest.NewWSRecorder()
 			h := ptytest.New(t, ptytest.WithWSRecorder(recorder))
