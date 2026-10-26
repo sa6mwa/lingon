@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"golang.design/x/x11"
+	"pkt.systems/lingon/internal/clock"
 )
 
 // Endpoint exposes a selection to a shell. With an inherited display it uses
@@ -55,6 +56,7 @@ type clipboardServer struct {
 	wg                            sync.WaitGroup
 	closeOnce                     sync.Once
 	closeErr                      error
+	clock                         clock.Clock
 }
 
 func newServer(ctx context.Context) (*clipboardServer, error) {
@@ -67,7 +69,7 @@ func newServer(ctx context.Context) (*clipboardServer, error) {
 		_ = l.Close()
 		return nil, fmt.Errorf("invalid clipboard endpoint port")
 	}
-	s := &clipboardServer{listener: l, connections: make(map[net.Conn]struct{}), display: "127.0.0.1:" + strconv.Itoa(port-6000)}
+	s := &clipboardServer{listener: l, connections: make(map[net.Conn]struct{}), display: "127.0.0.1:" + strconv.Itoa(port-6000), clock: clock.New()}
 	if _, err := rand.Read(s.cookie[:]); err != nil {
 		_ = l.Close()
 		return nil, err
@@ -210,7 +212,7 @@ func clipboardSetup(order binary.ByteOrder) []byte {
 // initialization used by Xlib. Unsupported requests receive BadRequest; no
 // request opens another display, draws graphics, or executes a command.
 func (s *clipboardServer) serve(c net.Conn) {
-	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = c.SetDeadline(s.clock.Now().Add(10 * time.Second))
 	h := make([]byte, 12)
 	if _, err := io.ReadFull(c, h); err != nil {
 		return
@@ -256,9 +258,15 @@ func (s *clipboardServer) serve(c net.Conn) {
 		return err == nil
 	}
 	for {
-		_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+		// An authenticated application may keep its clipboard connection idle.
+		// Start the request timeout only once it begins sending another packet.
+		_ = c.SetDeadline(time.Time{})
 		head := make([]byte, 4)
-		if _, err := io.ReadFull(c, head); err != nil {
+		if _, err := io.ReadFull(c, head[:1]); err != nil {
+			return
+		}
+		_ = c.SetDeadline(s.clock.Now().Add(30 * time.Second))
+		if _, err := io.ReadFull(c, head[1:]); err != nil {
 			return
 		}
 		length := int(order.Uint16(head[2:])) * 4
@@ -300,6 +308,32 @@ func (s *clipboardServer) serve(c net.Conn) {
 			}
 			out = packet(1)
 			order.PutUint32(out[8:], atom)
+		case 17: // GetAtomName
+			if len(req) != 8 {
+				return
+			}
+			atom := u32(4)
+			var name string
+			found := false
+			for candidate, id := range atoms {
+				if id == atom {
+					name, found = candidate, true
+					break
+				}
+			}
+			if !found {
+				out = packet(0)
+				out[1], out[10] = 5, req[0] // BadAtom
+				order.PutUint32(out[4:], atom)
+				break
+			}
+			out = packet(1)
+			order.PutUint16(out[8:], uint16(len(name)))
+			out = append(out, name...)
+			for len(out)%4 != 0 {
+				out = append(out, 0)
+			}
+			order.PutUint32(out[4:], uint32(len(out)-32)/4)
 		case 18:
 			if len(req) < 24 {
 				return
@@ -334,7 +368,9 @@ func (s *clipboardServer) serve(c net.Conn) {
 				if offset > uint64(len(p.data)) {
 					return
 				}
-				n := min(uint64(u32(20))*4, uint64(ChunkBytes), uint64(len(p.data))-offset)
+				// Honor X11's requested length. The image bound limits the reply;
+				// relay chunk sizes do not constrain local X11 property reads.
+				n := min(uint64(u32(20))*4, uint64(len(p.data))-offset)
 				out[1] = p.format
 				order.PutUint32(out[8:], p.typ)
 				order.PutUint32(out[12:], uint32(uint64(len(p.data))-offset-n))
