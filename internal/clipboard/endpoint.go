@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"golang.design/x/x11"
 )
 
 // Endpoint exposes a selection to a shell. With an inherited display it uses
@@ -76,11 +78,27 @@ func newServer(ctx context.Context) (*clipboardServer, error) {
 		return nil, err
 	}
 	s.authority = filepath.Join(s.directory, "Xauthority")
+	hostname, err := os.Hostname()
+	if err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("get clipboard authority hostname: %w", err)
+	}
 	// Xauthority uses big endian regardless of the X11 client's byte order.
-	data := []byte{0, 0}
-	for _, field := range [][]byte{{127, 0, 0, 1}, []byte(strconv.Itoa(port - 6000)), []byte("MIT-MAGIC-COOKIE-1"), s.cookie[:]} {
-		data = binary.BigEndian.AppendUint16(data, uint16(len(field)))
-		data = append(data, field...)
+	// Xlib/libxcb use FamilyLocal for loopback TCP; direct wire clients can
+	// also use the explicit IPv4 record. Both records require the same cookie.
+	var data []byte
+	for _, entry := range []struct {
+		family  uint16
+		address []byte
+	}{
+		{x11.FamilyInternet, []byte{127, 0, 0, 1}},
+		{x11.FamilyLocal, []byte(hostname)},
+	} {
+		data = binary.BigEndian.AppendUint16(data, entry.family)
+		for _, field := range [][]byte{entry.address, []byte(strconv.Itoa(port - 6000)), []byte(x11.MITCookie), s.cookie[:]} {
+			data = binary.BigEndian.AppendUint16(data, uint16(len(field)))
+			data = append(data, field...)
+		}
 	}
 	if err := os.WriteFile(s.authority, data, 0600); err != nil {
 		_ = s.Close()
@@ -149,8 +167,48 @@ func (s *clipboardServer) accept() {
 	}
 }
 
-// serve implements only selection-related core requests. Unsupported requests
-// receive BadRequest; no request opens another display or executes a command.
+// clipboardSetup describes one minimal valid screen for clients that validate
+// X11 setup before using selections. This does not enable graphics requests.
+func clipboardSetup(order binary.ByteOrder) []byte {
+	setup := make([]byte, 128)
+	setup[0] = 1
+	order.PutUint16(setup[2:], 11)
+	order.PutUint16(setup[6:], uint16((len(setup)-8)/4))
+	order.PutUint32(setup[8:], 1)
+	order.PutUint32(setup[12:], 0x200000)
+	order.PutUint32(setup[16:], 0x1fffff)
+	order.PutUint16(setup[24:], 6)
+	order.PutUint16(setup[26:], 65535)
+	setup[28], setup[29] = 1, 1   // one root and one pixmap format
+	setup[32], setup[33] = 32, 32 // bitmap scanline unit and pad
+	setup[34], setup[35] = 8, 255
+	copy(setup[40:], "lingon")
+	setup[48], setup[49], setup[50] = 24, 32, 32 // depth, bits/pixel, scanline pad
+	root := setup[56:96]
+	order.PutUint32(root, 1)
+	order.PutUint32(root[4:], 2) // synthetic default colormap
+	order.PutUint32(root[8:], 0xffffff)
+	for _, offset := range []int{20, 22, 24, 26, 28, 30} {
+		order.PutUint16(root[offset:], 1) // geometry and installed colormap counts
+	}
+	order.PutUint32(root[32:], 3) // default visual
+	root[38], root[39] = 24, 1    // root depth and one allowed depth
+	depth := setup[96:104]
+	depth[0] = 24
+	order.PutUint16(depth[2:], 1)
+	visual := setup[104:]
+	order.PutUint32(visual, 3)
+	visual[4], visual[5] = 4, 8 // TrueColor, bits per RGB value
+	order.PutUint16(visual[6:], 256)
+	order.PutUint32(visual[8:], 0xff0000)
+	order.PutUint32(visual[12:], 0x00ff00)
+	order.PutUint32(visual[16:], 0x0000ff)
+	return setup
+}
+
+// serve implements selection-related core requests and the minimal resource
+// initialization used by Xlib. Unsupported requests receive BadRequest; no
+// request opens another display, draws graphics, or executes a command.
 func (s *clipboardServer) serve(c net.Conn) {
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	h := make([]byte, 12)
@@ -174,29 +232,18 @@ func (s *clipboardServer) serve(c net.Conn) {
 	if _, err := io.ReadFull(c, auth); err != nil || string(auth[:18]) != "MIT-MAGIC-COOKIE-1" || subtle.ConstantTimeCompare(auth[20:], s.cookie[:]) != 1 {
 		return
 	}
-	setup := make([]byte, 80)
-	setup[0] = 1
-	order.PutUint16(setup[2:], 11)
-	order.PutUint16(setup[6:], 18)
-	order.PutUint32(setup[12:], 0x200000)
-	order.PutUint32(setup[16:], 0x1fffff)
-	order.PutUint16(setup[26:], 65535)
-	setup[28] = 1
-	setup[34] = 8
-	setup[35] = 255
-	order.PutUint32(setup[40:], 1) // one synthetic root, no graphics/depths
-	if _, err := c.Write(setup); err != nil {
+	if _, err := c.Write(clipboardSetup(order)); err != nil {
 		return
 	}
-	atoms := map[string]uint32{"ATOM": 4, "STRING": 31}
-	nextAtom := uint32(100)
+	// Supported selection targets must exist before any client queries TARGETS.
+	atoms := map[string]uint32{"ATOM": 4, "STRING": 31, "CLIPBOARD": 100, "TARGETS": 101, "image/png": 102, "image/jpeg": 103}
+	nextAtom := uint32(104)
 	type property struct {
 		typ    uint32
 		format byte
 		data   []byte
 	}
 	properties := make(map[[2]uint32]property)
-	var captured Image
 	var seq uint16
 	packet := func(kind byte) []byte { b := make([]byte, 32); b[0] = kind; order.PutUint16(b[2:], seq); return b }
 	propertyEvent := func(window, prop uint32, state byte) bool {
@@ -232,7 +279,7 @@ func (s *clipboardServer) serve(c net.Conn) {
 		}
 		var out []byte
 		switch req[0] {
-		case 1, 2, 4, 127: // create/change/destroy window, NoOperation
+		case 1, 2, 4, 55, 60, 127: // window/default GC lifecycle, NoOperation
 		case 16:
 			if len(req) < 8 {
 				return
@@ -313,12 +360,11 @@ func (s *clipboardServer) serve(c net.Conn) {
 			if len(req) != 24 {
 				return
 			}
-			// Capture one immutable image for this requestor, including pagination.
-			if captured.Data == nil {
-				s.mu.Lock()
-				captured = s.image
-				s.mu.Unlock()
-			}
+			// Each conversion sees the current image. Existing properties retain
+			// their immutable data so concurrent pagination cannot mix images.
+			s.mu.Lock()
+			captured := s.image
+			s.mu.Unlock()
 			prop := u32(16)
 			target := u32(12)
 			if prop == 0 {
@@ -329,9 +375,12 @@ func (s *clipboardServer) serve(c net.Conn) {
 			} else if target == atoms[captured.MIME] && len(captured.Data) > 0 {
 				properties[[2]uint32{u32(4), prop}] = property{typ: target, format: 8, data: captured.Data}
 			} else if target == atoms["TARGETS"] {
-				value := make([]byte, 8)
+				value := make([]byte, 4)
 				order.PutUint32(value, atoms["TARGETS"])
-				order.PutUint32(value[4:], atoms[captured.MIME])
+				if len(captured.Data) > 0 {
+					value = append(value, 0, 0, 0, 0)
+					order.PutUint32(value[4:], atoms[captured.MIME])
+				}
 				properties[[2]uint32{u32(4), prop}] = property{typ: 4, format: 32, data: value}
 			} else {
 				prop = 0
