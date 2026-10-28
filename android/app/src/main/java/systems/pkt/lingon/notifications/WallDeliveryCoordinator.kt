@@ -12,7 +12,10 @@ import systems.pkt.lingon.viewmodel.WallNotifier
 
 interface WallDeliveryCoordinator {
     suspend fun deliver(notification: WallNotification): Boolean
-    suspend fun consumeInApp(notification: WallNotification): Boolean
+    suspend fun consumeInApp(
+        notification: WallNotification,
+        fetchPage: suspend (since: Long, limit: Int) -> RelayWallEventsPage,
+    ): Boolean
     suspend fun pollOnce(
         endpoint: String,
         pageLimit: Int,
@@ -48,10 +51,29 @@ class MonotonicWallDeliveryCoordinator(
         }
     }
 
-    override suspend fun consumeInApp(notification: WallNotification): Boolean {
+    override suspend fun consumeInApp(
+        notification: WallNotification,
+        fetchPage: suspend (since: Long, limit: Int) -> RelayWallEventsPage,
+    ): Boolean {
         return deliveryMu.withLock {
             if (!stateStore.shouldDeliver(notification.endpoint, notification.eventId)) {
-                return@withLock false
+                val since = stateStore.loadCursor(notification.endpoint)
+                // Confirm a relay restart remotely before accepting a lower ID;
+                // an ordinary replay must not reset persisted delivery state.
+                val page = try {
+                    fetchPage(since, 1)
+                } catch (err: CancellationException) {
+                    throw err
+                } catch (_: Exception) {
+                    return@withLock false
+                }
+                if (page.hasMore ||
+                    !shouldResetWallCursor(since, page.nextId, page.events.size) ||
+                    notification.eventId <= 0L || notification.eventId > page.nextId
+                ) {
+                    return@withLock false
+                }
+                stateStore.clearCursor(notification.endpoint)
             }
             stateStore.advanceCursor(notification.endpoint, notification.eventId)
             notification.message.trim().isNotBlank()
@@ -133,7 +155,10 @@ class MonotonicWallDeliveryCoordinator(
 object NoopWallDeliveryCoordinator : WallDeliveryCoordinator {
     override suspend fun deliver(notification: WallNotification): Boolean = false
 
-    override suspend fun consumeInApp(notification: WallNotification): Boolean = false
+    override suspend fun consumeInApp(
+        notification: WallNotification,
+        fetchPage: suspend (since: Long, limit: Int) -> RelayWallEventsPage,
+    ): Boolean = false
 
     override suspend fun pollOnce(
         endpoint: String,

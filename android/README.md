@@ -78,7 +78,14 @@ Output APK:
 ## Release APK (signed)
 
 `make release` builds a local signed APK and verifies its signer against
-`android/lingon-release-cert.pem`. It preserves an existing
+`android/lingon-release-cert.pem`. On an untagged or dirty tree, its version name
+is explicitly marked as development input and includes the Git revision. Its
+version code matches the newest reachable lightweight stable release tag, so
+`make install-release` can update that installed release without a downgrade
+flag or deleting app data. With no release history, development builds use code
+1. A clean, exactly tagged release keeps the tag's normal name and code.
+
+The build preserves an existing
 `android/signing.properties`. If that file is absent, its helper generates
 local development signing configuration and, if necessary, a development key.
 A newly generated key will not match the pinned release certificate, so this

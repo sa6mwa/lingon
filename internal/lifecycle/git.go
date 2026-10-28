@@ -103,11 +103,54 @@ func (w *workflow) androidReleaseIdentity(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	exact := version != "0.0.0"
+	if !exact {
+		tags, err := w.git(ctx, "tag", "--points-at", "HEAD")
+		if err != nil {
+			return "", err
+		}
+		for _, tag := range strings.Fields(tags) {
+			exact = exact || tag == "v0.0.0"
+		}
+	}
+	status, err := w.git(ctx, "status", "--porcelain=v1", "-uall")
+	if err != nil {
+		return "", err
+	}
+	name := "v" + version
+	if !exact || status != "" {
+		// Local signed APKs must update an installed release without claiming
+		// a new stable version. Reuse the newest reachable release's code and
+		// identify these bytes explicitly as development input. Official
+		// artifacts retain the exact-tag/explicit-version release workflow.
+		refs, err := w.git(ctx, "for-each-ref", "--merged=HEAD", "--format=%(refname:strip=2) %(objecttype)", "refs/tags")
+		if err != nil {
+			return "", err
+		}
+		for _, line := range strings.Split(refs, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) != 2 || fields[1] != "commit" || !stableVersion.MatchString(fields[0]) {
+				continue
+			}
+			candidate := strings.TrimPrefix(fields[0], "v")
+			if newerVersion(candidate, version) {
+				version = candidate
+			}
+		}
+		commit, err := w.git(ctx, "rev-parse", "--short=12", "HEAD")
+		if err != nil {
+			return "", err
+		}
+		name = "v" + version + "-dev.g" + commit
+		if status != "" {
+			name += ".dirty"
+		}
+	}
 	code := androidVersionCode(version)
 	if code == "0" {
 		return "", fmt.Errorf("release version exceeds Android versionCode limits")
 	}
-	return "v" + version + " " + code, nil
+	return name + " " + code, nil
 }
 
 func newerVersion(a, b string) bool {

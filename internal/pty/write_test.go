@@ -1,4 +1,4 @@
-package session
+package pty
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"pkt.systems/lingon/internal/clock"
 )
 
 func TestWriteAllWithRetryHandlesPartialWrite(t *testing.T) {
@@ -41,8 +43,9 @@ func TestWriteAllWithRetryRetriesWouldBlock(t *testing.T) {
 		}
 		return len(p), nil
 	}
-	sleep := func(_ time.Duration) {
+	sleep := func(_ context.Context, _ time.Duration) error {
 		sleepCalls++
+		return nil
 	}
 
 	n, err := writeAllWithRetry(context.Background(), sleep, []byte("ok"), write)
@@ -92,5 +95,53 @@ func TestWriteAllWithRetryReturnsShortWrite(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("written=%d, want 0", n)
+	}
+}
+
+type retryTimerClock struct {
+	clock.Clock
+	registered chan struct{}
+}
+
+func (c retryTimerClock) NewTimer(d time.Duration) *clock.Timer {
+	timer := c.Clock.NewTimer(d)
+	close(c.registered)
+	return timer
+}
+
+func TestPTYRetryUsesClockAndCancellation(t *testing.T) {
+	for _, cancelWait := range []bool{false, true} {
+		name := "advance"
+		if cancelWait {
+			name = "cancel"
+		}
+		t.Run(name, func(t *testing.T) {
+			guard, stop := context.WithTimeout(context.Background(), time.Second)
+			defer stop()
+			mock := clock.NewMock()
+			c := retryTimerClock{Clock: mock, registered: make(chan struct{})}
+			ctx, cancel := context.WithCancel(guard)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- waitRetry(ctx, c, 2*time.Millisecond) }()
+			select {
+			case <-c.registered:
+			case <-guard.Done():
+				t.Fatal("retry timer was not registered")
+			}
+			if cancelWait {
+				cancel() // Cancellation must wake the retry without advancing time.
+			} else {
+				mock.Add(2 * time.Millisecond)
+			}
+			select {
+			case err := <-done:
+				if cancelWait && !errors.Is(err, context.Canceled) || !cancelWait && err != nil {
+					t.Fatalf("retry returned %v", err)
+				}
+			case <-guard.Done():
+				t.Fatal("retry did not wake")
+			}
+		})
 	}
 }

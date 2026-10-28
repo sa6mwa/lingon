@@ -40,8 +40,9 @@ type FrameRecord struct {
 
 // WSRecorder stores websocket frame records for tests.
 type WSRecorder struct {
-	mu     sync.Mutex
-	frames []FrameRecord
+	mu      sync.Mutex
+	frames  []FrameRecord
+	changed chan struct{}
 }
 
 // NewWSRecorder constructs a recorder for websocket frames.
@@ -95,7 +96,36 @@ func (r *WSRecorder) record(role string, dir Direction, data []byte) {
 	}
 	r.mu.Lock()
 	r.frames = append(r.frames, rec)
+	if r.changed != nil {
+		close(r.changed)
+	}
+	r.changed = make(chan struct{})
 	r.mu.Unlock()
+}
+
+// WaitForFrame waits on recorded frame events rather than elapsed-time polling.
+func (r *WSRecorder) WaitForFrame(ctx context.Context, match func(FrameRecord) bool) error {
+	index := 0
+	for {
+		r.mu.Lock()
+		if r.changed == nil {
+			r.changed = make(chan struct{})
+		}
+		records := append([]FrameRecord(nil), r.frames[index:]...)
+		index = len(r.frames)
+		changed := r.changed
+		r.mu.Unlock()
+		for _, rec := range records {
+			if match(rec) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
 }
 
 // Frames returns a snapshot of all recorded frames.

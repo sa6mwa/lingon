@@ -80,12 +80,17 @@ import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -3424,34 +3429,128 @@ class EndToEndTest {
         waitUntilNoError(5_000L) { wallEventCount() == baselineWalls + 2 }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun wall_inactivity_banner_auto_dismisses_without_tab_switch() {
+    fun wall_inactivity_banner_auto_dismisses_without_tab_switch() = withWallBannerClock { model, clock ->
+        val baselineWalls = wallEventCount()
+        clickSettingsWallInactivity()
+        runBlocking {
+            kotlinx.coroutines.withTimeout(15_000) {
+                model.state.first { it.transientStatus?.message == "wall 250ms" }
+            }
+        }
+        composeRule.onAllNodesWithText("wall 250ms").assertCountEquals(1)
+
+        composeRule.runOnUiThread {
+            clock.runCurrent()
+            clock.advanceTimeBy(4_999)
+            clock.runCurrent()
+            assertEquals("wall 250ms", model.state.value.bannerStatus?.message)
+        }
+        composeRule.onAllNodesWithText("wall 250ms").assertCountEquals(1)
+        composeRule.runOnUiThread {
+            clock.advanceTimeBy(1)
+            clock.runCurrent()
+            assertNull("confirmation did not expire at its deadline", model.state.value.bannerStatus)
+        }
+        composeRule.onAllNodesWithText("wall 250ms").assertCountEquals(0)
+        assertEquals("relay time advanced with banner time", baselineWalls, wallEventCount())
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun foreground_wall_replacement_gets_own_dismiss_deadline() = withWallBannerClock { model, clock ->
+        clickSettingsWallInactivity()
+        runBlocking {
+            kotlinx.coroutines.withTimeout(15_000) {
+                model.state.first { it.transientStatus?.message == "wall 250ms" }
+            }
+        }
+        composeRule.runOnUiThread {
+            clock.runCurrent()
+            clock.advanceTimeBy(2_000)
+            clock.runCurrent()
+        }
+        val message = "replacement wall ${UUID.randomUUID()}"
+        sendWallViaHarness(message)
+        runBlocking {
+            kotlinx.coroutines.withTimeout(15_000) {
+                model.state.first { it.lastFrameType == "wall" && it.bannerStatus?.message?.contains(message) == true }
+            }
+        }
+        composeRule.onAllNodesWithText(message, substring = true).assertCountEquals(1)
+        composeRule.runOnUiThread {
+            clock.runCurrent()
+            clock.advanceTimeBy(3_000)
+            clock.runCurrent()
+            assertTrue("old confirmation deadline erased its replacement", model.state.value.bannerStatus?.message?.contains(message) == true)
+            clock.advanceTimeBy(1_999)
+            clock.runCurrent()
+            assertTrue("replacement expired early", model.state.value.bannerStatus?.message?.contains(message) == true)
+        }
+        composeRule.onAllNodesWithText(message, substring = true).assertCountEquals(1)
+        composeRule.runOnUiThread {
+            clock.advanceTimeBy(1)
+            clock.runCurrent()
+            assertNull("replacement did not expire at its own deadline", model.state.value.bannerStatus)
+        }
+        composeRule.onAllNodesWithText(message, substring = true).assertCountEquals(0)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun withWallBannerClock(test: (AppViewModel, TestCoroutineScheduler) -> Unit) {
+        // Fail immediately if this test is routed through a real-time harness.
+        // Banner and relay inactivity clocks must advance independently.
+        advanceWallClockViaHarness(0)
         setEndpoint(testConfig.endpoint)
         ensureLoggedOut()
-
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
         ensureAllWallInactivityOff()
-
-        val observedBanner = AtomicBoolean(false)
-        lateinit var observer: Job
-        composeRule.runOnUiThread {
-            observer = CoroutineScope(Dispatchers.Main.immediate).launch(start = CoroutineStart.UNDISPATCHED) {
-                appViewModel().state.collect { current ->
-                    if (current.transientStatus?.message == "wall 250ms") observedBanner.set(true)
+        val originalModel = appViewModel()
+        val application = composeRule.activity.application as LingonApplication
+        val modelStore = androidx.lifecycle.ViewModelStore()
+        val dataJob = kotlinx.coroutines.SupervisorJob()
+        val preferencesFile = File(composeRule.activity.cacheDir, "wall-banner-clock-${UUID.randomUUID()}.preferences_pb")
+        val preferences = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(dataJob + Dispatchers.IO), produceFile = { preferencesFile },
+        )
+        val wallStore = systems.pkt.lingon.data.WallWorkStateStore(preferences)
+        val coordinator = systems.pkt.lingon.notifications.MonotonicWallDeliveryCoordinator(
+            wallStore, object : systems.pkt.lingon.viewmodel.WallNotifier {
+                override fun notifyWall(notification: systems.pkt.lingon.viewmodel.WallNotification): Boolean = false
+            },
+        )
+        val clock = TestCoroutineScheduler()
+        val dispatcher = StandardTestDispatcher(clock)
+        try {
+            lateinit var model: AppViewModel
+            composeRule.runOnUiThread {
+                model = AppViewModel(
+                    application.repository, application.wsClient, coordinator,
+                    // Only banner expiry uses virtual time. Keep Android's main
+                    // dispatcher and the real relay/WebSocket transport intact.
+                    delayTransientStatus = { ms -> withContext(dispatcher) { delay(ms) } },
+                )
+                modelStore.put("wall-banner-clock", model)
+                composeRule.activity.setContent { systems.pkt.lingon.ui.LingonApp(model) }
+            }
+            runBlocking {
+                kotlinx.coroutines.withTimeout(20_000) {
+                    model.state.first { it.loggedIn && it.connectionState == ConnectionState.Connected && it.activeSnapshot != null }
                 }
             }
-        }
-        try {
-            openSettings()
-            composeRule.onNodeWithText("Wall inactivity")
-                .performScrollTo()
-                .performClick()
-            waitUntilNoError(5_000L) { observedBanner.get() }
-            closeSettingsIfOpen()
-            waitUntilNoError(6_000L) { readStatusBanner() == null }
+            test(model, clock)
         } finally {
-            observer.cancel()
+            composeRule.runOnUiThread {
+                modelStore.clear()
+                composeRule.activity.setContent { systems.pkt.lingon.ui.LingonApp(originalModel) }
+            }
+            runBlocking {
+                dataJob.cancel()
+                dataJob.join()
+            }
+            preferencesFile.delete()
         }
     }
 
@@ -3929,18 +4028,20 @@ class EndToEndTest {
 
         loginWithConfiguredUser()
         waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        // The default host echoes keys; it does not execute `seq`. Own the
+        // history needed by this test instead of depending on earlier tests.
+        val sessionId = startHostsViaHarness(count = 1, rows = 50, shell = "/bin/sh", initialLines = 260).single()
+        waitUntilNoError(20_000L) { appViewModel().state.value.sessions.any { it.id == sessionId } }
+        selectSessionTab(sessionId, timeoutMs = 10_000L)
+        waitUntilNoError(10_000L) { snapshotContainsToken("LINE_${sessionId} 259") && !stateForTest().sessionSyncing }
         composeRule.runOnIdle {
             appViewModel().resetZoomAndPan()
         }
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
 
-        val beforeLoad = readTerminalDebugInfo()
-            ?: throw AssertionError("missing terminal debug info before loading scrollback fixture")
-        sendTerminalInput("seq 1 180")
-        sendTerminalEnter()
         val loaded = waitForTerminalDebugInfo(timeoutMs = 20_000L) { info ->
-            info.lastFrameSeq > beforeLoad.lastFrameSeq && info.hash != beforeLoad.hash
+            info.activeSessionId == sessionId && info.rows == 50 && info.isLiveBottomAnchored()
         } ?: throw AssertionError("scrollback fixture did not render")
         composeRule.onNodeWithTag(TestTags.TerminalFocus).performClick()
         waitUntilNoError(10_000L) { hasTextNode("CTRL") }
@@ -4319,6 +4420,125 @@ class EndToEndTest {
             )
         } finally {
             observer.cancel()
+        }
+    }
+
+    @Test
+    fun foreground_wall_survives_terminal_output() {
+        assertForegroundWallSurvivesOutput(priorCursor = 0L)
+    }
+
+    @Test
+    fun foreground_wall_recovers_stale_cursor_and_survives_terminal_output() {
+        assertForegroundWallSurvivesOutput(priorCursor = 9_000_000L)
+    }
+
+    private fun assertForegroundWallSurvivesOutput(priorCursor: Long) {
+        setEndpoint(testConfig.endpoint)
+        ensureLoggedOut()
+        loginWithConfiguredUser()
+        waitForTerminalReady(timeoutMs = TERMINAL_READY_TIMEOUT_MS)
+        ensureAllWallInactivityOff()
+        val originalModel = appViewModel()
+        val application = composeRule.activity.application as LingonApplication
+        val modelStore = androidx.lifecycle.ViewModelStore()
+        val dataJob = kotlinx.coroutines.SupervisorJob()
+        val dataScope = CoroutineScope(dataJob + Dispatchers.IO)
+        val preferencesFile = File(composeRule.activity.cacheDir, "wall-frame-order-${UUID.randomUUID()}.preferences_pb")
+        val preferences = androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(
+            scope = dataScope, produceFile = { preferencesFile },
+        )
+        val wallStore = systems.pkt.lingon.data.WallWorkStateStore(preferences)
+        val expires = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val releaseTerminal = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val terminalFrame = kotlinx.coroutines.CompletableDeferred<Long>()
+        val sawWall = AtomicBoolean()
+        val providerField = RelayWebSocketClient::class.java.getDeclaredField("httpClientProvider").apply { isAccessible = true }
+        val provider = providerField.get(application.wsClient) as systems.pkt.lingon.data.HttpClientProvider
+        val gatedSocket = object : RelayWebSocketClient(provider) {
+            override fun connect(options: ConnectOptions, listener: Listener): WebSocket {
+                return application.wsClient.connect(options, object : Listener {
+                    override fun onOpen(webSocket: WebSocket) = listener.onOpen(webSocket)
+                    override fun onFrame(webSocket: WebSocket, frame: Frame) {
+                        if (frame.hasWall()) sawWall.set(true)
+                        if (sawWall.get() && (frame.hasSnapshot() || frame.hasDiff())) {
+                            terminalFrame.complete(frame.seq)
+                            runBlocking { releaseTerminal.await() }
+                        }
+                        listener.onFrame(webSocket, frame)
+                    }
+                    override fun onFailure(webSocket: WebSocket, t: Throwable?, response: okhttp3.Response?) =
+                        listener.onFailure(webSocket, t, response)
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String?) =
+                        listener.onClosed(webSocket, code, reason)
+                })
+            }
+        }
+        val posted = java.util.concurrent.atomic.AtomicInteger()
+        val notifier = object : systems.pkt.lingon.viewmodel.WallNotifier {
+            override fun notifyWall(notification: systems.pkt.lingon.viewmodel.WallNotification): Boolean {
+                posted.incrementAndGet()
+                return true
+            }
+        }
+        val coordinator = systems.pkt.lingon.notifications.MonotonicWallDeliveryCoordinator(wallStore, notifier)
+        lateinit var model: AppViewModel
+        try {
+            runBlocking { wallStore.advanceCursor(testConfig.endpoint, priorCursor) }
+            composeRule.runOnIdle {
+                model = AppViewModel(
+                    application.repository, gatedSocket, coordinator,
+                    // Hold expiry behind an explicit barrier. This assertion is
+                    // about frame ordering, never device speed versus five seconds.
+                    delayTransientStatus = { expires.await() },
+                )
+                modelStore.put("wall-frame-order", model)
+                composeRule.activity.setContent { systems.pkt.lingon.ui.LingonApp(model) }
+            }
+            runBlocking {
+                kotlinx.coroutines.withTimeout(20_000) {
+                    model.state.first { it.loggedIn && it.connectionState == ConnectionState.Connected && it.activeSnapshot != null }
+                }
+            }
+            val message = "wall survives output ${UUID.randomUUID()}"
+            val beforeWall = model.state.value.lastFrameSeq
+            sendWallViaHarness(message)
+            val wallState = runBlocking {
+                kotlinx.coroutines.withTimeout(15_000) {
+                    // Wall processing is a positive fence even when a regression
+                    // suppresses the banner; assert visibility after the fence.
+                    model.state.first { it.lastFrameSeq > beforeWall && it.lastFrameType == "wall" }
+                }
+            }
+            assertTrue("foreground wall was suppressed: $wallState", wallState.bannerStatus?.message?.contains(message) == true)
+            val cursor = runBlocking { wallStore.loadCursor(testConfig.endpoint) }
+            assertTrue("fresh cursor was not recorded: $cursor", cursor > 0 && (priorCursor == 0L || cursor < priorCursor))
+            composeRule.runOnUiThread { model.sendRawInput("x") }
+            val outputSeq = runBlocking {
+                kotlinx.coroutines.withTimeout(15_000) { terminalFrame.await() }
+            }
+            releaseTerminal.complete(Unit)
+            val updated = runBlocking {
+                kotlinx.coroutines.withTimeout(15_000) {
+                    model.state.first { it.lastFrameSeq >= outputSeq }
+                }
+            }
+            assertTrue("terminal frame erased wall: $updated", updated.bannerStatus?.message?.contains(message) == true)
+            composeRule.waitForIdle()
+            composeRule.onAllNodesWithText(message, substring = true).assertCountEquals(1)
+            assertEquals("foreground wall posted a system notification", 0, posted.get())
+        } finally {
+            releaseTerminal.complete(Unit)
+            expires.complete(Unit)
+            composeRule.runOnUiThread {
+                modelStore.clear()
+                composeRule.activity.setContent { systems.pkt.lingon.ui.LingonApp(originalModel) }
+            }
+            runBlocking {
+                dataJob.cancel()
+                dataJob.join()
+            }
+            preferencesFile.delete()
         }
     }
 

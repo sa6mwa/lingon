@@ -284,11 +284,65 @@ class WallDeliveryCoordinatorTest {
         val coordinator = MonotonicWallDeliveryCoordinator(store, notifier)
         val notification = notification(eventId = 42L)
 
-        assertEquals(true, coordinator.consumeInApp(notification))
-        assertEquals(false, coordinator.consumeInApp(notification))
+        assertEquals(true, coordinator.consumeInApp(notification) { _, _ -> page(nextId = 42L) })
+        assertEquals(false, coordinator.consumeInApp(notification) { _, _ -> page(nextId = 42L) })
 
         assertEquals(42L, store.loadCursor(notification.endpoint))
         assertEquals(0, notifier.deliveries.size)
+    }
+
+    @Test
+    fun liveResetConfirmationPreservesReplayAndEndpointIsolation() = runTest {
+        val store = newStore()
+        val notifier = RecordingNotifier(succeeds = true)
+        val coordinator = MonotonicWallDeliveryCoordinator(store, notifier)
+        val live = notification(eventId = 5L)
+        val other = "https://other-relay.example/v1"
+        store.advanceCursor(live.endpoint, 100L)
+        store.advanceCursor(other, 200L)
+
+        // A delayed frame from the same relay generation is still a replay.
+        assertEquals(false, coordinator.consumeInApp(live) { since, limit ->
+            assertEquals(100L, since)
+            assertEquals(1, limit)
+            page(nextId = 100L)
+        })
+        assertEquals(100L, store.loadCursor(live.endpoint))
+        // An obsolete frame from before a reset must not be accepted either.
+        assertEquals(false, coordinator.consumeInApp(live) { _, _ -> page(nextId = 4L) })
+        assertEquals(100L, store.loadCursor(live.endpoint))
+        assertEquals(true, coordinator.consumeInApp(live) { _, _ -> page(nextId = 5L) })
+        assertEquals(5L, store.loadCursor(live.endpoint))
+        assertEquals(200L, store.loadCursor(other))
+        assertEquals(false, coordinator.consumeInApp(live) { _, _ -> page(nextId = 5L) })
+        assertEquals(5L, store.loadCursor(live.endpoint))
+        assertEquals(0, notifier.deliveries.size)
+    }
+
+    @Test
+    fun failedOrCancelledLiveResetConfirmationKeepsCursor() = runTest {
+        val store = newStore()
+        val coordinator = MonotonicWallDeliveryCoordinator(store, RecordingNotifier(succeeds = true))
+        val live = notification(eventId = 5L)
+        store.advanceCursor(live.endpoint, 100L)
+        assertEquals(false, coordinator.consumeInApp(live) { _, _ -> throw java.io.IOException("offline") })
+        assertEquals(100L, store.loadCursor(live.endpoint))
+        try {
+            coordinator.consumeInApp(live) { _, _ -> throw CancellationException("cancelled") }
+            error("expected cancellation")
+        } catch (_: CancellationException) {
+            // A lifecycle cancellation must propagate without changing state.
+        }
+        assertEquals(100L, store.loadCursor(live.endpoint))
+    }
+
+    @Test
+    fun freshLiveWallDoesNotRequireAnHttpRequest() = runTest {
+        val store = newStore()
+        val coordinator = MonotonicWallDeliveryCoordinator(store, RecordingNotifier(succeeds = true))
+        val live = notification(eventId = 5L)
+        assertEquals(true, coordinator.consumeInApp(live) { _, _ -> error("unexpected HTTP request") })
+        assertEquals(5L, store.loadCursor(live.endpoint))
     }
 
     private fun notification(eventId: Long): WallNotification {

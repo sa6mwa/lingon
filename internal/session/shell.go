@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/user"
 
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/pty"
 )
 
@@ -27,11 +28,15 @@ func resolveShellPath(shellOverride string) string {
 	return path
 }
 
-func startShell(shellOverride, term string) (*os.File, *os.File, *exec.Cmd, error) {
+func startShell(shellOverride, term string, endpoint *clipboard.Endpoint) (*os.File, *os.File, *exec.Cmd, error) {
 	path := resolveShellPath(shellOverride)
 	cmd := exec.Command(path)
+	cmd.Env = os.Environ()
 	if term != "" {
-		cmd.Env = append(os.Environ(), "TERM="+term)
+		cmd.Env = append(cmd.Env, "TERM="+term)
+	}
+	if endpoint != nil {
+		cmd.Env = endpoint.Env(cmd.Env)
 	}
 	ptyFile, ttyFile, err := pty.StartWithTTY(cmd)
 	if err != nil {

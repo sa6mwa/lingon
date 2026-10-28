@@ -45,8 +45,25 @@ func TestSessionManagementLocalCLI(t *testing.T) {
 		t.Fatalf("start: %v %s", err, output)
 	}
 	original, _ := headless.SocketPath(cfg, source)
-	terminal := startLingonAttachHeadlessCLI(t, home, source, 100, 24)
+	terminal := startLingonAttachHeadlessCLI(t, home, source, 100, 24, "--log-file", filepath.Join(cfg, "management-test.log"))
 	t.Cleanup(terminal.Cancel)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		exited, runErr := terminal.WaitErr(0)
+		raw := terminal.DrainRaw()
+		if len(raw) > 32*1024 {
+			raw = raw[len(raw)-32*1024:]
+		}
+		t.Logf("attach exited=%t err=%v raw tail=%q", exited, runErr, raw)
+		if state, err := headless.NewStore(cfg).Load(); err == nil {
+			t.Logf("local state: %+v", state)
+		}
+		if data, err := os.ReadFile(filepath.Join(cfg, "management-test.log")); err == nil {
+			t.Logf("client log: %s", data)
+		}
+	})
 	waitForPromptVisible(t, terminal, 8*time.Second)
 	terminal.Send("\x0ceLocal build 🦊\r")
 	terminal.Eventually(8*time.Second, 50*time.Millisecond, func(screen ptytest.Screen) error {

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocol"
@@ -30,8 +31,11 @@ type localSession struct {
 	nameMu sync.RWMutex
 	name   string
 
-	shell string
-	term  string
+	shell             string
+	term              string
+	clipboardMu       sync.Mutex
+	clipboardEndpoint *clipboard.Endpoint
+	clipboardHandler  *clipboard.Handler
 
 	cols            int
 	rows            int
@@ -46,8 +50,10 @@ type localSession struct {
 	pty     *os.File
 	tty     *os.File
 	cmd     *exec.Cmd
-	writeMu sync.Mutex
+	writeMu contextMutex
 
+	// Order emulator updates and their publication across reads and resizes.
+	outputMu    sync.Mutex
 	emuMu       sync.Mutex
 	emulator    terminal.Emulator
 	preserveEmu *emu.Emulator
@@ -100,7 +106,7 @@ type localSession struct {
 	recentInputMu sync.Mutex
 	recentInput   []byte
 
-	remoteInputCh chan []byte
+	remoteInputCh chan remoteInputOperation
 	outputNotify  chan struct{}
 	startupOnce   sync.Once
 	startupCh     chan error
@@ -478,7 +484,7 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 		cursorQuery:       opts.CursorQuery,
 		trace:             opts.Trace,
 		allowRemoteResize: opts.AllowRemoteResize,
-		remoteInputCh:     make(chan []byte, 256),
+		remoteInputCh:     make(chan remoteInputOperation, 256),
 		outputNotify:      make(chan struct{}, 1),
 		startupCh:         make(chan error, 1),
 	}
@@ -493,6 +499,7 @@ func newLocalSession(parent context.Context, opts localSessionOptions) *localSes
 		session.preserved = cloneSnapshot(session.snapshot)
 	}
 	session.setOscDefaults(opts.DefaultFg, opts.DefaultBg, opts.DefaultCursor)
+	session.clipboardHandler = clipboard.NewHandler(session.submitRemoteImage)
 	go session.runRemoteInput()
 	return session
 }
@@ -677,13 +684,22 @@ func (s *localSession) Size() (int, int) {
 	return s.cols, s.rows
 }
 
-func (s *localSession) Resize(cols, rows int) (*protocolpb.Snapshot, error) {
+func (s *localSession) Resize(cols, rows int) (snapshot *protocolpb.Snapshot, resizeErr error) {
 	if cols <= 0 || rows <= 0 {
 		return nil, fmt.Errorf("invalid size")
 	}
+	s.outputMu.Lock()
+	defer s.outputMu.Unlock()
+	defer func() {
+		if resizeErr == nil && snapshot != nil && s.publisher != nil {
+			s.publisher.Resize(cols, rows, snapshot)
+		}
+	}()
 	// Input must not reach the child until the resized viewport and cursor
 	// baseline have been restored. Echo during that transaction uses stale rows.
-	s.writeMu.Lock()
+	if err := s.writeMu.Lock(s.ctx); err != nil {
+		return nil, err
+	}
 	defer s.writeMu.Unlock()
 	s.emuMu.Lock()
 	prevCols := s.cols
@@ -923,15 +939,17 @@ func (s *localSession) notifyRemoteSessionClosed(reason string) {
 }
 
 func (s *localSession) writePTY(data []byte) (int, error) {
-	return s.writePTYWithMode(data, false)
+	return s.writePTYWithMode(s.ctx, data, false)
 }
 
 func (s *localSession) writeTerminalReply(data []byte) (int, error) {
-	return s.writePTYWithMode(data, true)
+	return s.writePTYWithMode(s.ctx, data, true)
 }
 
-func (s *localSession) writePTYWithMode(data []byte, disableEcho bool) (int, error) {
-	s.writeMu.Lock()
+func (s *localSession) writePTYWithMode(ctx context.Context, data []byte, disableEcho bool) (int, error) {
+	if err := s.writeMu.Lock(ctx); err != nil {
+		return 0, err
+	}
 	defer s.writeMu.Unlock()
 	if len(data) > 0 {
 		if disableEcho {
@@ -957,15 +975,13 @@ func (s *localSession) writePTYWithMode(data []byte, disableEcho bool) (int, err
 		}
 	}
 	defer restoreEcho()
-	sleep := time.Sleep
-	if s.clock != nil {
-		sleep = s.clock.Sleep
-	}
-	return writeAllWithRetry(s.ctx, sleep, data, ptyFile.Write)
+	return pty.NewWriter(ptyFile, s.clock).Write(ctx, data)
 }
 
 func (s *localSession) sendRemoteEOF() error {
-	s.writeMu.Lock()
+	if err := s.writeMu.Lock(s.ctx); err != nil {
+		return err
+	}
 	defer s.writeMu.Unlock()
 
 	s.ptyMu.RLock()
@@ -992,52 +1008,8 @@ func (s *localSession) sendRemoteEOF() error {
 		}()
 	}
 
-	sleep := time.Sleep
-	if s.clock != nil {
-		sleep = s.clock.Sleep
-	}
-	_, err := writeAllWithRetry(s.ctx, sleep, []byte{veof}, ptyFile.Write)
+	_, err := pty.NewWriter(ptyFile, s.clock).Write(s.ctx, []byte{veof})
 	return err
-}
-
-func writeAllWithRetry(ctx context.Context, sleep func(time.Duration), data []byte, write func([]byte) (int, error)) (int, error) {
-	if len(data) == 0 {
-		return 0, nil
-	}
-	written := 0
-	for written < len(data) {
-		if ctx != nil {
-			if err := ctx.Err(); err != nil {
-				return written, err
-			}
-		}
-		n, err := write(data[written:])
-		if n > 0 {
-			written += n
-		}
-		if err == nil {
-			if n == 0 {
-				return written, io.ErrShortWrite
-			}
-			continue
-		}
-		if errors.Is(err, syscall.EINTR) {
-			continue
-		}
-		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
-			if ctx != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return written, ctxErr
-				}
-			}
-			if sleep != nil {
-				sleep(2 * time.Millisecond)
-			}
-			continue
-		}
-		return written, err
-	}
-	return written, nil
 }
 
 func (s *localSession) resizePTY(cols, rows int) error {
@@ -1089,6 +1061,7 @@ func (s *localSession) setHolder(holderID string) {
 		return
 	}
 	s.holderID = holderID
+	s.clipboardHandler.Reset()
 	s.applyVEOF(holderID)
 }
 
@@ -1141,10 +1114,22 @@ func (s *localSession) enqueueRemoteInput(data []byte) error {
 		return nil
 	}
 	payload := append([]byte(nil), data...)
+	return s.enqueueRemoteOperation(remoteInputOperation{data: payload})
+}
+
+func (s *localSession) enqueueRemoteOperation(op remoteInputOperation) error {
 	select {
 	case <-s.ctx.Done():
 		return s.ctx.Err()
-	case s.remoteInputCh <- payload:
+	case s.remoteInputCh <- op:
+		return nil
+	default:
+		s.clipboardHandler.Reset()
+	}
+	select {
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case s.remoteInputCh <- op:
 		return nil
 	}
 }
@@ -1154,8 +1139,12 @@ func (s *localSession) runRemoteInput() {
 		select {
 		case <-s.ctx.Done():
 			return
-		case data := <-s.remoteInputCh:
-			s.processRemoteInput(data)
+		case op := <-s.remoteInputCh:
+			if op.run != nil {
+				op.run()
+			} else {
+				s.processRemoteInput(op.data)
+			}
 		}
 	}
 }
@@ -1203,7 +1192,22 @@ func (s *localSession) closePTY() {
 }
 
 func (s *localSession) runOnce(ctx context.Context) error {
-	ptyFile, ttyFile, cmd, err := startShell(s.shell, s.term)
+	endpoint, err := clipboard.NewEndpoint(ctx, os.Getenv("DISPLAY"), os.Getenv("XAUTHORITY"))
+	if err != nil {
+		s.reportStartup(err)
+		return fmt.Errorf("start session clipboard: %w", err)
+	}
+	s.clipboardMu.Lock()
+	s.clipboardEndpoint = endpoint
+	s.clipboardMu.Unlock()
+	defer func() {
+		s.clipboardMu.Lock()
+		s.clipboardEndpoint = nil
+		s.clipboardHandler.Reset()
+		s.clipboardMu.Unlock()
+		_ = endpoint.Close()
+	}()
+	ptyFile, ttyFile, cmd, err := startShell(s.shell, s.term, endpoint)
 	if err != nil {
 		s.reportStartup(err)
 		return err
@@ -1330,7 +1334,7 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				return
 			default:
 			}
-			n, err := readPTY(readCtx, ptyFile, buf)
+			n, err := pty.Read(readCtx, ptyFile, buf)
 			if err != nil {
 				if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
 					s.clock.Sleep(10 * time.Millisecond)
@@ -1345,75 +1349,23 @@ func (s *localSession) runOnce(ctx context.Context) error {
 				}
 				return
 			}
-			data := buf[:n]
-			if s.onPTYRead != nil {
-				cp := make([]byte, len(data))
-				copy(cp, data)
-				s.onPTYRead(cp)
-			}
-			filtered := s.filterOSCOutput(data)
-			suppressResizeRedraw := s.shouldIgnoreNextPTYOutput(filtered)
-			var scrollRows []terminal.ScrollbackRow
-			s.emuMu.Lock()
-			if err := s.emulator.Write(filtered); err != nil {
-				s.logger.Debug("session.emulator.write.failed", "err", err, "session", s.id)
-			}
-			rawSnap, err := s.emulator.Snapshot()
-			if scrollback, ok := s.emulator.(*emu.Emulator); ok {
-				scrollRows = scrollback.DrainScrollback()
-			}
-			s.emuMu.Unlock()
-			s.respondToTerminalQueries(data, rawSnap)
-			if err != nil {
+			if err := s.processPTYOutput(buf[:n]); err != nil {
 				select {
 				case localErr <- err:
 				default:
 				}
 				return
 			}
-			if suppressResizeRedraw {
-				continue
-			}
-			if s.onSnapshot != nil {
-				s.onSnapshot(rawSnap)
-			}
-			protoSnap := protocol.SnapshotToProto(rawSnap)
-			snap := protoSnap
-			resetViewport := !s.allowRemoteResize && localOutputForcesFullRedraw(filtered)
-			if !s.allowRemoteResize && s.preservedEmulatorActive() {
-				if resetViewport {
-					s.clearPreserveEmulator()
-					snap = s.storeResetSnapshot(protoSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
-				} else {
-					s.clearPreserveEmulator()
-					snap = s.storeSnapshotWithoutDetectedScroll(protoSnap, len(scrollRows))
-				}
-			} else {
-				if resetViewport {
-					snap = s.storeResetSnapshot(protoSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
-				} else {
-					snap = s.storeSnapshot(protoSnap, len(scrollRows))
-				}
-			}
-			scrollRows = s.appendScrollback(s.drainScrollbackRows(scrollRows))
-			if s.onOutput != nil {
-				s.onOutput(s.id, filtered, snap)
-			}
-			s.notifyOutput()
-			if s.publisher != nil {
-				if len(scrollRows) > 0 {
-					s.publisher.PublishScrollback(scrollRows, int(snap.Cols), false)
-				}
-				s.publisher.Publish(filtered, snap)
-			}
 		}
 	}()
 
 	if s.publisher != nil {
+		s.outputMu.Lock()
 		s.publisher.TakeControl()
 		if snap := s.Snapshot(); snap != nil {
 			s.publisher.Publish(nil, snap)
 		}
+		s.outputMu.Unlock()
 	}
 
 	select {
@@ -2432,4 +2384,67 @@ func (s *localSession) Run() {
 		}
 		s.clock.Sleep(100 * time.Millisecond)
 	}
+}
+
+// processPTYOutput commits one read before a resize can publish another state.
+func (s *localSession) processPTYOutput(data []byte) error {
+	if s.onPTYRead != nil {
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		s.onPTYRead(cp)
+	}
+	s.outputMu.Lock()
+	defer s.outputMu.Unlock()
+	filtered := s.filterOSCOutput(data)
+	suppressResizeRedraw := s.shouldIgnoreNextPTYOutput(filtered)
+	var scrollRows []terminal.ScrollbackRow
+	s.emuMu.Lock()
+	if err := s.emulator.Write(filtered); err != nil {
+		s.logger.Debug("session.emulator.write.failed", "err", err, "session", s.id)
+	}
+	rawSnap, err := s.emulator.Snapshot()
+	if scrollback, ok := s.emulator.(*emu.Emulator); ok {
+		scrollRows = scrollback.DrainScrollback()
+	}
+	s.emuMu.Unlock()
+	s.respondToTerminalQueries(data, rawSnap)
+	if err != nil {
+		return err
+	}
+	if suppressResizeRedraw {
+		return nil
+	}
+	if s.onSnapshot != nil {
+		s.onSnapshot(rawSnap)
+	}
+	protoSnap := protocol.SnapshotToProto(rawSnap)
+	snap := protoSnap
+	resetViewport := !s.allowRemoteResize && localOutputForcesFullRedraw(filtered)
+	if !s.allowRemoteResize && s.preservedEmulatorActive() {
+		if resetViewport {
+			s.clearPreserveEmulator()
+			snap = s.storeResetSnapshot(protoSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+		} else {
+			s.clearPreserveEmulator()
+			snap = s.storeSnapshotWithoutDetectedScroll(protoSnap, len(scrollRows))
+		}
+	} else {
+		if resetViewport {
+			snap = s.storeResetSnapshot(protoSnap, int(protoSnap.GetCols()), int(protoSnap.GetRows()))
+		} else {
+			snap = s.storeSnapshot(protoSnap, len(scrollRows))
+		}
+	}
+	scrollRows = s.appendScrollback(s.drainScrollbackRows(scrollRows))
+	if s.onOutput != nil {
+		s.onOutput(s.id, filtered, snap)
+	}
+	s.notifyOutput()
+	if s.publisher != nil {
+		if len(scrollRows) > 0 {
+			s.publisher.PublishScrollback(scrollRows, int(snap.Cols), false)
+		}
+		s.publisher.Publish(filtered, snap)
+	}
+	return nil
 }

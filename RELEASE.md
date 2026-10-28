@@ -134,6 +134,13 @@ multiple exact stable tags and inferred historical versions cannot establish a
 release version. `make print-release-version` prints an exact lightweight stable
 tag on HEAD, or `0.0.0` when HEAD is untagged.
 
+Local `make android-release` and `make android-install-release` also support
+development trees. An untagged or dirty tree gets a `-dev.g<revision>` version
+name (plus `.dirty` when applicable) and reuses the newest reachable lightweight
+release tag's Android code. This permits local updates of that release without
+choosing a new stable version. It does not establish a release identity for
+publication; official artifacts still use the explicitly selected release.
+
 After tagging, the command cleans release-owned outputs and the Android build,
 runs the entire proof again, and rebuilds/verifies the final matrix. Only this
 successful final tagged gate records full proof. `make release-matrix` provides

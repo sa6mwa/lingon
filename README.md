@@ -177,6 +177,40 @@ Lingon uses prefix keystroke `Ctrl+l` as *command introducer*, see `Ctrl+l h` (`
 lingon attach -e https://localhost:12843/v1 my-session
 ```
 
+With an X11 image in `CLIPBOARD`, press **Ctrl+V** inside an attach terminal or
+a remote tab in the host UI to transfer it to the target application. Local
+interactive host tabs forward Ctrl+V unchanged: the app already shares the
+host's clipboard. Image transfer also works inside tmux and with local
+`attach -x`. The originating Lingon process needs access to
+`DISPLAY` and its Xauthority cookie; use a key binding that sends the actual
+Ctrl+V byte, rather than the terminal emulator's text-paste shortcut.
+XQuartz socket-path displays are supported directly on macOS.
+
+PNG is preferred, with JPEG as the fallback. Original encoded bytes are
+preserved, up to 32 MiB per image. The entire image is validated before delivery;
+decoded images are limited to 33,554,432 pixels and 32,768 pixels per side to
+bound decoder allocation. The target clipboard is populated before
+Ctrl+V reaches the application. Softline's chat prompt can then read the image
+normally and insert its own cached image path. When the source clipboard has
+no image, Ctrl+V passes through unchanged; bracketed text paste is unchanged.
+
+Targets with an existing `DISPLAY` use that X11 clipboard. On a headless target,
+Lingon gives each session a private, authenticated, loopback X11 clipboard
+endpoint and supplies its `DISPLAY`/`XAUTHORITY` to the shell. This endpoint
+supports clipboard reads, not graphical X applications. Its socket and cookie
+are removed when the session ends. Clipboard access uses native Go, without
+CGO, libX11, `xclip`, or a target-side X server.
+
+On an existing X server, Lingon serves up to eight concurrent large-image reads.
+A read that makes no progress for 30 seconds is discarded; the selection remains
+available to other readers.
+
+Images travel in bounded internal protocol chunks with upload flow control,
+the same control authorization as keyboard input, and no terminal replay
+storage. The source and target each buffer a bounded image. Android image
+upload UI is planned separately; this transfer operation provides its host-side
+foundation.
+
 ### 7) Open the Web UI
 
 ```text

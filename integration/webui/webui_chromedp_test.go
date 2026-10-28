@@ -1640,11 +1640,7 @@ func ensureWebUILogin(ctx context.Context, loginURL, username, password, totp st
 	); err != nil {
 		return err
 	}
-	if err := chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
-		_, err := chromedp.Call(ctx, page.Navigate, page.NavigateParams{URL: loginURL})
-		return err
-	}), chromedp.Sleep(200*time.Millisecond),
-	); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate(loginURL)); err != nil {
 		return err
 	}
 	return nil
@@ -1664,11 +1660,7 @@ func ensureWebUIShare(ctx context.Context, loginURL, token string) error {
 	); err != nil {
 		return err
 	}
-	if err := chromedp.Do(ctx, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
-		_, err := chromedp.Call(ctx, page.Navigate, page.NavigateParams{URL: loginURL})
-		return err
-	}), chromedp.Sleep(200*time.Millisecond),
-	); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate(loginURL)); err != nil {
 		return err
 	}
 	return nil

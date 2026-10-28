@@ -1,7 +1,6 @@
 package relayhost
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -14,9 +13,11 @@ import (
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/logging"
 	"pkt.systems/lingon/internal/protocolpb"
+	"pkt.systems/lingon/internal/pty"
 	"pkt.systems/lingon/internal/relaywire"
 	"pkt.systems/lingon/internal/terminal"
 	"pkt.systems/lingon/internal/terminal/emu"
@@ -39,15 +40,18 @@ type Host struct {
 	MaxReplayScreens int
 	// ScrollbackLines caps the scrollback buffer rows.
 	ScrollbackLines int
-	OnInput         func([]byte)
-	OnPTYRead       func([]byte)
-	OnFrame         func(*protocolpb.Frame)
+	// OnInput runs in input order after the complete payload reaches the PTY.
+	OnInput   func([]byte)
+	OnPTYRead func([]byte)
+	OnFrame   func(*protocolpb.Frame)
 
 	Logger pslog.Logger
 
-	emulator terminal.Emulator
-	emuMu    sync.Mutex
-	lastSnap *protocolpb.Snapshot
+	emulator          terminal.Emulator
+	emuMu             sync.Mutex
+	lastSnap          *protocolpb.Snapshot
+	clipboardEndpoint *clipboard.Endpoint
+	clipboardHandler  *clipboard.Handler
 }
 
 // Run starts the host session.
@@ -83,7 +87,13 @@ func (h *Host) Run(ctx context.Context) error {
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 
-	cmd, ptyFile, err := startCommand(h.Command)
+	endpoint, err := clipboard.NewEndpoint(runCtx, os.Getenv("DISPLAY"), os.Getenv("XAUTHORITY"))
+	if err != nil {
+		return fmt.Errorf("start clipboard endpoint: %w", err)
+	}
+	defer endpoint.Close()
+	h.clipboardEndpoint = endpoint
+	cmd, ptyFile, err := startCommand(h.Command, endpoint)
 	if err != nil {
 		return err
 	}
@@ -152,7 +162,9 @@ func (h *Host) Run(ctx context.Context) error {
 	wg.Add(4)
 
 	ctrlFrames := make(chan *protocolpb.Frame, 4)
-	ptyInput := make(chan []byte, 4096)
+	ptyInput := make(chan inputOperation, 4096)
+	h.clipboardHandler = clipboard.NewHandler(func(d *clipboard.Delivery) error { return enqueuePaste(d, ptyInput) })
+	defer h.clipboardHandler.Reset()
 
 	go func() {
 		defer wg.Done()
@@ -163,7 +175,7 @@ func (h *Host) Run(ctx context.Context) error {
 
 	go func() {
 		defer wg.Done()
-		h.writePTY(runCtx, ptyFile, ptyInput)
+		h.writePTY(runCtx, pty.NewWriter(ptyFile, nil), ptyInput)
 		cancelRun()
 	}()
 
@@ -182,11 +194,10 @@ func (h *Host) Run(ctx context.Context) error {
 }
 
 func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.Emulator, ctrlFrames chan<- *protocolpb.Frame, outputQueue *relaywire.FrameQueue, screens int) {
-	reader := bufio.NewReader(ptyFile)
 	buf := make([]byte, 4096)
 
 	for {
-		n, err := reader.Read(buf)
+		n, err := pty.Read(ctx, ptyFile, buf)
 		if err != nil {
 			if err != io.EOF {
 				h.Logger.Debug("host.pty.read.failed", "err", err)
@@ -258,12 +269,22 @@ func (h *Host) readPTY(ctx context.Context, ptyFile *os.File, emulator terminal.
 	}
 }
 
-func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File, ctrlFrames chan<- *protocolpb.Frame, ptyInput chan []byte, outputQueue *relaywire.FrameQueue, screens int) {
+func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File, ctrlFrames chan<- *protocolpb.Frame, ptyInput chan inputOperation, outputQueue *relaywire.FrameQueue, screens int) {
+	defer h.clipboardHandler.Reset()
 	for {
 		frame, err := relaywire.ReadFrame(ctx, ws)
 		if err != nil {
 			h.Logger.Debug("host.ws.read.failed", "err", err)
 			return
+		}
+		if frame.GetControl() != nil {
+			h.clipboardHandler.Reset()
+		}
+		if chunk := frame.GetClipboard(); chunk != nil {
+			h.clipboardHandler.Handle(ctx, chunk, func(reply *protocolpb.Clipboard) {
+				enqueueControl(ctx, ctrlFrames, &protocolpb.Frame{SessionId: h.SessionID, Payload: &protocolpb.Frame_Clipboard{Clipboard: reply}})
+			})
+			continue
 		}
 		if hello := frame.GetHello(); hello != nil {
 			if snap, err := h.snapshot(); err == nil {
@@ -289,18 +310,11 @@ func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File,
 			}
 		}
 		if in := frame.GetIn(); in != nil {
-			if h.OnInput != nil && len(in.Data) > 0 {
-				cp := make([]byte, len(in.Data))
-				copy(cp, in.Data)
-				h.OnInput(cp)
-			}
 			if len(in.Data) > 0 {
 				cp := make([]byte, len(in.Data))
 				copy(cp, in.Data)
-				select {
-				case <-ctx.Done():
+				if err := enqueueInput(ctx, cp, ptyInput, h.clipboardHandler.Reset); err != nil {
 					return
-				case ptyInput <- cp:
 				}
 			}
 		}
@@ -308,13 +322,8 @@ func (h *Host) readWS(ctx context.Context, ws *websocket.Conn, ptyFile *os.File,
 			switch command.GetKind() {
 			case protocolpb.CommandKind_COMMAND_KIND_SEND_EOF:
 				cp := []byte{0x04}
-				if h.OnInput != nil {
-					h.OnInput(cp)
-				}
-				select {
-				case <-ctx.Done():
+				if err := enqueueInput(ctx, cp, ptyInput, h.clipboardHandler.Reset); err != nil {
 					return
-				case ptyInput <- cp:
 				}
 			}
 		}
@@ -391,27 +400,6 @@ func (h *Host) writeFrames(ctx context.Context, ws *websocket.Conn, ctrlFrames <
 	}
 }
 
-func (h *Host) writePTY(ctx context.Context, ptyFile *os.File, input <-chan []byte) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case data := <-input:
-			if len(data) == 0 {
-				continue
-			}
-			for len(data) > 0 {
-				n, err := ptyFile.Write(data)
-				if err != nil {
-					h.Logger.Debug("host.pty.write.failed", "err", err)
-					return
-				}
-				data = data[n:]
-			}
-		}
-	}
-}
-
 func enqueueControl(ctx context.Context, ch chan<- *protocolpb.Frame, frame *protocolpb.Frame) {
 	select {
 	case <-ctx.Done():
@@ -437,24 +425,16 @@ func (h *Host) snapshotLocked() (*protocolpb.Snapshot, error) {
 	return snapshotToProto(snap), nil
 }
 
-func startCommand(command []string) (*exec.Cmd, *os.File, error) {
+func startCommand(command []string, endpoint *clipboard.Endpoint) (*exec.Cmd, *os.File, error) {
 	if len(command) == 0 {
-		return startShell()
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		command = []string{shell}
 	}
 	cmd := exec.Command(command[0], command[1:]...)
-	ptyFile, err := startPTY(cmd)
-	if err != nil {
-		return nil, nil, err
-	}
-	return cmd, ptyFile, nil
-}
-
-func startShell() (*exec.Cmd, *os.File, error) {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	cmd := exec.Command(shell)
+	cmd.Env = endpoint.Env(os.Environ())
 	ptyFile, err := startPTY(cmd)
 	if err != nil {
 		return nil, nil, err

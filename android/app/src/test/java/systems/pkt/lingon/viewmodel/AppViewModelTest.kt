@@ -2448,6 +2448,77 @@ class AppViewModelTest {
     }
 
     @Test
+    fun foregroundWallSurvivesFollowingSnapshot() = assertForegroundWallDelivery(
+        terminalUpdate = snapshotFrame(4, "after wall"),
+    )
+
+    @Test
+    fun foregroundWallSurvivesFollowingDiff() = assertForegroundWallDelivery(
+        terminalUpdate = diffFrame(4, "after wall"),
+    )
+
+    @Test
+    fun foregroundWallRecoversAfterRelayCounterRestarts() = assertForegroundWallDelivery(
+        priorCursor = 100L,
+        wallId = 1L,
+    )
+
+    private fun assertForegroundWallDelivery(
+        terminalUpdate: Frame? = null,
+        priorCursor: Long = 0L,
+        wallId: Long = 42L,
+    ) = runTest {
+        val endpoint = "https://localhost:12843/v1"
+        val repository = FakeRepository(
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            failListSessions = false,
+        )
+        repository.onListWallEvents = { _, _ -> RelayWallEventsPage(nextId = wallId) }
+        val wsClient = FakeWsClient { _, listener, socket ->
+            listener.onOpen(socket)
+            listener.onFrame(socket, welcomeFrame())
+        }
+        val notifier = RecordingWallNotifier()
+        val store = testWallWorkStateStore(backgroundScope)
+        store.advanceCursor(endpoint, priorCursor)
+        val viewModel = AppViewModel(
+            repository = repository,
+            wsClient = wsClient,
+            wallDeliveryCoordinator = MonotonicWallDeliveryCoordinator(store, notifier),
+        )
+        setUiStateForTest(viewModel, viewModel.state.value.copy(
+            loggedIn = true, endpoint = endpoint,
+            sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
+            activeSessionId = "host-1", connectionState = ConnectionState.Disconnected,
+        ))
+        viewModel.selectSession("host-1")
+        advanceUntilIdle()
+        wsClient.fireConnect()
+        wsClient.fireFrame(snapshotFrame(2, "before wall"))
+        viewModel.state.first { it.lastFrameSeq == 2L && it.lastFrameType == "snapshot" }
+        val wall = Frame.newBuilder().setSeq(3).setWall(
+            systems.pkt.lingon.protocol.Wall.newBuilder()
+                .setId(wallId).setSender("relay").setMessage("regression wall"),
+        ).build()
+        wsClient.fireFrame(wall)
+        viewModel.state.first { it.lastFrameType == "wall" }
+        assertEquals("relay: regression wall", viewModel.state.value.bannerStatus?.message)
+        if (terminalUpdate != null) {
+            wsClient.fireFrame(terminalUpdate)
+            viewModel.state.first { it.lastFrameSeq == 4L }
+            assertEquals("relay: regression wall", viewModel.state.value.bannerStatus?.message)
+        }
+        assertEquals(wallId, store.loadCursor(endpoint))
+        assertEquals(emptyList<Pair<String, String>>(), notifier.deliveries)
+        advanceTimeBy(4_999L)
+        runCurrent()
+        assertEquals("relay: regression wall", viewModel.state.value.bannerStatus?.message)
+        advanceTimeBy(1L)
+        runCurrent()
+        assertNull(viewModel.state.value.transientStatus)
+    }
+
+    @Test
     fun wallInactivityBannerAutoDismisses() = runTest {
         val repository = FakeRepository(
             sessions = listOf(RelaySession(id = "host-1", name = "Host 1", status = "active")),
@@ -2978,6 +3049,7 @@ private class FakeRepository(
     val managementRequests = mutableListOf<systems.pkt.lingon.data.relay.SessionManagementRequest>()
     var onManage: (suspend () -> Unit)? = null
     var onListSessions: (suspend () -> List<RelaySession>)? = null
+    var onListWallEvents: (suspend (Long, Int) -> RelayWallEventsPage)? = null
     var onLoadLastActiveSession: (suspend () -> String?)? = null
     var refreshAuthCalls: Int = 0
     var saveZoomCalls: Int = 0
@@ -3074,6 +3146,7 @@ private class FakeRepository(
     }
 
     override suspend fun listWallEvents(sinceId: Long, limit: Int): RelayWallEventsPage {
+        onListWallEvents?.let { return it(sinceId, limit) }
         return RelayWallEventsPage()
     }
 

@@ -504,6 +504,12 @@ func (d *Daemon) handleWSClient(w http.ResponseWriter, r *http.Request) {
 		clientID = randomClientID()
 	}
 	client := &wsClient{id: clientID, ws: ws}
+	var clipboardID string
+	defer func() {
+		if clipboardID != "" && d.runner != nil {
+			d.runner.HandleSessionClipboard(context.Background(), d.sessionID, &protocolpb.Clipboard{TransferId: clipboardID, Source: client.id, Cancel: true}, nil)
+		}
+	}()
 	d.addClient(client)
 	defer d.removeClient(client.id)
 
@@ -511,10 +517,7 @@ func (d *Daemon) handleWSClient(w http.ResponseWriter, r *http.Request) {
 	var scrollRows []*protocolpb.ScrollbackRow
 	d.clientsMu.Lock()
 	if hello.GetWantsControl() || d.holderID == "" {
-		if d.holderID != clientID {
-			d.holderID = clientID
-			holderChanged = true
-		}
+		holderChanged = d.changeHolderLocked(clientID)
 	}
 	holder := d.holderID
 	cols := d.cols
@@ -583,6 +586,32 @@ func (d *Daemon) handleWSClient(w http.ResponseWriter, r *http.Request) {
 					_ = d.writeInput(data)
 				}
 				d.noteLocalActivity()
+			}
+			continue
+		}
+		if chunk := frame.GetClipboard(); chunk != nil {
+			if chunk.Completed || chunk.Error != "" {
+				return
+			}
+			chunk.Source = client.id
+			if chunk.Offset != 0 || chunk.Cancel {
+				d.clientsMu.RLock()
+				holder := d.holderID
+				d.clientsMu.RUnlock()
+				if holder != client.id {
+					_ = d.writeClientFrame(ctx, client, &protocolpb.Frame{SessionId: d.sessionID, Payload: &protocolpb.Frame_Clipboard{Clipboard: &protocolpb.Clipboard{TransferId: chunk.TransferId, Completed: true, Error: "clipboard control changed"}}})
+					continue
+				}
+			}
+			d.setHolder(client.id)
+			clipboardID = chunk.TransferId
+			if !chunk.Cancel && len(chunk.Data) > 0 {
+				d.noteLocalActivity()
+			}
+			if d.runner != nil {
+				d.runner.HandleSessionClipboard(ctx, d.sessionID, chunk, func(reply *protocolpb.Clipboard) {
+					_ = d.writeClientFrame(ctx, client, &protocolpb.Frame{SessionId: d.sessionID, Payload: &protocolpb.Frame_Clipboard{Clipboard: reply}})
+				})
 			}
 			continue
 		}
@@ -1079,7 +1108,7 @@ func (d *Daemon) removeClient(id string) {
 	d.clientsMu.Lock()
 	delete(d.clients, id)
 	if d.holderID == id {
-		d.holderID = ""
+		d.changeHolderLocked("")
 	}
 	d.clientsMu.Unlock()
 }
@@ -1089,13 +1118,25 @@ func (d *Daemon) setHolder(holderID string) {
 		return
 	}
 	d.clientsMu.Lock()
-	if d.holderID == holderID {
-		d.clientsMu.Unlock()
+	changed := d.changeHolderLocked(holderID)
+	d.clientsMu.Unlock()
+	if !changed {
 		return
 	}
-	d.holderID = holderID
-	d.clientsMu.Unlock()
 	d.broadcast(&protocolpb.Frame{SessionId: d.sessionID, Payload: &protocolpb.Frame_Control{Control: &protocolpb.Control{HolderClientId: holderID}}})
+}
+
+// changeHolderLocked cancels the previous holder's clipboard work before making
+// the new owner visible to other local readers. The caller holds clientsMu.
+func (d *Daemon) changeHolderLocked(holderID string) bool {
+	if d.holderID == holderID {
+		return false
+	}
+	if d.runner != nil {
+		d.runner.ResetSessionClipboard(d.sessionID)
+	}
+	d.holderID = holderID
+	return true
 }
 
 func (d *Daemon) broadcast(frame *protocolpb.Frame) {

@@ -1341,7 +1341,11 @@ func (s *HTTPServer) serveWSLoop(ctx context.Context, ws *wsConn) {
 			}
 		case RoleClient:
 			if err := s.Hub.HandleClientFrame(ctx, ws, frame); err != nil {
-				_ = ws.Send(ctx, frameError(err.Error()))
+				if chunk := frame.GetClipboard(); chunk != nil && len(chunk.TransferId) == 32 {
+					_ = ws.Send(ctx, &protocolpb.Frame{SessionId: ws.sessionID, Payload: &protocolpb.Frame_Clipboard{Clipboard: &protocolpb.Clipboard{TransferId: chunk.TransferId, Completed: true, Error: err.Error()}}})
+				} else {
+					_ = ws.Send(ctx, frameError(err.Error()))
+				}
 			} else if isClientActivityFrame(frame) {
 				if svc := s.wallService(); svc != nil {
 					svc.markActivity(ws.sessionID, svc.now())
@@ -1666,6 +1670,9 @@ func formatDurationCompact(d time.Duration) string {
 func isClientActivityFrame(frame *protocolpb.Frame) bool {
 	if frame == nil {
 		return false
+	}
+	if chunk := frame.GetClipboard(); chunk != nil {
+		return !chunk.Completed && !chunk.Cancel && len(chunk.Data) > 0
 	}
 	if in := frame.GetIn(); in != nil {
 		return len(in.GetData()) > 0

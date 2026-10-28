@@ -760,9 +760,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		scheduleOverlayRedraw(effect)
 	}
 	setTheme := func(name string, show bool) {
+		mu.Lock()
 		themeName = resolveThemeName(name)
 		ui.ApplyAction(mvu.ContextAction{Input: mvu.ContextInput{Theme: theme.TUI(themeName)}})
-		mu.Lock()
 		for _, view := range views {
 			if view.client != nil {
 				view.client.setTheme(themeName)
@@ -775,10 +775,32 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		renderActiveCurrent()
 	}
 
-	var connectView func(SessionInfo, bool, *sessionView) (*sessionView, error)
-	connectView = func(session SessionInfo, visible bool, prev *sessionView) (*sessionView, error) {
+	type viewSeed struct {
+		client        *Client
+		connectedOnce bool
+		reconnectAt   time.Time
+		reconnectGen  uint64
+		missingSince  time.Time
+		theme         string
+		forceClear    bool
+	}
+	// Capture mutable state while holding mu. Reconnect preparation can then
+	// refresh credentials without blocking session updates or other tabs.
+	snapshotViewLocked := func(visible bool, prev *sessionView) viewSeed {
+		seed := viewSeed{theme: themeName, forceClear: visible && localSessionMode && len(views) == 0}
+		if prev != nil {
+			seed.client = prev.client
+			seed.connectedOnce = prev.connectedOnce
+			seed.reconnectAt = prev.reconnectAt
+			seed.reconnectGen = prev.reconnectGen
+			seed.missingSince = prev.missingSince
+		}
+		return seed
+	}
+	var connectView func(SessionInfo, bool, viewSeed) (*sessionView, error)
+	connectView = func(session SessionInfo, visible bool, seed viewSeed) (*sessionView, error) {
 		if m.Logger != nil {
-			m.Logger.Debug("attach.view.connect.start", "session", session.ID, "visible", visible, "has_prev", prev != nil)
+			m.Logger.Debug("attach.view.connect.start", "session", session.ID, "visible", visible, "has_prev", seed.client != nil)
 		}
 		if !localSessionMode && m.TokenRefresher != nil {
 			if _, err := m.refreshToken(ctx); err != nil {
@@ -797,16 +819,14 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 		}
 		view := &sessionView{
-			id:         session.ID,
-			name:       mvu.SessionLabel(session.ID, session.Name),
-			visible:    visible,
-			connecting: true,
-		}
-		if prev != nil {
-			view.connectedOnce = prev.connectedOnce
-			view.reconnectAt = prev.reconnectAt
-			view.reconnectGen = prev.reconnectGen
-			view.missingSince = prev.missingSince
+			id:            session.ID,
+			name:          mvu.SessionLabel(session.ID, session.Name),
+			visible:       visible,
+			connecting:    true,
+			connectedOnce: seed.connectedOnce,
+			reconnectAt:   seed.reconnectAt,
+			reconnectGen:  seed.reconnectGen,
+			missingSince:  seed.missingSince,
 		}
 		cctx, ccancel := context.WithCancel(ctx)
 		var tokenRefresher func(context.Context) (string, error)
@@ -816,7 +836,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		client := &Client{
 			// Clear inherited screen contents only when presenting the first local
 			// view. Loading a different tab must preserve the display baseline.
-			forceClear:                  visible && localSessionMode && len(views) == 0,
+			forceClear:                  seed.forceClear,
 			Endpoint:                    m.Endpoint,
 			SessionID:                   session.ID,
 			UnixSocket:                  unixSocket,
@@ -827,7 +847,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			DisableDesktopNotifications: m.DisableDesktopNotifications,
 			TLSDir:                      m.TLSDir,
 			Insecure:                    m.Insecure,
-			Theme:                       themeName,
+			Theme:                       seed.theme,
 			Stdin:                       io.NopCloser(strings.NewReader("")),
 			TermSize:                    termSize,
 			DisableResizePropagation:    !sessionAllowsResize(session),
@@ -843,10 +863,10 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				handleRoutedStatus(session.ID, wall)
 			}
 		}
-		if prev != nil && prev.client != nil {
-			client.SeedFrom(prev.client)
+		if seed.client != nil {
+			client.SeedFrom(seed.client)
 			if visible && localSessionMode && !client.HasSnapshot() {
-				client.seedLoadingRender(prev.client)
+				client.seedLoadingRender(seed.client)
 			}
 		}
 		client.OnSessionClosed = func(_ string) {
@@ -880,6 +900,8 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				}
 			}
 		}
+		// Readiness callbacks run outside the socket reader, so queued image
+		// uploads can await replies. Bind their lifetime to this connection.
 		client.OnReady = func() {
 			readyAt := m.Clock.Now()
 			if m.Logger != nil {
@@ -909,7 +931,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			for {
 				for _, op := range pending {
 					if len(op.input) > 0 {
-						if err := client.SendInput(ctx, op.input); err != nil {
+						if err := client.SendTerminalInput(cctx, op.input); err != nil {
 							if m.Logger != nil {
 								m.Logger.Debug("attach.stdin.send.flush.failed", "session", session.ID, "err", err)
 							}
@@ -1302,12 +1324,21 @@ func (m *MultiClient) Run(ctx context.Context) error {
 					return
 				}
 				currentView.connecting = true
+				seed := snapshotViewLocked(visible, currentView)
 				mu.Unlock()
-				nextView, err := connectView(current, visible, currentView)
+				nextView, err := connectView(current, visible, seed)
 				if err != nil {
 					continue
 				}
 				mu.Lock()
+				if views[current.ID] != currentView {
+					mu.Unlock()
+					nextView.cancel()
+					return
+				}
+				// Session discovery may have changed the grace state during
+				// credential refresh. Preserve its latest authoritative value.
+				nextView.missingSince = currentView.missingSince
 				if len(currentView.pendingOps) > 0 {
 					nextView.pendingOps = append(nextView.pendingOps, currentView.pendingOps...)
 					currentView.pendingOps = nil
@@ -1376,8 +1407,9 @@ func (m *MultiClient) Run(ctx context.Context) error {
 				reconnectAt := view.reconnectAt
 				reconnectGen := view.reconnectGen
 				view.cancel()
-				nextView, err := connectView(*nextSession, true, view)
+				nextView, err := connectView(*nextSession, true, snapshotViewLocked(true, view))
 				if err != nil {
+					mu.Unlock()
 					return err
 				}
 				if len(view.pendingOps) > 0 {
@@ -1448,7 +1480,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			}
 		}
 
-		view, err := connectView(*nextSession, true, prevView)
+		view, err := connectView(*nextSession, true, snapshotViewLocked(true, prevView))
 		if err != nil {
 			mu.Unlock()
 			return err
@@ -2036,7 +2068,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 		if m.Logger != nil {
 			m.Logger.Debug("attach.stdin.send", "bytes", len(pending))
 		}
-		if err := targetClient.SendInput(ctx, pending); err != nil {
+		if err := targetClient.SendTerminalInput(ctx, pending); err != nil {
 			if m.Logger != nil {
 				m.Logger.Debug("attach.stdin.send.failed", "err", err)
 			}

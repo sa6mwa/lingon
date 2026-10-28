@@ -61,6 +61,7 @@ class AppViewModel(
     private val wallWorkScheduler: WallWorkScheduler = NoopWallWorkScheduler,
     private val backgroundWallServiceController: BackgroundWallServiceController = NoopBackgroundWallServiceController,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val delayTransientStatus: suspend (Long) -> Unit = { delay(it) },
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -1433,7 +1434,7 @@ class AppViewModel(
                     socketOpen = true
                     reconnectAttempt = 0
                     stopReconnect()
-                    clearStatus()
+                    clearConnectionStatus()
                     syncWallPollingSchedule()
                 }
             }
@@ -1507,7 +1508,7 @@ class AppViewModel(
                                 sessionSyncing = false,
                             )
                         }
-                        clearStatus()
+                        clearConnectionStatus()
                         syncWallPollingSchedule()
                     }
                     frame.hasSnapshot() -> {
@@ -1543,7 +1544,7 @@ class AppViewModel(
                                 sessionSyncing = false,
                             )
                         }
-                        clearStatus()
+                        clearConnectionStatus()
                     }
                     frame.hasDiff() -> {
                         val nextLive = try {
@@ -1577,7 +1578,7 @@ class AppViewModel(
                                 sessionSyncing = false,
                             )
                         }
-                        clearStatus()
+                        clearConnectionStatus()
                     }
                     frame.hasControl() -> {
                         val holder = frame.control.holderClientId
@@ -1679,7 +1680,9 @@ class AppViewModel(
                             message = wall.message,
                         )
                         if (appInForeground) {
-                            if (wallDeliveryCoordinator.consumeInApp(notification)) {
+                            if (wallDeliveryCoordinator.consumeInApp(notification) { since, limit ->
+                                    repository.listWallEvents(since, limit)
+                                }) {
                                 showTransientStatus(wallBanner(notification), StatusLevel.Info)
                             }
                         } else {
@@ -2159,7 +2162,7 @@ class AppViewModel(
         transientStatusJob?.cancel()
         _state.update { it.copy(transientStatus = StatusMessage(message, level)) }
         transientStatusJob = viewModelScope.launch {
-            delay(timeoutMs)
+            delayTransientStatus(timeoutMs)
             _state.update { state ->
                 if (state.transientStatus?.message == message && state.transientStatus.level == level) {
                     state.copy(transientStatus = null)
@@ -2239,10 +2242,10 @@ class AppViewModel(
         }
     }
 
-    private fun clearStatus() {
-        transientStatusJob?.cancel()
-        transientStatusJob = null
-        _state.update { it.copy(status = null, transientStatus = null) }
+    private fun clearConnectionStatus() {
+        // Healthy terminal frames clear transport errors, while informational
+        // banners keep their own display lifetime or explicit dismissal.
+        _state.update { it.copy(status = null) }
     }
 
     fun dismissStatus() {

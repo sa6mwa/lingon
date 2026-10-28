@@ -104,7 +104,16 @@ func (r *Runner) HandleSessionCommand(ctx context.Context, sessionID string, kin
 	stdout := r.stdout()
 	switch kind {
 	case protocolpb.CommandKind_COMMAND_KIND_SEND_EOF:
-		r.sendCtrlDSession(targetID)
+		if local := r.localSession(targetID); local != nil {
+			err := local.enqueueRemoteOperation(remoteInputOperation{run: func() {
+				if err := local.sendRemoteEOF(); err != nil && r.logger != nil {
+					r.logger.Debug("session.remote.ctrl_d.failed", "err", err, "session", local.ID())
+				}
+			}})
+			if err != nil && r.logger != nil {
+				r.logger.Debug("session.remote.ctrl_d.failed", "err", err, "session", local.ID())
+			}
+		}
 	case protocolpb.CommandKind_COMMAND_KIND_TOGGLE_OFFLINE:
 		r.toggleOffline(targetID, stdout)
 	case protocolpb.CommandKind_COMMAND_KIND_TOGGLE_RESPAWN:

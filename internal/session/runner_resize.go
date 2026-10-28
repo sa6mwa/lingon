@@ -59,13 +59,7 @@ func (r *Runner) ResizeActive(cols, rows int) {
 		if local == nil {
 			return
 		}
-		if snap, err := local.Resize(cols, rows); err == nil {
-			if local.publisher != nil {
-				local.publisher.Resize(cols, rows, snap)
-			}
-		} else if r.logger != nil {
-			r.logger.Debug("session.local.resize.failed", "err", err, "session", local.ID(), "cols", cols, "rows", rows)
-		}
+		r.resizeLocalSession(local, cols, rows)
 		return
 	}
 	if r.remoteSessions != nil && strings.TrimSpace(activeID) != "" {

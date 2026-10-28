@@ -767,7 +767,7 @@ func TestRealCLILocalHeadlessDetachRemovesTerminatedSessionWithoutReconnectOverl
 	}
 }
 
-func startLingonAttachHeadlessCLI(t *testing.T, homeDir, sessionID string, cols, rows int) *ptytest.PTYSession {
+func startLingonAttachHeadlessCLI(t *testing.T, homeDir, sessionID string, cols, rows int, extraArgs ...string) *ptytest.PTYSession {
 	t.Helper()
 	if cols <= 0 {
 		cols = 80
@@ -788,14 +788,14 @@ func startLingonAttachHeadlessCLI(t *testing.T, homeDir, sessionID string, cols,
 		_ = resizeSlave.Close()
 	})
 
-	cmd := exec.Command(
-		bin,
+	args := []string{
 		"attach",
 		"--headless",
 		sessionID,
 		"--request-control",
 		"--disable-desktop-notifications",
-	)
+	}
+	cmd := exec.Command(bin, append(args, extraArgs...)...)
 	cmd.Env = testAttachCLIEnv(homeDir)
 	cmd.Stdin = slave
 	cmd.Stdout = slave

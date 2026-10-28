@@ -26,7 +26,28 @@ message Frame {
     WallInactivityStatus wall_inactivity_status = 24;
     Activity activity = 25;
     SessionManagement management = 26;
+    Clipboard clipboard = 27;
   }
+}
+
+// Clipboard is an ephemeral, ordered image transfer, never terminal replay.
+// Source is overwritten by the authenticated relay/local transport.
+// Requests repeat MIME/total, start at offset zero, and carry contiguous chunks
+// of at most 64 KiB, up to 32 MiB total. PNG and JPEG bytes are preserved.
+// The host returns an empty-data progress reply after each 1 MiB window, with
+// offset equal to the next expected byte. Senders wait before the next window.
+// Completed replies acknowledge publication and delivery of Ctrl+V, or report
+// an error. Cancel discards only the matching source/transfer, without input.
+message Clipboard {
+  string transfer_id = 1;
+  string source = 2;
+  string mime = 3;
+  uint32 total = 4;
+  uint32 offset = 5;
+  bytes data = 6;
+  bool completed = 7;
+  string error = 8;
+  bool cancel = 9;
 }
 
 message Hello {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"pkt.systems/lingon/internal/attach"
+	"pkt.systems/lingon/internal/clipboard"
 	"pkt.systems/lingon/internal/clock"
 	"pkt.systems/lingon/internal/config"
 	"pkt.systems/lingon/internal/desktopnotify"
@@ -1040,6 +1041,14 @@ func (m *remoteManager) SendInput(ctx context.Context, sessionID string, data []
 	return nil
 }
 
+func (m *remoteManager) SendImage(ctx context.Context, sessionID string, img clipboard.Image) error {
+	_, client := m.viewClient(sessionID)
+	if client == nil || !client.Connected() {
+		return fmt.Errorf("image paste requires a connected session; reconnect and retry")
+	}
+	return client.SendImage(ctx, img)
+}
+
 func (m *remoteManager) SendCommand(ctx context.Context, sessionID string, kind protocolpb.CommandKind, stdout io.Writer) error {
 	if kind == protocolpb.CommandKind_COMMAND_KIND_UNSPECIFIED {
 		return nil
@@ -1480,7 +1489,10 @@ func (m *remoteManager) fetchSessions(ctx context.Context, httpURL string) ([]re
 			cancel()
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+m.token)
+		m.mu.Lock()
+		token := m.token
+		m.mu.Unlock()
+		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := client.Do(req)
 		if err != nil {
 			cancel()
