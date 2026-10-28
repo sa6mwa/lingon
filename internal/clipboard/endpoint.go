@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/bits"
 	"net"
 	"os"
 	"path/filepath"
@@ -259,6 +260,10 @@ func (s *clipboardServer) serve(c net.Conn) {
 		data   []byte
 	}
 	properties := make(map[[2]uint32]property)
+	// Clipboard libraries can join their event reader after DestroyWindow.
+	// Retain StructureNotify subscriptions so that join can complete even
+	// though this endpoint does not implement graphical window management.
+	structureWindows := make(map[uint32]bool)
 	storeProperty := func(key [2]uint32, value property) bool {
 		if _, exists := properties[key]; !exists && len(properties) >= 32 {
 			return false
@@ -307,7 +312,36 @@ func (s *clipboardServer) serve(c net.Conn) {
 		}
 		var out []byte
 		switch req[0] {
-		case 1, 2, 55, 60, 127: // window/default GC lifecycle, NoOperation
+		case 1, 2: // CreateWindow, ChangeWindowAttributes
+			maskOffset, valuesOffset := 28, 32
+			if req[0] == 2 {
+				maskOffset, valuesOffset = 8, 12
+			}
+			if len(req) < valuesOffset {
+				return
+			}
+			mask := u32(maskOffset)
+			if len(req) != valuesOffset+4*bits.OnesCount32(mask) {
+				return
+			}
+			window := u32(4)
+			if req[0] == 1 {
+				delete(structureWindows, window)
+			}
+			if mask&(1<<11) != 0 { // CWEventMask's value follows lower mask bits.
+				offset := valuesOffset + 4*bits.OnesCount32(mask&((1<<11)-1))
+				if u32(offset)&(1<<17) != 0 {
+					if !structureWindows[window] && len(structureWindows) >= 128 {
+						out = packet(0)
+						out[1], out[10] = 11, req[0] // BadAlloc
+						break
+					}
+					structureWindows[window] = true
+				} else {
+					delete(structureWindows, window)
+				}
+			}
+		case 55, 60, 127: // default GC lifecycle, NoOperation
 		case 4: // DestroyWindow releases the window's retained selection buffers.
 			if len(req) != 8 {
 				return
@@ -316,6 +350,12 @@ func (s *clipboardServer) serve(c net.Conn) {
 				if key[0] == u32(4) {
 					delete(properties, key)
 				}
+			}
+			if structureWindows[u32(4)] {
+				out = packet(17)                 // DestroyNotify releases arboard's event reader.
+				order.PutUint32(out[4:], u32(4)) // event and window are identical
+				order.PutUint32(out[8:], u32(4))
+				delete(structureWindows, u32(4))
 			}
 		case 16:
 			if len(req) < 8 {

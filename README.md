@@ -191,8 +191,10 @@ preserved, up to 32 MiB per image. The entire image is validated before delivery
 decoded images are limited to 33,554,432 pixels and 32,768 pixels per side to
 bound decoder allocation. The target clipboard is populated before
 Ctrl+V reaches the application. Softline's chat prompt can then read the image
-normally and insert its own cached image path. When the source clipboard has
-no image, Ctrl+V passes through unchanged; bracketed text paste is unchanged.
+normally and insert its own cached image path. Codex reads PNG from X11, so a
+JPEG-only source must be converted to PNG before copying for Codex. When the
+source clipboard has no image, Ctrl+V passes through unchanged; bracketed text
+paste is unchanged.
 
 Targets with an existing `DISPLAY` use that X11 clipboard. On a headless target,
 Lingon gives each session a private, authenticated, loopback X11 clipboard

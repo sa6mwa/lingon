@@ -37,17 +37,28 @@ should_auto_push_ca_pem() {
 
 if ! adb_cmd wait-for-device >/dev/null 2>&1; then
   echo "adb wait-for-device failed; emulator may not be running yet." >&2
-  exit 0
+  exit 1
 fi
 
 boot_deadline=$(( $(date +%s) + BOOT_TIMEOUT_SECS ))
+boot_ready=0
+boot_completed="unknown"
+user_state="unknown"
 while [[ "$(date +%s)" -lt "${boot_deadline}" ]]; do
-  boot_completed="$(adb_cmd shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+  boot_completed="$(adb_cmd shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
   if [[ "${boot_completed}" == "1" ]]; then
-    break
+    user_state="$(adb_cmd shell am get-started-user-state 0 2>/dev/null | tr -d '\r' || true)"
+    if [[ "${user_state}" == "RUNNING_UNLOCKED" ]]; then
+      boot_ready=1
+      break
+    fi
   fi
   sleep 2
 done
+if [[ "${boot_ready}" != 1 ]]; then
+  echo "Device ${ADB_SERIAL:-default} is not ready: boot=${boot_completed}, user0=${user_state}; need completed boot and unlocked credential storage." >&2
+  exit 1
+fi
 
 qemu_prop="$(adb_cmd shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r')"
 if [[ "${qemu_prop}" == "1" ]]; then

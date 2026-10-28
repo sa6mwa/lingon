@@ -290,10 +290,10 @@ start_emulator() {
   local emu_port="$2"
   if [[ " ${EMULATOR_FLAGS} " != *" -no-window "* ]] && command -v xws >/dev/null 2>&1; then
     echo "Starting emulator ${avd_name} on port ${emu_port} via xws workspace ${EMULATOR_WORKSPACE}..."
-    xws -w "${EMULATOR_WORKSPACE}" -- "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 2 >/dev/null 2>&1 &
+    xws -w "${EMULATOR_WORKSPACE}" -- "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -wipe-data -lowram -memory 1024 -cores 2 >/dev/null 2>&1 &
   else
     echo "Starting emulator ${avd_name} on port ${emu_port}..."
-    "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -lowram -memory 1024 -cores 2 >/dev/null 2>&1 &
+    "${EMULATOR_BIN}" -avd "${avd_name}" -port "${emu_port}" ${EMULATOR_FLAGS} -wipe-data -lowram -memory 1024 -cores 2 >/dev/null 2>&1 &
   fi
   EMULATOR_PID=$!
 }
@@ -670,7 +670,7 @@ ADB_SERIAL="${DEVICE_SERIAL}"
 export ADB_SERIAL
 export ADB="${ADB_BIN}"
 
-"${ANDROID_DIR}/scripts/ensure-emu-keyboard.sh" || true
+"${ANDROID_DIR}/scripts/ensure-emu-keyboard.sh"
 
 verify_emulator_profile
 

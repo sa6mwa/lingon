@@ -45,7 +45,22 @@ func TestClipboardPTYHelper(t *testing.T) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var finishRead func() error
+		if os.Getenv("LINGON_CLIPBOARD_JOIN_READER") == "1" {
+			var err error
+			finishRead, err = clipboardReaderShutdown(ctx)
+			if err != nil {
+				cancel()
+				fmt.Printf("CLIPBOARD_ERROR:%s\n", err)
+				continue
+			}
+		}
 		img, err := clipboard.NewX11(os.Getenv("DISPLAY"), os.Getenv("XAUTHORITY")).Read(ctx)
+		if finishRead != nil {
+			if shutdownErr := finishRead(); shutdownErr != nil {
+				err = shutdownErr
+			}
+		}
 		cancel()
 		if err != nil {
 			fmt.Printf("CLIPBOARD_ERROR:%s\n", err)
@@ -66,8 +81,7 @@ func TestClipboardAttachPTYHelper(t *testing.T) {
 }
 
 func TestClipboardThroughOwnedTMUX(t *testing.T) {
-	tmux, err := exec.LookPath("tmux")
-	if err != nil {
+	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux required for terminal interoperability")
 	}
 	t.Setenv("DISPLAY", "")
@@ -80,7 +94,7 @@ func TestClipboardThroughOwnedTMUX(t *testing.T) {
 	}
 	dir := t.TempDir()
 	shell := filepath.Join(dir, "shell")
-	if err := os.WriteFile(shell, []byte("#!/bin/sh\nstty -icanon -echo\nexport LINGON_CLIPBOARD_TEST_CHILD=1 LINGON_TEST_OWN_PTY=1\nexec '"+strings.ReplaceAll(exe, "'", "'\\''")+"' -test.run='^TestClipboardPTYHelper$'\n"), 0700); err != nil {
+	if err := os.WriteFile(shell, []byte("#!/bin/sh\nstty -icanon -echo\nexport LINGON_CLIPBOARD_TEST_CHILD=1 LINGON_TEST_OWN_PTY=1 LINGON_CLIPBOARD_JOIN_READER=1\nexec '"+strings.ReplaceAll(exe, "'", "'\\''")+"' -test.run='^TestClipboardPTYHelper$'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	recorder := ptytest.NewWSRecorder()
@@ -95,26 +109,8 @@ func TestClipboardThroughOwnedTMUX(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer source.Close()
-	master, slave := ptytest.OpenPTY(t, 110, 24)
-	defer master.Close()
-	defer slave.Close()
-	terminal := ptytest.NewPTYSession(t, master, slave, 110, 24)
+	terminal := startClipboardOwnedTMUX(t, ctx, h, source)
 	defer terminal.Close()
-	socket := filepath.Join(dir, "tmux.sock")
-	cmd := exec.CommandContext(ctx, tmux, "-S", socket, "-f", "/dev/null", "new-session", "-s", "clipboard", "exec '"+strings.ReplaceAll(exe, "'", "'\\''")+"' -test.run='^TestClipboardAttachPTYHelper$'")
-	cmd.Env = append(os.Environ(), "LINGON_TEST_OWN_PTY=1", "LINGON_CLIPBOARD_ATTACH_CHILD=1", "LINGON_CLIPBOARD_ENDPOINT="+h.Endpoint(), "LINGON_CLIPBOARD_TOKEN="+h.AccessToken(), "LINGON_CLIPBOARD_TLS="+h.TLSDir(), "DISPLAY="+source.Display, "XAUTHORITY="+source.Authority, "TERM=xterm-256color")
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancelCleanup()
-		_ = exec.CommandContext(cleanup, tmux, "-S", socket, "kill-server").Run()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
 	waitClipboardScreen(t, ctx, terminal, "CLIPBOARD_APP_READY")
 	img := clipboardPTYImage(t, "image/png")
 	if err := source.Set(ctx, img); err != nil {
@@ -122,6 +118,49 @@ func TestClipboardThroughOwnedTMUX(t *testing.T) {
 	}
 	terminal.SendBytes([]byte{0x16})
 	waitClipboardScreen(t, ctx, terminal, fmt.Sprintf("IMAGE:%x image/png", sha256.Sum256(img.Data)))
+	terminal.Send("z")
+	waitClipboardScreen(t, ctx, terminal, "KEY:7a")
+	// Repeat with distinct bytes after teardown, then prove keyboard delivery.
+	img = clipboardPTYImage(t, "image/jpeg")
+	if err := source.Set(ctx, img); err != nil {
+		t.Fatal(err)
+	}
+	terminal.SendBytes([]byte{0x16})
+	waitClipboardScreen(t, ctx, terminal, fmt.Sprintf("IMAGE:%x image/jpeg", sha256.Sum256(img.Data)))
+	terminal.Send("q")
+	waitClipboardScreen(t, ctx, terminal, "KEY:71")
+}
+
+// Every process and terminal belongs to this fixture, including the tmux server.
+func startClipboardOwnedTMUX(t *testing.T, ctx context.Context, h *ptytest.Harness, source *clipboard.Endpoint) *ptytest.PTYSession {
+	t.Helper()
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	master, slave := ptytest.OpenPTY(t, 110, 24)
+	t.Cleanup(func() { _ = master.Close(); _ = slave.Close() })
+	terminal := ptytest.NewPTYSession(t, master, slave, 110, 24)
+	socket := filepath.Join(t.TempDir(), "tmux.sock")
+	cmd := exec.CommandContext(ctx, tmux, "-S", socket, "-f", "/dev/null", "new-session", "-s", "clipboard", "exec '"+strings.ReplaceAll(exe, "'", "'\\''")+"' -test.run='^TestClipboardAttachPTYHelper$'")
+	cmd.Env = append(os.Environ(), "LINGON_TEST_OWN_PTY=1", "LINGON_CLIPBOARD_ATTACH_CHILD=1", "LINGON_CLIPBOARD_ENDPOINT="+h.Endpoint(), "LINGON_CLIPBOARD_TOKEN="+h.AccessToken(), "LINGON_CLIPBOARD_TLS="+h.TLSDir(), "DISPLAY="+source.Display, "XAUTHORITY="+source.Authority, "TERM=xterm-256color")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelCleanup()
+		_ = exec.CommandContext(cleanup, tmux, "-S", socket, "kill-server").Run()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return terminal
 }
 
 func TestClipboardTerminalToHeadlessPTY(t *testing.T) {
@@ -402,8 +441,14 @@ func clipboardPTYImage(t *testing.T, mime string) clipboard.Image {
 
 func waitClipboardScreen(t *testing.T, ctx context.Context, terminal *ptytest.PTYSession, text string) {
 	t.Helper()
-	if err := terminal.WaitForScreen(ctx, func(screen ptytest.Screen) bool { return strings.Contains(screen.String(), text) }); err != nil {
+	imageResult := strings.HasPrefix(text, "IMAGE:")
+	if err := terminal.WaitForScreen(ctx, func(screen ptytest.Screen) bool {
+		return strings.Contains(screen.String(), text) || (imageResult && strings.Contains(screen.String(), "CLIPBOARD_ERROR:"))
+	}); err != nil {
 		t.Fatalf("waiting for %q: %v\n%s", text, err, terminal.Screen().String())
+	}
+	if imageResult && !strings.Contains(terminal.Screen().String(), text) {
+		t.Fatalf("clipboard reader failed before %q:\n%s", text, terminal.Screen().String())
 	}
 }
 

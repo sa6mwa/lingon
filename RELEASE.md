@@ -98,6 +98,8 @@ do not accumulate in one long-lived process. One owned emulator remains for
 the sweep and is joined during cleanup; each batch retains its JUnit evidence.
 Go and JVMs may use four processor threads; the emulator has two vCPUs,
 sharing the same aggregate ceiling with its relay and reporting processes.
+Each owned emulator launch wipes its private guest data, and instrumentation
+starts only after boot completes and user 0's credential storage is unlocked.
 Podman build/runtime checks join the same slice. These full sweeps
 can take substantial time; run no other heavy work alongside them.
 
